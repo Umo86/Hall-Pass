@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  DATABASE_URL: postgres://postgres:postgres@localhost:5432/hallpass
+  DIRECT_DATABASE_URL: postgres://postgres:postgres@localhost:5432/hallpass
+  TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/hallpass_test
+  NEXT_PUBLIC_BRAND_NAME: Hall Pass
+  APP_TIMEZONE: Europe/London
+  CRON_SECRET: ci-secret
+  DEV_AUTH: "1"
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Create databases
+        run: |
+          psql postgres://postgres:postgres@localhost:5432/postgres -c "CREATE DATABASE hallpass;"
+          psql postgres://postgres:postgres@localhost:5432/postgres -c "CREATE DATABASE hallpass_test;"
+
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm db:migrate
+      - name: Seed runs twice without error
+        run: pnpm db:seed && pnpm db:seed
+      - name: Unit tests (incl. DB-backed RLS, audit trigger, refs, cron)
+        run: pnpm test
+      - run: pnpm build
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+      - name: End-to-end tests
+        run: pnpm test:e2e
+
+      - name: Dependency audit
+        run: pnpm audit --audit-level high
+        continue-on-error: true

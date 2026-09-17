@@ -6,6 +6,16 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 
 ---
 
+## V1 build status (September 2026)
+
+Built and tested in v1: all of Phase 0 (schema, migrations, RLS, audit trigger, auth with dev sign-in, authz with full matrix tests, seed, CI); Phase 1 core — signage CRUD with refs, status machine, workflow engine (conditions, parallel groups, decisions with optimistic locking, delegation, restart both ways, invalidation, supplier fallback, hold shifting), artwork versions with invalidation warnings, My Sign-offs, comments, notifications with email, dashboard, table/Kanban schedule with bulk actions, Excel import/export, approval certificate and spec label PDFs, soft delete/restore, supplier/sponsor/venue portals; Phase 2 core — stand submissions with questionnaire/complexity, documents with expiry flags, rules checklist, stand workflow, exhibitor portal, deadlines, all six cron jobs with idempotency tests, stand register export, `/q/[ref]`. 448 unit tests + 9 Playwright e2e tests green.
+
+Remaining (see DECISIONS.md, deferred not dropped): inline grid editing and saved views; artwork preview rendering, compare slider and annotations; floorplan and calendar views; onsite mobile + PWA + camera QR scanning; change-request flow UI; venue submission pack, contractor schedule, sponsor/cost/performance exports; iCal feed; workflow builder UI; email template editing; edition archive read-only enforcement; GDPR self-service; notification preference UI.
+
+---
+
+---
+
 ## Phase 0 — Foundations
 
 **Goal:** a deployable skeleton with the full schema, security model, auth, seed data and CI — no product features yet.

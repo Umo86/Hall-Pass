@@ -25,6 +25,7 @@ let jobs: typeof import("@/lib/cron/jobs");
 const TODAY = "2027-08-25";
 
 let opsUserId: string;
+const EXHIBITOR_EMAIL = `exhibitor-${Date.now()}@cron.test`;
 let instanceId: string;
 let exhibitorId: string;
 
@@ -147,7 +148,7 @@ d("daily cron jobs", () => {
         companyName: "Cron Exhibitor",
         standNumber: `Z${suffix}`,
         standType: "space_only",
-        contactEmail: "exhibitor@cron.test",
+        contactEmail: EXHIBITOR_EMAIL,
       })
       .returning();
     exhibitorId = exhibitor.id;
@@ -192,7 +193,7 @@ d("daily cron jobs", () => {
     const [{ n }] = await db
       .select({ n: count() })
       .from(schema.emailLog)
-      .where(eq(schema.emailLog.toEmail, "exhibitor@cron.test"));
+      .where(eq(schema.emailLog.toEmail, EXHIBITOR_EMAIL));
     expect(Number(n)).toBe(1);
   });
 
@@ -211,7 +212,7 @@ d("daily cron jobs", () => {
     const [{ n }] = await db
       .select({ n: count() })
       .from(schema.emailLog)
-      .where(eq(schema.emailLog.toEmail, "exhibitor@cron.test"));
+      .where(eq(schema.emailLog.toEmail, EXHIBITOR_EMAIL));
     expect(Number(n)).toBe(1);
   });
 
