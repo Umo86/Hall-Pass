@@ -110,6 +110,13 @@ export const approvalInstances = pgTable(
     holdShiftDays: integer("hold_shift_days").notNull().default(0),
     escalatedAt: timestamp("escalated_at", { withTimezone: true }),
     escalatedTo: uuid("escalated_to").array(),
+    // Step behaviour snapshots so runs never depend on later workflow edits.
+    invalidateOnNewVersionSnapshot: boolean("invalidate_on_new_version_snapshot")
+      .notNull()
+      .default(true),
+    restartFromHereSnapshot: boolean("restart_from_here_snapshot").notNull().default(true),
+    slaDaysSnapshot: integer("sla_days_snapshot").notNull().default(0),
+    noSupplierFallback: boolean("no_supplier_fallback").notNull().default(false),
     ...timestamps,
   },
   (t) => [
