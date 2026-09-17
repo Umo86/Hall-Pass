@@ -5,7 +5,7 @@
  *
  *   pnpm db:seed
  */
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
@@ -19,7 +19,6 @@ import {
   invalidateOnNewVersion,
   type EngineSettings,
   type EntityCtx,
-  type Instance,
   type StepDef,
 } from "@/lib/workflow";
 import { persistRun } from "@/lib/workflow/persist";
