@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1789661173257,
+      "tag": "0000_mushy_warhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789661180190,
+      "tag": "0001_rls_audit_constraints",
+      "breakpoints": true
+    }
+  ]
+}
