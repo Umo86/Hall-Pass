@@ -1,15 +1,20 @@
 import { Bell, Search } from "lucide-react";
 import { AppNav } from "@/components/app-nav";
 import { EditionSwitcher } from "@/components/edition-switcher";
+import { SignOutButton } from "@/components/auth/sign-out-button";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { brandName } from "@/lib/config";
+import { requireStaffSession } from "@/lib/auth/actor";
 
-export default function AppLayout({ children }: { children: React.ReactNode }) {
+export const dynamic = "force-dynamic";
+
+export default async function AppLayout({ children }: { children: React.ReactNode }) {
+  const session = await requireStaffSession();
+
   return (
     <div className="flex min-h-screen flex-col">
       <header className="bg-background sticky top-0 z-40 flex h-14 items-center gap-4 border-b px-4">
-        <div className="text-sm font-semibold tracking-tight">{brandName}</div>
+        <div className="text-sm font-semibold tracking-tight">{session.organisation.brandName}</div>
         <EditionSwitcher />
         <div className="ml-auto flex items-center gap-2">
           <div className="relative hidden md:block">
@@ -22,6 +27,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <Button variant="ghost" size="icon" aria-label="Notifications">
             <Bell className="size-4" aria-hidden />
           </Button>
+          <span className="text-muted-foreground hidden text-xs sm:inline">
+            {session.user.fullName || session.user.email} · {session.actor.role}
+          </span>
+          <SignOutButton />
         </div>
       </header>
       <div className="flex flex-1">

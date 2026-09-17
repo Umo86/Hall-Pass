@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server";
+import { createSupabaseServerClient } from "@/lib/auth/supabase-server";
 
-// Placeholder — the Supabase auth code exchange is wired up in Phase 0,
-// milestone 0.C. Until then the callback simply returns to the sign-in page.
+/** Supabase magic-link / OAuth code exchange. */
 export async function GET(request: Request) {
-  return NextResponse.redirect(new URL("/login", request.url));
+  const url = new URL(request.url);
+  const code = url.searchParams.get("code");
+  const next = url.searchParams.get("next") ?? "/";
+  const supabase = await createSupabaseServerClient();
+  if (supabase && code) {
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    if (!error) return NextResponse.redirect(new URL(next, request.url));
+  }
+  return NextResponse.redirect(new URL("/login?error=auth", request.url));
 }

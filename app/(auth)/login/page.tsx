@@ -1,14 +1,32 @@
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
+import { redirect } from "next/navigation";
+import { LoginForm } from "@/components/auth/login-form";
 import { brandName } from "@/lib/config";
+import { devAuthEnabled, getSession } from "@/lib/auth/actor";
+import { supabaseConfigured } from "@/lib/auth/supabase-server";
 
 export const metadata = { title: "Sign in" };
+export const dynamic = "force-dynamic";
 
-// Visual shell only — Supabase authentication is wired up in Phase 0,
-// milestone 0.C. Staff sign in with a password (development) or magic
-// link; external users sign in by magic link only.
-export default function LoginPage() {
+async function devUserList(): Promise<{ email: string; label: string }[]> {
+  if (!devAuthEnabled()) return [];
+  try {
+    const { db } = await import("@/lib/db/client");
+    const users = await db.query.users.findMany({ limit: 24 });
+    return users
+      .sort((a, b) => Number(a.isExternal) - Number(b.isExternal))
+      .map((u) => ({
+        email: u.email,
+        label: u.fullName ? `${u.fullName}` : u.email.split("@")[0],
+      }));
+  } catch {
+    return [];
+  }
+}
+
+export default async function LoginPage() {
+  const session = await getSession().catch(() => null);
+  if (session) redirect(session.actor.kind === "staff" ? "/editions" : "/portal/approvals");
+
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-6">
@@ -16,19 +34,11 @@ export default function LoginPage() {
           <h1 className="text-xl font-semibold tracking-tight">{brandName}</h1>
           <p className="text-muted-foreground text-sm">Signage schedule and design sign-off</p>
         </div>
-        <form className="space-y-3" aria-label="Sign in">
-          <label className="block space-y-1.5">
-            <span className="text-sm font-medium">Email address</span>
-            <Input type="email" name="email" autoComplete="email" placeholder="you@example.com" />
-          </label>
-          <Button type="button" className="w-full" disabled>
-            Send magic link
-          </Button>
-        </form>
-        <Separator />
-        <p className="text-muted-foreground text-center text-xs">
-          Sign-in is not yet available — authentication arrives with Phase 0.
-        </p>
+        <LoginForm
+          supabaseEnabled={supabaseConfigured()}
+          devEnabled={devAuthEnabled()}
+          devUsers={await devUserList()}
+        />
       </div>
     </div>
   );

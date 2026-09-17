@@ -2,19 +2,34 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "./schema";
 
-// Server-only Postgres client over the pooled connection (transaction mode).
-// Never import from client components — the import of "postgres" would fail
-// the build, which is the guard we want.
-const connectionString = process.env.DATABASE_URL;
+/**
+ * Server-only Postgres client over the pooled connection (transaction mode).
+ * Lazily initialised so importing this module during a build without
+ * DATABASE_URL does not crash; the first query needs the variable set.
+ */
+type DrizzleDb = ReturnType<typeof drizzle<typeof schema>>;
 
-if (!connectionString) {
-  throw new Error("DATABASE_URL is not set");
+let _db: DrizzleDb | null = null;
+
+function getDb(): DrizzleDb {
+  if (_db) return _db;
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error("DATABASE_URL is not set");
+  }
+  // Transaction-mode poolers do not support prepared statements.
+  const client = postgres(connectionString, { prepare: false });
+  _db = drizzle(client, { schema });
+  return _db;
 }
 
-// Transaction-mode poolers do not support prepared statements.
-const client = postgres(connectionString, { prepare: false });
+export const db: DrizzleDb = new Proxy({} as DrizzleDb, {
+  get(_target, prop, receiver) {
+    const real = getDb() as unknown as Record<string | symbol, unknown>;
+    const value = Reflect.get(real, prop, receiver);
+    return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(real) : value;
+  },
+});
 
-export const db = drizzle(client, { schema });
-
-export type Db = typeof db;
-export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type Db = DrizzleDb;
+export type Tx = Parameters<Parameters<DrizzleDb["transaction"]>[0]>[0];
