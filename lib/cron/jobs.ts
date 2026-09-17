@@ -1,5 +1,5 @@
 import "server-only";
-import { and, count, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -12,7 +12,6 @@ import {
   reminderLog,
   signageItems,
   standSubmissions,
-  users,
 } from "@/lib/db/schema";
 import { artworkDue, diffDaysIso, standDesignDue } from "@/lib/deadlines";
 import { editionForDeadlines } from "@/lib/queries/editions";
