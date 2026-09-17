@@ -1,0 +1,8 @@
+/**
+ * Brand configuration. The public brand name is a config value so the
+ * product can be renamed without a code hunt (non-negotiable 7). After
+ * login, organisations.brand_name overrides this default.
+ */
+export const brandName = process.env.NEXT_PUBLIC_BRAND_NAME ?? "Hall Pass";
+
+export const appTimezone = process.env.APP_TIMEZONE ?? "Europe/London";

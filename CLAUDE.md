@@ -68,6 +68,7 @@ tests/
 ## Conventions
 
 ### Server actions
+
 One intent per file under `app/actions/`, named by intent (`submitForReview`, `decideApproval`, `uploadArtworkVersion`). Every action follows the same shape:
 
 1. Parse input with zod
@@ -78,21 +79,27 @@ One intent per file under `app/actions/`, named by intent (`submitForReview`, `d
 6. Return a typed result (never throw raw errors to the client; no stack traces reach the browser)
 
 ### Database
+
 snake_case columns; `id uuid default gen_random_uuid()`; `created_at`/`updated_at` on everything; `deleted_at` where soft delete applies; statuses and kinds are Postgres enums; every FK indexed plus `(edition_id, status)` on `signage_items` and `stand_submissions`; refs are never reused.
 
 ### UI
+
 shadcn/ui components; react-hook-form + zod; toasts for success, inline errors for validation; destructive or consequential actions behind a confirm dialog that states the consequence; every list has a real empty state with its primary action. Quiet, dense, professional; light theme default with dark mode; no gradients, no emoji; one colour token per status, always accompanied by the status text. British English throughout. Onsite section is mobile-first.
 
 ### Testing
+
 Tests first for the workflow engine, status machines and authz; alongside the code everywhere else. Status machines get table-driven tests asserting every legal transition and that every other transition throws. Authz gets a test per permission-matrix row, including negatives. Cron jobs are pure functions taking `today`.
 
 ### Security
+
 Secrets only in environment variables (`.env.example` kept complete, one comment per variable); the Supabase service role key never appears in client code; signed URLs only, no public buckets; magic-link and invite endpoints rate-limited; security headers (CSP, HSTS, nosniff, frame-ancestors none).
 
 ### Git
+
 Conventional Commits (`feat:`, `fix:`, `chore:`, `test:`, `docs:`, `refactor:`). One task, one commit where practical.
 
 ### Decisions
+
 Where the brief is silent or ambiguous, choose the option that is simplest to test and easiest to change later, and log it with a one-line reason in `DECISIONS.md`. Ask before: adding a paid service, changing the stack, changing a status machine or workflow rule, or writing anything that deletes data.
 
 ## Definition of done (every task)

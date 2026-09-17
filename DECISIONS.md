@@ -2,6 +2,9 @@
 
 A one-line log of choices made where the build brief is silent, with the reason. Newest first.
 
-| Date | Decision | Reason |
-|---|---|---|
-| 2026-09-17 | Initial planning docs pushed straight to `main` | The repository was empty with no default branch yet; feature work from Phase 0 onwards goes through branches and pull requests. |
+| Date       | Decision                                                       | Reason                                                                                                                                                                                                                                           |
+| ---------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-09-17 | App shell (tasks 0.1–0.4, 0.17-lite) pushed straight to `main` | The owner asked for a first Vercel deployment; production tracks `main` and the repository is not yet connected to Vercel, so a pull request had nothing to preview against. Later phase work goes through branches and pull requests.           |
+| 2026-09-17 | shadcn/ui components vendored by hand (registry blocked)       | The build environment's egress proxy denies ui.shadcn.com, so `components.json`, the theme tokens and the base components were written manually from the standard shadcn sources; behaviourally identical, future components added the same way. |
+| 2026-09-17 | Cron endpoint accepts GET and POST                             | Vercel Cron invokes with GET while the brief specifies POST; both are served by the same handler behind the same `CRON_SECRET` bearer check.                                                                                                     |
+| 2026-09-17 | Initial planning docs pushed straight to `main`                | The repository was empty with no default branch yet.                                                                                                                                                                                             |

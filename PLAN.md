@@ -11,12 +11,14 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 **Goal:** a deployable skeleton with the full schema, security model, auth, seed data and CI — no product features yet.
 
 ### Milestone 0.A — Repo and tooling
+
 - [ ] 0.1 Scaffold Next.js (latest stable, App Router) with TypeScript strict, Tailwind CSS, pnpm; add shadcn/ui, Inter via `next/font`, lucide-react
 - [ ] 0.2 Tooling: ESLint + Prettier, Vitest, Playwright (config only), pino logger with request id; `pnpm typecheck | lint | test | test:e2e` scripts
 - [ ] 0.3 Project docs: `.env.example` (every variable, one comment each), `README.md` (local setup, Supabase setup, migrations, seed, tests, deploy, cron), `DECISIONS.md`
 - [ ] 0.4 App route skeleton per section 15 layout: `(auth)`, `(app)`, `(portal)`, `q/[ref]`, `api/cron/daily`, `api/ical/[token]` — empty pages only
 
 ### Milestone 0.B — Database
+
 - [ ] 0.5 Drizzle + drizzle-kit set-up (`DATABASE_URL` pooled transaction mode, `DIRECT_DATABASE_URL` for migrations); Postgres enums for all statuses/kinds
 - [ ] 0.6 Schema: tenancy and people (organisations, users, memberships, external_grants) + events and venues (events, venues, venue_rules, editions, edition_deadlines, edition_counters)
 - [ ] 0.7 Schema: floorplans (halls, locations), third parties (suppliers, contractors, sponsors, sponsor_entitlements, exhibitors)
@@ -27,12 +29,14 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] 0.12 Audit append-only trigger: raises on UPDATE or DELETE of `audit_log`; test proves it
 
 ### Milestone 0.C — Auth and authorisation
+
 - [ ] 0.13 Supabase Auth wiring: staff password (dev) + magic link; external magic link only; `/auth/callback`; session verification helper for server actions
 - [ ] 0.14 Invite flow: `/invite/[token]` — accept an external grant (token hash check, expiry, set name, land in portal); revocation and expiry cut access immediately
 - [ ] 0.15 `lib/authz.ts`: `can(actor, action, resource)` covering the staff permission matrix (3.3) and external scoping rules (3.2) — **tests first**, one per matrix row including negatives
 - [ ] 0.16 `lib/audit.ts`: audit row writer used inside the same transaction as every mutation; server action template established (zod → actor → authz → transaction+audit → revalidate → typed result)
 
 ### Milestone 0.D — Shell, seed, CI
+
 - [ ] 0.17 App shell: left nav (staff), reduced nav (external), top bar with edition switcher, search and notifications bell placeholders; light theme, responsive
 - [ ] 0.18 Seed script (`pnpm db:seed`, idempotent): organisation, staff users, external users + grants, event, venues, EXAMPLE venue rules, complex-structure triggers, edition BIRM27 with deadline offsets, halls + placeholder floorplans + 12 locations, item types, suppliers, contractors, sponsors + entitlements, default workflows (6.5)
 - [ ] 0.19 Seed: 30 signage items across statuses (artwork PDFs generated, pending steps for every role, two overdue, one on hold, one rejected, one superseded approval) and 12 exhibitors with the specified submission spread
@@ -47,6 +51,7 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 **Goal:** usable at the next show — the full signage lifecycle from creation to approval, with imports, exports and portals.
 
 ### Milestone 1.A — Editions and items
+
 - [ ] 1.1 Editions: list, create; edition switcher wired to real data
 - [ ] 1.2 Edition clone: halls, locations, deadline offsets, items as `draft` with artwork/approvals/actuals/PO cleared; exhibitors optional; new code and dates required
 - [ ] 1.3 Settings: item types CRUD (defaults for workflow, fixing, venue approval)
@@ -55,6 +60,7 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] 1.6 `lib/status/signage.ts`: pure transition function — **tests first**, table-driven, every legal transition passes and every other throws (incl. on_hold from any non-terminal, previous_status, reopen)
 
 ### Milestone 1.B — Artwork pipeline
+
 - [ ] 1.7 `lib/storage.ts`: private buckets, path pattern, signed upload URLs issued by authorised server action, `finaliseUpload` with SHA-256 re-verification under 25 MB, 15-minute signed download URLs with audit
 - [ ] 1.8 Artwork versions: upload UI with type/size limits, version numbering, browser-side SHA-256 (Web Crypto), upload retry on same signed URL
 - [ ] 1.9 Previews: PNG of page 1 via `pdfjs-dist` + `sharp`; file-type icon fallback for AI/EPS/ZIP
@@ -62,6 +68,7 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] 1.11 Version compare: side-by-side with slider overlay; annotation pins per version linked to comment threads
 
 ### Milestone 1.C — Workflow engine (`lib/workflow/`, tests first throughout)
+
 - [ ] 1.12 Run creation: condition evaluation (all eight condition kinds), step snapshots, `skipped` instances, run_number increments
 - [ ] 1.13 Activation: first non-skipped step/parallel group pending, `pending_since`/`due_at` (calendar days), group completion advances
 - [ ] 1.14 Decisions: approve / approve_with_conditions / request_changes / reject / confirm; role and user assignment resolution incl. external scoping; admin override recorded; supplier-step fallback to ops with "No supplier set" flag
@@ -72,12 +79,14 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] 1.19 Integration: submit-for-review action (required-field validation, `awaiting_artwork` vs `in_review`), resubmit, hold/resume with `due_at` shift, reopen rejected
 
 ### Milestone 1.D — Approvals UX and collaboration
+
 - [ ] 1.20 Approvals tab: visual chain with status, assignee, due date, comments and conditions; decide buttons only for the current user's pending steps; delegate; previous-run history
 - [ ] 1.21 `/approvals` My Sign-offs: cross-edition pending instances, sorted by due date, inline decisions, preview drawer with locked version, filters (edition, step, overdue)
 - [ ] 1.22 Comments: markdown, threads, @mentions, attachments, internal/external flag, edit/delete; History tab from audit entries
 - [ ] 1.23 Notifications: in-app bell + event-driven emails (react-email, brand name, one CTA deep link, plain-text fallback, batched mentions), retries with backoff into `email_log`, per-kind mute in profile
 
 ### Milestone 1.E — Views, dashboard, exports
+
 - [ ] 1.24 Schedule table: TanStack grid, sticky header, column chooser, inline edit (per-field permission), multi-select bulk actions, grouping, saved views per user, search, `nuqs` URL-synced filters; virtualised, smooth at 1,500 rows
 - [ ] 1.25 Kanban view: column per status; cards with ref, name, thumbnail, hall, next pending step + assignee, due date
 - [ ] 1.26 Dashboard: status counts, sitting-with by department/external role, overdue click-through, next-7-days deadlines, budget vs estimate vs actual, most-overdue call-out (stand funnel arrives in Phase 2)
@@ -87,6 +96,7 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] 1.30 Spec labels: A6 PDF per item with QR to `/q/{ref}` (route resolves in Phase 2; label generation here)
 
 ### Milestone 1.F — Portals and e2e
+
 - [ ] 1.31 Supplier portal (`/portal/items`): scoped items, spec fields, approved locked artwork only, delivery/install dates, PO; "Sent to print" and "Delivered" confirmations
 - [ ] 1.32 Sponsor portal: scoped items, all artwork versions, sponsor approval step, external comments
 - [ ] 1.33 Playwright: staff flow (create → upload → submit → marketing + ops approve → export); sponsored path with sales approval; invalidation and re-approval; supplier/sponsor scoping incl. 403/404 by URL
@@ -98,6 +108,7 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 ## Phase 2 — Stands, deadlines, venue, floorplan
 
 ### Milestone 2.A — Stand submissions
+
 - [ ] 2.1 `lib/status/stand.ts` — **tests first**, table-driven as 1.6
 - [ ] 2.2 Exhibitors admin table (`/[editionCode]/stands`): stand type, contractor, status, complexity flags, days to deadline, last chased, filters, bulk chase
 - [ ] 2.3 Exhibitor portal (`/portal/submission`): structure questionnaire, `is_complex` computation (triggers + >4000 mm), document upload by type, submit (blocks on missing required docs / missing height), resubmit increments submission_version
@@ -107,6 +118,7 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] 2.7 Stand detail page: questionnaire, documents, checklist, chain, outcome, conditions, build check, comments
 
 ### Milestone 2.B — Deadlines and cron
+
 - [ ] 2.8 `lib/deadlines.ts`: `effectiveDeadline`, `artworkDue`, `printDeadline`, `standDesignDue`, `insuranceDue` — pure, tested, overrides and hold shifting
 - [ ] 2.9 Cron scaffold: `POST /api/cron/daily`, `CRON_SECRET` bearer check, Europe/London "today", each job a testable function taking `today`; `reminder_log` idempotency
 - [ ] 2.10 Jobs 1–2: approval reminders (−7/−2/due/overdue, cap 10) and escalation (`escalate_after_days`, admins + owner, `escalated_at/to`)
@@ -114,6 +126,7 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] 2.12 Job 6: daily digest to ops and admin; skipped when nothing changed and nothing overdue; Vercel Cron schedule config
 
 ### Milestone 2.C — Floorplans, views, exports
+
 - [ ] 2.13 Floorplan admin: upload per hall (PDF → PNG render), place and drag locations (x/y as 0–1), assign items
 - [ ] 2.14 Floorplan view: hall tabs, status-coloured pins with text, click popover; calendar view: install dates by day/slot grouped by contractor
 - [ ] 2.15 `/q/[ref]`: resolve QR to item or submission after login, external scoping enforced
@@ -127,12 +140,14 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 ## Phase 3 — Onsite, reporting, admin
 
 ### Milestone 3.A — Onsite and PWA
+
 - [ ] 3.1 Onsite mobile section: install checklist by hall/day, camera tick, installed confirmation with required photo (per org setting)
 - [ ] 3.2 Snags: new snag (photo, item picker, severity, assign), list, resolve/won't-fix, status round-trip to `installed`
 - [ ] 3.3 QR scanning: `@zxing/browser` camera scan + manual ref fallback; stand build checks onsite
 - [ ] 3.4 PWA: manifest, service worker caching app shell only; browser photo downscale to 2000 px
 
 ### Milestone 3.B — Reports and admin
+
 - [ ] 3.5 Reports page: sponsor deliverables, cost report, approval performance (Excel); generated-files list with expiry
 - [ ] 3.6 iCal feed at tokenised URL, one event per item per install slot
 - [ ] 3.7 Workflow builder UI: drag-to-order steps with kind, approver, conditions, SLA, invalidation; duplicate; archive
@@ -140,6 +155,7 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] 3.9 Edition archive (read-only), retention setting; GDPR export and deletion for externals from the portal
 
 ### Milestone 3.C — Polish
+
 - [ ] 3.10 Dark mode polish; accessibility pass (keyboard grid/dialogs, focus, labels, colour-plus-text)
 - [ ] 3.11 Error pages with reference ids; security headers, rate limiting on magic-link and invite endpoints
 - [ ] 3.12 Full e2e suite on desktop and mobile viewports; Lighthouse a11y ≥ 90 on dashboard, schedule, item detail, onsite
