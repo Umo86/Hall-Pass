@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname, useRouter } from "next/navigation";
 import { ChevronsUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,28 +12,45 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-// Static placeholder until editions are read from the database in Phase 1.
-const editions = [{ code: "BIRM27", name: "UKCW Birmingham 2027" }];
+export type EditionOption = { code: string; name: string; status: string };
 
-export function EditionSwitcher() {
-  const current = editions[0];
+const RESERVED = ["editions", "approvals", "settings", "portal", "login", "invite", "q", "api"];
+
+export function EditionSwitcher({ editions }: { editions: EditionOption[] }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const first = pathname.split("/").filter(Boolean)[0];
+  const current =
+    editions.find((e) => e.code === first) ?? editions.find((e) => e.status !== "archived");
+
+  function go(code: string) {
+    if (first && !RESERVED.includes(first)) {
+      router.push(pathname.replace(`/${first}`, `/${code}`));
+    } else {
+      router.push(`/${code}/dashboard`);
+    }
+  }
+
+  if (editions.length === 0) return null;
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="outline" size="sm" className="gap-2">
-          <span className="font-medium">{current.code}</span>
-          <span className="text-muted-foreground hidden sm:inline">{current.name}</span>
+          <span className="font-medium">{current?.code ?? "Select edition"}</span>
+          <span className="text-muted-foreground hidden max-w-48 truncate sm:inline">
+            {current?.name}
+          </span>
           <ChevronsUpDown className="size-3.5 opacity-50" aria-hidden />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-64">
+      <DropdownMenuContent align="start" className="w-72">
         <DropdownMenuLabel>Editions</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {editions.map((edition) => (
-          <DropdownMenuItem key={edition.code}>
+          <DropdownMenuItem key={edition.code} onSelect={() => go(edition.code)}>
             <span className="font-medium">{edition.code}</span>
-            <span className="text-muted-foreground">{edition.name}</span>
+            <span className="text-muted-foreground truncate">{edition.name}</span>
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>

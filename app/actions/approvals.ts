@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { approvalInstances, signageItems, standSubmissions } from "@/lib/db/schema";
 import { can, type ApprovalStepCtx } from "@/lib/authz";
@@ -20,7 +20,7 @@ import {
   type Decision,
   type EntityCtx,
 } from "@/lib/workflow";
-import { loadRun, persistRun, rowToInstance } from "@/lib/workflow/persist";
+import { loadRun, persistRun } from "@/lib/workflow/persist";
 import { notify } from "@/lib/notify";
 import {
   itemAuthzCtx,
@@ -421,33 +421,4 @@ export async function resubmitSignageItem(input: unknown): Promise<ActionResult>
   } catch (err) {
     return fail(err instanceof Error ? err.message : "Something went wrong");
   }
-}
-
-/** My Sign-offs: pending instances assigned to the current user. */
-export async function pendingInstancesForUser() {
-  const session = await requireSession();
-  const rows = await db
-    .select()
-    .from(approvalInstances)
-    .where(eq(approvalInstances.status, "pending"))
-    .orderBy(sql`${approvalInstances.dueAt} ASC NULLS LAST`);
-
-  const out = [];
-  for (const row of rows) {
-    const isSignage = row.entityType === "signage_item";
-    const bundle = isSignage
-      ? await loadItemBundle(db, row.entityId)
-      : await loadStandBundle(db, row.entityId);
-    if (!bundle) continue;
-    const stepCtx: ApprovalStepCtx = {
-      assignedRole: row.assignedRole,
-      assignedUserId: row.assignedUserId,
-      entity: isSignage
-        ? { type: "signage_item", item: itemAuthzCtx(bundle as never) }
-        : { type: "stand", sub: standAuthzCtx(bundle as never) },
-    };
-    if (!can(session.actor, { type: "approval.decide", step: stepCtx })) continue;
-    out.push({ row: rowToInstance(row), raw: row, bundle, isSignage });
-  }
-  return out;
 }

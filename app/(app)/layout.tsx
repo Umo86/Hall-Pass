@@ -5,17 +5,25 @@ import { SignOutButton } from "@/components/auth/sign-out-button";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { requireStaffSession } from "@/lib/auth/actor";
+import { listEditions } from "@/lib/queries/editions";
 
 export const dynamic = "force-dynamic";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await requireStaffSession();
+  const editions = await listEditions();
 
   return (
     <div className="flex min-h-screen flex-col">
       <header className="bg-background sticky top-0 z-40 flex h-14 items-center gap-4 border-b px-4">
         <div className="text-sm font-semibold tracking-tight">{session.organisation.brandName}</div>
-        <EditionSwitcher />
+        <EditionSwitcher
+          editions={editions.map((e) => ({
+            code: e.edition.code,
+            name: e.edition.name,
+            status: e.edition.status,
+          }))}
+        />
         <div className="ml-auto flex items-center gap-2">
           <div className="relative hidden md:block">
             <Search

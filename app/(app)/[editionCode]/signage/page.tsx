@@ -1,13 +1,46 @@
-import { PlaceholderPage } from "@/components/placeholder-page";
+import { notFound } from "next/navigation";
+import { eq } from "drizzle-orm";
+import { db } from "@/lib/db/client";
+import { suppliers } from "@/lib/db/schema";
+import { requireStaffSession } from "@/lib/auth/actor";
+import { can } from "@/lib/authz";
+import { getEditionByCode } from "@/lib/queries/editions";
+import { listScheduleRows } from "@/lib/queries/signage";
+import { ScheduleView } from "@/components/schedule/schedule-view";
 
 export const metadata = { title: "Signage schedule" };
+export const dynamic = "force-dynamic";
 
-export default function Page() {
+export default async function SignagePage({
+  params,
+}: {
+  params: Promise<{ editionCode: string }>;
+}) {
+  const session = await requireStaffSession();
+  const { editionCode } = await params;
+  const ed = await getEditionByCode(editionCode.toUpperCase());
+  if (!ed) notFound();
+  const rows = await listScheduleRows(ed.edition.id);
+  const supplierRows = await db
+    .select({ id: suppliers.id, name: suppliers.name })
+    .from(suppliers)
+    .where(eq(suppliers.organisationId, session.organisation.id));
+
   return (
-    <PlaceholderPage
-      title="Signage schedule"
-      description="Every sign, banner, graphic and screen for this edition — table, Kanban, floorplan and calendar views."
-      phase="Phase 1"
-    />
+    <div className="flex flex-col gap-4 p-6">
+      <h1 className="text-xl font-semibold tracking-tight">
+        Signage schedule{" "}
+        <span className="text-muted-foreground text-base font-normal">
+          {ed.edition.code} · {rows.length} items
+        </span>
+      </h1>
+      <ScheduleView
+        editionCode={ed.edition.code}
+        rows={rows}
+        suppliers={supplierRows}
+        canSeeCosts={can(session.actor, { type: "costs.view" })}
+        canEdit={can(session.actor, { type: "signage.create" })}
+      />
+    </div>
   );
 }
