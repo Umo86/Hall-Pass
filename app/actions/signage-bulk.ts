@@ -2,9 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { and, inArray, isNull } from "drizzle-orm";
+import { and, inArray, isNull, ne } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { signageItems } from "@/lib/db/schema";
+import { editions, signageItems } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
@@ -61,7 +61,17 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<{ 
     await tx
       .update(signageItems)
       .set(set)
-      .where(and(inArray(signageItems.id, ids), isNull(signageItems.deletedAt)));
+      .where(
+        and(
+          inArray(signageItems.id, ids),
+          isNull(signageItems.deletedAt),
+          // Archived editions are read-only; their items are silently excluded.
+          inArray(
+            signageItems.editionId,
+            tx.select({ id: editions.id }).from(editions).where(ne(editions.status, "archived")),
+          ),
+        ),
+      );
     await writeAudit(tx, {
       organisationId: session.organisation.id,
       actorUserId: session.user.id,

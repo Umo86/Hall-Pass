@@ -88,3 +88,14 @@ export async function getDownloadUrl(bucket: Bucket, storagePath: string): Promi
   }
   return `/api/files/${bucket}/${storagePath}`;
 }
+
+/**
+ * Like getDownloadUrl but for rendering in the page (image tags, PDF frames)
+ * rather than saving: the local backend serves it inline with its real
+ * content type. Supabase signed URLs already carry the stored content type.
+ */
+export async function getInlineUrl(bucket: Bucket, storagePath: string): Promise<string> {
+  const supabase = supabaseAdmin();
+  if (supabase) return getDownloadUrl(bucket, storagePath);
+  return `/api/files/${bucket}/${storagePath}?inline=1`;
+}

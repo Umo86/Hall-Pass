@@ -1,3 +1,4 @@
+import { appUrl } from "@/lib/app-url";
 import "server-only";
 import { and, count, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
@@ -300,13 +301,13 @@ export async function standChasers(today: string): Promise<JobResult> {
         ? `Stand design overdue — ${row.edition.name} (stand ${row.exhibitor.standNumber})`
         : `Stand design due ${diff === 0 ? "today" : `in ${diff} days`} — ${row.edition.name}`;
     const bodyText = `Your stand design for ${row.edition.name} (stand ${row.exhibitor.standNumber}) has not been submitted. Designs were due ${due}. Submit plans, elevations, RAMS and insurance through the portal.`;
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
+    const base = appUrl();
     const { html, text } = await renderNotificationEmail({
       brandName,
       title: subject,
       bodyText,
       ctaLabel: "Open the exhibitor portal",
-      ctaUrl: `${appUrl}/portal/submission`,
+      ctaUrl: `${base}/portal/submission`,
     });
     const recipients = [row.exhibitor.contactEmail].filter((x): x is string => Boolean(x));
     if (row.exhibitor.contractorId) {

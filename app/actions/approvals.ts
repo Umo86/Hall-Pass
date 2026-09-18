@@ -30,6 +30,7 @@ import {
   startItemRun,
 } from "@/lib/domain/signage";
 import { loadStandBundle, standAuthzCtx, standEntityCtx } from "@/lib/domain/stand";
+import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 
 const decideSchema = z.object({
   instanceId: z.string().uuid(),
@@ -70,6 +71,7 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
         ? await loadItemBundle(tx, row.entityId)
         : await loadStandBundle(tx, row.entityId);
       if (!bundle) throw new WorkflowError("Record not found");
+      if (editionIsReadOnly(bundle.edition.status)) throw new WorkflowError(EDITION_LOCKED_MESSAGE);
 
       const stepCtx: ApprovalStepCtx = {
         assignedRole: row.assignedRole,
@@ -332,6 +334,7 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
         ? await loadItemBundle(tx, row.entityId)
         : await loadStandBundle(tx, row.entityId);
       if (!bundle) throw new WorkflowError("Record not found");
+      if (editionIsReadOnly(bundle.edition.status)) throw new WorkflowError(EDITION_LOCKED_MESSAGE);
       const stepCtx: ApprovalStepCtx = {
         assignedRole: row.assignedRole,
         assignedUserId: row.assignedUserId,
@@ -382,6 +385,7 @@ export async function resubmitSignageItem(input: unknown): Promise<ActionResult>
   const session = await requireSession();
   const bundle = await loadItemBundle(db, parsed.data.id);
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.submit", item: itemAuthzCtx(bundle) })) {
     return fail("You cannot resubmit this item");
   }

@@ -16,6 +16,7 @@ import { buildStoragePath, putObject, sha256Hex } from "@/lib/storage";
 import { notify } from "@/lib/notify";
 import { loadStandBundle, standAuthzCtx, standEntityCtx, startStandRun, stepActiveFlags } from "@/lib/domain/stand";
 import { resolveAssigneeUserIds } from "@/lib/domain/signage";
+import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 
 async function bundleWithFlags(subId: string) {
   const bundle = await loadStandBundle(db, subId);
@@ -46,6 +47,7 @@ export async function saveStandQuestionnaire(input: unknown): Promise<ActionResu
   const loaded = await bundleWithFlags(parsed.data.submissionId);
   if (!loaded) return fail("Submission not found");
   const { bundle, flags } = loaded;
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   const ctx = standAuthzCtx(bundle, flags);
 
   const isExhibitor = can(session.actor, { type: "stand.submit", sub: ctx });
@@ -130,6 +132,7 @@ export async function uploadStandDocument(formData: FormData): Promise<ActionRes
   const loaded = await bundleWithFlags(submissionId);
   if (!loaded) return fail("Submission not found");
   const { bundle, flags } = loaded;
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   const ctx = standAuthzCtx(bundle, flags);
   const isExhibitor = can(session.actor, { type: "stand.submit", sub: ctx });
   const isOps = can(session.actor, { type: "stand.review" });
@@ -186,6 +189,7 @@ export async function submitStandSubmission(input: unknown): Promise<ActionResul
   const loaded = await bundleWithFlags(parsed.data.submissionId);
   if (!loaded) return fail("Submission not found");
   const { bundle, flags } = loaded;
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   const ctx = standAuthzCtx(bundle, flags);
   const isExhibitor = can(session.actor, { type: "stand.submit", sub: ctx });
   const isOps = can(session.actor, { type: "stand.review" });
@@ -314,6 +318,7 @@ export async function tickRulesChecklist(input: unknown): Promise<ActionResult> 
   if (!can(session.actor, { type: "stand.review" })) return fail("Only ops review the checklist");
   const bundle = await loadStandBundle(db, parsed.data.submissionId);
   if (!bundle) return fail("Submission not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
 
   const updated = bundle.sub.rulesChecklist.map((entry) =>
     entry.rule_id === parsed.data.ruleId

@@ -19,6 +19,9 @@ import { can } from "@/lib/authz";
 import { formatDate, formatDateTime, statusLabel } from "@/lib/format";
 import { InviteExternalForm, RevokeGrantButton } from "@/components/settings/invite-form";
 import { RestoreItemButton } from "@/components/settings/restore-button";
+import { icalToken } from "@/lib/ical";
+import { appUrl } from "@/lib/app-url";
+import { NotificationPrefsForm } from "@/components/settings/notification-prefs";
 
 export const metadata = { title: "Settings" };
 export const dynamic = "force-dynamic";
@@ -28,6 +31,7 @@ export default async function SettingsPage() {
   const canManage = can(session.actor, { type: "settings.manage" });
   const canUsers = can(session.actor, { type: "users.manage" });
 
+  const [me] = await db.select().from(users).where(eq(users.id, session.user.id));
   const [staff, grants, types, wfs, steps, deleted, editionRows, venueRows, supplierRows, exhibitorRows, sponsorRows] =
     await Promise.all([
       db
@@ -70,6 +74,25 @@ export default async function SettingsPage() {
           escalate after {session.organisation.settings.escalate_after_days} days overdue ·
           install photo {session.organisation.settings.install_photo_required ? "required" : "optional"}
         </p>
+      </section>
+
+      <section>
+        <h2 className="mb-2 text-sm font-semibold">Calendar feed</h2>
+        <p className="text-muted-foreground mb-2 text-sm">
+          Subscribe to every deadline, install date and your pending sign-offs from your own
+          calendar (Google Calendar, Outlook or Apple Calendar — &ldquo;add calendar from
+          URL&rdquo;). The link is personal to you; treat it like a password.
+        </p>
+        <FeedLink userId={session.user.id} />
+      </section>
+
+      <section>
+        <h2 className="mb-2 text-sm font-semibold">My notifications</h2>
+        <p className="text-muted-foreground mb-2 text-sm">
+          Untick anything you don&rsquo;t want to be notified about. These apply to in-app
+          notifications and the emails that mirror them.
+        </p>
+        <NotificationPrefsForm initial={me?.notificationPrefs ?? {}} />
       </section>
 
       <section>
@@ -218,5 +241,29 @@ export default async function SettingsPage() {
         </section>
       )}
     </div>
+  );
+}
+
+function FeedLink({ userId }: { userId: string }) {
+  let url: string | null = null;
+  try {
+    const base = appUrl();
+    url = base ? `${base}/api/ical/${icalToken(userId)}` : null;
+  } catch {
+    url = null;
+  }
+  if (!url) {
+    return (
+      <p className="text-muted-foreground text-sm">
+        Calendar feeds need CRON_SECRET and the app URL configured on the server.
+      </p>
+    );
+  }
+  return (
+    <input
+      readOnly
+      value={url}
+      className="bg-muted/40 w-full max-w-xl rounded-md border px-3 py-2 font-mono text-xs"
+    />
   );
 }

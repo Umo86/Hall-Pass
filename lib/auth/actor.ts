@@ -36,6 +36,11 @@ export type Session = {
   organisation: { id: string; brandName: string; settings: OrganisationSettings };
 };
 
+/** Session for a user id without cookies — used by the tokenised iCal feed. */
+export async function sessionForUserId(userId: string): Promise<Session | null> {
+  return loadSessionForUserId(userId);
+}
+
 async function loadSessionForUserId(userId: string): Promise<Session | null> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) return null;

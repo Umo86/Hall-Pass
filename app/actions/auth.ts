@@ -1,5 +1,6 @@
 "use server";
 
+import { appUrl } from "@/lib/app-url";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -34,10 +35,10 @@ export async function signInWithMagicLink(input: unknown): Promise<AuthResult> {
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
   const supabase = await createSupabaseServerClient();
   if (!supabase) return { ok: false, error: "Authentication is not configured" };
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
+  const base = appUrl();
   const { error } = await supabase.auth.signInWithOtp({
     email: parsed.data.email,
-    options: { emailRedirectTo: `${appUrl}/auth/callback` },
+    options: { emailRedirectTo: `${base}/auth/callback` },
   });
   if (error) return { ok: false, error: "Could not send the magic link — try again shortly" };
   return { ok: true, message: "Check your inbox for a sign-in link." };

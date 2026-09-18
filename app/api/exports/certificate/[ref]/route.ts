@@ -1,3 +1,4 @@
+import { appUrl } from "@/lib/app-url";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db/client";
 import { getSession } from "@/lib/auth/actor";
@@ -46,7 +47,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ ref: st
       conditions: instance.conditionsText,
     }));
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
+  const base = appUrl();
   const data = await renderApprovalCertificate({
     brandName: session.organisation.brandName,
     ref: item.ref,
@@ -61,7 +62,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ ref: st
       ["Run", `#${item.currentRunNumber}`],
     ],
     steps,
-    recordUrl: `${appUrl}/q/${item.ref}`,
+    recordUrl: `${base}/q/${item.ref}`,
   });
   return recordAndServeExport({
     session,

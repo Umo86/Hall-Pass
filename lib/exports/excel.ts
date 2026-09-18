@@ -173,6 +173,194 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
   return { workbook: wb, edition };
 }
 
+/**
+ * Contractor install schedule: what goes up where and when, one sheet per
+ * install contractor plus deliveries — the document handed to install crews.
+ */
+export async function buildContractorSchedule(editionId: string) {
+  const [edition] = await db.select().from(editions).where(eq(editions.id, editionId));
+  const rows = await db
+    .select({
+      item: signageItems,
+      typeName: itemTypes.name,
+      hallName: halls.name,
+      locationName: locations.name,
+      contractorName: contractors.name,
+    })
+    .from(signageItems)
+    .leftJoin(itemTypes, eq(signageItems.itemTypeId, itemTypes.id))
+    .leftJoin(halls, eq(signageItems.hallId, halls.id))
+    .leftJoin(locations, eq(signageItems.locationId, locations.id))
+    .leftJoin(contractors, eq(signageItems.installContractorId, contractors.id))
+    .where(and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt)))
+    .orderBy(asc(signageItems.installDate), asc(signageItems.seq));
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "Hall Pass";
+
+  const columns = [
+    { header: "Install date", key: "date", width: 14 },
+    { header: "Slot", key: "slot", width: 8 },
+    { header: "Ref", key: "ref", width: 16 },
+    { header: "Name", key: "name", width: 36 },
+    { header: "Hall", key: "hall", width: 12 },
+    { header: "Location", key: "location", width: 20 },
+    { header: "Type", key: "type", width: 18 },
+    { header: "W (mm)", key: "w", width: 9 },
+    { header: "H (mm)", key: "h", width: 9 },
+    { header: "Qty", key: "qty", width: 6 },
+    { header: "Fixing", key: "fixing", width: 16 },
+    { header: "Weight (kg)", key: "weight", width: 11 },
+    { header: "Status", key: "status", width: 20 },
+    { header: "Contractor", key: "contractor", width: 20 },
+  ];
+
+  function fillSheet(ws: ExcelJS.Worksheet, data: typeof rows) {
+    ws.columns = columns as ExcelJS.Column[];
+    styleHeader(ws.getRow(1));
+    ws.views = [{ state: "frozen", ySplit: 1, xSplit: 3 }];
+    for (const r of data) {
+      const row = ws.addRow({
+        date: r.item.installDate ? formatDate(r.item.installDate) : "TBC",
+        slot: r.item.installSlot?.toUpperCase() ?? "",
+        ref: r.item.ref,
+        name: r.item.name,
+        hall: r.hallName ?? "",
+        location: r.locationName ?? "",
+        type: r.typeName ?? "",
+        w: r.item.widthMm ?? "",
+        h: r.item.heightMm ?? "",
+        qty: r.item.quantity,
+        fixing: r.item.fixingMethod ? statusLabel(r.item.fixingMethod) : "",
+        weight: r.item.weightKg ? Number(r.item.weightKg) : "",
+        status: statusLabel(r.item.status),
+        contractor: r.contractorName ?? "Unassigned",
+      });
+      const fill = STATUS_FILLS[r.item.status];
+      if (fill) {
+        row.getCell("status").fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
+      }
+    }
+  }
+
+  fillSheet(wb.addWorksheet("All installs"), rows);
+  const names = [...new Set(rows.map((r) => r.contractorName ?? "Unassigned"))];
+  for (const name of names) {
+    fillSheet(
+      wb.addWorksheet(name.slice(0, 31)),
+      rows.filter((r) => (r.contractorName ?? "Unassigned") === name),
+    );
+  }
+
+  const deliveries = wb.addWorksheet("Deliveries");
+  deliveries.columns = [
+    { header: "Delivery date", key: "date", width: 14 },
+    { header: "Ref", key: "ref", width: 16 },
+    { header: "Name", key: "name", width: 36 },
+    { header: "Hall", key: "hall", width: 12 },
+    { header: "Qty", key: "qty", width: 6 },
+    { header: "Supplier PO", key: "po", width: 14 },
+    { header: "Status", key: "status", width: 20 },
+  ] as ExcelJS.Column[];
+  styleHeader(deliveries.getRow(1));
+  for (const r of rows.filter((r) => r.item.deliveryDate)) {
+    deliveries.addRow({
+      date: formatDate(r.item.deliveryDate!),
+      ref: r.item.ref,
+      name: r.item.name,
+      hall: r.hallName ?? "",
+      qty: r.item.quantity,
+      po: r.item.poNumber ?? "",
+      status: statusLabel(r.item.status),
+    });
+  }
+
+  return { workbook: wb, edition };
+}
+
+/**
+ * Venue submission pack: every item needing venue approval (rigging,
+ * suspended and structural pieces) with weights, fixings and approval state —
+ * the workbook sent to the venue's rigging team.
+ */
+export async function buildVenuePack(editionId: string) {
+  const [edition] = await db.select().from(editions).where(eq(editions.id, editionId));
+  const rows = await db
+    .select({
+      item: signageItems,
+      typeName: itemTypes.name,
+      hallName: halls.name,
+      locationName: locations.name,
+    })
+    .from(signageItems)
+    .leftJoin(itemTypes, eq(signageItems.itemTypeId, itemTypes.id))
+    .leftJoin(halls, eq(signageItems.hallId, halls.id))
+    .leftJoin(locations, eq(signageItems.locationId, locations.id))
+    .where(
+      and(
+        eq(signageItems.editionId, editionId),
+        eq(signageItems.requiresVenueApproval, true),
+        isNull(signageItems.deletedAt),
+      ),
+    )
+    .orderBy(asc(signageItems.seq));
+
+  const instances = await db
+    .select({ instance: approvalInstances, decider: users })
+    .from(approvalInstances)
+    .leftJoin(users, eq(approvalInstances.decidedBy, users.id))
+    .where(eq(approvalInstances.entityType, "signage_item"));
+  const venueState = new Map<string, string>();
+  for (const { instance, decider } of instances) {
+    if (instance.assignedRole !== "venue" || instance.status === "invalidated") continue;
+    const text = instance.decidedAt
+      ? `${statusLabel(instance.status)} ${formatDate(instance.decidedAt)} (${decider?.fullName ?? "—"})`
+      : statusLabel(instance.status);
+    venueState.set(instance.entityId, text);
+  }
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "Hall Pass";
+  const ws = wb.addWorksheet("Venue submission");
+  ws.columns = [
+    { header: "Ref", key: "ref", width: 16 },
+    { header: "Name", key: "name", width: 36 },
+    { header: "Hall", key: "hall", width: 12 },
+    { header: "Location", key: "location", width: 20 },
+    { header: "Type", key: "type", width: 18 },
+    { header: "W (mm)", key: "w", width: 9 },
+    { header: "H (mm)", key: "h", width: 9 },
+    { header: "D (mm)", key: "d", width: 9 },
+    { header: "Qty", key: "qty", width: 6 },
+    { header: "Weight (kg)", key: "weight", width: 11 },
+    { header: "Fixing method", key: "fixing", width: 18 },
+    { header: "Material", key: "material", width: 16 },
+    { header: "Install date", key: "install", width: 14 },
+    { header: "Venue approval", key: "venue", width: 32 },
+  ] as ExcelJS.Column[];
+  styleHeader(ws.getRow(1));
+  ws.views = [{ state: "frozen", ySplit: 1, xSplit: 2 }];
+  for (const r of rows) {
+    ws.addRow({
+      ref: r.item.ref,
+      name: r.item.name,
+      hall: r.hallName ?? "",
+      location: r.locationName ?? "",
+      type: r.typeName ?? "",
+      w: r.item.widthMm ?? "",
+      h: r.item.heightMm ?? "",
+      d: r.item.depthMm ?? "",
+      qty: r.item.quantity,
+      weight: r.item.weightKg ? Number(r.item.weightKg) : "",
+      fixing: r.item.fixingMethod ? statusLabel(r.item.fixingMethod) : "",
+      material: r.item.material ?? "",
+      install: r.item.installDate ? formatDate(r.item.installDate) : "",
+      venue: venueState.get(r.item.id) ?? "Not yet submitted",
+    });
+  }
+  return { workbook: wb, edition };
+}
+
 /** Stand approval register. */
 export async function buildStandRegister(editionId: string) {
   const [edition] = await db.select().from(editions).where(eq(editions.id, editionId));

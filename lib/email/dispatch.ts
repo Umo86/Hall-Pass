@@ -1,3 +1,4 @@
+import { appUrl } from "@/lib/app-url";
 import "server-only";
 import { eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
@@ -20,10 +21,10 @@ export async function dispatchNotificationEmails(limit = 100): Promise<number> {
     .limit(limit);
   if (rows.length === 0) return 0;
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
+  const base = appUrl();
   const sentIds: string[] = [];
   for (const { n, u } of rows) {
-    const link = u.isExternal ? `${appUrl}/portal/approvals` : n.link ? `${appUrl}${n.link}` : appUrl;
+    const link = u.isExternal ? `${base}/portal/approvals` : n.link ? `${base}${n.link}` : base;
     const { html, text } = await renderNotificationEmail({
       brandName,
       title: n.title,

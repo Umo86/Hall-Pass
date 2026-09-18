@@ -18,6 +18,7 @@ import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { nextSignageRef } from "@/lib/refs";
+import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 
 const rowSchema = z.object({
   ref: z.string().trim().optional().or(z.literal("")),
@@ -89,10 +90,11 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
   const ws = wb.worksheets[0];
   if (!ws) return fail("The workbook has no sheets");
 
-  const [edition] = await db.execute<{ code: string }>(
-    (await import("drizzle-orm")).sql`SELECT code FROM editions WHERE id = ${editionId}`,
+  const [edition] = await db.execute<{ code: string; status: string }>(
+    (await import("drizzle-orm")).sql`SELECT code, status FROM editions WHERE id = ${editionId}`,
   );
   if (!edition) return fail("Edition not found");
+  if (editionIsReadOnly(edition.status)) return fail(EDITION_LOCKED_MESSAGE);
 
   const [typeRows, hallRows, locationRows, sponsorRows, supplierRows] = await Promise.all([
     db.select().from(itemTypes).where(eq(itemTypes.organisationId, session.organisation.id)),

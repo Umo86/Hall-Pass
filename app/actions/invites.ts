@@ -1,5 +1,6 @@
 "use server";
 
+import { appUrl } from "@/lib/app-url";
 import { randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -84,10 +85,10 @@ export async function acceptInvite(input: unknown): Promise<InviteResult> {
   // claimed by email match on first sign-in (lib/auth/actor.ts).
   const supabase = await createSupabaseServerClient();
   if (!supabase) return { ok: false, error: "Authentication is not configured" };
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
+  const base = appUrl();
   const { error } = await supabase.auth.signInWithOtp({
     email: grant.invitedEmail,
-    options: { emailRedirectTo: `${appUrl}/auth/callback?next=/invite/${token}` },
+    options: { emailRedirectTo: `${base}/auth/callback?next=/invite/${token}` },
   });
   if (error) return { ok: false, error: "Could not send the sign-in link — try again shortly." };
   return { ok: true, message: `A sign-in link has been sent to ${grant.invitedEmail}.` };

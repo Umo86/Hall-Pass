@@ -28,8 +28,39 @@ export type VersionRow = {
   uploaderName: string | null;
   createdAt: string;
   downloadUrl: string | null;
+  previewUrl: string | null;
+  mimeType: string;
   isCurrent: boolean;
 };
+
+function VersionPreview({ version, className }: { version: VersionRow; className?: string }) {
+  if (!version.previewUrl) {
+    return (
+      <div
+        className={`text-muted-foreground flex items-center justify-center rounded-lg border border-dashed p-6 text-xs ${className ?? ""}`}
+      >
+        No preview for this file type — download to view.
+      </div>
+    );
+  }
+  if (version.mimeType === "application/pdf") {
+    return (
+      <iframe
+        src={version.previewUrl}
+        title={`Preview of v${version.versionNumber} — ${version.fileName}`}
+        className={`h-[480px] w-full rounded-lg border ${className ?? ""}`}
+      />
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- artwork previews have unknown dimensions
+    <img
+      src={version.previewUrl}
+      alt={`Preview of v${version.versionNumber} — ${version.fileName}`}
+      className={`bg-muted/30 max-h-[480px] w-full rounded-lg border object-contain ${className ?? ""}`}
+    />
+  );
+}
 
 export function ArtworkTab({
   itemId,
@@ -53,6 +84,13 @@ export function ArtworkTab({
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
+
+  const current = versions.find((v) => v.isCurrent) ?? versions[0] ?? null;
+  const [compare, setCompare] = useState(false);
+  const [leftId, setLeftId] = useState<string | null>(null);
+  const [rightId, setRightId] = useState<string | null>(null);
+  const left = versions.find((v) => v.id === leftId) ?? versions[1] ?? current;
+  const right = versions.find((v) => v.id === rightId) ?? current;
 
   function doUpload() {
     if (!file) return;
@@ -105,6 +143,51 @@ export function ArtworkTab({
             </div>
           )}
           {error && <p className="text-destructive mt-2 text-sm">{error}</p>}
+        </div>
+      )}
+
+      {current && (
+        <div className="rounded-lg border p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold">
+              {compare ? "Compare versions" : `Preview — v${current.versionNumber}`}
+            </h3>
+            {versions.length > 1 && (
+              <Button size="sm" variant="outline" onClick={() => setCompare((c) => !c)}>
+                {compare ? "Single view" : "Compare versions"}
+              </Button>
+            )}
+          </div>
+          {compare && left && right ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              {[
+                { chosen: left, set: setLeftId, label: "Left" },
+                { chosen: right, set: setRightId, label: "Right" },
+              ].map(({ chosen, set, label }) => (
+                <div key={label} className="space-y-2">
+                  <select
+                    aria-label={`${label} version`}
+                    className="w-full rounded-md border px-2 py-1.5 text-sm"
+                    value={chosen.id}
+                    onChange={(e) => set(e.target.value)}
+                  >
+                    {versions.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        v{v.versionNumber} — {v.fileName}
+                        {v.isCurrent ? " (current)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <VersionPreview version={chosen} />
+                  <p className="text-muted-foreground text-xs">
+                    SHA-256 {chosen.sha256.slice(0, 12)}… · {formatDateTime(chosen.createdAt)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <VersionPreview version={current} />
+          )}
         </div>
       )}
 

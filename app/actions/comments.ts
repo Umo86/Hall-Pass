@@ -12,6 +12,7 @@ import { notify } from "@/lib/notify";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
 import { loadStandBundle, standAuthzCtx, stepActiveFlags } from "@/lib/domain/stand";
 import { loadRun } from "@/lib/workflow/persist";
+import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 
 const addSchema = z.object({
   entityType: z.enum(["signage_item", "stand_submission"]),
@@ -43,6 +44,7 @@ export async function addComment(input: unknown): Promise<ActionResult> {
   if (data.entityType === "signage_item") {
     const bundle = await loadItemBundle(db, data.entityId);
     if (!bundle) return fail("Record not found");
+    if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
     editionId = bundle.edition.id;
     ref = bundle.item.ref;
     ownerId = bundle.item.ownerUserId;
@@ -57,6 +59,7 @@ export async function addComment(input: unknown): Promise<ActionResult> {
   } else {
     const bundle = await loadStandBundle(db, data.entityId);
     if (!bundle) return fail("Record not found");
+    if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
     editionId = bundle.edition.id;
     ref = bundle.sub.ref;
     link = `/${bundle.edition.code}/stands/${bundle.sub.ref}`;

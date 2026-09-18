@@ -44,6 +44,20 @@ export default async function ReportsPage({
       description: "Exhibitors, complexity, outcome, conditions, approver names and dates.",
       href: `/api/exports/stand-register/${ed.edition.code}`,
     },
+    {
+      kind: "contractor_schedule",
+      title: "Contractor install schedule (Excel)",
+      description:
+        "What goes up where and when — a sheet per install contractor, plus deliveries.",
+      href: `/api/exports/contractor-schedule/${ed.edition.code}`,
+    },
+    {
+      kind: "venue_pack",
+      title: "Venue submission pack (Excel)",
+      description:
+        "Every rigged or venue-approval item with weights, fixings and approval state.",
+      href: `/api/exports/venue-pack/${ed.edition.code}`,
+    },
   ];
 
   return (

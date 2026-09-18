@@ -1,3 +1,4 @@
+import { appUrl } from "@/lib/app-url";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db/client";
 import { getSession } from "@/lib/auth/actor";
@@ -20,7 +21,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ ref: st
     return NextResponse.json({ error: "Not permitted" }, { status: 403 });
   }
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
+  const base = appUrl();
   const data = await renderSpecLabel({
     brandName: session.organisation.brandName,
     ref: item.ref,
@@ -33,7 +34,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ ref: st
       ["Fixing", item.fixingMethod ? statusLabel(item.fixingMethod) : "—"],
       ["Install", item.installDate ? formatDate(item.installDate) : "—"],
     ],
-    qrUrl: `${appUrl}/q/${item.ref}`,
+    qrUrl: `${base}/q/${item.ref}`,
   });
   return recordAndServeExport({
     session,

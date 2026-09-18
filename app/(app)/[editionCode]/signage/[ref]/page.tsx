@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   contractors,
@@ -26,7 +26,7 @@ import {
   getItemVersions,
 } from "@/lib/queries/signage";
 import { artworkInvalidationPreview } from "@/app/actions/artwork";
-import { getDownloadUrl } from "@/lib/storage";
+import { getDownloadUrl, getInlineUrl } from "@/lib/storage";
 import { formatDate, formatDateTime, formatMoney, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import { ApprovalChain, type ChainInstance } from "@/components/approvals/chain";
@@ -34,10 +34,14 @@ import { ArtworkTab, type VersionRow } from "@/components/signage/artwork-tab";
 import { CommentThread } from "@/components/comments/thread";
 import { ItemForm } from "@/components/signage/item-form";
 import { LifecycleButtons } from "@/components/signage/lifecycle-buttons";
+import { ChangesTab, type ChangeRequestRow } from "@/components/signage/changes-tab";
+import { changeRequests } from "@/lib/db/schema";
+import { desc as descOrder } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 
 export const dynamic = "force-dynamic";
 
-const TABS = ["details", "artwork", "approvals", "production", "install", "comments", "history"] as const;
+const TABS = ["details", "artwork", "approvals", "production", "install", "comments", "changes", "history"] as const;
 
 export default async function ItemDetailPage({
   params,
@@ -145,9 +149,38 @@ export default async function ItemDetailPage({
       downloadUrl: version.filePath.startsWith("seed/")
         ? null
         : await getDownloadUrl("artwork", version.filePath).catch(() => null),
+      previewUrl: version.previewPath
+        ? await getInlineUrl("artwork", version.previewPath).catch(() => null)
+        : version.mimeType === "application/pdf" && !version.filePath.startsWith("seed/")
+          ? await getInlineUrl("artwork", version.filePath).catch(() => null)
+          : null,
+      mimeType: version.mimeType,
       isCurrent: version.id === item.currentArtworkVersionId,
     })),
   );
+
+  const crRequester = alias(users, "cr_requester");
+  const crDecider = alias(users, "cr_decider");
+  const crRows = await db
+    .select({ cr: changeRequests, requester: crRequester, decider: crDecider })
+    .from(changeRequests)
+    .innerJoin(crRequester, eq(changeRequests.requestedBy, crRequester.id))
+    .leftJoin(crDecider, eq(changeRequests.decidedBy, crDecider.id))
+    .where(
+      and(eq(changeRequests.entityType, "signage_item"), eq(changeRequests.entityId, item.id)),
+    )
+    .orderBy(descOrder(changeRequests.createdAt));
+  const changeRequestRows: ChangeRequestRow[] = crRows.map(({ cr, requester, decider }) => ({
+    id: cr.id,
+    reason: cr.reason,
+    status: cr.status,
+    requesterName: requester.fullName || requester.email,
+    deciderName: decider ? decider.fullName || decider.email : null,
+    decidedAt: cr.decidedAt?.toISOString() ?? null,
+    createdAt: cr.createdAt.toISOString(),
+    reopenedCount: cr.reopenedInstanceIds?.length ?? 0,
+    fieldChanges: cr.fieldChanges,
+  }));
 
   const uploadBlocked = ["installed", "snagged", "closed"].includes(item.status)
     ? "This item is installed — an admin or ops user must reopen it before new artwork can be uploaded."
@@ -365,6 +398,15 @@ export default async function ItemDetailPage({
           canWriteInternal={can(session.actor, { type: "comment.internal.write" })}
           canWriteExternal={can(session.actor, { type: "comment.external.write", entity: itemCtx })}
           isStaff
+        />
+      )}
+
+      {tab === "changes" && (
+        <ChangesTab
+          itemId={item.id}
+          requests={changeRequestRows}
+          canRaise={can(session.actor, { type: "change_request.raise" })}
+          canDecide={can(session.actor, { type: "change_request.approve" })}
         />
       )}
 

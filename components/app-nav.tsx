@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   CalendarCheck,
+  CalendarDays,
   ClipboardCheck,
   FileBarChart,
   HardHat,
@@ -33,6 +34,7 @@ export function AppNav() {
     { label: "Signage", href: `/${edition}/signage`, icon: Signpost },
     { label: "Stands", href: `/${edition}/stands`, icon: HardHat },
     { label: "My Sign-offs", href: "/approvals", icon: ClipboardCheck },
+    { label: "Calendar", href: `/${edition}/calendar`, icon: CalendarDays },
     { label: "Floorplan", href: `/${edition}/floorplan`, icon: Map },
     { label: "Onsite", href: `/${edition}/onsite`, icon: CalendarCheck },
     { label: "Reports", href: `/${edition}/reports`, icon: FileBarChart },

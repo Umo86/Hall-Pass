@@ -21,6 +21,7 @@ import {
   startItemRun,
 } from "@/lib/domain/signage";
 import { diffDaysIso } from "@/lib/deadlines";
+import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 
 const itemFields = z.object({
   name: z.string().trim().min(1, "Name is required").max(300),
@@ -85,10 +86,11 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
   try {
     const ref = await db.transaction(async (tx) => {
       // Locking not needed here; the counter row lock serialises the seq.
-      const [edition] = await tx.execute<{ code: string }>(
-        sql`SELECT code FROM editions WHERE id = ${data.editionId}`,
+      const [edition] = await tx.execute<{ code: string; status: string }>(
+        sql`SELECT code, status FROM editions WHERE id = ${data.editionId}`,
       );
       if (!edition) throw new Error("Edition not found");
+      if (editionIsReadOnly(edition.status)) throw new Error(EDITION_LOCKED_MESSAGE);
       const { ref, seq } = await nextSignageRef(tx, data.editionId, edition.code);
       const [item] = await tx
         .insert(signageItems)
@@ -157,6 +159,7 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
   const session = await requireSession();
   const bundle = await loadItemBundle(db, parsed.data.id);
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.edit", item: itemAuthzCtx(bundle) })) {
     return fail("You cannot edit this item");
   }
@@ -229,6 +232,7 @@ export async function softDeleteSignageItem(input: unknown): Promise<ActionResul
   const session = await requireSession();
   const bundle = await loadItemBundle(db, parsed.data.id);
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.delete" })) return fail("You cannot delete items");
   await db.transaction(async (tx) => {
     await tx
@@ -255,6 +259,7 @@ export async function restoreSignageItem(input: unknown): Promise<ActionResult> 
   const session = await requireSession();
   const bundle = await loadItemBundle(db, parsed.data.id);
   if (!bundle || !bundle.item.deletedAt) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.restore" })) return fail("You cannot restore items");
   await db.transaction(async (tx) => {
     await tx
@@ -282,6 +287,7 @@ export async function submitForReview(input: unknown): Promise<ActionResult> {
   const session = await requireSession();
   const bundle = await loadItemBundle(db, parsed.data.id);
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.submit", item: itemAuthzCtx(bundle) })) {
     return fail("You cannot submit items for review");
   }
@@ -363,6 +369,7 @@ export async function holdSignageItem(input: unknown): Promise<ActionResult> {
   const session = await requireSession();
   const bundle = await loadItemBundle(db, parsed.data.id);
   if (!bundle) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.hold" })) return fail("You cannot put items on hold");
   let next;
   try {
@@ -397,6 +404,7 @@ export async function resumeSignageItem(input: unknown): Promise<ActionResult> {
   const session = await requireSession();
   const bundle = await loadItemBundle(db, parsed.data.id);
   if (!bundle) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.resume" })) return fail("You cannot resume items");
   let next;
   try {
@@ -445,6 +453,7 @@ export async function reopenSignageItem(input: unknown): Promise<ActionResult> {
   const session = await requireSession();
   const bundle = await loadItemBundle(db, parsed.data.id);
   if (!bundle) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.reopen" })) return fail("You cannot reopen items");
   let next;
   try {

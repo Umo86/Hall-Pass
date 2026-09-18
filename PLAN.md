@@ -10,7 +10,9 @@ Statuses: `[ ]` not started · `[~]` in progress · `[x]` done.
 
 Built and tested in v1: all of Phase 0 (schema, migrations, RLS, audit trigger, auth with dev sign-in, authz with full matrix tests, seed, CI); Phase 1 core — signage CRUD with refs, status machine, workflow engine (conditions, parallel groups, decisions with optimistic locking, delegation, restart both ways, invalidation, supplier fallback, hold shifting), artwork versions with invalidation warnings, My Sign-offs, comments, notifications with email, dashboard, table/Kanban schedule with bulk actions, Excel import/export, approval certificate and spec label PDFs, soft delete/restore, supplier/sponsor/venue portals; Phase 2 core — stand submissions with questionnaire/complexity, documents with expiry flags, rules checklist, stand workflow, exhibitor portal, deadlines, all six cron jobs with idempotency tests, stand register export, `/q/[ref]`. 448 unit tests + 9 Playwright e2e tests green.
 
-Remaining (see DECISIONS.md, deferred not dropped): inline grid editing and saved views; artwork preview rendering, compare slider and annotations; floorplan and calendar views; onsite mobile + PWA + camera QR scanning; change-request flow UI; venue submission pack, contractor schedule, sponsor/cost/performance exports; iCal feed; workflow builder UI; email template editing; edition archive read-only enforcement; GDPR self-service; notification preference UI.
+Shipped since v1: artwork previews and side-by-side version compare; deadlines calendar view; iCal feed (personal tokenised link in Settings); contractor install schedule and venue submission pack exports; change-request flow (raise, ops approve/reject, applied changes reopen affected sign-offs); notification preferences; archived editions enforced read-only.
+
+Remaining (see DECISIONS.md, deferred not dropped): inline grid editing and saved views; artwork compare slider and pinned annotations; floorplan view; onsite mobile + PWA + camera QR scanning; sponsor/cost/performance exports; workflow builder UI; email template editing; GDPR self-service.
 
 ---
 

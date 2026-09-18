@@ -14,6 +14,7 @@ import { invalidateOnNewVersion } from "@/lib/workflow";
 import { loadRun, persistRun } from "@/lib/workflow/persist";
 import { buildStoragePath, putObject, sha256Hex } from "@/lib/storage";
 import { notify } from "@/lib/notify";
+import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import {
   itemAuthzCtx,
   itemEntityCtx,
@@ -34,6 +35,21 @@ const ARTWORK_TYPES = [
   "application/zip",
 ];
 const MAX_ARTWORK_BYTES = 200 * 1024 * 1024;
+const PREVIEWABLE = ["image/png", "image/jpeg", "image/tiff", "image/svg+xml"];
+
+/** Rasterised webp preview for image formats (SVG included, so scripts never render). */
+async function generatePreview(bytes: Buffer, mimeType: string): Promise<Buffer | null> {
+  if (!PREVIEWABLE.includes(mimeType)) return null;
+  try {
+    const { default: sharp } = await import("sharp");
+    return await sharp(bytes, { density: 150 })
+      .resize({ width: 1400, height: 1400, fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 82 })
+      .toBuffer();
+  } catch {
+    return null; // An unreadable file still uploads; it just has no preview.
+  }
+}
 
 /**
  * How many approvals a new version would invalidate — shown in the upload
@@ -65,6 +81,7 @@ export async function uploadArtwork(
   const session = await requireSession();
   const bundle = await loadItemBundle(db, itemId);
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "artwork.upload", item: itemAuthzCtx(bundle) })) {
     return fail("You cannot upload artwork for this item");
   }
@@ -91,12 +108,20 @@ export async function uploadArtwork(
   });
   await putObject("artwork", storagePath, bytes);
 
+  const preview = await generatePreview(bytes, file.type);
+  let previewPath: string | null = null;
+  if (preview) {
+    previewPath = `${storagePath}.preview.webp`;
+    await putObject("artwork", previewPath, preview);
+  }
+
   return recordArtworkVersion(session, bundle, {
     filePath: storagePath,
     fileName: file.name,
     mimeType: file.type || "application/octet-stream",
     fileSize: file.size,
     sha256,
+    previewPath,
     notes: typeof notes === "string" && notes.trim() ? notes.trim() : null,
   });
 }
@@ -111,6 +136,7 @@ async function recordArtworkVersion(
     mimeType: string;
     fileSize: number;
     sha256: string;
+    previewPath?: string | null;
     notes: string | null;
   },
 ): Promise<ActionResult<{ version: number }>> {
@@ -134,6 +160,7 @@ async function recordArtworkVersion(
           mimeType: fileMeta.mimeType,
           fileSize: fileMeta.fileSize,
           sha256: fileMeta.sha256,
+          previewPath: fileMeta.previewPath ?? null,
           uploadedBy: session.user.id,
           notes: fileMeta.notes,
         })

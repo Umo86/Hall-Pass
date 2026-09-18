@@ -1,5 +1,6 @@
 "use server";
 
+import { appUrl } from "@/lib/app-url";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
@@ -57,7 +58,7 @@ export async function inviteExternal(input: unknown): Promise<ActionResult<{ inv
         summary: `Invited ${data.email} as ${data.role}`,
       });
     });
-    const base = process.env.NEXT_PUBLIC_APP_URL ?? "";
+    const base = appUrl();
     revalidatePath("/settings");
     return success(
       { inviteUrl: `${base}/invite/${token}` },
