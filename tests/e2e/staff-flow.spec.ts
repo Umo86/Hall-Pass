@@ -26,9 +26,12 @@ test.describe("staff flow", () => {
     await expect(page.getByText("Sponsor approval")).toBeVisible();
   });
 
-  test("create item → submit → marketing approves", async ({ page, context, baseURL }) => {
-    await signInAs(context, "ops@media10.test", baseURL!);
-    await page.goto("/BIRM27/signage/new");
+  test("create → artwork → submit → marketing approves", async ({ browser, baseURL }) => {
+    // Ops creates and submits a fresh item so the approval is guaranteed.
+    const opsCtx = await browser.newContext();
+    await signInAs(opsCtx, "ops@media10.test", baseURL!);
+    const page = await opsCtx.newPage();
+    await page.goto(`${baseURL}/BIRM27/signage/new`);
     const name = `E2E test sign ${Date.now()}`;
     await page.getByLabel("Name", { exact: true }).fill(name);
     await page.getByLabel("Item type").selectOption({ label: "Foamex board" });
@@ -40,22 +43,37 @@ test.describe("staff flow", () => {
     await page.getByRole("button", { name: "Create item" }).click();
     await page.waitForURL("**/signage/SIG-BIRM27-*");
     await expect(page.getByRole("heading", { name })).toBeVisible();
+    const ref = new URL(page.url()).pathname.split("/").pop()!;
 
-    // Submit for review — no artwork yet, so it awaits artwork.
+    // Upload artwork so submission goes straight to review.
+    await page.goto(`${baseURL}/BIRM27/signage/${ref}?tab=artwork`);
+    await page.setInputFiles('input[type="file"]', {
+      name: "artwork.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF"),
+    });
+    await page.getByRole("button", { name: "Upload" }).click();
+    await expect(page.getByText("v1 — artwork.pdf")).toBeVisible();
+
+    await page.goto(`${baseURL}/BIRM27/signage/${ref}`);
     await page.getByRole("button", { name: "Submit for review" }).click();
-    await expect(page.getByText("Awaiting artwork")).toBeVisible();
+    await expect(page.getByText("In review", { exact: true })).toBeVisible();
+    await opsCtx.close();
+
+    // Marketing sees the step in My Sign-offs and approves it.
+    const mktCtx = await browser.newContext();
+    await signInAs(mktCtx, "marketing@media10.test", baseURL!);
+    const mkt = await mktCtx.newPage();
+    await mkt.goto(`${baseURL}/approvals`);
+    const row = mkt.locator("li", { hasText: ref });
+    await expect(row).toBeVisible();
+    await row.getByRole("button", { name: "Approve", exact: true }).click();
+    await expect(
+      mkt.getByText("Your approval is recorded against the current version"),
+    ).toBeVisible();
+    await mkt.getByRole("dialog").getByRole("button", { name: "Approve", exact: true }).click();
+    await expect(row).toHaveCount(0);
+    await mktCtx.close();
   });
 
-  test("marketing decides their pending step from My Sign-offs", async ({ page, context, baseURL }) => {
-    await signInAs(context, "marketing@media10.test", baseURL!);
-    await page.goto("/approvals");
-    await expect(page.getByRole("heading", { name: "My Sign-offs" })).toBeVisible();
-    const firstApprove = page.getByRole("button", { name: "Approve", exact: true }).first();
-    await expect(firstApprove).toBeVisible();
-    await firstApprove.click();
-    await expect(page.getByText("Your approval is recorded against the current version")).toBeVisible();
-    await page.getByRole("dialog").getByRole("button", { name: "Approve", exact: true }).click();
-    // The row disappears or the list refreshes without error.
-    await expect(page.getByRole("heading", { name: "My Sign-offs" })).toBeVisible();
-  });
 });
