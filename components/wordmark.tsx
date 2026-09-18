@@ -1,9 +1,10 @@
 import { cn } from "@/lib/utils";
 
 /**
- * Text-based logo. The brand name stays a config value: the first word is
- * set in the foreground colour, the rest in the accent, closed with an
- * amber full stop — distinctive at any size with no image asset.
+ * The platform logo, per the supplied brand mark ("hallpass."): lowercase
+ * bold, words run together, first word in the foreground colour, the rest
+ * and the closing full stop in indigo. Rendered as text so it is pin-sharp
+ * at every size with no image asset. The brand name stays a config value.
  */
 export function Wordmark({
   name,
@@ -30,9 +31,9 @@ export function Wordmark({
     >
       <span>{first}</span>
       {rest.length > 0 && (
-        <span className="text-indigo-600 dark:text-indigo-400">{rest.join(" ")}</span>
+        <span className="text-indigo-600 dark:text-indigo-400">{rest.join("")}</span>
       )}
-      <span className="text-amber-500" aria-hidden>
+      <span className="text-indigo-500 dark:text-indigo-400" aria-hidden>
         .
       </span>
     </span>

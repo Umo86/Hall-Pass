@@ -5,7 +5,8 @@ import { formatDate, formatDateTime, statusLabel } from "@/lib/format";
 
 const styles = StyleSheet.create({
   page: { padding: 32, fontSize: 10, fontFamily: "Helvetica", color: "#171717" },
-  brand: { fontSize: 8, letterSpacing: 2, color: "#737373", marginBottom: 4 },
+  brand: { fontSize: 12, fontFamily: "Helvetica-Bold", marginBottom: 4 },
+  brandAccent: { color: "#4f46e5" },
   h1: { fontSize: 16, fontFamily: "Helvetica-Bold", marginBottom: 2 },
   sub: { color: "#525252", marginBottom: 12 },
   row: { flexDirection: "row", marginBottom: 3 },
@@ -18,6 +19,17 @@ const styles = StyleSheet.create({
   qr: { width: 72, height: 72 },
   labelPage: { padding: 16, fontSize: 9, fontFamily: "Helvetica", color: "#171717" },
 });
+
+/** The text logo ("hallpass."): lowercase bold, second word and full stop in indigo. */
+function BrandMark({ name }: { name: string }) {
+  const [first, ...rest] = name.toLowerCase().split(" ");
+  return (
+    <Text style={styles.brand}>
+      {first}
+      <Text style={styles.brandAccent}>{rest.join("")}.</Text>
+    </Text>
+  );
+}
 
 export type CertificateStep = {
   name: string;
@@ -46,7 +58,7 @@ export async function renderApprovalCertificate(input: CertificateInput): Promis
       <Page size="A4" style={styles.page}>
         <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
           <View>
-            <Text style={styles.brand}>{input.brandName.toUpperCase()}</Text>
+            <BrandMark name={input.brandName} />
             <Text style={styles.h1}>Approval certificate</Text>
             <Text style={styles.sub}>
               {input.ref} — {input.title} · {input.editionName}
@@ -108,7 +120,7 @@ export async function renderSpecLabel(input: SpecLabelInput): Promise<Buffer> {
   const doc = (
     <Document title={`${input.ref} spec label`}>
       <Page size="A6" style={styles.labelPage}>
-        <Text style={styles.brand}>{input.brandName.toUpperCase()}</Text>
+        <BrandMark name={input.brandName} />
         <Text style={{ fontSize: 14, fontFamily: "Helvetica-Bold" }}>{input.ref}</Text>
         <Text style={{ fontSize: 10, marginBottom: 8 }}>{input.name}</Text>
         {input.fields.map(([k, v]) => (

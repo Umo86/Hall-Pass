@@ -19,9 +19,15 @@ export type NotificationEmailProps = {
   ctaUrl?: string;
 };
 
+/** Splits the brand name into the two logo segments: "Hall Pass" → ["hall", "pass"]. */
+function brandWords(name: string): [string, string] {
+  const [first, ...rest] = name.toLowerCase().split(" ");
+  return [first, rest.join("")];
+}
+
 /**
- * The one transactional template: brand name, one clear call-to-action deep
- * link, plain-text fallback. Subject and intro copy vary per notification.
+ * The one transactional template: brand wordmark, one clear call-to-action
+ * deep link, plain-text fallback. Subject and intro copy vary per notification.
  */
 export function NotificationEmail({ brandName, title, bodyText, ctaLabel, ctaUrl }: NotificationEmailProps) {
   return (
@@ -38,8 +44,9 @@ export function NotificationEmail({ brandName, title, bodyText, ctaLabel, ctaUrl
             padding: 32,
           }}
         >
-          <Text style={{ color: "#737373", fontSize: 12, letterSpacing: 1, margin: 0 }}>
-            {brandName.toUpperCase()}
+          <Text style={{ fontSize: 18, fontWeight: 700, letterSpacing: -0.5, margin: 0 }}>
+            <span style={{ color: "#171717" }}>{brandWords(brandName)[0]}</span>
+            <span style={{ color: "#4f46e5" }}>{brandWords(brandName)[1]}.</span>
           </Text>
           <Heading as="h1" style={{ fontSize: 20, margin: "8px 0 16px" }}>
             {title}
