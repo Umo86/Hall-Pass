@@ -2,7 +2,6 @@
 -- PostgreSQL database dump
 --
 
-\restrict pHoSsizILSZkv7RQOJl7gxqOZ7ZMPghypYiztizySvbjnZtc1vIF3tEbtGUwaxZ
 
 -- Dumped from database version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
 -- Dumped by pg_dump version 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1)
@@ -3952,7 +3951,6 @@ ALTER TABLE public.workflows ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict pHoSsizILSZkv7RQOJl7gxqOZ7ZMPghypYiztizySvbjnZtc1vIF3tEbtGUwaxZ
 
 
 -- ---------------------------------------------------------------------------
