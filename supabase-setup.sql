@@ -1,3 +1,45 @@
+-- ---------------------------------------------------------------------------
+-- Hall Pass database setup for the Supabase SQL Editor.
+-- RE-RUNNABLE: this preamble removes everything the script creates, so it is
+-- safe to run again after a partial or failed earlier attempt. It only drops
+-- Hall Pass objects (and the drizzle bookkeeping schema) — nothing else.
+DROP SCHEMA IF EXISTS drizzle CASCADE;
+DROP TABLE IF EXISTS public.users, public.external_grants, public.organisations, public.memberships, public.editions, public.edition_counters, public.edition_deadlines, public.events, public.venues, public.venue_rules, public.halls, public.locations, public.contractors, public.exhibitors, public.sponsors, public.suppliers, public.workflow_steps, public.workflows, public.artwork_annotations, public.item_types, public.documents, public.change_requests, public.comments, public.comment_attachments, public.exports, public.notifications, public.snags, public.signage_items, public.stand_submissions, public.artwork_versions, public.sponsor_entitlements, public.audit_log, public.email_log, public.reminder_log, public.approval_instances CASCADE;
+DROP TYPE IF EXISTS public.actor_type CASCADE;
+DROP TYPE IF EXISTS public.approval_entity_type CASCADE;
+DROP TYPE IF EXISTS public.approver_type CASCADE;
+DROP TYPE IF EXISTS public.audit_action CASCADE;
+DROP TYPE IF EXISTS public.change_request_status CASCADE;
+DROP TYPE IF EXISTS public.deadline_key CASCADE;
+DROP TYPE IF EXISTS public.doc_type CASCADE;
+DROP TYPE IF EXISTS public.document_status CASCADE;
+DROP TYPE IF EXISTS public.edition_status CASCADE;
+DROP TYPE IF EXISTS public.email_status CASCADE;
+DROP TYPE IF EXISTS public.entity_type CASCADE;
+DROP TYPE IF EXISTS public.external_role CASCADE;
+DROP TYPE IF EXISTS public.fixing_method CASCADE;
+DROP TYPE IF EXISTS public.install_slot CASCADE;
+DROP TYPE IF EXISTS public.instance_status CASCADE;
+DROP TYPE IF EXISTS public.owner_role CASCADE;
+DROP TYPE IF EXISTS public.proof_status CASCADE;
+DROP TYPE IF EXISTS public.reminder_kind CASCADE;
+DROP TYPE IF EXISTS public.reminder_target_type CASCADE;
+DROP TYPE IF EXISTS public.scope_type CASCADE;
+DROP TYPE IF EXISTS public.sided CASCADE;
+DROP TYPE IF EXISTS public.signage_status CASCADE;
+DROP TYPE IF EXISTS public.snag_severity CASCADE;
+DROP TYPE IF EXISTS public.snag_status CASCADE;
+DROP TYPE IF EXISTS public.staff_role CASCADE;
+DROP TYPE IF EXISTS public.stand_outcome CASCADE;
+DROP TYPE IF EXISTS public.stand_status CASCADE;
+DROP TYPE IF EXISTS public.stand_type CASCADE;
+DROP TYPE IF EXISTS public.step_kind CASCADE;
+DROP TYPE IF EXISTS public.supplier_kind CASCADE;
+DROP TYPE IF EXISTS public.workflow_applies_to CASCADE;
+DROP FUNCTION IF EXISTS public.forbid_audit_mutation() CASCADE;
+DROP FUNCTION IF EXISTS public.set_updated_at() CASCADE;
+-- ---------------------------------------------------------------------------
+
 --
 -- PostgreSQL database dump
 --
