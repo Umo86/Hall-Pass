@@ -18,12 +18,16 @@ export const DEV_COOKIE = "hp-dev-user";
 /**
  * Development sign-in is available when Supabase Auth is not configured and
  * explicitly enabled. It lets the seeded users be assumed via a cookie so
- * the platform can be demonstrated with only a database connection. Never
- * active once Supabase Auth is configured.
+ * the platform can be demonstrated with only a database connection.
+ * An explicit DEV_AUTH=1 always enables it (even with Supabase configured,
+ * so a project without auth users yet is never locked out); the automatic
+ * enable in local development applies only while Supabase is unconfigured.
+ * Remove DEV_AUTH before real users arrive.
  */
 export function devAuthEnabled(): boolean {
+  if (process.env.DEV_AUTH === "1") return true;
   if (supabaseConfigured()) return false;
-  return process.env.DEV_AUTH === "1" || process.env.NODE_ENV === "development";
+  return process.env.NODE_ENV === "development";
 }
 
 export type Session = {

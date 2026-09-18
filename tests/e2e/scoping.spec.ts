@@ -44,6 +44,6 @@ test.describe("external scoping", () => {
   test("signed-out users land on the sign-in page", async ({ page }) => {
     await page.goto("/BIRM27/dashboard");
     await page.waitForURL("**/login");
-    await expect(page.getByText("Signage schedule and design sign-off")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Choose who to sign in as" })).toBeVisible();
   });
 });
