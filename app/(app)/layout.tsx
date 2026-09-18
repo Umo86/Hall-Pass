@@ -5,6 +5,7 @@ import { EditionSwitcher } from "@/components/edition-switcher";
 import { NotificationsBell } from "@/components/notifications-bell";
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { Input } from "@/components/ui/input";
+import { Wordmark } from "@/components/wordmark";
 import { db } from "@/lib/db/client";
 import { notifications } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
@@ -29,7 +30,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <div className="flex min-h-screen flex-col">
       <header className="bg-background sticky top-0 z-40 flex h-14 items-center gap-4 border-b px-4">
-        <div className="text-sm font-semibold tracking-tight">{session.organisation.brandName}</div>
+        <Wordmark name={session.organisation.brandName} size="sm" />
         <EditionSwitcher
           editions={editions.map((e) => ({
             code: e.edition.code,

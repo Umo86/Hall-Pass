@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { requirePortalSession } from "@/lib/auth/actor";
+import { Wordmark } from "@/components/wordmark";
 
 export const dynamic = "force-dynamic";
 
@@ -14,9 +15,7 @@ export default async function PortalLayout({ children }: { children: React.React
   return (
     <div className="flex min-h-screen flex-col">
       <header className="bg-background sticky top-0 z-40 flex h-14 items-center gap-6 border-b px-4">
-        <div className="text-sm font-semibold tracking-tight">
-          {session.organisation.brandName}
-        </div>
+        <Wordmark name={session.organisation.brandName} size="sm" />
         <nav className="flex items-center gap-4 text-sm" aria-label="Portal navigation">
           <Link href="/portal/approvals" className="text-muted-foreground hover:text-foreground">
             My Sign-offs

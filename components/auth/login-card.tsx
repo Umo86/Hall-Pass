@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { ArrowLeft, Building2, Check, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AccentRule, Wordmark } from "@/components/wordmark";
 import { Input } from "@/components/ui/input";
 import { devSignIn, signInWithMagicLink, signInWithPassword } from "@/app/actions/auth";
 
@@ -38,9 +39,9 @@ export function LoginCard({ brandName, supabaseEnabled, devEnabled, devUsers, co
       <div className="mx-auto flex w-full max-w-5xl items-center px-6 py-5">
         <Link
           href="/"
-          className="text-muted-foreground hover:text-foreground flex items-center gap-1.5 text-sm"
+          className="text-muted-foreground hover:text-foreground flex items-center gap-2 text-sm"
         >
-          <ArrowLeft className="size-4" aria-hidden /> {brandName}
+          <ArrowLeft className="size-4" aria-hidden /> <Wordmark name={brandName} size="sm" />
         </Link>
       </div>
 
@@ -48,7 +49,8 @@ export function LoginCard({ brandName, supabaseEnabled, devEnabled, devUsers, co
         <div className="bg-background grid w-full max-w-4xl overflow-hidden rounded-xl border shadow-sm md:grid-cols-[2fr_3fr]">
           <aside className="bg-sidebar hidden flex-col justify-between border-r p-8 md:flex">
             <div>
-              <p className="text-sm font-semibold tracking-tight">{brandName}</p>
+              <Wordmark name={brandName} />
+              <AccentRule className="mt-3 w-16" />
               <h1 className="mt-6 text-2xl font-semibold tracking-tight text-balance">
                 Sign in to your schedule
               </h1>
@@ -65,7 +67,7 @@ export function LoginCard({ brandName, supabaseEnabled, devEnabled, devUsers, co
 
           <main className="p-6 sm:p-8">
             <div className="md:hidden">
-              <p className="text-sm font-semibold tracking-tight">{brandName}</p>
+              <Wordmark name={brandName} />
               <h1 className="mt-2 mb-6 text-xl font-semibold tracking-tight">Sign in</h1>
             </div>
             {!configured ? (
