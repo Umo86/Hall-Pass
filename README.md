@@ -62,6 +62,13 @@ pnpm build
 4. In Supabase Storage, create private buckets: `artwork`, `documents`, `photos`, `floorplans`, `exports`.
 5. Deploy. `vercel.json` schedules the daily cron at 06:00 UTC (07:00 BST); the handler computes "today" in Europe/London so clock changes don't break it.
 
+## Imagery
+
+Public and portal pages ship with built-in vector scenes of event crews at work. To use real
+photography (e.g. AI-generated imagery), drop files into `public/images/` named `hero`,
+`office`, `login` and `portal` (`.jpg`, `.png` or `.webp`) — they replace the corresponding
+scene automatically, no code changes.
+
 ## Repository layout
 
 Per the brief: `app/` (routes + `actions/` server actions, one intent per file), `components/`, `lib/` (`authz.ts`, `workflow/`, `status/`, `deadlines.ts`, `refs.ts`, `audit.ts`, `email/`, `exports/`, `storage.ts`, `db/` with schema, migrations and seed), `tests/unit` and `tests/e2e`.

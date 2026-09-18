@@ -7,6 +7,8 @@ import { listEditions } from "@/lib/queries/editions";
 import { formatDate } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import { CloneEditionDialog, CreateEditionDialog } from "@/components/editions/edition-forms";
+import { Scene } from "@/components/scene";
+import { brandImage } from "@/lib/brand-images";
 
 export const metadata = { title: "Editions" };
 export const dynamic = "force-dynamic";
@@ -38,6 +40,13 @@ export default async function EditionsPage() {
           </div>
         )}
       </div>
+
+      <Scene
+        kind="hall"
+        photo={brandImage("hero")}
+        alt="Crew installing event signage in an exhibition hall"
+        className="max-h-44 [&>svg]:h-44 [&>img]:h-44"
+      />
 
       {rows.length === 0 ? (
         <div className="border-border text-muted-foreground flex h-48 flex-col items-center justify-center gap-3 rounded-lg border border-dashed text-sm">

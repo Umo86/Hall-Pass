@@ -4,6 +4,7 @@ import { brandName } from "@/lib/config";
 import { devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { supabaseConfigured } from "@/lib/auth/supabase-server";
 import { statusLabel } from "@/lib/format";
+import { brandImage } from "@/lib/brand-images";
 
 export const metadata = { title: "Sign in" };
 export const dynamic = "force-dynamic";
@@ -63,6 +64,7 @@ export default async function LoginPage() {
       supabaseEnabled={supabaseConfigured()}
       devEnabled={devAuthEnabled()}
       devUsers={await devUserList()}
+      photo={brandImage("login")}
       configStatus={{
         supabaseUrl: Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL),
         supabaseKey: Boolean(

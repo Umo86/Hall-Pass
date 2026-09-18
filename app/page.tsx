@@ -4,6 +4,8 @@ import { ArrowRight, ClipboardCheck, FileCheck2, ShieldCheck } from "lucide-reac
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { AccentRule, Wordmark } from "@/components/wordmark";
+import { Scene } from "@/components/scene";
+import { brandImage } from "@/lib/brand-images";
 import { brandName } from "@/lib/config";
 import { getSession } from "@/lib/auth/actor";
 
@@ -47,7 +49,8 @@ export default async function Home() {
       </header>
 
       <main className="flex flex-1 flex-col">
-        <section className="mx-auto w-full max-w-5xl px-6 pt-14 pb-16 sm:pt-20">
+        <section className="mx-auto grid w-full max-w-5xl items-center gap-10 px-6 pt-14 pb-16 sm:pt-20 lg:grid-cols-[7fr_5fr]">
+          <div>
           <p className="text-xs font-semibold tracking-[0.2em] text-indigo-600 uppercase dark:text-indigo-400">
             Signage schedule &amp; design sign-off
           </p>
@@ -82,6 +85,13 @@ export default async function Home() {
               </span>
             ))}
           </div>
+          </div>
+          <Scene
+            kind="hall"
+            photo={brandImage("hero")}
+            alt="Crew installing event signage in an exhibition hall"
+            className="shadow-sm"
+          />
         </section>
 
         <section className="border-t bg-slate-50 dark:bg-slate-900/40">
@@ -97,6 +107,32 @@ export default async function Home() {
                 <p className="text-muted-foreground mt-1.5 text-sm leading-relaxed">{f.body}</p>
               </div>
             ))}
+          </div>
+        </section>
+
+        <section className="border-t">
+          <div className="mx-auto grid w-full max-w-5xl items-center gap-10 px-6 py-14 lg:grid-cols-[5fr_7fr]">
+            <Scene
+              kind="office"
+              photo={brandImage("office")}
+              alt="Event operations team planning at a schedule wall"
+              className="order-last lg:order-first"
+            />
+            <div>
+              <h2 className="text-2xl font-semibold tracking-tight text-balance sm:text-3xl">
+                From the office wall to the hall floor
+              </h2>
+              <p className="text-muted-foreground mt-4 max-w-xl leading-relaxed">
+                Marketing checks the brand, ops checks the build, the venue checks the rigging and
+                sponsors sign their own artwork — all on the same record, all against the same
+                locked version. When the doors open, the audit trail already tells the whole story.
+              </p>
+              <ul className="text-muted-foreground mt-5 space-y-2 text-sm">
+                <li className="flex gap-2"><span className="mt-1.5 size-2 shrink-0 rounded-full bg-indigo-500" />Automatic reminders and escalation keep every approval moving</li>
+                <li className="flex gap-2"><span className="mt-1.5 size-2 shrink-0 rounded-full bg-amber-500" />Excel in, Excel out — plus certificates and spec labels as PDFs</li>
+                <li className="flex gap-2"><span className="mt-1.5 size-2 shrink-0 rounded-full bg-emerald-500" />Exhibitors and contractors submit through their own portal</li>
+              </ul>
+            </div>
           </div>
         </section>
       </main>

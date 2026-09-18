@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { AccentRule, Wordmark } from "@/components/wordmark";
 import { Input } from "@/components/ui/input";
 import { devSignIn, signInWithMagicLink, signInWithPassword } from "@/app/actions/auth";
+import { Scene } from "@/components/scene";
 
 export type DevUser = {
   email: string;
@@ -29,9 +30,10 @@ type Props = {
   devEnabled: boolean;
   devUsers: DevUser[];
   configStatus: ConfigStatus;
+  photo: string | null;
 };
 
-export function LoginCard({ brandName, supabaseEnabled, devEnabled, devUsers, configStatus }: Props) {
+export function LoginCard({ brandName, supabaseEnabled, devEnabled, devUsers, configStatus, photo }: Props) {
   const configured = supabaseEnabled || (devEnabled && devUsers.length > 0);
 
   return (
@@ -60,9 +62,17 @@ export function LoginCard({ brandName, supabaseEnabled, devEnabled, devUsers, co
                 <li>One portal for venues, suppliers, sponsors and exhibitors</li>
               </ul>
             </div>
-            <p className="text-muted-foreground text-xs">
-              Access is by invitation from the operations team.
-            </p>
+            <div>
+              <Scene
+                kind="hall"
+                photo={photo}
+                alt="Crew installing event signage in an exhibition hall"
+                className="mb-4"
+              />
+              <p className="text-muted-foreground text-xs">
+                Access is by invitation from the operations team.
+              </p>
+            </div>
           </aside>
 
           <main className="p-6 sm:p-8">
