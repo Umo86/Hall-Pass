@@ -54,7 +54,7 @@ pnpm build
    - `CRON_SECRET` — any long random string (Vercel Cron sends it automatically)
    - `RESEND_API_KEY` + `EMAIL_FROM` — for transactional email (optional; sends are logged as failed until set)
    - Optional for a keyless demo: set only `DATABASE_URL`/`DIRECT_DATABASE_URL` and `DEV_AUTH=1` to use development sign-in.
-3. Run migrations and seed against the Supabase database from your machine:
+3. Set up the database — either run `supabase-setup.sql` (checked into the repo root: full schema, RLS, triggers and demo seed, verified against a clean Postgres 16) in the Supabase **SQL Editor**, or run migrations and seed from your machine:
    ```bash
    DIRECT_DATABASE_URL=postgres://... pnpm db:migrate
    DIRECT_DATABASE_URL=postgres://... pnpm db:seed
