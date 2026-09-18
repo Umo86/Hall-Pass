@@ -21,6 +21,7 @@ export type ConfigStatus = {
   supabaseKey: boolean;
   databaseUrl: boolean;
   databaseReachable: boolean;
+  databaseError: string | null;
   devAuth: boolean;
 };
 
@@ -292,7 +293,9 @@ function PersonButton({
 function SetupPanel({ status }: { status: ConfigStatus }) {
   const rows: Array<[string, boolean, string]> = [
     ["Database connected", status.databaseUrl && status.databaseReachable,
-      status.databaseUrl ? "DATABASE_URL is set but unreachable — check the pooler URI and password" : "Set DATABASE_URL (Supabase transaction pooler, port 6543)"],
+      status.databaseUrl
+        ? (status.databaseError ?? "DATABASE_URL is set but unreachable — check the pooler URI and password")
+        : "Set DATABASE_URL (Supabase transaction pooler, port 6543)"],
     ["Sign-in method", status.devAuth || (status.supabaseUrl && status.supabaseKey),
       "Set DEV_AUTH=1 for demo sign-in, or NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY for real auth"],
   ];

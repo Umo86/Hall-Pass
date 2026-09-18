@@ -47,14 +47,16 @@ export default async function LoginPage() {
   // Self-diagnosis for the unconfigured state, so a misdeployed instance
   // says exactly what is missing instead of a dead end.
   let databaseReachable = false;
+  let databaseError: string | null = null;
   if (process.env.DATABASE_URL) {
     try {
       const { sql } = await import("drizzle-orm");
       const { db } = await import("@/lib/db/client");
       await db.execute(sql`SELECT 1`);
       databaseReachable = true;
-    } catch {
-      databaseReachable = false;
+    } catch (err) {
+      const { describeDbError } = await import("@/lib/db/diagnose");
+      databaseError = describeDbError(err);
     }
   }
 
@@ -73,6 +75,7 @@ export default async function LoginPage() {
         ),
         databaseUrl: Boolean(process.env.DATABASE_URL),
         databaseReachable,
+        databaseError,
         devAuth: process.env.DEV_AUTH === "1",
       }}
     />

@@ -10,6 +10,7 @@ export const dynamic = "force-dynamic";
  */
 export async function GET() {
   let database: "ok" | "unreachable" | "unconfigured" = "unconfigured";
+  let databaseError: string | undefined;
   let seeded = false;
   if (process.env.DATABASE_URL) {
     try {
@@ -20,8 +21,10 @@ export async function GET() {
       );
       database = "ok";
       seeded = Number(rows[0]?.n ?? 0) > 0;
-    } catch {
+    } catch (err) {
       database = "unreachable";
+      const { describeDbError } = await import("@/lib/db/diagnose");
+      databaseError = describeDbError(err);
     }
   }
   const auth = devAuthEnabled() ? "demo" : supabaseConfigured() ? "supabase" : "none";
@@ -30,6 +33,7 @@ export async function GET() {
     {
       ok,
       database,
+      ...(databaseError ? { databaseError } : {}),
       seeded,
       auth,
       storage: Boolean(
