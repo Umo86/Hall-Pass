@@ -15,12 +15,16 @@ export async function GET() {
   if (process.env.DATABASE_URL) {
     try {
       const { sql } = await import("drizzle-orm");
-      const { db } = await import("@/lib/db/client");
+      const { db, databaseVia } = await import("@/lib/db/client");
       const rows = await db.execute<{ n: number }>(
         sql`SELECT count(*)::int AS n FROM organisations`,
       );
       database = "ok";
       seeded = Number(rows[0]?.n ?? 0) > 0;
+      if (databaseVia === "DIRECT_DATABASE_URL") {
+        databaseError =
+          "Running on DIRECT_DATABASE_URL because DATABASE_URL is unreachable — sign-in works, but fix DATABASE_URL (transaction pooler, port 6543) when convenient.";
+      }
     } catch (err) {
       database = "unreachable";
       const { describeDbError } = await import("@/lib/db/diagnose");
