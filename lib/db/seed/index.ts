@@ -416,6 +416,19 @@ async function main() {
     return { workflow: wf, steps: defs };
   }
 
+  const signageWfInitial = await ensureWorkflow("Signage default", "signage", defaultSignageSteps);
+  // Demo of a named-user sign-off: the Event Director step is assigned to Dana
+  // herself rather than the whole event_director role (only flipped once).
+  await db
+    .update(s.workflowSteps)
+    .set({ approverType: "user", approverUserId: byRole.event_director, approverRole: null })
+    .where(
+      and(
+        eq(s.workflowSteps.workflowId, signageWfInitial.workflow.id),
+        eq(s.workflowSteps.name, "Event Director sign-off"),
+        eq(s.workflowSteps.approverType, "role"),
+      ),
+    );
   const signageWf = await ensureWorkflow("Signage default", "signage", defaultSignageSteps);
   const standWf = await ensureWorkflow("Stand default", "stand", defaultStandSteps);
 
@@ -425,6 +438,7 @@ async function main() {
     code: string;
     defaultFixingMethod: typeof s.signageItems.$inferSelect.fixingMethod;
     requiresVenueApprovalDefault: boolean;
+    kind?: "signage" | "sponsorship_item";
   }> = [
     {
       name: "Hanging banner",
@@ -492,6 +506,28 @@ async function main() {
       defaultFixingMethod: "digital",
       requiresVenueApprovalDefault: false,
     },
+    // Sponsorship deliverables sold by the sales team (separate register).
+    {
+      name: "Branded lanyards",
+      code: "lanyard",
+      defaultFixingMethod: null,
+      requiresVenueApprovalDefault: false,
+      kind: "sponsorship_item",
+    },
+    {
+      name: "Show bags",
+      code: "show_bag",
+      defaultFixingMethod: null,
+      requiresVenueApprovalDefault: false,
+      kind: "sponsorship_item",
+    },
+    {
+      name: "Registration branding",
+      code: "reg_branding",
+      defaultFixingMethod: null,
+      requiresVenueApprovalDefault: false,
+      kind: "sponsorship_item",
+    },
   ];
   const itemTypeRows: Record<string, typeof s.itemTypes.$inferSelect> = {};
   for (const [i, it] of itemTypeDefs.entries()) {
@@ -505,7 +541,7 @@ async function main() {
       })
       .onConflictDoUpdate({
         target: [s.itemTypes.organisationId, s.itemTypes.code],
-        set: { name: it.name },
+        set: { name: it.name, kind: it.kind ?? "signage" },
       })
       .returning();
     itemTypeRows[it.code] = row;
@@ -732,8 +768,9 @@ async function main() {
     seq: number;
     name: string;
     type: keyof typeof itemTypeRows;
-    hall: "Hall 1" | "Hall 2";
-    locIdx: number;
+    kind?: "sponsorship_item";
+    hall?: "Hall 1" | "Hall 2";
+    locIdx?: number;
     status: typeof s.signageItems.$inferSelect.status;
     owner: "ops" | "marketing";
     sponsor?: "BuildCo" | "ToolMart";
@@ -1205,9 +1242,44 @@ async function main() {
       owner: "ops",
       cost: 200,
     }),
+    // Sponsorship items (separate register): sold deliverables, no location.
+    P({
+      seq: 900,
+      name: "Branded lanyards — BuildCo",
+      type: "lanyard",
+      kind: "sponsorship_item",
+      status: "in_review",
+      owner: "marketing",
+      sponsor: "BuildCo",
+      cost: 4500,
+      versions: 1,
+      advance: [],
+    }),
+    P({
+      seq: 901,
+      name: "Show bags — BuildCo",
+      type: "show_bag",
+      kind: "sponsorship_item",
+      status: "draft",
+      owner: "marketing",
+      sponsor: "BuildCo",
+      cost: 6200,
+    }),
   ];
 
   const signageStepDefs = signageWf.steps;
+
+  // Wayfinding types read as directional; sponsored signage is sponsorship;
+  // everything else is venue dressing. Sponsorship items carry no category.
+  const DIRECTIONAL_TYPES = new Set(["aisle_sign", "floor_vinyl"]);
+  const categoryFor = (plan: ItemPlan): "directional" | "venue" | "sponsorship" | null =>
+    plan.kind === "sponsorship_item"
+      ? null
+      : plan.sponsor
+        ? "sponsorship"
+        : DIRECTIONAL_TYPES.has(String(plan.type))
+          ? "directional"
+          : "venue";
 
   for (const plan of plans) {
     const ref = formatSignageRef("BIRM27", plan.seq);
@@ -1228,9 +1300,11 @@ async function main() {
         seq: plan.seq,
         name: plan.name,
         description: `${plan.name} for UKCW Birmingham 2027.`,
+        kind: plan.kind ?? "signage",
+        category: categoryFor(plan),
         itemTypeId: itemType.id,
-        hallId: hallRows[plan.hall].id,
-        locationId: locationRows[plan.locIdx]?.id ?? null,
+        hallId: plan.hall ? hallRows[plan.hall].id : null,
+        locationId: plan.locIdx != null ? (locationRows[plan.locIdx]?.id ?? null) : null,
         ownerRole: plan.owner,
         ownerUserId: plan.owner === "ops" ? byRole.ops : byRole.marketing,
         sponsorId,
@@ -1540,6 +1614,45 @@ async function main() {
         }
         await persistRun(tx, "stand_submission", sub.id, run);
       }
+    });
+  }
+
+  // ------------------------------------------------- v1.5 demo data
+  // Categorise any items seeded before the category column existed.
+  await client`
+    UPDATE signage_items SET category = CASE
+      WHEN sponsor_id IS NOT NULL THEN 'sponsorship'::signage_category
+      WHEN item_type_id IN (SELECT id FROM item_types WHERE code IN ('aisle_sign','floor_vinyl'))
+        THEN 'directional'::signage_category
+      ELSE 'venue'::signage_category
+    END
+    WHERE kind = 'signage' AND category IS NULL`;
+
+  // Example per-user override: Marcus (marketing) may also edit costs.
+  await db
+    .update(s.memberships)
+    .set({ permissionOverrides: { "costs.edit": true } })
+    .where(and(eq(s.memberships.userId, uid(3)), eq(s.memberships.organisationId, org.id)));
+
+  // Demo personal task on Olivia's My Work list, linked to the first item.
+  const demoTaskTitle = "Chase NEC about rigging slot confirmation";
+  const existingTask = await db.query.tasks.findFirst({
+    where: and(eq(s.tasks.organisationId, org.id), eq(s.tasks.title, demoTaskTitle)),
+  });
+  if (!existingTask) {
+    const firstItem = await db.query.signageItems.findFirst({
+      where: eq(s.signageItems.ref, formatSignageRef("BIRM27", 1)),
+    });
+    await db.insert(s.tasks).values({
+      organisationId: org.id,
+      editionId: edition.id,
+      title: demoTaskTitle,
+      notes: "The rigging plan needs the venue's slot confirmation before install week.",
+      dueDate: new Date(NOW.getTime() + 7 * 86_400_000).toISOString().slice(0, 10),
+      assignedToUserId: byRole.ops,
+      createdByUserId: byRole.admin,
+      entityType: firstItem ? "signage_item" : null,
+      entityId: firstItem?.id ?? null,
     });
   }
 

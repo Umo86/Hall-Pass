@@ -8,4 +8,5 @@ export * from "./signage";
 export * from "./stands";
 export * from "./documents";
 export * from "./collab";
+export * from "./tasks";
 export * from "./audit";

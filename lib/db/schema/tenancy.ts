@@ -66,6 +66,12 @@ export const memberships = pgTable(
       .notNull()
       .references(() => organisations.id),
     role: staffRole("role").notNull(),
+    // Per-user ability overrides on top of the role defaults; keys are
+    // whitelisted in lib/authz.ts (OVERRIDE_KEYS). Admins ignore overrides.
+    permissionOverrides: jsonb("permission_overrides")
+      .$type<Record<string, boolean>>()
+      .notNull()
+      .default({}),
     ...timestamps,
   },
   (t) => [
@@ -102,6 +108,38 @@ export const externalGrants = pgTable(
     index("external_grants_edition_idx").on(t.editionId),
     index("external_grants_invited_by_idx").on(t.invitedBy),
     index("external_grants_token_idx").on(t.inviteTokenHash),
+  ],
+);
+
+/**
+ * Pending invitations for staff users. A membership row needs the Supabase
+ * auth uid, which doesn't exist until first sign-in, so the invite carries
+ * the role (and overrides) to apply when the email first signs in.
+ */
+export const staffInvites = pgTable(
+  "staff_invites",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organisationId: uuid("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    invitedEmail: text("invited_email").notNull(),
+    role: staffRole("role").notNull(),
+    permissionOverrides: jsonb("permission_overrides")
+      .$type<Record<string, boolean>>()
+      .notNull()
+      .default({}),
+    invitedBy: uuid("invited_by").references(() => users.id),
+    inviteTokenHash: text("invite_token_hash").notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (t) => [
+    index("staff_invites_org_idx").on(t.organisationId),
+    index("staff_invites_email_idx").on(t.invitedEmail),
+    index("staff_invites_invited_by_idx").on(t.invitedBy),
+    index("staff_invites_token_idx").on(t.inviteTokenHash),
   ],
 );
 

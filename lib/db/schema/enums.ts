@@ -45,6 +45,14 @@ export const standType = pgEnum("stand_type", ["space_only", "shell", "custom_sh
 
 export const ownerRole = pgEnum("owner_role", ["ops", "marketing"]);
 
+/** Which register an item belongs to: the signage schedule or sponsorship items. */
+export const itemKind = pgEnum("item_kind", ["signage", "sponsorship_item"]);
+
+/** Classification of signage; sponsorship items carry no category. */
+export const signageCategory = pgEnum("signage_category", ["directional", "venue", "sponsorship"]);
+
+export const taskStatus = pgEnum("task_status", ["open", "done"]);
+
 export const sided = pgEnum("sided", ["single", "double"]);
 
 export const fixingMethod = pgEnum("fixing_method", [

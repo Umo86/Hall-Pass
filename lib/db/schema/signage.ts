@@ -10,7 +10,16 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
-import { fixingMethod, installSlot, ownerRole, proofStatus, sided, signageStatus } from "./enums";
+import {
+  fixingMethod,
+  installSlot,
+  itemKind,
+  ownerRole,
+  proofStatus,
+  sided,
+  signageCategory,
+  signageStatus,
+} from "./enums";
 import { editions } from "./events";
 import { halls, locations } from "./floorplans";
 import { contractors, sponsorEntitlements, sponsors, suppliers } from "./parties";
@@ -26,6 +35,7 @@ export const itemTypes = pgTable(
       .references(() => organisations.id),
     name: text("name").notNull(),
     code: text("code").notNull(),
+    kind: itemKind("kind").notNull().default("signage"),
     defaultWorkflowId: uuid("default_workflow_id").references(() => workflows.id),
     defaultFixingMethod: fixingMethod("default_fixing_method"),
     requiresVenueApprovalDefault: boolean("requires_venue_approval_default")
@@ -52,6 +62,8 @@ export const signageItems = pgTable(
     seq: integer("seq").notNull(),
     name: text("name").notNull(),
     description: text("description"),
+    kind: itemKind("kind").notNull().default("signage"),
+    category: signageCategory("category"),
     itemTypeId: uuid("item_type_id").references(() => itemTypes.id),
     hallId: uuid("hall_id").references(() => halls.id),
     locationId: uuid("location_id").references(() => locations.id),
@@ -98,6 +110,7 @@ export const signageItems = pgTable(
   },
   (t) => [
     index("signage_items_edition_status_idx").on(t.editionId, t.status),
+    index("signage_items_edition_kind_idx").on(t.editionId, t.kind),
     index("signage_items_edition_idx").on(t.editionId),
     index("signage_items_item_type_idx").on(t.itemTypeId),
     index("signage_items_hall_idx").on(t.hallId),
