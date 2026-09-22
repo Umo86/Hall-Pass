@@ -23,7 +23,7 @@ export default async function PortalSubmissionPage() {
   );
   if (!grant?.scopeId) {
     return (
-      <div className="p-6">
+      <div className="p-4 sm:p-6">
         <p className="text-muted-foreground text-sm">
           No stand submission is linked to your account. Contact the organiser if you believe this
           is wrong.
@@ -35,7 +35,7 @@ export default async function PortalSubmissionPage() {
   const row = await getSubmissionForExhibitor(grant.scopeId);
   if (!row) {
     return (
-      <div className="p-6">
+      <div className="p-4 sm:p-6">
         <p className="text-muted-foreground text-sm">
           Your submission record has not been created yet — the organiser will set it up.
         </p>
@@ -77,7 +77,7 @@ export default async function PortalSubmissionPage() {
   const changesComment = run.find((i) => i.status === "changes_requested")?.decisionComment;
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-6 p-6">
+    <div className="mx-auto flex max-w-3xl flex-col gap-6 p-4 sm:p-6">
       <div className="flex flex-wrap items-center gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">

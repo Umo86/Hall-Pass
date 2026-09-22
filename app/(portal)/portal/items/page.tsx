@@ -13,7 +13,7 @@ export default async function PortalItemsPage() {
   const rows = await visibleItemsForExternal(session.actor);
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-4 p-6">
+    <div className="mx-auto flex max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <h1 className="text-xl font-semibold tracking-tight">
         My items <span className="text-muted-foreground text-base font-normal">({rows.length})</span>
       </h1>

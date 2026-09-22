@@ -44,7 +44,7 @@ export function QuestionnaireForm({
 
   if (readOnly) {
     return (
-      <dl className="grid max-w-xl grid-cols-2 gap-x-6 gap-y-2 text-sm">
+      <dl className="grid max-w-xl grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
         <dt className="text-muted-foreground">Maximum height</dt>
         <dd>{values.maxHeightMm ? `${values.maxHeightMm} mm` : "Not set"}</dd>
         {TRIGGERS.map(([key, label]) => (

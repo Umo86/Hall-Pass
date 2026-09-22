@@ -231,7 +231,7 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
           value={q}
           onChange={(e) => setQ(e.target.value || null)}
           placeholder="Search ref, name, location…"
-          className="h-8 w-64"
+          className="h-8 w-full sm:w-64"
         />
         <select
           value={status}
@@ -263,7 +263,7 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm">
-                <Columns3 className="size-4" /> Columns
+                <Columns3 className="size-4" /> <span className="hidden sm:inline">Columns</span>
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
@@ -287,14 +287,14 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
             size="sm"
             onClick={() => setView("table")}
           >
-            <Table2 className="size-4" /> Table
+            <Table2 className="size-4" /> <span className="hidden sm:inline">Table</span>
           </Button>
           <Button
             variant={view === "kanban" ? "secondary" : "outline"}
             size="sm"
             onClick={() => setView("kanban")}
           >
-            <Kanban className="size-4" /> Kanban
+            <Kanban className="size-4" /> <span className="hidden sm:inline">Kanban</span>
           </Button>
           {canEdit && (
             <Button size="sm" asChild>

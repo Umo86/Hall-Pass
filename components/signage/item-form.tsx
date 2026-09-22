@@ -111,9 +111,22 @@ export function ItemForm({
   const locationChoices = options.locations.filter((l) => !hallId || l.hallId === hallId);
   const entitlementChoices = options.entitlements.filter((e) => e.sponsorId === sponsorId);
 
+  const costsOpen = Boolean(
+    values.budgetLine ?? values.costEstimate ?? values.costActual ?? values.poNumber ?? values.supplierId,
+  );
+  const datesOpen = Boolean(
+    values.artworkDueOverride ??
+      values.printDeadline ??
+      values.deliveryDate ??
+      values.installDate ??
+      values.installSlot ??
+      values.installContractorId,
+  );
+
   return (
-    <form onSubmit={onSubmit} className="grid max-w-4xl gap-4">
+    <form onSubmit={onSubmit} className="grid max-w-4xl gap-5">
       <section className="grid gap-3 sm:grid-cols-2">
+        <h3 className="text-sm font-semibold sm:col-span-2">Basics</h3>
         <div className="space-y-1.5 sm:col-span-2">
           <Label htmlFor="name">Name</Label>
           <Input id="name" name="name" defaultValue={values.name ?? ""} required />
@@ -170,6 +183,7 @@ export function ItemForm({
       </section>
 
       <section className="grid gap-3 sm:grid-cols-3">
+        <h3 className="text-sm font-semibold sm:col-span-3">Physical spec</h3>
         <div className="space-y-1.5">
           <Label htmlFor="widthMm">Width (mm)</Label>
           <Input id="widthMm" name="widthMm" type="number" min="1" defaultValue={values.widthMm ?? ""} />
@@ -219,6 +233,7 @@ export function ItemForm({
       </section>
 
       <section className="grid gap-3 sm:grid-cols-2">
+        <h3 className="text-sm font-semibold sm:col-span-2">Sponsorship &amp; sign-off</h3>
         <div className="space-y-1.5">
           <Label htmlFor="sponsorId">Sponsor</Label>
           <SelectNative
@@ -251,6 +266,18 @@ export function ItemForm({
             ))}
           </SelectNative>
         </div>
+        {mode === "create" && (
+          <div className="space-y-1.5">
+            <Label htmlFor="workflowId">Sign-off workflow</Label>
+            <SelectNative id="workflowId" name="workflowId" defaultValue={options.workflows[0]?.id ?? ""}>
+              {options.workflows.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </SelectNative>
+          </div>
+        )}
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -272,7 +299,11 @@ export function ItemForm({
       </section>
 
       {canSeeCosts && (
-        <section className="grid gap-3 sm:grid-cols-3">
+        <details open={costsOpen} className="rounded-lg border">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-semibold select-none">
+            Costs &amp; purchasing
+          </summary>
+          <section className="grid gap-3 px-4 pb-4 sm:grid-cols-3">
           <div className="space-y-1.5">
             <Label htmlFor="budgetLine">Budget line</Label>
             <Input id="budgetLine" name="budgetLine" defaultValue={values.budgetLine ?? ""} disabled={!canEditCosts} />
@@ -300,10 +331,15 @@ export function ItemForm({
               ))}
             </SelectNative>
           </div>
-        </section>
+          </section>
+        </details>
       )}
 
-      <section className="grid gap-3 sm:grid-cols-3">
+      <details open={datesOpen} className="rounded-lg border">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold select-none">
+          Dates &amp; install
+        </summary>
+        <section className="grid gap-3 px-4 pb-4 sm:grid-cols-3">
         <div className="space-y-1.5">
           <Label htmlFor="artworkDueOverride">Artwork due (override)</Label>
           <Input id="artworkDueOverride" name="artworkDueOverride" type="date" defaultValue={values.artworkDueOverride ?? ""} />
@@ -340,19 +376,8 @@ export function ItemForm({
             ))}
           </SelectNative>
         </div>
-        {mode === "create" && (
-          <div className="space-y-1.5">
-            <Label htmlFor="workflowId">Workflow</Label>
-            <SelectNative id="workflowId" name="workflowId" defaultValue={options.workflows[0]?.id ?? ""}>
-              {options.workflows.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
-            </SelectNative>
-          </div>
-        )}
-      </section>
+        </section>
+      </details>
 
       <div className="flex items-center gap-3">
         <Button type="submit" disabled={pending}>

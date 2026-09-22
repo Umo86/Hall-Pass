@@ -12,7 +12,7 @@ export default async function PortalApprovalsPage() {
   const rows = await pendingInstancesForUser();
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-4 p-6">
+    <div className="mx-auto flex max-w-3xl flex-col gap-4 p-4 sm:p-6">
       <h1 className="text-xl font-semibold tracking-tight">
         My Sign-offs{" "}
         <span className="text-muted-foreground text-base font-normal">

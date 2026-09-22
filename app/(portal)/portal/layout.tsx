@@ -16,9 +16,9 @@ export default async function PortalLayout({ children }: { children: React.React
 
   return (
     <div className="flex min-h-screen flex-col">
-      <header className="bg-background sticky top-0 z-40 flex h-14 items-center gap-6 border-b px-4">
+      <header className="bg-background sticky top-0 z-40 flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 border-b px-3 py-2 sm:gap-6 sm:px-4">
         <Wordmark name={session.organisation.brandName} size="sm" />
-        <nav className="flex items-center gap-4 text-sm" aria-label="Portal navigation">
+        <nav className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm" aria-label="Portal navigation">
           <Link href="/portal/approvals" className="text-muted-foreground hover:text-foreground">
             My Sign-offs
           </Link>
@@ -40,7 +40,7 @@ export default async function PortalLayout({ children }: { children: React.React
           <SignOutButton />
         </div>
       </header>
-      <div className="mx-auto w-full max-w-5xl px-6 pt-6">
+      <div className="mx-auto w-full max-w-5xl px-4 pt-4 sm:px-6 sm:pt-6">
         <Scene
           kind="stand"
           photo={brandImage("portal")}

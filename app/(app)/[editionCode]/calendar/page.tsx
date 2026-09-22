@@ -137,7 +137,7 @@ export default async function CalendarPage({
   const buildMonth = parseMonthParam(edition.buildStart.slice(0, 7), today);
 
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <div className="flex flex-col gap-4 p-4 sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Calendar</h1>

@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { ChevronsUpDown } from "lucide-react";
+import { editionCodeFromPath } from "@/lib/edition-path";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -14,17 +15,15 @@ import {
 
 export type EditionOption = { code: string; name: string; status: string };
 
-const RESERVED = ["editions", "approvals", "settings", "portal", "login", "invite", "q", "api"];
-
 export function EditionSwitcher({ editions }: { editions: EditionOption[] }) {
   const pathname = usePathname();
   const router = useRouter();
-  const first = pathname.split("/").filter(Boolean)[0];
+  const first = editionCodeFromPath(pathname);
   const current =
     editions.find((e) => e.code === first) ?? editions.find((e) => e.status !== "archived");
 
   function go(code: string) {
-    if (first && !RESERVED.includes(first)) {
+    if (first) {
       router.push(pathname.replace(`/${first}`, `/${code}`));
     } else {
       router.push(`/${code}/dashboard`);

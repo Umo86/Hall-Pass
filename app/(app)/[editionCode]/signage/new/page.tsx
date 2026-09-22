@@ -51,7 +51,7 @@ export default async function NewItemPage({
     ]);
 
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <div className="flex flex-col gap-4 p-4 sm:p-6">
       <h1 className="text-xl font-semibold tracking-tight">New signage item</h1>
       <ItemForm
         mode="create"

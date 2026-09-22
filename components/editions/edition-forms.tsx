@@ -77,7 +77,7 @@ export function CreateEditionDialog({
             });
           }}
         >
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="eventId">Event</Label>
               <select
@@ -109,7 +109,7 @@ export function CreateEditionDialog({
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="name">Name</Label>
               <Input id="name" name="name" placeholder="UKCW London 2027" required />
@@ -119,7 +119,7 @@ export function CreateEditionDialog({
               <Input id="code" name="code" placeholder="LON27" required />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <DateField label="Build start" name="buildStart" />
             <DateField label="Build end" name="buildEnd" />
             <DateField label="Open start" name="openStart" />
@@ -195,7 +195,7 @@ export function CloneEditionDialog({ editions }: { editions: EditionOption[] }) 
               ))}
             </select>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="clone-name">New name</Label>
               <Input id="clone-name" name="name" required />
@@ -205,7 +205,7 @@ export function CloneEditionDialog({ editions }: { editions: EditionOption[] }) 
               <Input id="clone-code" name="code" required />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <DateField label="Build start" name="buildStart" />
             <DateField label="Build end" name="buildEnd" />
             <DateField label="Open start" name="openStart" />

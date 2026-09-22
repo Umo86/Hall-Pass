@@ -27,7 +27,7 @@ export default async function SignagePage({
     .where(eq(suppliers.organisationId, session.organisation.id));
 
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <div className="flex flex-col gap-4 p-4 sm:p-6">
       <h1 className="text-xl font-semibold tracking-tight">
         Signage schedule{" "}
         <span className="text-muted-foreground text-base font-normal">

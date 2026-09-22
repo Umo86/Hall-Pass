@@ -202,7 +202,7 @@ export default async function ItemDetailPage({
   };
 
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <div className="flex flex-col gap-4 p-4 sm:p-6">
       <div className="flex flex-wrap items-center gap-3">
         <div>
           <p className="text-muted-foreground text-xs">
@@ -325,7 +325,7 @@ export default async function ItemDetailPage({
         ))}
 
       {tab === "production" && (
-        <dl className="grid max-w-2xl grid-cols-2 gap-x-6 gap-y-3 text-sm">
+        <dl className="grid max-w-2xl grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
           <dt className="text-muted-foreground">Supplier</dt>
           <dd>{supplierRows.find((s) => s.id === item.supplierId)?.name ?? "—"}</dd>
           {canSeeCosts && (
@@ -353,7 +353,7 @@ export default async function ItemDetailPage({
 
       {tab === "install" && (
         <div className="max-w-2xl space-y-4 text-sm">
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-3">
+          <dl className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
             <dt className="text-muted-foreground">Install date</dt>
             <dd>
               {formatDate(item.installDate)}

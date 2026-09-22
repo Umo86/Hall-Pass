@@ -21,7 +21,7 @@ export default async function ApprovalsPage({
   const filtered = overdue === "1" ? rows.filter((r) => r.isOverdue) : rows;
 
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <div className="flex flex-col gap-4 p-4 sm:p-6">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold tracking-tight">My Sign-offs</h1>
         <span className="text-muted-foreground text-sm">

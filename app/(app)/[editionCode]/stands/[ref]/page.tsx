@@ -121,7 +121,7 @@ export default async function StandDetailPage({
   );
 
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="flex flex-col gap-6 p-4 sm:p-6">
       <div className="flex flex-wrap items-center gap-3">
         <div>
           <p className="text-muted-foreground text-xs">

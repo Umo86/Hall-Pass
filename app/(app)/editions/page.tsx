@@ -21,7 +21,7 @@ export default async function EditionsPage() {
   const canManage = can(session.actor, { type: "settings.manage" });
 
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <div className="flex flex-col gap-4 p-4 sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold tracking-tight">Editions</h1>
         {canManage && (
