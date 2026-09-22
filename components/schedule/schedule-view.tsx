@@ -340,9 +340,10 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
           ))}
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border">
+        <div className="max-h-[70vh] overflow-auto rounded-lg border">
           <table className="w-full text-sm">
-            <thead className="bg-muted/50 sticky top-0">
+            {/* Opaque header: rows scroll underneath it inside the capped box. */}
+            <thead className="bg-muted sticky top-0 z-10">
               {table.getHeaderGroups().map((hg) => (
                 <tr key={hg.id} className="border-b text-left">
                   {hg.headers.map((h) => (
@@ -395,7 +396,7 @@ function SimpleTable({
   canSeeCosts: boolean;
 }) {
   return (
-    <div className="overflow-x-auto rounded-lg border">
+    <div className="max-h-[70vh] overflow-auto rounded-lg border">
       <table className="w-full text-sm">
         <tbody>
           {rows.map((r) => (
