@@ -68,7 +68,7 @@ export async function devSignIn(input: unknown): Promise<AuthResult> {
       summary: `${user.email} signed in (development)`,
     });
   });
-  redirect(membership ? "/" : "/portal/approvals");
+  redirect(membership ? "/editions" : "/portal/approvals");
 }
 
 export async function signOut(): Promise<void> {

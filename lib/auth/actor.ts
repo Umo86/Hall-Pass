@@ -113,18 +113,21 @@ export async function getSession(): Promise<Session | null> {
     const {
       data: { user },
     } = await supabase.auth.getUser();
-    if (!user) return null;
-    const existing = await loadSessionForUserId(user.id);
-    if (existing) return existing;
-    // First sign-in: create the app user row keyed by the auth uid.
-    if (user.email) {
-      await db
-        .insert(users)
-        .values({ id: user.id, email: user.email, fullName: "" })
-        .onConflictDoNothing();
-      return loadSessionForUserId(user.id);
+    if (user) {
+      const existing = await loadSessionForUserId(user.id);
+      if (existing) return existing;
+      // First sign-in: create the app user row keyed by the auth uid.
+      if (user.email) {
+        await db
+          .insert(users)
+          .values({ id: user.id, email: user.email, fullName: "" })
+          .onConflictDoNothing();
+        return loadSessionForUserId(user.id);
+      }
+      return null;
     }
-    return null;
+    // No Supabase user: fall through — DEV_AUTH=1 keeps the dev cookie
+    // usable even with Supabase configured, so demos are never locked out.
   }
   if (devAuthEnabled()) {
     const store = await cookies();
