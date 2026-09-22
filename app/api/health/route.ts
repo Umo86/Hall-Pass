@@ -28,7 +28,7 @@ export async function GET() {
     } catch (err) {
       database = "unreachable";
       const { describeDbError } = await import("@/lib/db/diagnose");
-      databaseError = describeDbError(err);
+      databaseError = describeDbError(err, process.env.DATABASE_URL);
     }
   }
   const auth = devAuthEnabled() ? "demo" : supabaseConfigured() ? "supabase" : "none";

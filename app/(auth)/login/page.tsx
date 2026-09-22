@@ -56,7 +56,7 @@ export default async function LoginPage() {
       databaseReachable = true;
     } catch (err) {
       const { describeDbError } = await import("@/lib/db/diagnose");
-      databaseError = describeDbError(err);
+      databaseError = describeDbError(err, process.env.DATABASE_URL);
     }
   }
 
