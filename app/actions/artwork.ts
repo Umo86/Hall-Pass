@@ -12,7 +12,8 @@ import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { INVALIDATABLE_STATUSES, signageTransition } from "@/lib/status/signage";
 import { invalidateOnNewVersion } from "@/lib/workflow";
 import { loadRun, persistRun } from "@/lib/workflow/persist";
-import { buildStoragePath, putObject, sha256Hex } from "@/lib/storage";
+import { z } from "zod";
+import { buildStoragePath, getObject, putObject, sha256Hex } from "@/lib/storage";
 import { notify } from "@/lib/notify";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import {
@@ -123,6 +124,65 @@ export async function uploadArtwork(
     sha256,
     previewPath,
     notes: typeof notes === "string" && notes.trim() ? notes.trim() : null,
+  });
+}
+
+/**
+ * Records a version that the browser uploaded straight to Vercel Blob
+ * (multi-gigabyte files never pass through the server). The token route
+ * already authorised the write; this re-checks and creates the version row.
+ */
+const uploadedSchema = z.object({
+  itemId: z.string().uuid(),
+  fileName: z.string().min(1).max(300),
+  pathname: z.string().min(1).max(1000),
+  mimeType: z.string().max(200),
+  fileSize: z.number().int().positive(),
+  sha256: z.string(),
+  notes: z.string().max(2000).optional(),
+});
+
+export async function recordUploadedArtwork(
+  rawInput: unknown,
+): Promise<ActionResult<{ version: number }>> {
+  const parsed = uploadedSchema.safeParse(rawInput);
+  if (!parsed.success) return fail("Invalid upload details");
+  const input = parsed.data;
+  const session = await requireSession();
+  const bundle = await loadItemBundle(db, input.itemId);
+  if (!bundle || bundle.item.deletedAt) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
+  if (!can(session.actor, { type: "artwork.upload", item: itemAuthzCtx(bundle) })) {
+    return fail("You cannot upload artwork for this item");
+  }
+  const prefix = `artwork/${bundle.organisation.id}/${bundle.edition.id}/signage_item/${bundle.item.id}/`;
+  if (!input.pathname.startsWith(prefix) || input.pathname.includes("..")) {
+    return fail("Invalid upload path");
+  }
+  if (!/^[0-9a-f]{64}$/.test(input.sha256)) return fail("Invalid file hash");
+  const storagePath = input.pathname.slice("artwork/".length);
+  let uploaded: Buffer | null = null;
+  try {
+    uploaded = input.fileSize <= 32 * 1024 * 1024 ? await getObject("artwork", storagePath) : null;
+  } catch {
+    return fail("The uploaded file could not be found — try the upload again");
+  }
+  let previewPath: string | null = null;
+  if (uploaded) {
+    const preview = await generatePreview(uploaded, input.mimeType);
+    if (preview) {
+      previewPath = `${storagePath}.preview.webp`;
+      await putObject("artwork", previewPath, preview);
+    }
+  }
+  return recordArtworkVersion(session, bundle, {
+    filePath: storagePath,
+    fileName: input.fileName,
+    mimeType: input.mimeType || "application/octet-stream",
+    fileSize: input.fileSize,
+    sha256: input.sha256,
+    previewPath,
+    notes: input.notes?.trim() ? input.notes.trim() : null,
   });
 }
 

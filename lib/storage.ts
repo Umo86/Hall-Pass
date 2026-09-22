@@ -1,9 +1,12 @@
 /**
- * File storage abstraction. Production uses Supabase Storage private buckets
- * with signed URLs; when Supabase is not configured the local-filesystem
- * backend keeps development and demo deployments working (files under
- * .data/uploads, served through an authenticated route). Paths follow
- * {organisation_id}/{edition_id}/{entity_type}/{entity_id}/{uuid}-{name}.
+ * File storage abstraction, in priority order:
+ *  1. Vercel Blob when BLOB_READ_WRITE_TOKEN is set — pathnames are
+ *     {bucket}/{storagePath}, URLs are unguessable (every path carries a
+ *     uuid segment) and downloads are served straight from the blob CDN.
+ *  2. Supabase Storage private buckets with signed URLs.
+ *  3. Local filesystem (development/demo), files under .data/uploads served
+ *     through the authenticated /api/files route.
+ * Paths follow {organisation_id}/{edition_id}/{entity_type}/{entity_id}/{uuid}-{name}.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -13,6 +16,17 @@ import { createClient } from "@supabase/supabase-js";
 export type Bucket = "artwork" | "documents" | "photos" | "floorplans" | "exports";
 
 const LOCAL_ROOT = path.join(process.cwd(), ".data", "uploads");
+
+export function blobEnabled(): boolean {
+  return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+}
+
+async function blobUrlFor(bucket: Bucket, storagePath: string): Promise<string> {
+  const { list } = await import("@vercel/blob");
+  const { blobs } = await list({ prefix: `${bucket}/${storagePath}`, limit: 1 });
+  if (!blobs[0]) throw new Error(`Blob not found: ${bucket}/${storagePath}`);
+  return blobs[0].url;
+}
 
 function supabaseAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -49,6 +63,15 @@ export function sha256Hex(data: Buffer | string): string {
 
 /** Store a file server-side (used by direct uploads and export generation). */
 export async function putObject(bucket: Bucket, storagePath: string, data: Buffer): Promise<void> {
+  if (blobEnabled()) {
+    const { put } = await import("@vercel/blob");
+    await put(`${bucket}/${storagePath}`, data, {
+      access: "public",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+    });
+    return;
+  }
   const supabase = supabaseAdmin();
   if (supabase) {
     const { error } = await supabase.storage
@@ -63,6 +86,11 @@ export async function putObject(bucket: Bucket, storagePath: string, data: Buffe
 }
 
 export async function getObject(bucket: Bucket, storagePath: string): Promise<Buffer> {
+  if (blobEnabled()) {
+    const res = await fetch(await blobUrlFor(bucket, storagePath));
+    if (!res.ok) throw new Error(`Blob download failed: ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
   const supabase = supabaseAdmin();
   if (supabase) {
     const { data, error } = await supabase.storage.from(bucket).download(storagePath);
@@ -78,6 +106,7 @@ export async function getObject(bucket: Bucket, storagePath: string): Promise<Bu
  * /api/files route.
  */
 export async function getDownloadUrl(bucket: Bucket, storagePath: string): Promise<string> {
+  if (blobEnabled()) return blobUrlFor(bucket, storagePath);
   const supabase = supabaseAdmin();
   if (supabase) {
     const { data, error } = await supabase.storage
@@ -95,6 +124,7 @@ export async function getDownloadUrl(bucket: Bucket, storagePath: string): Promi
  * content type. Supabase signed URLs already carry the stored content type.
  */
 export async function getInlineUrl(bucket: Bucket, storagePath: string): Promise<string> {
+  if (blobEnabled()) return blobUrlFor(bucket, storagePath);
   const supabase = supabaseAdmin();
   if (supabase) return getDownloadUrl(bucket, storagePath);
   return `/api/files/${bucket}/${storagePath}?inline=1`;

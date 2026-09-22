@@ -26,7 +26,7 @@ import {
   getItemVersions,
 } from "@/lib/queries/signage";
 import { artworkInvalidationPreview } from "@/app/actions/artwork";
-import { getDownloadUrl, getInlineUrl } from "@/lib/storage";
+import { blobEnabled, getDownloadUrl, getInlineUrl } from "@/lib/storage";
 import { formatDate, formatDateTime, formatMoney, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import { ApprovalChain, type ChainInstance } from "@/components/approvals/chain";
@@ -296,6 +296,11 @@ export default async function ItemDetailPage({
           invalidationCount={invalidation.count}
           invalidationSteps={invalidation.steps}
           uploadBlocked={uploadBlocked}
+          uploadPrefix={
+            blobEnabled()
+              ? `artwork/${bundle.organisation.id}/${bundle.edition.id}/signage_item/${item.id}/`
+              : null
+          }
         />
       )}
 

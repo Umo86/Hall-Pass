@@ -4,7 +4,7 @@ import postgres from "postgres";
 import "dotenv/config";
 
 async function main() {
-  const url = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
+  const url = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL_UNPOOLED ?? process.env.POSTGRES_URL_NON_POOLING ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
   if (!url) throw new Error("DIRECT_DATABASE_URL (or DATABASE_URL) is not set");
   const client = postgres(url, { max: 1, prepare: false });
   const db = drizzle(client);

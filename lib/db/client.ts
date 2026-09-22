@@ -3,16 +3,27 @@ import postgres from "postgres";
 import * as schema from "./schema";
 
 /**
- * Server-only Postgres client. Prefers DATABASE_URL (the pooled, transaction
- * mode connection) but self-heals: when DATABASE_URL and DIRECT_DATABASE_URL
- * are both set and only the direct one is reachable, it runs on the direct
- * connection instead, so one mistyped URI does not take the platform down.
- * Lazily initialised so importing this module during a build without any
- * database variables does not crash; the first query needs one set.
+ * Server-only Postgres client. Works with any plain Postgres: Vercel
+ * Postgres/Neon (whose integration injects POSTGRES_URL and friends),
+ * Supabase poolers, or a local database. Candidates are tried in order and
+ * the first reachable one wins, so one mistyped or stale URI does not take
+ * the platform down. Lazily initialised so importing this module during a
+ * build without any database variables does not crash; the first query
+ * needs one set.
  */
 type DrizzleDb = ReturnType<typeof drizzle<typeof schema>>;
 
-export type DatabaseSource = "DATABASE_URL" | "DIRECT_DATABASE_URL";
+// Priority order: our own names first, then what Vercel's database
+// integrations inject automatically.
+const CANDIDATE_VARS = [
+  "DATABASE_URL",
+  "DIRECT_DATABASE_URL",
+  "POSTGRES_URL",
+  "DATABASE_URL_UNPOOLED",
+  "POSTGRES_URL_NON_POOLING",
+] as const;
+
+export type DatabaseSource = (typeof CANDIDATE_VARS)[number];
 
 async function reachable(url: string): Promise<boolean> {
   const probe = postgres(url, { max: 1, prepare: false, connect_timeout: 8 });
@@ -27,19 +38,25 @@ async function reachable(url: string): Promise<boolean> {
 }
 
 async function resolveConnection(): Promise<{ url: string; source: DatabaseSource } | null> {
-  const primary = process.env.DATABASE_URL;
-  const fallback = process.env.DIRECT_DATABASE_URL;
-  if (!primary) return fallback ? { url: fallback, source: "DIRECT_DATABASE_URL" } : null;
-  if (!fallback || fallback === primary) return { url: primary, source: "DATABASE_URL" };
-  if (await reachable(primary)) return { url: primary, source: "DATABASE_URL" };
-  if (await reachable(fallback)) {
-    console.warn(
-      "DATABASE_URL is unreachable — falling back to DIRECT_DATABASE_URL. Fix DATABASE_URL (Supabase transaction pooler, port 6543) for pooled connections.",
-    );
-    return { url: fallback, source: "DIRECT_DATABASE_URL" };
+  const candidates: Array<{ url: string; source: DatabaseSource }> = [];
+  for (const name of CANDIDATE_VARS) {
+    const url = process.env[name];
+    if (url && !candidates.some((c) => c.url === url)) candidates.push({ url, source: name });
   }
-  // Neither answers: keep the primary so its error surfaces in diagnostics.
-  return { url: primary, source: "DATABASE_URL" };
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  for (const candidate of candidates) {
+    if (await reachable(candidate.url)) {
+      if (candidate !== candidates[0]) {
+        console.warn(
+          `${candidates[0].source} is unreachable — running on ${candidate.source} instead. Fix or remove the stale variable when convenient.`,
+        );
+      }
+      return candidate;
+    }
+  }
+  // Nothing answers: keep the first so its error surfaces in diagnostics.
+  return candidates[0];
 }
 
 const resolved = await resolveConnection();

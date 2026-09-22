@@ -1,5 +1,8 @@
 -- ---------------------------------------------------------------------------
--- Hall Pass database setup for the Supabase SQL Editor.
+-- Hall Pass database setup. Runs on any plain Postgres: paste it into the
+-- SQL editor of Vercel Postgres/Neon (or Supabase), or run it with psql.
+-- Creates the full schema (with row-level security and the append-only
+-- audit trigger) and loads the UKCW Birmingham 2027 demo data.
 -- RE-RUNNABLE: this preamble removes everything the script creates, so it is
 -- safe to run again after a partial or failed earlier attempt. It only drops
 -- Hall Pass objects (and the drizzle bookkeeping schema) — nothing else.

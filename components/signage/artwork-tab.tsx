@@ -15,7 +15,18 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status-badge";
 import { formatDateTime } from "@/lib/format";
-import { uploadArtwork } from "@/app/actions/artwork";
+import { recordUploadedArtwork, uploadArtwork } from "@/app/actions/artwork";
+
+/** Streaming SHA-256 so multi-gigabyte files hash without loading into memory. */
+async function sha256OfFile(file: File): Promise<string> {
+  const { createSHA256 } = await import("hash-wasm");
+  const hasher = await createSHA256();
+  const chunk = 8 * 1024 * 1024;
+  for (let offset = 0; offset < file.size; offset += chunk) {
+    hasher.update(new Uint8Array(await file.slice(offset, offset + chunk).arrayBuffer()));
+  }
+  return hasher.digest("hex");
+}
 
 export type VersionRow = {
   id: string;
@@ -69,6 +80,7 @@ export function ArtworkTab({
   invalidationCount,
   invalidationSteps,
   uploadBlocked,
+  uploadPrefix = null,
 }: {
   itemId: string;
   versions: VersionRow[];
@@ -76,12 +88,15 @@ export function ArtworkTab({
   invalidationCount: number;
   invalidationSteps: string[];
   uploadBlocked: string | null;
+  /** Set when Vercel Blob is configured: enables direct browser uploads. */
+  uploadPrefix?: string | null;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [notes, setNotes] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
 
@@ -92,23 +107,61 @@ export function ArtworkTab({
   const left = versions.find((v) => v.id === leftId) ?? versions[1] ?? current;
   const right = versions.find((v) => v.id === rightId) ?? current;
 
+  function done() {
+    setFile(null);
+    setNotes("");
+    setConfirmOpen(false);
+    setProgress(null);
+    if (fileRef.current) fileRef.current.value = "";
+    router.refresh();
+  }
+
   function doUpload() {
     if (!file) return;
-    const fd = new FormData();
-    fd.set("itemId", itemId);
-    fd.set("file", file);
-    fd.set("notes", notes);
     setError(null);
     start(async () => {
+      if (uploadPrefix) {
+        // Browser → Vercel Blob directly, so gigabyte files skip the server.
+        try {
+          setProgress("Preparing…");
+          const sha256 = await sha256OfFile(file);
+          const clean = file.name.replace(/[^\w.-]+/g, "_").slice(0, 120);
+          const pathname = `${uploadPrefix}${crypto.randomUUID()}-${clean}`;
+          const { upload } = await import("@vercel/blob/client");
+          await upload(pathname, file, {
+            access: "public",
+            handleUploadUrl: "/api/blob/upload",
+            clientPayload: JSON.stringify({ itemId }),
+            multipart: file.size > 50 * 1024 * 1024,
+            onUploadProgress: ({ percentage }) => setProgress(`Uploading ${percentage}%`),
+          });
+          setProgress("Recording version…");
+          const res = await recordUploadedArtwork({
+            itemId,
+            fileName: file.name,
+            pathname,
+            mimeType: file.type || "application/octet-stream",
+            fileSize: file.size,
+            sha256,
+            notes,
+          });
+          if (!res.ok) {
+            setError(res.error);
+            setProgress(null);
+          } else done();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Upload failed");
+          setProgress(null);
+        }
+        return;
+      }
+      const fd = new FormData();
+      fd.set("itemId", itemId);
+      fd.set("file", file);
+      fd.set("notes", notes);
       const res = await uploadArtwork(fd);
       if (!res.ok) setError(res.error);
-      else {
-        setFile(null);
-        setNotes("");
-        setConfirmOpen(false);
-        if (fileRef.current) fileRef.current.value = "";
-        router.refresh();
-      }
+      else done();
     });
   }
 
@@ -142,6 +195,7 @@ export function ArtworkTab({
               </Button>
             </div>
           )}
+          {progress && <p className="text-muted-foreground mt-2 text-sm">{progress}</p>}
           {error && <p className="text-destructive mt-2 text-sm">{error}</p>}
         </div>
       )}

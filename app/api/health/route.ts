@@ -21,9 +21,8 @@ export async function GET() {
       );
       database = "ok";
       seeded = Number(rows[0]?.n ?? 0) > 0;
-      if (databaseVia === "DIRECT_DATABASE_URL") {
-        databaseError =
-          "Running on DIRECT_DATABASE_URL because DATABASE_URL is unreachable — sign-in works, but fix DATABASE_URL (transaction pooler, port 6543) when convenient.";
+      if (databaseVia && databaseVia !== "DATABASE_URL") {
+        databaseError = `Running on ${databaseVia} because an earlier database variable is unreachable — everything works, but remove or fix the stale variable when convenient.`;
       }
     } catch (err) {
       database = "unreachable";
@@ -40,11 +39,11 @@ export async function GET() {
       ...(databaseError ? { databaseError } : {}),
       seeded,
       auth,
-      storage: Boolean(
-        process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY,
-      )
-        ? "supabase"
-        : "local",
+      storage: process.env.BLOB_READ_WRITE_TOKEN
+        ? "vercel-blob"
+        : Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY)
+          ? "supabase"
+          : "local",
       email: process.env.RESEND_API_KEY ? "resend" : "logged-only",
       cron: Boolean(process.env.CRON_SECRET),
     },

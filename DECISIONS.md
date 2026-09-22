@@ -17,3 +17,16 @@ A one-line log of choices made where the build brief is silent, with the reason.
 | 2026-09-17 | shadcn/ui components vendored by hand (registry blocked)       | The build environment's egress proxy denies ui.shadcn.com, so `components.json`, the theme tokens and the base components were written manually from the standard shadcn sources; behaviourally identical, future components added the same way. |
 | 2026-09-17 | Cron endpoint accepts GET and POST                             | Vercel Cron invokes with GET while the brief specifies POST; both are served by the same handler behind the same `CRON_SECRET` bearer check.                                                                                                     |
 | 2026-09-17 | Initial planning docs pushed straight to `main`                | The repository was empty with no default branch yet.                                                                                                                                                                                             |
+
+## Vercel-first infrastructure (2026-09-22)
+The platform now targets Vercel end to end at the owner's request: Vercel
+Postgres (Neon) for the database and Vercel Blob for files. The db client
+accepts the integration's injected variables (POSTGRES_URL etc.) and probes
+candidates in order, so attaching the store needs no manual env work.
+Large artwork uploads go browser → Blob directly (2 GB cap, streaming
+SHA-256 in the browser, token route scoped to the item's folder) because
+serverless request bodies cap at ~4.5 MB. Blob URLs are public-but-
+unguessable (uuid path segments, no store listing); the app never renders
+them outside authenticated pages — accepted for an internal tool, revisit
+if artwork becomes sensitive. Supabase remains a supported alternative;
+supabase-setup.sql was renamed database-setup.sql and runs on any Postgres.

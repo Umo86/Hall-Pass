@@ -43,24 +43,33 @@ pnpm test:e2e                              # Playwright (needs the seeded DB; DE
 pnpm build
 ```
 
-## Deploying to Vercel
+## Deploying to Vercel (all-Vercel setup)
 
-1. Import `Umo86/Hall-Pass` at [vercel.com/new](https://vercel.com/new); name the project `hall-pass` for the `hall-pass.vercel.app` subdomain.
-2. Create a **Supabase** project. In Vercel, set the environment variables from `.env.example`:
-   - `DATABASE_URL` — Supabase **pooled** connection string (transaction mode)
-   - `DIRECT_DATABASE_URL` — Supabase direct connection string
-   - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
-   - `NEXT_PUBLIC_APP_URL` — e.g. `https://hall-pass.vercel.app`
+1. Import `Umo86/Hall-Pass` at [vercel.com/new](https://vercel.com/new).
+2. **Database** — in the project's **Storage** tab, create/connect a **Postgres (Neon)**
+   database. The integration injects `DATABASE_URL` and friends automatically; the app
+   accepts any of `DATABASE_URL`, `DIRECT_DATABASE_URL`, `POSTGRES_URL`,
+   `DATABASE_URL_UNPOOLED`, `POSTGRES_URL_NON_POOLING` and uses the first reachable one.
+3. **Schema + demo data** — open the database's SQL editor (Storage tab → Open in Neon →
+   SQL Editor), paste the whole of `database-setup.sql` (repo root; re-runnable) and run it.
+4. **Files** — in the Storage tab, also create a **Blob** store. Its
+   `BLOB_READ_WRITE_TOKEN` is injected automatically; uploads then persist in Vercel Blob,
+   with large artwork going browser → Blob directly (up to 2 GB per file). Without it,
+   uploads fall back to the serverless filesystem, which does not persist.
+5. Remaining env vars (Settings → Environment Variables):
+   - `DEV_AUTH=1` — demo sign-in (one-click seeded users)
    - `CRON_SECRET` — any long random string (Vercel Cron sends it automatically)
-   - `RESEND_API_KEY` + `EMAIL_FROM` — for transactional email (optional; sends are logged as failed until set)
-   - Optional for a keyless demo: set only `DATABASE_URL`/`DIRECT_DATABASE_URL` and `DEV_AUTH=1` to use development sign-in.
-3. Set up the database — either run `supabase-setup.sql` (checked into the repo root: full schema, RLS, triggers and demo seed, verified against a clean Postgres 16) in the Supabase **SQL Editor**, or run migrations and seed from your machine:
-   ```bash
-   DIRECT_DATABASE_URL=postgres://... pnpm db:migrate
-   DIRECT_DATABASE_URL=postgres://... pnpm db:seed
-   ```
-4. In Supabase Storage, create private buckets: `artwork`, `documents`, `photos`, `floorplans`, `exports`.
-5. Deploy. `vercel.json` schedules the daily cron at 06:00 UTC (07:00 BST); the handler computes "today" in Europe/London so clock changes don't break it.
+   - `RESEND_API_KEY` + `EMAIL_FROM` — transactional email (optional; sends are logged until set)
+   - `NEXT_PUBLIC_APP_URL` — optional; auto-detected from the Vercel domain when unset
+6. Redeploy. `vercel.json` schedules the daily cron at 06:00 UTC (07:00 BST); the handler
+   computes "today" in Europe/London so clock changes don't break it. Verify at
+   `/api/health` — it should return `"ok":true` and states which database variable and
+   storage backend are active.
+
+Supabase remains supported as an alternative (its pooler URIs in `DATABASE_URL`/
+`DIRECT_DATABASE_URL`, Storage private buckets named `artwork`, `documents`, `photos`,
+`floorplans`, `exports`, and `NEXT_PUBLIC_SUPABASE_URL` + publishable key for real email
+sign-in). `database-setup.sql` runs unchanged in its SQL editor.
 
 ## Imagery
 
