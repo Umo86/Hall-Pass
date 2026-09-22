@@ -52,6 +52,7 @@ export function itemAuthzCtx(bundle: ItemBundle): SignageItemCtx {
   return {
     editionId: bundle.edition.id,
     venueId: bundle.venue.id,
+    kind: bundle.item.kind,
     ownerUserId: bundle.item.ownerUserId,
     sponsorId: bundle.item.sponsorId,
     supplierId: bundle.item.supplierId,

@@ -27,11 +27,30 @@ export type GrantInfo = {
   revokedAt: Date | null;
 };
 
+/**
+ * Abilities an admin can grant or remove per user on top of the role
+ * defaults. Precedence: admins ignore overrides entirely; an explicit
+ * true/false wins over the role default; anything else falls back to the
+ * role. `approval.decide: true` never bypasses step assignment — it can only
+ * be used to remove the ability. `users.manage` is deliberately not
+ * overridable (no privilege-escalation path).
+ */
+export const OVERRIDE_KEYS = [
+  "signage.create",
+  "sponsorship.create",
+  "costs.edit",
+  "approval.decide",
+  "settings.manage",
+] as const;
+export type OverrideKey = (typeof OVERRIDE_KEYS)[number];
+export type PermissionOverrides = Partial<Record<OverrideKey, boolean>>;
+
 export type StaffActor = {
   kind: "staff";
   userId: string;
   organisationId: string;
   role: StaffRole;
+  overrides?: PermissionOverrides;
 };
 
 export type ExternalActor = {
@@ -47,11 +66,18 @@ export type Actor = StaffActor | ExternalActor;
 export type SignageItemCtx = {
   editionId: string;
   venueId: string;
+  kind?: "signage" | "sponsorship_item";
   ownerUserId?: string | null;
   sponsorId?: string | null;
   supplierId?: string | null;
   requiresVenueApproval?: boolean;
   status?: string;
+};
+
+/** A personal task, reduced to the fields authorisation depends on. */
+export type TaskCtx = {
+  assignedToUserId: string;
+  createdByUserId: string;
 };
 
 export type StandSubmissionCtx = {
@@ -79,6 +105,11 @@ export type Action =
   | { type: "view_edition" }
   | { type: "signage.view"; item: SignageItemCtx }
   | { type: "signage.create" }
+  | { type: "sponsorship.create" }
+  | { type: "task.create" }
+  | { type: "task.assign" }
+  | { type: "task.update"; task: TaskCtx }
+  | { type: "task.delete"; task: TaskCtx }
   | { type: "signage.edit"; item: SignageItemCtx }
   | { type: "signage.delete" }
   | { type: "signage.restore" }
@@ -267,6 +298,23 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
   }
 
   const role = actor.role;
+
+  // Per-user overrides (admins are immune, so an admin can never lock
+  // themselves out). An explicit false always blocks; an explicit true
+  // grants directly — except approval.decide, where step assignment below
+  // still applies, so a true can never let someone decide steps that are
+  // not theirs.
+  if (role !== "admin" && actor.overrides) {
+    const key = (OVERRIDE_KEYS as readonly string[]).includes(action.type)
+      ? (action.type as OverrideKey)
+      : null;
+    if (key != null) {
+      const override = actor.overrides[key];
+      if (override === false) return false;
+      if (override === true && key !== "approval.decide") return true;
+    }
+  }
+
   switch (action.type) {
     case "view_edition":
       return true; // every staff role views all editions and records
@@ -277,9 +325,28 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
 
     case "signage.create":
       return role === "admin" || role === "ops" || role === "marketing";
+    case "sponsorship.create":
+      // Sales sell sponsorship items; ops also manage them.
+      return role === "admin" || role === "ops" || role === "sales";
+
+    case "task.create":
+      return true; // everyone keeps their own to-do list, viewers included
+    case "task.assign":
+      return role !== "viewer";
+    case "task.update":
+      return (
+        role === "admin" ||
+        action.task.assignedToUserId === actor.userId ||
+        action.task.createdByUserId === actor.userId
+      );
+    case "task.delete":
+      return role === "admin" || action.task.createdByUserId === actor.userId;
+
     case "signage.edit":
       if (role === "admin" || role === "ops" || role === "marketing") return true;
-      if (sponsorScopedRoles.includes(role)) return isSponsorItem(action.item);
+      if (sponsorScopedRoles.includes(role)) {
+        return isSponsorItem(action.item) || action.item.kind === "sponsorship_item";
+      }
       return false;
 
     case "signage.delete":
@@ -288,11 +355,17 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
 
     case "artwork.upload":
       if (role === "admin" || role === "ops" || role === "marketing") return true;
-      if (role === "sales") return isSponsorItem(action.item);
+      if (role === "sales") {
+        return isSponsorItem(action.item) || action.item.kind === "sponsorship_item";
+      }
       return false;
 
     case "signage.submit":
-      return role === "admin" || role === "ops" || role === "marketing";
+      if (role === "admin" || role === "ops" || role === "marketing") return true;
+      if (role === "sales") {
+        return isSponsorItem(action.item) || action.item.kind === "sponsorship_item";
+      }
+      return false;
 
     case "approval.decide":
       return staffCanDecide(actor, action.step);

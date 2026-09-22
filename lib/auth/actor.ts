@@ -10,7 +10,7 @@ import {
   users,
   type OrganisationSettings,
 } from "@/lib/db/schema";
-import type { Actor, ExternalActor, StaffActor } from "@/lib/authz";
+import type { Actor, ExternalActor, PermissionOverrides, StaffActor } from "@/lib/authz";
 import { createSupabaseServerClient, supabaseConfigured } from "./supabase-server";
 
 export const DEV_COOKIE = "hp-dev-user";
@@ -61,6 +61,7 @@ async function loadSessionForUser(user: typeof users.$inferSelect): Promise<Sess
       userId: user.id,
       organisationId: org.id,
       role: membership.role,
+      overrides: membership.permissionOverrides as PermissionOverrides,
     };
     return {
       actor,
