@@ -4,12 +4,15 @@ Internal signage schedule and design sign-off platform for exhibitions. One regi
 
 See `PLAN.md` for the build plan and current status, `CLAUDE.md` for conventions and the non-negotiables, and `DECISIONS.md` for choices made where the brief was silent.
 
-## What version 1 includes
+## What the platform includes
 
-- **Signage schedule** — items with refs, full lifecycle (draft → review → approval → production → delivery → install → close, plus hold/reject/reopen), artwork versions with SHA-256 hashes and never-silent invalidation, table and Kanban views with bulk actions, Excel import/export, approval certificate and A6 spec-label PDFs with QR codes.
+- **Signage schedule** — items with refs and a category (directional / venue / sponsorship), full lifecycle (draft → review → approval → production → delivery → install → close, plus hold/reject/reopen), artwork versions with SHA-256 hashes and never-silent invalidation, table and Kanban views with bulk actions, Excel import/export, approval certificate and A6 spec-label PDFs with QR codes.
+- **Sponsorship items** — a separate register for sold deliverables (branded bags, lanyards, venue branding) managed by sales and ops, reusing the same sign-off chain and artwork versioning.
+- **My Work** — every user's personal to-do list (self-created or assigned by colleagues, with due dates and notifications) alongside the sign-offs waiting on them across all editions.
+- **Team management** — admins set each member's role, fine-tune per-user abilities (add signage, add sponsorship items, edit costs, approve, manage settings) and invite staff by email; sign-off steps can be assigned to a role or to any named staff member from Settings.
 - **Stand design approvals** — structure questionnaire with automatic complex-structure classification, required documents with expiry flags, venue-rules checklist, engineer/H&S/venue review chain, exhibitor portal with submit/resubmit.
-- **Shared engine** — configurable workflows with conditions, parallel groups, SLAs, delegation and optimistic locking; My Sign-offs across editions; internal/external comments; notifications with transactional email; daily cron (reminders, escalation, chasers, expiry, digest) with idempotency; append-only audit trail enforced by the database; deny-by-default RLS; external portals scoped per grant.
-- **Tests** — 448 unit tests (authz matrix, status machines, workflow engine, deadlines, DB-backed ref concurrency/RLS/audit-trigger/cron idempotency) and 9 Playwright end-to-end tests.
+- **Shared engine** — configurable workflows with conditions, parallel groups, SLAs, delegation and optimistic locking; creation and assignment notifications with a self-updating bell; internal/external comments; transactional email; daily cron (reminders, escalation, chasers, expiry, digest) with idempotency; append-only audit trail enforced by the database; deny-by-default RLS; external portals scoped per grant; mobile navigation throughout.
+- **Tests** — 512 unit tests (authz + override matrix, status machines, workflow engine, deadlines, DB-backed ref concurrency/RLS/audit-trigger/cron idempotency) and 15 Playwright end-to-end tests.
 
 ## Local development
 

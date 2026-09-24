@@ -30,3 +30,35 @@ unguessable (uuid path segments, no store listing); the app never renders
 them outside authenticated pages — accepted for an internal tool, revisit
 if artwork becomes sensitive. Supabase remains a supported alternative;
 supabase-setup.sql was renamed database-setup.sql and runs on any Postgres.
+
+## v1.5 restructure (2026-09-24)
+At the owner's request the platform was reshaped for ops, sales and
+marketing teams together. The load-bearing choices:
+
+- **Sponsorship items share the signage register** (`signage_items.kind`
+  discriminator) but get their own navigation section. Everything they need
+  — sign-off runs, artwork versions, comments, audit, portal scoping —
+  already hangs off that table; a parallel table would have duplicated all
+  of it for identically-behaving records.
+- **`kind` and `category` are separate columns.** `category`
+  (directional / venue / sponsorship) classifies signage for filtering and
+  sales visibility; `kind` separates the registers. One merged enum would
+  make the schedule filter and the separate section fight each other.
+- **Permissions are role defaults + per-user overrides**
+  (`memberships.permission_overrides`, whitelisted keys in `lib/authz.ts`).
+  Admins are immune, an explicit false always blocks, and an
+  `approval.decide: true` override never bypasses step assignment —
+  it can only remove the ability. `users.manage` is not overridable, so
+  there is no privilege-escalation path.
+- **Staff invites get their own table** (`staff_invites`): a membership row
+  needs the auth uid, which doesn't exist until first sign-in, so the invite
+  carries the role and overrides to apply when the email arrives.
+- **"My Work" reuses the `/approvals` route** rather than a new one, keeping
+  bookmarks, the portal twin and existing tests valid.
+- **The bell polls a count endpoint** (30 s, paused when hidden) and calls
+  `router.refresh()` on change; the dropdown stays server-rendered. No web
+  push or service worker — deliberate, to avoid permission prompts.
+- **Task audit rows use the text `entity_type` column** of `audit_log`;
+  the `entity_type` pg enum was left untouched (task notifications simply
+  leave their nullable entity fields empty), avoiding an ALTER TYPE with
+  transaction-ordering constraints.
