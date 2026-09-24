@@ -248,6 +248,7 @@ export default async function ItemDetailPage({
       {tab === "details" && (
         <ItemForm
           mode="edit"
+          kind={item.kind}
           values={{
             id: item.id,
             name: item.name,

@@ -6,6 +6,7 @@ import {
   CalendarDays,
   ClipboardCheck,
   FileBarChart,
+  Gift,
   HardHat,
   Layers,
   LayoutDashboard,
@@ -38,6 +39,7 @@ export function AppNav({
     ? [
         { label: "Dashboard", href: `/${edition}/dashboard`, icon: LayoutDashboard },
         { label: "Signage", href: `/${edition}/signage`, icon: Signpost },
+        { label: "Sponsorship", href: `/${edition}/sponsorship`, icon: Gift },
         { label: "Stands", href: `/${edition}/stands`, icon: HardHat },
         { label: "Calendar", href: `/${edition}/calendar`, icon: CalendarDays },
         { label: "Reports", href: `/${edition}/reports`, icon: FileBarChart },

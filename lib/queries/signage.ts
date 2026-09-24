@@ -129,6 +129,54 @@ export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]
   }));
 }
 
+export type SponsorshipRow = {
+  id: string;
+  ref: string;
+  name: string;
+  status: string;
+  typeName: string | null;
+  sponsorName: string | null;
+  quantity: number;
+  costEstimate: string | null;
+  artworkDueOverride: string | null;
+  currentVersion: number | null;
+};
+
+/** The sponsorship register: sold deliverables such as bags and lanyards. */
+export async function listSponsorshipRows(editionId: string): Promise<SponsorshipRow[]> {
+  const rows = await db
+    .select({
+      item: signageItems,
+      typeName: itemTypes.name,
+      sponsorName: sponsors.companyName,
+      currentVersion: artworkVersions.versionNumber,
+    })
+    .from(signageItems)
+    .leftJoin(itemTypes, eq(signageItems.itemTypeId, itemTypes.id))
+    .leftJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
+    .leftJoin(artworkVersions, eq(signageItems.currentArtworkVersionId, artworkVersions.id))
+    .where(
+      and(
+        eq(signageItems.editionId, editionId),
+        eq(signageItems.kind, "sponsorship_item"),
+        isNull(signageItems.deletedAt),
+      ),
+    )
+    .orderBy(asc(signageItems.seq));
+  return rows.map((r) => ({
+    id: r.item.id,
+    ref: r.item.ref,
+    name: r.item.name,
+    status: r.item.status,
+    typeName: r.typeName,
+    sponsorName: r.sponsorName,
+    quantity: r.item.quantity,
+    costEstimate: r.item.costEstimate,
+    artworkDueOverride: r.item.artworkDueOverride,
+    currentVersion: r.currentVersion,
+  }));
+}
+
 export async function getItemByRef(ref: string) {
   const [item] = await db.select().from(signageItems).where(eq(signageItems.ref, ref)).limit(1);
   return item ?? null;

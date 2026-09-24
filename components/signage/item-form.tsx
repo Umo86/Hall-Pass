@@ -66,6 +66,7 @@ export function ItemForm({
   canSeeCosts,
   canEditCosts,
   editionCode,
+  kind = "signage",
 }: {
   mode: "create" | "edit";
   values: ItemFormValues;
@@ -73,7 +74,10 @@ export function ItemForm({
   canSeeCosts: boolean;
   canEditCosts: boolean;
   editionCode: string;
+  /** Sponsorship items skip category, location and install fields. */
+  kind?: "signage" | "sponsorship_item";
 }) {
+  const isSponsorship = kind === "sponsorship_item";
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [sponsorId, setSponsorId] = useState(values.sponsorId ?? "");
@@ -95,7 +99,7 @@ export function ItemForm({
     setMessage(null);
     start(async () => {
       if (mode === "create") {
-        const res = await createSignageItem({ ...clean, editionId: values.editionId });
+        const res = await createSignageItem({ ...clean, editionId: values.editionId, kind });
         if (!res.ok) setError(res.error);
         else router.push(`/${editionCode}/signage/${res.data?.ref}`);
       } else {
@@ -136,15 +140,17 @@ export function ItemForm({
           <Label htmlFor="description">Description</Label>
           <Textarea id="description" name="description" defaultValue={values.description ?? ""} />
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="category">Category</Label>
-          <SelectNative id="category" name="category" defaultValue={values.category ?? ""} required>
-            <option value="">— Select —</option>
-            <option value="directional">Directional (wayfinding)</option>
-            <option value="venue">Venue</option>
-            <option value="sponsorship">Sponsorship (sold)</option>
-          </SelectNative>
-        </div>
+        {!isSponsorship && (
+          <div className="space-y-1.5">
+            <Label htmlFor="category">Category</Label>
+            <SelectNative id="category" name="category" defaultValue={values.category ?? ""} required>
+              <option value="">— Select —</option>
+              <option value="directional">Directional (wayfinding)</option>
+              <option value="venue">Venue</option>
+              <option value="sponsorship">Sponsorship (sold)</option>
+            </SelectNative>
+          </div>
+        )}
         <div className="space-y-1.5">
           <Label htmlFor="itemTypeId">Item type</Label>
           <SelectNative id="itemTypeId" name="itemTypeId" defaultValue={values.itemTypeId ?? ""}>
@@ -163,33 +169,37 @@ export function ItemForm({
             <option value="marketing">Marketing</option>
           </SelectNative>
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="hallId">Hall</Label>
-          <SelectNative
-            id="hallId"
-            name="hallId"
-            value={hallId}
-            onChange={(e) => setHallId(e.target.value)}
-          >
-            <option value="">— Select —</option>
-            {options.halls.map((h) => (
-              <option key={h.id} value={h.id}>
-                {h.name}
-              </option>
-            ))}
-          </SelectNative>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="locationId">Location</Label>
-          <SelectNative id="locationId" name="locationId" defaultValue={values.locationId ?? ""}>
-            <option value="">— Select —</option>
-            {locationChoices.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.name}
-              </option>
-            ))}
-          </SelectNative>
-        </div>
+        {!isSponsorship && (
+          <>
+            <div className="space-y-1.5">
+              <Label htmlFor="hallId">Hall</Label>
+              <SelectNative
+                id="hallId"
+                name="hallId"
+                value={hallId}
+                onChange={(e) => setHallId(e.target.value)}
+              >
+                <option value="">— Select —</option>
+                {options.halls.map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.name}
+                  </option>
+                ))}
+              </SelectNative>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="locationId">Location</Label>
+              <SelectNative id="locationId" name="locationId" defaultValue={values.locationId ?? ""}>
+                <option value="">— Select —</option>
+                {locationChoices.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </SelectNative>
+            </div>
+          </>
+        )}
       </section>
 
       <section className="grid gap-3 sm:grid-cols-3">
@@ -288,15 +298,17 @@ export function ItemForm({
             </SelectNative>
           </div>
         )}
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            name="requiresVenueApproval"
-            className="size-4"
-            defaultChecked={values.requiresVenueApproval}
-          />
-          Requires venue approval (always on for rigged items)
-        </label>
+        {!isSponsorship && (
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              name="requiresVenueApproval"
+              className="size-4"
+              defaultChecked={values.requiresVenueApproval}
+            />
+            Requires venue approval (always on for rigged items)
+          </label>
+        )}
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -362,30 +374,34 @@ export function ItemForm({
           <Label htmlFor="deliveryDate">Delivery date</Label>
           <Input id="deliveryDate" name="deliveryDate" type="date" defaultValue={values.deliveryDate ?? ""} />
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="installDate">Install date</Label>
-          <Input id="installDate" name="installDate" type="date" defaultValue={values.installDate ?? ""} />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="installSlot">Install slot</Label>
-          <SelectNative id="installSlot" name="installSlot" defaultValue={values.installSlot ?? ""}>
-            <option value="">— None —</option>
-            <option value="am">AM</option>
-            <option value="pm">PM</option>
-            <option value="overnight">Overnight</option>
-          </SelectNative>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="installContractorId">Install contractor</Label>
-          <SelectNative id="installContractorId" name="installContractorId" defaultValue={values.installContractorId ?? ""}>
-            <option value="">— None —</option>
-            {options.contractors.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </SelectNative>
-        </div>
+        {!isSponsorship && (
+          <>
+            <div className="space-y-1.5">
+              <Label htmlFor="installDate">Install date</Label>
+              <Input id="installDate" name="installDate" type="date" defaultValue={values.installDate ?? ""} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="installSlot">Install slot</Label>
+              <SelectNative id="installSlot" name="installSlot" defaultValue={values.installSlot ?? ""}>
+                <option value="">— None —</option>
+                <option value="am">AM</option>
+                <option value="pm">PM</option>
+                <option value="overnight">Overnight</option>
+              </SelectNative>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="installContractorId">Install contractor</Label>
+              <SelectNative id="installContractorId" name="installContractorId" defaultValue={values.installContractorId ?? ""}>
+                <option value="">— None —</option>
+                {options.contractors.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </SelectNative>
+            </div>
+          </>
+        )}
         </section>
       </details>
 
