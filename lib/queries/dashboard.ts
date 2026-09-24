@@ -1,5 +1,5 @@
 import "server-only";
-import { and, count, eq, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, count, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -10,56 +10,68 @@ import {
 } from "@/lib/db/schema";
 import { effectiveDeadline, type DeadlineKey } from "@/lib/deadlines";
 import { editionForDeadlines } from "./editions";
+import { standsEnabled } from "@/lib/config";
 
 export async function dashboardData(editionId: string) {
-  const [statusCounts, standCounts, budgetRow, edition] = await Promise.all([
-    db
-      .select({ status: signageItems.status, n: count() })
-      .from(signageItems)
-      .where(and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt)))
-      .groupBy(signageItems.status),
-    db
-      .select({ status: standSubmissions.status, n: count() })
-      .from(standSubmissions)
-      .innerJoin(exhibitors, eq(standSubmissions.exhibitorId, exhibitors.id))
-      .where(and(eq(standSubmissions.editionId, editionId), eq(exhibitors.standType, "space_only")))
-      .groupBy(standSubmissions.status),
-    db
-      .select({
-        estimate: sql<string>`coalesce(sum(${signageItems.costEstimate}), 0)`,
-        actual: sql<string>`coalesce(sum(${signageItems.costActual}), 0)`,
-      })
-      .from(signageItems)
-      .where(and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt))),
-    db.select().from(editions).where(eq(editions.id, editionId)).limit(1),
-  ]);
+  const liveItems = and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt));
+  const signageOnly = and(liveItems, eq(signageItems.kind, "signage"));
+  // Open sign-offs for this show's live, not-held items (and stands when on),
+  // as subqueries so the ids never make a round trip.
+  const itemIds = db
+    .select({ id: signageItems.id })
+    .from(signageItems)
+    .where(and(liveItems, ne(signageItems.status, "on_hold")));
+  const subIds = db
+    .select({ id: standSubmissions.id })
+    .from(standSubmissions)
+    .where(eq(standSubmissions.editionId, editionId));
 
-  // Pending instances for signage items in this edition.
-  const itemIds = (
-    await db
-      .select({ id: signageItems.id })
-      .from(signageItems)
-      .where(and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt)))
-  ).map((r) => r.id);
-  const subIds = (
-    await db
-      .select({ id: standSubmissions.id })
-      .from(standSubmissions)
-      .where(eq(standSubmissions.editionId, editionId))
-  ).map((r) => r.id);
-
-  const pendingRows =
-    itemIds.length + subIds.length > 0
-      ? await db
-          .select()
-          .from(approvalInstances)
-          .where(
-            and(
-              eq(approvalInstances.status, "pending"),
-              inArray(approvalInstances.entityId, [...itemIds, ...subIds]),
-            ),
-          )
-      : [];
+  const [statusCounts, sponsorshipCount, standCounts, budgetRow, edition, pendingRows, forDeadlines] =
+    await Promise.all([
+      db
+        .select({ status: signageItems.status, n: count() })
+        .from(signageItems)
+        .where(signageOnly)
+        .groupBy(signageItems.status),
+      db
+        .select({ n: count() })
+        .from(signageItems)
+        .where(and(liveItems, eq(signageItems.kind, "sponsorship_item"))),
+      standsEnabled
+        ? db
+            .select({ status: standSubmissions.status, n: count() })
+            .from(standSubmissions)
+            .innerJoin(exhibitors, eq(standSubmissions.exhibitorId, exhibitors.id))
+            .where(
+              and(eq(standSubmissions.editionId, editionId), eq(exhibitors.standType, "space_only")),
+            )
+            .groupBy(standSubmissions.status)
+        : Promise.resolve([] as { status: string; n: number }[]),
+      // The signage budget covers signage; sponsorship items are sold separately.
+      db
+        .select({
+          estimate: sql<string>`coalesce(sum(${signageItems.costEstimate}), 0)`,
+          actual: sql<string>`coalesce(sum(${signageItems.costActual}), 0)`,
+        })
+        .from(signageItems)
+        .where(signageOnly),
+      db.select().from(editions).where(eq(editions.id, editionId)).limit(1),
+      db
+        .select()
+        .from(approvalInstances)
+        .where(
+          and(
+            eq(approvalInstances.status, "pending"),
+            standsEnabled
+              ? or(inArray(approvalInstances.entityId, itemIds), inArray(approvalInstances.entityId, subIds))
+              : and(
+                  eq(approvalInstances.entityType, "signage_item"),
+                  inArray(approvalInstances.entityId, itemIds),
+                ),
+          ),
+        ),
+      editionForDeadlines(editionId),
+    ]);
 
   const sittingWith = new Map<string, number>();
   for (const p of pendingRows) {
@@ -73,7 +85,6 @@ export async function dashboardData(editionId: string) {
     .sort((a, b) => (a.dueAt?.getTime() ?? 0) - (b.dueAt?.getTime() ?? 0));
 
   // Deadlines in the next 7 days.
-  const forDeadlines = await editionForDeadlines(editionId);
   const keys: DeadlineKey[] = [
     "stand_design_due",
     "insurance_due",
@@ -95,6 +106,7 @@ export async function dashboardData(editionId: string) {
   return {
     edition: edition[0],
     statusCounts: Object.fromEntries(statusCounts.map((r) => [r.status, r.n])),
+    sponsorshipCount: Number(sponsorshipCount[0]?.n ?? 0),
     standCounts: Object.fromEntries(standCounts.map((r) => [r.status, r.n])),
     budget: {
       budget: edition[0]?.signageBudget ?? null,

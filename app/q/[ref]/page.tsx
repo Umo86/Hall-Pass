@@ -26,7 +26,7 @@ export default async function QrResolvePage({ params }: { params: Promise<{ ref:
         redirect(
           session.actor.kind === "staff"
             ? `/${bundle.edition.code}/signage/${item.ref}`
-            : "/portal/items",
+            : `/portal/items/${item.ref}`,
         );
       }
     }

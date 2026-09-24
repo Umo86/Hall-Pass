@@ -33,6 +33,7 @@ import {
 } from "@/lib/domain/signage";
 import { loadStandBundle, standAuthzCtx, standEntityCtx } from "@/lib/domain/stand";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
+import { buildStoragePath, putObject } from "@/lib/storage";
 
 const decideSchema = z.object({
   instanceId: z.string().uuid(),
@@ -90,6 +91,20 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
       const entity: EntityCtx = isSignage
         ? itemEntityCtx(bundle as never)
         : standEntityCtx(bundle as never);
+
+      // A photo must be one uploaded for this record (uploadInstallPhoto).
+      if (
+        data.photoPath &&
+        !photoPathBelongsTo(
+          data.photoPath,
+          session.organisation.id,
+          bundle.edition.id,
+          row.entityType,
+          row.entityId,
+        )
+      ) {
+        throw new WorkflowError("That photo does not belong to this item — take it again");
+      }
 
       // Photo requirement for the Installed confirmation.
       if (
@@ -434,6 +449,83 @@ export async function resubmitSignageItem(input: unknown): Promise<ActionResult>
 }
 
 /** Deleted or held items take no decisions until restored or resumed. */
+function photoPrefix(orgId: string, editionId: string, entityType: string, entityId: string) {
+  return `${orgId}/${editionId}/${entityType}/${entityId}/`;
+}
+
+function photoPathBelongsTo(
+  path: string,
+  orgId: string,
+  editionId: string,
+  entityType: string,
+  entityId: string,
+) {
+  return (
+    path.startsWith(photoPrefix(orgId, editionId, entityType, entityId)) &&
+    !path.includes("..") &&
+    !path.includes("//")
+  );
+}
+
+const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const MAX_PHOTO_BYTES = 15 * 1024 * 1024;
+
+/**
+ * Store an install / build-check photo for a pending confirmation step and
+ * return its path, which the confirmation then carries (checked above).
+ */
+export async function uploadInstallPhoto(
+  formData: FormData,
+): Promise<ActionResult<{ photoPath: string }>> {
+  const instanceId = formData.get("instanceId");
+  const file = formData.get("file");
+  if (typeof instanceId !== "string" || !(file instanceof File))
+    return fail("Choose a photo first");
+  if (!z.string().uuid().safeParse(instanceId).success) return fail("Invalid request");
+  if (file.size === 0) return fail("That photo is empty — take it again");
+  if (file.size > MAX_PHOTO_BYTES) return fail("That photo is too large (15 MB max)");
+  if (!PHOTO_TYPES.includes(file.type)) return fail("Use a JPG, PNG or WebP photo");
+
+  const session = await requireSession();
+  try {
+    const row = await db.query.approvalInstances.findFirst({
+      where: eq(approvalInstances.id, instanceId),
+    });
+    if (!row || row.status !== "pending" || row.stepKindSnapshot !== "confirmation") {
+      return fail("This step is no longer waiting for a photo");
+    }
+    const isSignage = row.entityType === "signage_item";
+    const bundle = isSignage
+      ? await loadItemBundle(db, row.entityId)
+      : await loadStandBundle(db, row.entityId);
+    if (!bundle) return fail("Record not found");
+    if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
+    const stepCtx: ApprovalStepCtx = {
+      assignedRole: row.assignedRole,
+      assignedUserId: row.assignedUserId,
+      entity: isSignage
+        ? { type: "signage_item", item: itemAuthzCtx(bundle as never) }
+        : { type: "stand", sub: standAuthzCtx(bundle as never) },
+    };
+    if (!can(session.actor, { type: "approval.decide", step: stepCtx })) {
+      return fail("This step is not assigned to you");
+    }
+    const ext = file.type === "image/png" ? "png" : file.type === "image/webp" ? "webp" : "jpg";
+    const photoPath = buildStoragePath({
+      organisationId: session.organisation.id,
+      editionId: bundle.edition.id,
+      entityType: row.entityType,
+      entityId: row.entityId,
+      fileName: `install-photo.${ext}`,
+    });
+    await putObject("photos", photoPath, Buffer.from(await file.arrayBuffer()));
+    return success({ photoPath }, "Photo added");
+  } catch (err) {
+    console.error("uploadInstallPhoto", err);
+    return fail("Could not save the photo — check your signal and try again");
+  }
+}
+
 function assertItemOpen(bundle: object) {
   const item = (bundle as { item?: { deletedAt: Date | null; status: string } }).item;
   if (!item) return;

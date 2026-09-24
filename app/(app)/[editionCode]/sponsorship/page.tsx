@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Gift, Plus } from "lucide-react";
+import { Download, Gift, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { requireStaffSession } from "@/lib/auth/actor";
@@ -49,6 +49,7 @@ export default async function SponsorshipPage({
     : [];
   const counts = new Map(itemCounts.map((r) => [r.sponsorId, Number(r.n)]));
   const canSeeCosts = can(session.actor, { type: "costs.view" });
+  const canExport = can(session.actor, { type: "export.run", kind: "sponsor_report" });
   const canAdd =
     can(session.actor, { type: "sponsorship.create" }) && !editionIsReadOnly(ed.edition.status);
 
@@ -62,13 +63,22 @@ export default async function SponsorshipPage({
             artwork sign-off as signage.
           </p>
         </div>
-        {canAdd && (
-          <Button asChild size="sm">
-            <Link href={`/${editionCode}/sponsorship/new`}>
-              <Plus className="size-4" /> Add sponsorship item
-            </Link>
-          </Button>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {canExport && (
+            <Button asChild size="sm" variant="outline">
+              <a href={`/api/exports/sponsorship/${ed.edition.code}`}>
+                <Download className="size-4" /> Sponsor report
+              </a>
+            </Button>
+          )}
+          {canAdd && (
+            <Button asChild size="sm">
+              <Link href={`/${editionCode}/sponsorship/new`}>
+                <Plus className="size-4" /> Add sponsorship item
+              </Link>
+            </Button>
+          )}
+        </div>
       </div>
 
       {rows.length === 0 ? (

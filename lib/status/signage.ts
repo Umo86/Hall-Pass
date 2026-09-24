@@ -63,6 +63,17 @@ export const INVALIDATABLE_STATUSES: SignageStatus[] = [
   "delivered",
 ];
 
+/** Statuses at which the sign-off chain is complete (certificate, supplier artwork). */
+export const APPROVED_OR_LATER: SignageStatus[] = [
+  "approved",
+  "approved_with_conditions",
+  "in_production",
+  "delivered",
+  "installed",
+  "snagged",
+  "closed",
+];
+
 export function signageTransition(
   current: SignageStatus,
   event: SignageEvent,

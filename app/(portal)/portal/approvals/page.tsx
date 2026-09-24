@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requirePortalSession } from "@/lib/auth/actor";
 import { pendingInstancesForUser } from "@/lib/queries/approvals";
 import { formatDateTime } from "@/lib/format";
@@ -8,7 +9,7 @@ export const metadata = { title: "My Sign-offs" };
 export const dynamic = "force-dynamic";
 
 export default async function PortalApprovalsPage() {
-  await requirePortalSession();
+  const session = await requirePortalSession();
   const rows = await pendingInstancesForUser();
 
   return (
@@ -41,7 +42,14 @@ export default async function PortalApprovalsPage() {
                 <StatusBadge status="pending" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm">
-                    <span className="font-medium">{ref}</span> — {title}
+                    {isSignage ? (
+                      <Link href={`/portal/items/${ref}`} className="font-medium hover:underline">
+                        {ref}
+                      </Link>
+                    ) : (
+                      <span className="font-medium">{ref}</span>
+                    )}{" "}
+                    — {title}
                   </p>
                   <p
                     className={`text-xs ${isOverdue ? "text-destructive font-medium" : "text-muted-foreground"}`}
@@ -60,6 +68,10 @@ export default async function PortalApprovalsPage() {
                     isSignage
                       ? (b.item!.currentArtworkVersionId ?? null)
                       : String(b.sub!.submissionVersion)
+                  }
+                  requiresPhoto={
+                    raw.stepNameSnapshot === "Installed" &&
+                    session.organisation.settings.install_photo_required
                   }
                   compact
                 />

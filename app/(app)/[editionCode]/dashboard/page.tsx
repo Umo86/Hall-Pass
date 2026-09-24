@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireStaffSession } from "@/lib/auth/actor";
+import { can } from "@/lib/authz";
+import { standsEnabled } from "@/lib/config";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { dashboardData, refsForInstanceEntities } from "@/lib/queries/dashboard";
 import { formatDate, formatDateTime, formatMoney, statusLabel } from "@/lib/format";
@@ -41,7 +43,8 @@ export default async function DashboardPage({
 }: {
   params: Promise<{ editionCode: string }>;
 }) {
-  await requireStaffSession();
+  const session = await requireStaffSession();
+  const canSeeCosts = can(session.actor, { type: "costs.view" });
   const { editionCode } = await params;
   const ed = await getEditionByCode(editionCode.toUpperCase());
   if (!ed) notFound();
@@ -105,10 +108,17 @@ export default async function DashboardPage({
               </Link>
             ))}
           </div>
+          <Link
+            href={`/${editionCode}/sponsorship`}
+            className="text-muted-foreground mt-3 inline-block text-sm hover:underline"
+          >
+            Sponsorship items: {data.sponsorshipCount} →
+          </Link>
         </div>
 
+        {canSeeCosts && (
         <div className="rounded-lg border p-4">
-          <h2 className="mb-3 text-sm font-semibold">Budget</h2>
+          <h2 className="mb-3 text-sm font-semibold">Signage budget</h2>
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between">
               <dt className="text-muted-foreground">Budget</dt>
@@ -124,6 +134,7 @@ export default async function DashboardPage({
             </div>
           </dl>
         </div>
+        )}
       </section>
 
       <section className="grid gap-4 lg:grid-cols-3">
@@ -195,6 +206,7 @@ export default async function DashboardPage({
         </div>
       </section>
 
+      {standsEnabled && (
       <section className="rounded-lg border p-4">
         <h2 className="mb-3 text-sm font-semibold">Stand submissions — space-only exhibitors</h2>
         <div className="flex flex-wrap gap-2">
@@ -210,6 +222,7 @@ export default async function DashboardPage({
           ))}
         </div>
       </section>
+      )}
     </div>
   );
 }

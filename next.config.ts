@@ -31,6 +31,10 @@ const nextConfig: NextConfig = {
       bodySizeLimit: "25mb",
     },
   },
+  // PDF exports load their fonts from disk at runtime.
+  outputFileTracingIncludes: {
+    "/api/exports/**": ["./lib/exports/fonts/**"],
+  },
   async headers() {
     return [{ source: "/(.*)", headers: securityHeaders }];
   },

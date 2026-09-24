@@ -13,8 +13,26 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
-import { decideApproval } from "@/app/actions/approvals";
+import { decideApproval, uploadInstallPhoto } from "@/app/actions/approvals";
+
+/** Shrink a phone photo (longest side ≤ 2000px, JPEG) before upload. */
+async function downscale(file: File): Promise<Blob> {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 2000 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.85),
+    );
+    return blob ?? file;
+  } catch {
+    return file; // Could not decode here — send the original.
+  }
+}
 
 type DecisionKind = "approve" | "approve_with_conditions" | "request_changes" | "reject" | "confirm";
 
@@ -51,9 +69,41 @@ export function DecideButtons(props: Props) {
   const [comment, setComment] = useState("");
   const [conditions, setConditions] = useState("");
   const [photoPath, setPhotoPath] = useState("");
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
+
+  async function takePhoto(file: File | undefined) {
+    if (!file) return;
+    setError(null);
+    setUploading(true);
+    setPhotoPath("");
+    try {
+      const blob = await downscale(file);
+      const fd = new FormData();
+      fd.set("instanceId", props.instanceId);
+      fd.set(
+        "file",
+        new File([blob], blob === file ? file.name : "photo.jpg", {
+          type: blob.type || file.type,
+        }),
+      );
+      const res = await uploadInstallPhoto(fd);
+      if (!res.ok) {
+        setError(res.error);
+        setPhotoPreview(null);
+      } else {
+        setPhotoPath(res.data!.photoPath);
+        setPhotoPreview(URL.createObjectURL(blob));
+      }
+    } catch {
+      setError("Could not upload the photo — check your signal and try again");
+    } finally {
+      setUploading(false);
+    }
+  }
 
   function submit(kind: DecisionKind) {
     setError(null);
@@ -72,6 +122,8 @@ export function DecideButtons(props: Props) {
         setOpen(null);
         setComment("");
         setConditions("");
+        setPhotoPath("");
+        setPhotoPreview(null);
         router.refresh();
       }
     });
@@ -129,13 +181,24 @@ export function DecideButtons(props: Props) {
               </div>
               {open === "confirm" && props.requiresPhoto && (
                 <div className="space-y-1.5">
-                  <Label htmlFor="photo-path">Photo reference (required)</Label>
-                  <Input
-                    id="photo-path"
-                    value={photoPath}
-                    onChange={(e) => setPhotoPath(e.target.value)}
-                    placeholder="Photo file name or reference"
+                  <Label htmlFor="install-photo">Photo of the installed item (required)</Label>
+                  <input
+                    id="install-photo"
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="block w-full text-sm file:mr-3 file:rounded-md file:border file:bg-transparent file:px-3 file:py-1.5 file:text-sm"
+                    onChange={(e) => void takePhoto(e.target.files?.[0])}
                   />
+                  {uploading && <p className="text-muted-foreground text-xs">Uploading photo…</p>}
+                  {photoPreview && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={photoPreview}
+                      alt="Install photo preview"
+                      className="max-h-40 rounded-md border object-contain"
+                    />
+                  )}
                 </div>
               )}
               {error && <p className="text-destructive text-sm">{error}</p>}
@@ -145,7 +208,11 @@ export function DecideButtons(props: Props) {
                 </Button>
                 <Button
                   variant={open === "reject" ? "destructive" : "default"}
-                  disabled={pending}
+                  disabled={
+                    pending ||
+                    uploading ||
+                    (open === "confirm" && Boolean(props.requiresPhoto) && !photoPath)
+                  }
                   onClick={() => submit(open)}
                 >
                   {LABELS[open]}

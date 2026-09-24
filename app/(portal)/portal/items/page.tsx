@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requirePortalSession } from "@/lib/auth/actor";
 import { visibleItemsForExternal } from "@/lib/queries/portal";
 import { formatDate, statusLabel } from "@/lib/format";
@@ -47,7 +48,11 @@ export default async function PortalItemsPage() {
             <tbody>
               {rows.map((r) => (
                 <tr key={r.item.id} className="border-b last:border-0">
-                  <td className="px-3 py-2 font-medium">{r.item.ref}</td>
+                  <td className="px-3 py-2 font-medium">
+                    <Link href={`/portal/items/${r.item.ref}`} className="text-primary hover:underline">
+                      {r.item.ref}
+                    </Link>
+                  </td>
                   <td className="px-3 py-2">{r.item.name}</td>
                   <td className="px-3 py-2">
                     <StatusBadge status={r.item.status} />
@@ -85,8 +90,8 @@ export default async function PortalItemsPage() {
         </div>
       )}
       <p className="text-muted-foreground text-xs">
-        Sign-offs waiting on you are under My Sign-offs. Artwork downloads are provided per item
-        once approved{isSupplier ? " (suppliers see the locked, approved version only)" : ""}.
+        Open an item for its artwork, spec label and sign-off progress
+        {isSupplier ? " — artwork is released to suppliers once it is signed off" : ""}.
       </p>
     </div>
   );

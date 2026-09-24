@@ -82,12 +82,22 @@ test.describe("staff flow", () => {
     const opsCtx2 = await browser.newContext();
     await signInAs(opsCtx2, "ops@media10.test", baseURL!);
     const ops = await opsCtx2.newPage();
-    const decide = async (button: "Approve" | "Confirm", photo?: string) => {
+    // A 1×1 PNG stands in for the installer's camera photo.
+    const PNG = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    const decide = async (button: "Approve" | "Confirm", photo?: boolean) => {
       await ops.goto(`${baseURL}/approvals`);
       const opsRow = ops.locator("li", { hasText: ref });
       await opsRow.getByRole("button", { name: button, exact: true }).click();
       const dialog = ops.getByRole("dialog");
-      if (photo) await dialog.getByLabel(/photo/i).fill(photo);
+      if (photo) {
+        await dialog
+          .getByLabel(/photo of the installed item/i)
+          .setInputFiles({ name: "install.png", mimeType: "image/png", buffer: PNG });
+        await expect(dialog.getByAltText("Install photo preview")).toBeVisible();
+      }
       await dialog.getByRole("button", { name: button, exact: true }).click();
       await expect(dialog).toHaveCount(0);
     };
@@ -96,9 +106,18 @@ test.describe("staff flow", () => {
     await expect(ops.getByText("Approved", { exact: true }).first()).toBeVisible();
     await decide("Confirm"); // Sent to print → in production
     await decide("Confirm"); // Delivered
-    await decide("Confirm", "IMG_0001.jpg"); // Installed (photo required)
+    await decide("Confirm", true); // Installed (photo required)
     await ops.goto(`${baseURL}/BIRM27/signage/${ref}`);
     await expect(ops.getByText("Installed", { exact: true }).first()).toBeVisible();
+    await ops.goto(`${baseURL}/BIRM27/signage/${ref}?tab=install`);
+    await expect(ops.getByRole("link", { name: "View photo" })).toBeVisible();
+    // Signed off, so the approval certificate is offered and downloads.
+    await ops.goto(`${baseURL}/BIRM27/signage/${ref}?tab=production`);
+    const [cert] = await Promise.all([
+      ops.waitForEvent("download"),
+      ops.getByRole("link", { name: /approval certificate/i }).click(),
+    ]);
+    expect(cert.suggestedFilename()).toBe(`${ref}-approval-certificate.pdf`);
     await opsCtx2.close();
   });
 

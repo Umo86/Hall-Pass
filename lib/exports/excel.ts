@@ -1,6 +1,6 @@
 import "server-only";
 import ExcelJS from "exceljs";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -17,6 +17,7 @@ import {
   users,
 } from "@/lib/db/schema";
 import { formatDate, statusLabel } from "@/lib/format";
+import { safeSheetName } from "./sheet-name";
 
 const STATUS_FILLS: Record<string, string> = {
   draft: "FFE5E5E5",
@@ -40,6 +41,54 @@ function styleHeader(row: ExcelJS.Row) {
   row.height = 18;
 }
 
+type ItemRef = { id: string; currentRunNumber: number };
+
+/**
+ * Current-run sign-off state per item, e.g. "Approved 12 Mar 2027, J Smith".
+ * Only these items' instances are read, and superseded runs are ignored.
+ */
+async function currentApprovals(items: ItemRef[]) {
+  const byItem = new Map<string, { step: string; text: string; order: number; role: string | null }[]>();
+  const stepOrder = new Map<string, number>();
+  if (items.length === 0) return { byItem, orderedSteps: [] as string[] };
+  const runOf = new Map(items.map((i) => [i.id, i.currentRunNumber]));
+  const instances = await db
+    .select({ instance: approvalInstances, decider: users })
+    .from(approvalInstances)
+    .leftJoin(users, eq(approvalInstances.decidedBy, users.id))
+    .where(
+      and(
+        eq(approvalInstances.entityType, "signage_item"),
+        inArray(approvalInstances.entityId, [...runOf.keys()]),
+      ),
+    );
+  for (const { instance, decider } of instances) {
+    if (instance.runNumber !== runOf.get(instance.entityId)) continue;
+    if (instance.status === "invalidated" || instance.status === "skipped") continue;
+    const order = instance.sortOrderSnapshot;
+    stepOrder.set(
+      instance.stepNameSnapshot,
+      Math.min(order, stepOrder.get(instance.stepNameSnapshot) ?? order),
+    );
+    const text =
+      instance.decidedAt && decider
+        ? `${statusLabel(instance.status)} ${formatDate(instance.decidedAt)}, ${decider.fullName || decider.email}`
+        : statusLabel(instance.status);
+    const list = byItem.get(instance.entityId) ?? [];
+    list.push({ step: instance.stepNameSnapshot, text, order, role: instance.assignedRole });
+    byItem.set(instance.entityId, list);
+  }
+  const orderedSteps = [...stepOrder.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+    .map(([name]) => name);
+  return { byItem, orderedSteps };
+}
+
+function fillStatus(row: ExcelJS.Row, status: string) {
+  const fill = STATUS_FILLS[status];
+  if (fill) row.getCell("status").fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
+}
+
 /** Signage schedule: one sheet per hall plus a summary, approval columns. */
 export async function buildScheduleWorkbook(editionId: string, includeCosts: boolean) {
   const [edition] = await db.select().from(editions).where(eq(editions.id, editionId));
@@ -58,30 +107,16 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
     .leftJoin(locations, eq(signageItems.locationId, locations.id))
     .leftJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
     .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
-    .where(and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt)))
+    .where(
+      and(
+        eq(signageItems.editionId, editionId),
+        eq(signageItems.kind, "signage"),
+        isNull(signageItems.deletedAt),
+      ),
+    )
     .orderBy(asc(signageItems.seq));
 
-  // Approval status per step, e.g. "Approved 12 Mar 2027, J Smith, v3".
-  const instances = await db
-    .select({ instance: approvalInstances, decider: users })
-    .from(approvalInstances)
-    .leftJoin(users, eq(approvalInstances.decidedBy, users.id))
-    .where(eq(approvalInstances.entityType, "signage_item"));
-  const byItem = new Map<string, { step: string; text: string; order: number }[]>();
-  const stepNames = new Set<string>();
-  for (const { instance, decider } of instances) {
-    if (instance.status === "invalidated" || instance.status === "skipped") continue;
-    stepNames.add(instance.stepNameSnapshot);
-    const list = byItem.get(instance.entityId) ?? [];
-    const versionSuffix = instance.lockedVersionId ? "" : "";
-    const text =
-      instance.decidedAt && decider
-        ? `${statusLabel(instance.status)} ${formatDate(instance.decidedAt)}, ${decider.fullName || decider.email}${versionSuffix}`
-        : statusLabel(instance.status);
-    list.push({ step: instance.stepNameSnapshot, text, order: instance.sortOrderSnapshot });
-    byItem.set(instance.entityId, list);
-  }
-  const orderedSteps = [...stepNames].sort();
+  const { byItem, orderedSteps } = await currentApprovals(rows.map((r) => r.item));
 
   const wb = new ExcelJS.Workbook();
   wb.creator = "Hall Pass";
@@ -90,6 +125,7 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
     { header: "Ref", key: "ref", width: 16 },
     { header: "Name", key: "name", width: 36 },
     { header: "Status", key: "status", width: 20 },
+    { header: "Category", key: "category", width: 14 },
     { header: "Type", key: "type", width: 18 },
     { header: "Hall", key: "hall", width: 12 },
     { header: "Location", key: "location", width: 20 },
@@ -124,6 +160,7 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
         ref: r.item.ref,
         name: r.item.name,
         status: statusLabel(r.item.status),
+        category: r.item.category ? statusLabel(r.item.category) : "",
         type: r.typeName ?? "",
         hall: r.hallName ?? "",
         location: r.locationName ?? "",
@@ -147,29 +184,112 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
           : {}),
         ...stepCells,
       });
-      const fill = STATUS_FILLS[r.item.status];
-      if (fill) {
-        row.getCell("status").fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: fill },
-        };
-      }
+      fillStatus(row, r.item.status);
     }
   }
 
-  const summary = wb.addWorksheet("Summary");
-  addRows(summary, rows);
+  const used = new Set<string>();
+  addRows(wb.addWorksheet(safeSheetName("Summary", used)), rows);
 
   const hallNames = [...new Set(rows.map((r) => r.hallName).filter(Boolean))] as string[];
   for (const hallName of hallNames) {
-    const ws = wb.addWorksheet(hallName.slice(0, 31));
     addRows(
-      ws,
+      wb.addWorksheet(safeSheetName(hallName, used)),
       rows.filter((r) => r.hallName === hallName),
     );
   }
 
+  return { workbook: wb, edition };
+}
+
+/**
+ * Sponsor report: everything sold to sponsors (signage and sponsorship
+ * items), a summary plus one sheet per sponsor — what they bought and where
+ * its sign-off stands. Built for sales to send on.
+ */
+export async function buildSponsorWorkbook(editionId: string, includeCosts: boolean) {
+  const [edition] = await db.select().from(editions).where(eq(editions.id, editionId));
+  const rows = await db
+    .select({
+      item: signageItems,
+      typeName: itemTypes.name,
+      sponsorName: sponsors.companyName,
+      supplierName: suppliers.name,
+    })
+    .from(signageItems)
+    .innerJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
+    .leftJoin(itemTypes, eq(signageItems.itemTypeId, itemTypes.id))
+    .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
+    .where(
+      and(
+        eq(signageItems.editionId, editionId),
+        isNotNull(signageItems.sponsorId),
+        isNull(signageItems.deletedAt),
+      ),
+    )
+    .orderBy(asc(sponsors.companyName), asc(signageItems.seq));
+
+  const { byItem } = await currentApprovals(rows.map((r) => r.item));
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "Hall Pass";
+  const columns = [
+    { header: "Sponsor", key: "sponsor", width: 22 },
+    { header: "Ref", key: "ref", width: 16 },
+    { header: "Name", key: "name", width: 36 },
+    { header: "Kind", key: "kind", width: 16 },
+    { header: "Type", key: "type", width: 18 },
+    { header: "Status", key: "status", width: 20 },
+    { header: "Qty", key: "qty", width: 6 },
+    { header: "Size (mm)", key: "size", width: 14 },
+    { header: "Supplier", key: "supplier", width: 18 },
+    { header: "Delivery", key: "delivery", width: 14 },
+    ...(includeCosts
+      ? [
+          { header: "Estimate £", key: "estimate", width: 12 },
+          { header: "Actual £", key: "actual", width: 12 },
+        ]
+      : []),
+    { header: "Sign-off", key: "signoff", width: 60 },
+  ];
+
+  function fill(ws: ExcelJS.Worksheet, data: typeof rows) {
+    ws.columns = columns as ExcelJS.Column[];
+    styleHeader(ws.getRow(1));
+    ws.views = [{ state: "frozen", ySplit: 1, xSplit: 2 }];
+    for (const r of data) {
+      const steps = (byItem.get(r.item.id) ?? []).sort((a, b) => a.order - b.order);
+      const row = ws.addRow({
+        sponsor: r.sponsorName,
+        ref: r.item.ref,
+        name: r.item.name,
+        kind: r.item.kind === "sponsorship_item" ? "Sponsorship item" : "Signage",
+        type: r.typeName ?? "",
+        status: statusLabel(r.item.status),
+        qty: r.item.quantity,
+        size: r.item.widthMm && r.item.heightMm ? `${r.item.widthMm} × ${r.item.heightMm}` : "",
+        supplier: r.supplierName ?? "",
+        delivery: r.item.deliveryDate ? formatDate(r.item.deliveryDate) : "",
+        ...(includeCosts
+          ? {
+              estimate: r.item.costEstimate ? Number(r.item.costEstimate) : "",
+              actual: r.item.costActual ? Number(r.item.costActual) : "",
+            }
+          : {}),
+        signoff: steps.map((s) => `${s.step}: ${s.text}`).join("; "),
+      });
+      fillStatus(row, r.item.status);
+    }
+  }
+
+  const used = new Set<string>();
+  fill(wb.addWorksheet(safeSheetName("All sponsors", used)), rows);
+  for (const name of [...new Set(rows.map((r) => r.sponsorName))]) {
+    fill(
+      wb.addWorksheet(safeSheetName(name, used)),
+      rows.filter((r) => r.sponsorName === name),
+    );
+  }
   return { workbook: wb, edition };
 }
 
@@ -236,19 +356,20 @@ export async function buildContractorSchedule(editionId: string) {
         status: statusLabel(r.item.status),
         contractor: r.contractorName ?? "Unassigned",
       });
-      const fill = STATUS_FILLS[r.item.status];
-      if (fill) {
-        row.getCell("status").fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
-      }
+      fillStatus(row, r.item.status);
     }
   }
 
-  fillSheet(wb.addWorksheet("All installs"), rows);
-  const names = [...new Set(rows.map((r) => r.contractorName ?? "Unassigned"))];
+  // Only signage is installed; sponsorship items (bags, lanyards) are
+  // delivered, so they appear on the Deliveries sheet only.
+  const installs = rows.filter((r) => r.item.kind === "signage");
+  const used = new Set<string>(["deliveries"]);
+  fillSheet(wb.addWorksheet(safeSheetName("All installs", used)), installs);
+  const names = [...new Set(installs.map((r) => r.contractorName ?? "Unassigned"))];
   for (const name of names) {
     fillSheet(
-      wb.addWorksheet(name.slice(0, 31)),
-      rows.filter((r) => (r.contractorName ?? "Unassigned") === name),
+      wb.addWorksheet(safeSheetName(name, used)),
+      installs.filter((r) => (r.contractorName ?? "Unassigned") === name),
     );
   }
 
@@ -305,18 +426,11 @@ export async function buildVenuePack(editionId: string) {
     )
     .orderBy(asc(signageItems.seq));
 
-  const instances = await db
-    .select({ instance: approvalInstances, decider: users })
-    .from(approvalInstances)
-    .leftJoin(users, eq(approvalInstances.decidedBy, users.id))
-    .where(eq(approvalInstances.entityType, "signage_item"));
+  const { byItem } = await currentApprovals(rows.map((r) => r.item));
   const venueState = new Map<string, string>();
-  for (const { instance, decider } of instances) {
-    if (instance.assignedRole !== "venue" || instance.status === "invalidated") continue;
-    const text = instance.decidedAt
-      ? `${statusLabel(instance.status)} ${formatDate(instance.decidedAt)} (${decider?.fullName ?? "—"})`
-      : statusLabel(instance.status);
-    venueState.set(instance.entityId, text);
+  for (const [itemId, steps] of byItem) {
+    const venue = steps.find((s) => s.role === "venue");
+    if (venue) venueState.set(itemId, venue.text);
   }
 
   const wb = new ExcelJS.Workbook();

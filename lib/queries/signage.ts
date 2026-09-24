@@ -6,6 +6,7 @@ import {
   artworkVersions,
   auditLog,
   comments,
+  contractors,
   halls,
   itemTypes,
   locations,
@@ -15,6 +16,7 @@ import {
   suppliers,
   users,
 } from "@/lib/db/schema";
+import type { LabelRow } from "@/lib/exports/label-fields";
 
 export type ScheduleRow = {
   id: string;
@@ -175,6 +177,54 @@ export async function listSponsorshipRows(editionId: string): Promise<Sponsorshi
     artworkDueOverride: r.item.artworkDueOverride,
     currentVersion: r.currentVersion,
   }));
+}
+
+/**
+ * Spec-label rows with the names a label prints, for given items or for a
+ * whole edition (optionally one hall), in ref order. Deleted items are left
+ * out.
+ */
+export async function getLabelRows(opts: {
+  itemIds?: string[];
+  editionId?: string;
+  hallId?: string;
+}): Promise<(LabelRow & { id: string; editionId: string })[]> {
+  const where = [isNull(signageItems.deletedAt)];
+  if (opts.itemIds) where.push(inArray(signageItems.id, opts.itemIds));
+  if (opts.editionId) where.push(eq(signageItems.editionId, opts.editionId));
+  if (opts.hallId) where.push(eq(signageItems.hallId, opts.hallId));
+  if (!opts.itemIds && !opts.editionId) return [];
+  if (opts.itemIds?.length === 0) return [];
+  return db
+    .select({
+      id: signageItems.id,
+      editionId: signageItems.editionId,
+      ref: signageItems.ref,
+      name: signageItems.name,
+      kind: signageItems.kind,
+      widthMm: signageItems.widthMm,
+      heightMm: signageItems.heightMm,
+      quantity: signageItems.quantity,
+      material: signageItems.material,
+      finish: signageItems.finish,
+      fixingMethod: signageItems.fixingMethod,
+      installDate: signageItems.installDate,
+      installSlot: signageItems.installSlot,
+      deliveryDate: signageItems.deliveryDate,
+      hallName: halls.name,
+      locationName: locations.name,
+      contractorName: contractors.name,
+      sponsorName: sponsors.companyName,
+      supplierName: suppliers.name,
+    })
+    .from(signageItems)
+    .leftJoin(halls, eq(signageItems.hallId, halls.id))
+    .leftJoin(locations, eq(signageItems.locationId, locations.id))
+    .leftJoin(contractors, eq(signageItems.installContractorId, contractors.id))
+    .leftJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
+    .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
+    .where(and(...where))
+    .orderBy(asc(signageItems.seq));
 }
 
 export async function getItemByRef(ref: string) {

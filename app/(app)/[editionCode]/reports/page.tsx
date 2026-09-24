@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
-import { desc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { exports as exportsTable, users } from "@/lib/db/schema";
+import { exports as exportsTable, halls, users } from "@/lib/db/schema";
+import { standsEnabled } from "@/lib/config";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
 import { getEditionByCode } from "@/lib/queries/editions";
@@ -21,50 +22,66 @@ export default async function ReportsPage({
   const ed = await getEditionByCode(editionCode.toUpperCase());
   if (!ed) notFound();
 
-  const canExport = can(session.actor, { type: "export.run", kind: "schedule" });
   const canImport = can(session.actor, { type: "signage.create" });
-  const recent = await db
-    .select({ exp: exportsTable, user: users })
-    .from(exportsTable)
-    .leftJoin(users, eq(exportsTable.generatedBy, users.id))
-    .where(eq(exportsTable.editionId, ed.edition.id))
-    .orderBy(desc(exportsTable.createdAt))
-    .limit(20);
+  const [recent, hallRows] = await Promise.all([
+    db
+      .select({ exp: exportsTable, user: users })
+      .from(exportsTable)
+      .leftJoin(users, eq(exportsTable.generatedBy, users.id))
+      .where(eq(exportsTable.editionId, ed.edition.id))
+      .orderBy(desc(exportsTable.createdAt))
+      .limit(20),
+    db
+      .select({ id: halls.id, name: halls.name })
+      .from(halls)
+      .where(eq(halls.editionId, ed.edition.id))
+      .orderBy(asc(halls.sortOrder), asc(halls.name)),
+  ]);
 
+  const code = ed.edition.code;
   const exportsList = [
     {
-      kind: "signage_schedule",
+      kind: "schedule",
       title: "Signage schedule (Excel)",
-      description: "One sheet per hall plus a summary; approval status per step as columns.",
-      href: `/api/exports/schedule/${ed.edition.code}`,
+      description: "One sheet per hall plus a summary; sign-off status per step as columns.",
+      href: `/api/exports/schedule/${code}`,
     },
     {
-      kind: "stand_register",
-      title: "Stand approval register (Excel)",
-      description: "Exhibitors, complexity, outcome, conditions, approver names and dates.",
-      href: `/api/exports/stand-register/${ed.edition.code}`,
+      kind: "sponsor_report",
+      title: "Sponsor report (Excel)",
+      description: "Everything sold to each sponsor — signage and sponsorship items — with sign-off status.",
+      href: `/api/exports/sponsorship/${code}`,
     },
     {
       kind: "contractor_schedule",
       title: "Contractor install schedule (Excel)",
-      description:
-        "What goes up where and when — a sheet per install contractor, plus deliveries.",
-      href: `/api/exports/contractor-schedule/${ed.edition.code}`,
+      description: "What goes up where and when — a sheet per install contractor, plus deliveries.",
+      href: `/api/exports/contractor-schedule/${code}`,
     },
     {
       kind: "venue_pack",
       title: "Venue submission pack (Excel)",
-      description:
-        "Every rigged or venue-approval item with weights, fixings and approval state.",
-      href: `/api/exports/venue-pack/${ed.edition.code}`,
+      description: "Every rigged or venue-approval item with weights, fixings and approval state.",
+      href: `/api/exports/venue-pack/${code}`,
     },
-  ];
+    ...(standsEnabled
+      ? [
+          {
+            kind: "stand_register",
+            title: "Stand approval register (Excel)",
+            description: "Exhibitors, complexity, outcome, conditions, approver names and dates.",
+            href: `/api/exports/stand-register/${code}`,
+          },
+        ]
+      : []),
+  ].filter((e) => can(session.actor, { type: "export.run", kind: e.kind }));
+  const canLabels = can(session.actor, { type: "export.run", kind: "spec_labels" });
 
   return (
     <div className="flex max-w-4xl flex-col gap-6 p-4 sm:p-6">
       <h1 className="text-xl font-semibold tracking-tight">Reports & exports</h1>
 
-      {canExport && (
+      {(exportsList.length > 0 || canLabels) && (
         <section className="grid gap-3 sm:grid-cols-2">
           {exportsList.map((e) => (
             <a
@@ -76,13 +93,32 @@ export default async function ReportsPage({
               <p className="text-muted-foreground mt-1 text-sm">{e.description}</p>
             </a>
           ))}
-          <div className="rounded-lg border p-4">
-            <p className="text-sm font-semibold">Approval certificate & spec label (PDF)</p>
-            <p className="text-muted-foreground mt-1 text-sm">
-              Generated per item from its detail page (Production tab), with the locked versions,
-              SHA-256 prefixes and a QR code to the live record.
-            </p>
-          </div>
+          {canLabels && (
+            <div className="rounded-lg border p-4">
+              <p className="text-sm font-semibold">Spec labels (PDF)</p>
+              <p className="text-muted-foreground mt-1 text-sm">
+                One A6 label per item showing where it goes, install slot and a QR code — print
+                them all or one hall at a time.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm">
+                <a className="text-primary hover:underline" href={`/api/exports/spec-labels/${code}`}>
+                  All items
+                </a>
+                {hallRows.map((h) => (
+                  <a
+                    key={h.id}
+                    className="text-primary hover:underline"
+                    href={`/api/exports/spec-labels/${code}?hall=${h.id}`}
+                  >
+                    {h.name}
+                  </a>
+                ))}
+              </div>
+              <p className="text-muted-foreground mt-2 text-xs">
+                Approval certificates are on each item&apos;s Production tab once it is signed off.
+              </p>
+            </div>
+          )}
         </section>
       )}
 
@@ -92,7 +128,7 @@ export default async function ReportsPage({
         <h2 className="mb-2 text-sm font-semibold">Recently generated</h2>
         {recent.length === 0 ? (
           <p className="text-muted-foreground text-sm">
-            Nothing yet — generated files are listed here and expire after 7 days.
+            Nothing yet — each download is listed here so you can see who took what, and when.
           </p>
         ) : (
           <ul className="space-y-1 text-sm">

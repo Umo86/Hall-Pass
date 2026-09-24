@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { eq, inArray, isNotNull, and } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { editionDeadlines, editions, signageItems } from "@/lib/db/schema";
+import { editionDeadlines, editions, events as eventsTable, signageItems } from "@/lib/db/schema";
 import { sessionForUserId } from "@/lib/auth/actor";
 import { effectiveDeadline, type DeadlineKey } from "@/lib/deadlines";
 import { buildCalendar, verifyIcalToken, type CalendarEvent } from "@/lib/ical";
@@ -26,13 +26,42 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string 
   const events: CalendarEvent[] = [];
 
   if (session.actor.kind === "staff") {
-    const eds = await db.select().from(editions);
-    const dls = eds.length
-      ? await db
-          .select()
-          .from(editionDeadlines)
-          .where(inArray(editionDeadlines.editionId, eds.map((e) => e.id)))
-      : [];
+    // This organisation's live shows only; archived shows drop off.
+    const eds = (
+      await db
+        .select({ edition: editions })
+        .from(editions)
+        .innerJoin(eventsTable, eq(editions.eventId, eventsTable.id))
+        .where(
+          and(
+            eq(eventsTable.organisationId, session.organisation.id),
+            ne(editions.status, "archived"),
+          ),
+        )
+    ).map((r) => r.edition);
+    const edIds = eds.map((e) => e.id);
+    const [dls, items] = edIds.length
+      ? await Promise.all([
+          db.select().from(editionDeadlines).where(inArray(editionDeadlines.editionId, edIds)),
+          db
+            .select({
+              editionId: signageItems.editionId,
+              ref: signageItems.ref,
+              name: signageItems.name,
+              installDate: signageItems.installDate,
+              installSlot: signageItems.installSlot,
+            })
+            .from(signageItems)
+            .where(
+              and(
+                inArray(signageItems.editionId, edIds),
+                eq(signageItems.kind, "signage"),
+                isNull(signageItems.deletedAt),
+                isNotNull(signageItems.installDate),
+              ),
+            ),
+        ])
+      : [[], []];
     for (const ed of eds) {
       const rows = dls.filter((d) => d.editionId === ed.id);
       for (const row of rows) {
@@ -55,19 +84,11 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string 
           url: base ? `${base}/${ed.code}/dashboard` : undefined,
         });
       }
-      const items = await db
-        .select({
-          ref: signageItems.ref,
-          name: signageItems.name,
-          installDate: signageItems.installDate,
-        })
-        .from(signageItems)
-        .where(and(eq(signageItems.editionId, ed.id), isNotNull(signageItems.installDate)));
-      for (const item of items) {
+      for (const item of items.filter((i) => i.editionId === ed.id)) {
         events.push({
           uid: `install-${item.ref}@hallpass`,
           date: item.installDate!,
-          title: `Install ${item.ref} — ${item.name}`,
+          title: `Install ${item.ref}${item.installSlot ? ` (${item.installSlot.toUpperCase()})` : ""} — ${item.name}`,
           url: base ? `${base}/${ed.code}/signage/${item.ref}` : undefined,
         });
       }
@@ -78,7 +99,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string 
     if (!pending.raw.dueAt) continue;
     const ref = pending.isSignage
       ? (pending.bundle as { item: { ref: string } }).item.ref
-      : "stand submission";
+      : ((pending.bundle as { sub?: { ref?: string } }).sub?.ref ?? "stand");
     events.push({
       uid: `signoff-${pending.raw.id}@hallpass`,
       date: pending.raw.dueAt.toISOString().slice(0, 10),

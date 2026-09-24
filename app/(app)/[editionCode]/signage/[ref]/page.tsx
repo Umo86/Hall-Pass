@@ -28,6 +28,7 @@ import {
 import { artworkInvalidationPreview } from "@/app/actions/artwork";
 import { blobEnabled, getDownloadUrl, getInlineUrl } from "@/lib/storage";
 import { formatDate, formatDateTime, formatMoney, statusLabel } from "@/lib/format";
+import { APPROVED_OR_LATER } from "@/lib/status/signage";
 import { StatusBadge } from "@/components/status-badge";
 import { ApprovalChain, type ChainInstance } from "@/components/approvals/chain";
 import { ArtworkTab, type VersionRow } from "@/components/signage/artwork-tab";
@@ -96,6 +97,10 @@ export default async function ItemDetailPage({
 
   const itemCtx = itemAuthzCtx(bundle);
   const canSeeCosts = can(session.actor, { type: "costs.view" });
+  const installPhotoUrl =
+    tab === "install" && item.installPhotoPath?.includes("/")
+      ? await getInlineUrl("photos", item.installPhotoPath).catch(() => null)
+      : null;
   const canEditCosts = can(session.actor, { type: "costs.edit" });
   const canUploadArtwork = can(session.actor, { type: "artwork.upload", item: itemCtx });
 
@@ -353,6 +358,23 @@ export default async function ItemDetailPage({
               Download A6 spec label (PDF)
             </a>
           </dd>
+          {can(session.actor, { type: "export.run", kind: "certificate" }) && (
+            <>
+              <dt className="text-muted-foreground">Approval certificate</dt>
+              <dd>
+                {APPROVED_OR_LATER.includes(item.status) ? (
+                  <a
+                    className="text-primary hover:underline"
+                    href={`/api/exports/certificate/${item.ref}`}
+                  >
+                    Download approval certificate (PDF)
+                  </a>
+                ) : (
+                  <span className="text-muted-foreground">Available once signed off</span>
+                )}
+              </dd>
+            </>
+          )}
         </dl>
       )}
 
@@ -368,9 +390,17 @@ export default async function ItemDetailPage({
             <dd>{contractorRows.find((c) => c.id === item.installContractorId)?.name ?? "—"}</dd>
             <dt className="text-muted-foreground">Installed</dt>
             <dd>
-              {item.installedAt
-                ? `${formatDateTime(item.installedAt)}${item.installPhotoPath ? " · photo on file" : ""}`
-                : "Not yet"}
+              {item.installedAt ? formatDateTime(item.installedAt) : "Not yet"}
+              {installPhotoUrl ? (
+                <>
+                  {" · "}
+                  <a className="text-primary hover:underline" href={installPhotoUrl} target="_blank" rel="noreferrer">
+                    View photo
+                  </a>
+                </>
+              ) : item.installPhotoPath ? (
+                " · photo on file"
+              ) : null}
             </dd>
           </dl>
           <div>
