@@ -3,9 +3,17 @@
 import { appUrl } from "@/lib/app-url";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { externalGrants } from "@/lib/db/schema";
+import {
+  editions,
+  events,
+  exhibitors,
+  externalGrants,
+  sponsors,
+  suppliers,
+  venues,
+} from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
@@ -30,6 +38,36 @@ export async function inviteExternal(input: unknown): Promise<ActionResult<{ inv
     return fail("Only admins manage external access");
   }
   const data = parsed.data;
+  const orgId = session.organisation.id;
+  const [edition] = await db
+    .select({ id: editions.id })
+    .from(editions)
+    .innerJoin(events, eq(editions.eventId, events.id))
+    .where(and(eq(editions.id, data.editionId), eq(events.organisationId, orgId)))
+    .limit(1);
+  if (!edition) return fail("Edition not found");
+  // The scope must be this organisation's, and for sponsors/exhibitors this show's.
+  if (data.scopeType) {
+    if (!data.scopeId) return fail("Choose who this invitation is for");
+    const id = data.scopeId;
+    const found =
+      data.scopeType === "venue"
+        ? await db.query.venues.findFirst({
+            where: and(eq(venues.id, id), eq(venues.organisationId, orgId)),
+          })
+        : data.scopeType === "supplier"
+          ? await db.query.suppliers.findFirst({
+              where: and(eq(suppliers.id, id), eq(suppliers.organisationId, orgId)),
+            })
+          : data.scopeType === "sponsor"
+            ? await db.query.sponsors.findFirst({
+                where: and(eq(sponsors.id, id), eq(sponsors.editionId, data.editionId)),
+              })
+            : await db.query.exhibitors.findFirst({
+                where: and(eq(exhibitors.id, id), eq(exhibitors.editionId, data.editionId)),
+              });
+    if (!found) return fail("That choice doesn't belong to this show");
+  }
   const token = generateInviteToken();
   try {
     await db.transaction(async (tx) => {

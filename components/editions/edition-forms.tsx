@@ -14,7 +14,9 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { createEdition, cloneEdition } from "@/app/actions/editions";
+import Link from "next/link";
+import { SelectNative } from "@/components/ui/select-native";
+import { createEdition, cloneEdition, updateEdition } from "@/app/actions/editions";
 
 type EventOption = { id: string; name: string };
 type VenueOption = { id: string; name: string };
@@ -61,6 +63,15 @@ export function CreateEditionDialog({
             An edition is one show at one venue, with its own schedule and deadlines.
           </DialogDescription>
         </DialogHeader>
+        {(events.length === 0 || venues.length === 0) && (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+            Add an event and a venue first in{" "}
+            <Link href="/settings#events-venues" className="underline">
+              Settings → Events &amp; venues
+            </Link>
+            .
+          </p>
+        )}
         <form
           className="grid gap-3"
           onSubmit={(e) => {
@@ -168,10 +179,7 @@ export function CloneEditionDialog({ editions }: { editions: EditionOption[] }) 
             const fd = new FormData(e.currentTarget);
             setError(null);
             start(async () => {
-              const res = await cloneEdition({
-                ...Object.fromEntries(fd.entries()),
-                includeExhibitors: fd.get("includeExhibitors") === "on",
-              });
+              const res = await cloneEdition(Object.fromEntries(fd.entries()));
               if (!res.ok) setError(res.error);
               else {
                 setOpen(false);
@@ -212,14 +220,136 @@ export function CloneEditionDialog({ editions }: { editions: EditionOption[] }) 
             <DateField label="Open end" name="openEnd" />
             <DateField label="Breakdown ends" name="breakdownEnd" />
           </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="includeExhibitors" className="size-4" />
-            Also copy exhibitors
-          </label>
           {error && <p className="text-destructive text-sm">{error}</p>}
           <DialogFooter>
             <Button type="submit" disabled={pending}>
               Clone
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export type EditableEdition = {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
+  buildStart: string;
+  buildEnd: string;
+  openStart: string;
+  openEnd: string;
+  breakdownEnd: string;
+  signageBudget: string | null;
+};
+
+export function EditEditionDialog({
+  edition,
+  canArchive,
+}: {
+  edition: EditableEdition;
+  canArchive: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+  const router = useRouter();
+  const archived = edition.status === "archived";
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline">
+          Edit
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit {edition.code}</DialogTitle>
+          <DialogDescription>
+            {archived
+              ? "This show is archived and read-only. An admin can un-archive it."
+              : "Deadlines move automatically with the build start date."}
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="grid gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const fd = new FormData(e.currentTarget);
+            const status = String(fd.get("status"));
+            if (
+              status === "archived" &&
+              !archived &&
+              !window.confirm(`Archive ${edition.code}? It becomes read-only for everyone.`)
+            ) {
+              return;
+            }
+            setError(null);
+            start(async () => {
+              const res = await updateEdition({ ...Object.fromEntries(fd.entries()), id: edition.id });
+              if (!res.ok) setError(res.error);
+              else {
+                setOpen(false);
+                router.refresh();
+              }
+            });
+          }}
+        >
+          <fieldset disabled={archived} className="grid gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor={`name-${edition.id}`}>Name</Label>
+              <Input id={`name-${edition.id}`} name="name" defaultValue={edition.name} required />
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <DateField label="Build start" name="buildStart" defaultValue={edition.buildStart} />
+              <DateField label="Build end" name="buildEnd" defaultValue={edition.buildEnd} />
+              <DateField label="Open start" name="openStart" defaultValue={edition.openStart} />
+              <DateField label="Open end" name="openEnd" defaultValue={edition.openEnd} />
+              <DateField label="Breakdown ends" name="breakdownEnd" defaultValue={edition.breakdownEnd} />
+              <div className="space-y-1.5">
+                <Label htmlFor={`budget-${edition.id}`}>Signage budget (£)</Label>
+                <Input
+                  id={`budget-${edition.id}`}
+                  name="signageBudget"
+                  type="number"
+                  min="0"
+                  defaultValue={edition.signageBudget ?? ""}
+                />
+              </div>
+            </div>
+          </fieldset>
+          {/* Hidden copies so an archived show can still be un-archived. */}
+          {archived && (
+            <>
+              <input type="hidden" name="name" value={edition.name} />
+              <input type="hidden" name="buildStart" value={edition.buildStart} />
+              <input type="hidden" name="buildEnd" value={edition.buildEnd} />
+              <input type="hidden" name="openStart" value={edition.openStart} />
+              <input type="hidden" name="openEnd" value={edition.openEnd} />
+              <input type="hidden" name="breakdownEnd" value={edition.breakdownEnd} />
+            </>
+          )}
+          <div className="space-y-1.5">
+            <Label htmlFor={`status-${edition.id}`}>Status</Label>
+            <SelectNative
+              id={`status-${edition.id}`}
+              name="status"
+              defaultValue={edition.status}
+              disabled={archived && !canArchive}
+            >
+              <option value="planning">Planning</option>
+              <option value="live">Live</option>
+              <option value="closed">Closed</option>
+              {(canArchive || archived) && <option value="archived">Archived (read-only)</option>}
+            </SelectNative>
+          </div>
+          {error && <p className="text-destructive text-sm">{error}</p>}
+          <DialogFooter>
+            <Button type="submit" disabled={pending || (archived && !canArchive)}>
+              Save
             </Button>
           </DialogFooter>
         </form>

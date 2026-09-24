@@ -6,10 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SelectNative } from "@/components/ui/select-native";
-import { statusLabel } from "@/lib/format";
+import { roleLabel } from "@/lib/format";
 import { OVERRIDE_KEYS, type OverrideKey, type PermissionOverrides, type StaffRole } from "@/lib/authz";
 import {
   inviteStaff,
+  removeStaffMember,
   revokeStaffInvite,
   updateStaffOverrides,
   updateStaffRole,
@@ -56,9 +57,34 @@ function MemberRow({ member, isSelf }: { member: TeamMember; isSelf: boolean }) 
   const router = useRouter();
 
   function changeRole(role: string) {
+    const label = roleLabel(role);
+    if (
+      !window.confirm(
+        `Make ${member.name || member.email} ${label}? Any custom permissions go back to that role's defaults.`,
+      )
+    ) {
+      router.refresh();
+      return;
+    }
     setError(null);
     start(async () => {
       const res = await updateStaffRole({ membershipId: member.membershipId, role });
+      if (!res.ok) setError(res.error);
+      router.refresh();
+    });
+  }
+
+  function remove() {
+    if (
+      !window.confirm(
+        `Remove ${member.name || member.email} from the team? They lose access straight away.`,
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    start(async () => {
+      const res = await removeStaffMember({ membershipId: member.membershipId });
       if (!res.ok) setError(res.error);
       router.refresh();
     });
@@ -110,10 +136,15 @@ function MemberRow({ member, isSelf }: { member: TeamMember; isSelf: boolean }) 
         >
           {ROLES.map((r) => (
             <option key={r} value={r}>
-              {statusLabel(r)}
+              {roleLabel(r)}
             </option>
           ))}
         </SelectNative>
+        {!isSelf && (
+          <Button size="sm" variant="ghost" disabled={pending} onClick={remove}>
+            Remove
+          </Button>
+        )}
       </div>
       {member.role === "admin" ? (
         <p className="text-muted-foreground mt-1 text-xs">Full access</p>
@@ -165,6 +196,7 @@ export function TeamTable({
   canManage: boolean;
 }) {
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
@@ -178,7 +210,7 @@ export function TeamTable({
               <tr key={m.membershipId} className="border-b last:border-0">
                 <td className="px-3 py-2 font-medium">{m.name || m.email}</td>
                 <td className="text-muted-foreground px-3 py-2">{m.email}</td>
-                <td className="px-3 py-2">{statusLabel(m.role)}</td>
+                <td className="px-3 py-2">{roleLabel(m.role)}</td>
               </tr>
             ))}
           </tbody>
@@ -205,6 +237,7 @@ export function TeamTable({
             setError(null);
             setInviteUrl(null);
             start(async () => {
+              setCopied(false);
               const res = await inviteStaff({ email: fd.get("email"), role: fd.get("role") });
               if (!res.ok) setError(res.error);
               else {
@@ -223,7 +256,7 @@ export function TeamTable({
             <SelectNative id="staff-role" name="role" defaultValue="ops">
               {ROLES.map((r) => (
                 <option key={r} value={r}>
-                  {statusLabel(r)}
+                  {roleLabel(r)}
                 </option>
               ))}
             </SelectNative>
@@ -233,9 +266,28 @@ export function TeamTable({
           </Button>
         </form>
         {inviteUrl && (
-          <p className="mt-2 text-sm break-all">
-            Share this link: <code className="bg-muted rounded px-1.5 py-0.5">{inviteUrl}</code>
-          </p>
+          <div className="mt-2 space-y-1 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <code className="bg-muted min-w-0 flex-1 rounded px-1.5 py-0.5 break-all">
+                {inviteUrl}
+              </code>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(inviteUrl);
+                  setCopied(true);
+                }}
+              >
+                {copied ? "Copied" : "Copy link"}
+              </Button>
+            </div>
+            <p className="text-muted-foreground text-xs">
+              Send them this link — or just ask them to sign in with that email address; the
+              invitation is applied automatically.
+            </p>
+          </div>
         )}
         {error && <p className="text-destructive mt-2 text-sm">{error}</p>}
         {invites.length > 0 && (
@@ -243,7 +295,7 @@ export function TeamTable({
             {invites.map((inv) => (
               <li key={inv.id} className="flex items-center gap-2 text-sm">
                 <span className="min-w-0 flex-1 truncate">
-                  {inv.email} <span className="text-muted-foreground">· {statusLabel(inv.role)} · invited</span>
+                  {inv.email} <span className="text-muted-foreground">· {roleLabel(inv.role)} · invited</span>
                 </span>
                 <Button
                   size="sm"

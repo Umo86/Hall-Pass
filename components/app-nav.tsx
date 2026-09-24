@@ -10,6 +10,7 @@ import {
   HardHat,
   Layers,
   LayoutDashboard,
+  MapPin,
   Settings,
   Signpost,
 } from "lucide-react";
@@ -20,11 +21,20 @@ export type NavEdition = { code: string; status: string };
 
 type NavItem = { label: string; href: string; icon: React.ComponentType<{ className?: string }> };
 
+export type NavOptions = {
+  /** Admin/ops: show the show-setup pages. */
+  canSetup: boolean;
+  /** Stand approvals are hidden unless switched on. */
+  showStands: boolean;
+};
+
 export function AppNav({
   editions,
+  options,
   onNavigate,
 }: {
   editions: NavEdition[];
+  options: NavOptions;
   /** Closes the mobile sheet after a link is chosen. */
   onNavigate?: () => void;
 }) {
@@ -40,9 +50,14 @@ export function AppNav({
         { label: "Dashboard", href: `/${edition}/dashboard`, icon: LayoutDashboard },
         { label: "Signage", href: `/${edition}/signage`, icon: Signpost },
         { label: "Sponsorship", href: `/${edition}/sponsorship`, icon: Gift },
-        { label: "Stands", href: `/${edition}/stands`, icon: HardHat },
+        ...(options.showStands
+          ? [{ label: "Stands", href: `/${edition}/stands`, icon: HardHat }]
+          : []),
         { label: "Calendar", href: `/${edition}/calendar`, icon: CalendarDays },
         { label: "Reports", href: `/${edition}/reports`, icon: FileBarChart },
+        ...(options.canSetup
+          ? [{ label: "Halls & locations", href: `/${edition}/halls`, icon: MapPin }]
+          : []),
       ]
     : [];
   const globalItems: NavItem[] = [

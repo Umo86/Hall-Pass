@@ -5,8 +5,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { acceptInvite } from "@/app/actions/invites";
 
-export function InviteForm({ token, invitedEmail }: { token: string; invitedEmail: string }) {
-  const [fullName, setFullName] = useState("");
+export function InviteForm({
+  token,
+  invitedEmail,
+  initialName = "",
+}: {
+  token: string;
+  invitedEmail: string;
+  /** Carried back through the sign-in link so nobody types it twice. */
+  initialName?: string;
+}) {
+  const [fullName, setFullName] = useState(initialName);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -32,7 +41,7 @@ export function InviteForm({ token, invitedEmail }: { token: string; invitedEmai
         <Input value={fullName} onChange={(e) => setFullName(e.target.value)} required />
       </label>
       <Button type="submit" className="w-full" disabled={pending}>
-        Accept invitation
+        {initialName ? "Continue" : "Accept invitation"}
       </Button>
       {message && <p className="text-sm text-green-700 dark:text-green-400">{message}</p>}
       {error && <p className="text-destructive text-sm">{error}</p>}

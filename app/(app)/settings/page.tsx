@@ -1,7 +1,9 @@
 import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
+  contractors,
   editions,
+  events,
   exhibitors,
   externalGrants,
   itemTypes,
@@ -20,6 +22,8 @@ import { can, type PermissionOverrides } from "@/lib/authz";
 import { formatDate, formatDateTime, statusLabel } from "@/lib/format";
 import { InviteExternalForm, RevokeGrantButton } from "@/components/settings/invite-form";
 import { TeamTable } from "@/components/settings/team-table";
+import { DirectorySection } from "@/components/settings/directory-section";
+import { standsEnabled } from "@/lib/config";
 import { WorkflowApproverForm } from "@/components/settings/workflow-approver-form";
 import { RestoreItemButton } from "@/components/settings/restore-button";
 import { icalToken } from "@/lib/ical";
@@ -36,7 +40,7 @@ export default async function SettingsPage() {
   const canUsers = can(session.actor, { type: "users.manage" });
 
   const [me] = await db.select().from(users).where(eq(users.id, session.user.id));
-  const [staff, grants, types, wfs, steps, deleted, editionRows, venueRows, supplierRows, exhibitorRows, sponsorRows, pendingInvites] =
+  const [staff, grants, types, wfs, steps, deleted, editionRows, venueRows, supplierRows, exhibitorRows, sponsorRows, pendingInvites, eventRows, contractorRows] =
     await Promise.all([
       db
         .select({ m: memberships, u: users })
@@ -74,6 +78,12 @@ export default async function SettingsPage() {
           ),
         )
         .orderBy(desc(staffInvites.createdAt)),
+      db.select().from(events).where(eq(events.organisationId, session.organisation.id)).orderBy(events.name),
+      db
+        .select()
+        .from(contractors)
+        .where(eq(contractors.organisationId, session.organisation.id))
+        .orderBy(contractors.name),
     ]);
 
   const staffById = new Map(staff.map(({ u }) => [u.id, u.fullName || u.email]));
@@ -154,8 +164,14 @@ export default async function SettingsPage() {
               exhibitors={exhibitorRows.map((x) => ({
                 id: x.id,
                 label: `${x.companyName} (${x.standNumber})`,
+                editionId: x.editionId,
               }))}
-              sponsors={sponsorRows.map((sp) => ({ id: sp.id, label: sp.companyName }))}
+              sponsors={sponsorRows.map((sp) => ({
+                id: sp.id,
+                label: sp.companyName,
+                editionId: sp.editionId,
+              }))}
+              showStandRoles={standsEnabled}
             />
           </div>
           <div className="overflow-x-auto rounded-lg border">
@@ -184,6 +200,112 @@ export default async function SettingsPage() {
         </section>
       )}
 
+      {canManage && (
+        <section id="events-venues" className="scroll-mt-20 space-y-4">
+          <div>
+            <h2 className="text-sm font-semibold">Events &amp; venues</h2>
+            <p className="text-muted-foreground text-sm">
+              Each show (edition) belongs to an event brand and takes place at a venue.
+            </p>
+          </div>
+          <DirectorySection
+            type="event"
+            noun="Event"
+            canEdit={canManage}
+            fields={[
+              { key: "name", label: "Name", required: true, listed: true, placeholder: "UK Construction Week" },
+              { key: "code", label: "Short code", required: true, listed: true, placeholder: "UKCW" },
+            ]}
+            rows={eventRows.map((e) => ({ id: e.id, name: e.name, code: e.code }))}
+          />
+          <DirectorySection
+            type="venue"
+            noun="Venue"
+            canEdit={canManage}
+            fields={[
+              { key: "name", label: "Name", required: true, listed: true, placeholder: "NEC Birmingham" },
+              { key: "code", label: "Short code", required: true, listed: true, placeholder: "NEC" },
+              { key: "address", label: "Address", listed: true },
+              { key: "riggingContactName", label: "Rigging contact" },
+              { key: "riggingContactEmail", label: "Rigging contact email", type: "email" },
+            ]}
+            rows={venueRows.map((v) => ({
+              id: v.id,
+              name: v.name,
+              code: v.code,
+              address: v.address,
+              riggingContactName: v.riggingContactName,
+              riggingContactEmail: v.riggingContactEmail,
+            }))}
+          />
+        </section>
+      )}
+
+      {canManage && (
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-sm font-semibold">Suppliers &amp; contractors</h2>
+            <p className="text-muted-foreground text-sm">
+              Printers and producers you order from, and the crews who install.
+            </p>
+          </div>
+          <DirectorySection
+            type="supplier"
+            noun="Supplier"
+            canEdit={canManage}
+            fields={[
+              { key: "name", label: "Name", required: true, listed: true },
+              {
+                key: "kind",
+                label: "Type",
+                type: "select",
+                required: true,
+                listed: true,
+                options: [
+                  { value: "print", label: "Print" },
+                  { value: "rigging", label: "Rigging" },
+                  { value: "av", label: "AV" },
+                  { value: "contractor", label: "Contractor" },
+                  { value: "structural_engineer", label: "Structural engineer" },
+                  { value: "other", label: "Other" },
+                ],
+              },
+              { key: "contactName", label: "Contact name", listed: true },
+              { key: "email", label: "Email", type: "email", listed: true },
+              { key: "phone", label: "Phone" },
+            ]}
+            rows={supplierRows.map((sp) => ({
+              id: sp.id,
+              name: sp.name,
+              kind: sp.kind,
+              contactName: sp.contactName,
+              email: sp.email,
+              phone: sp.phone,
+            }))}
+          />
+          <DirectorySection
+            type="contractor"
+            noun="Contractor"
+            canEdit={canManage}
+            fields={[
+              { key: "name", label: "Name", required: true, listed: true },
+              { key: "contactName", label: "Contact name", listed: true },
+              { key: "email", label: "Email", type: "email", listed: true },
+              { key: "phone", label: "Phone" },
+              { key: "insuranceExpiry", label: "Insurance expires", type: "date", listed: true },
+            ]}
+            rows={contractorRows.map((c) => ({
+              id: c.id,
+              name: c.name,
+              contactName: c.contactName,
+              email: c.email,
+              phone: c.phone,
+              insuranceExpiry: c.insuranceExpiry,
+            }))}
+          />
+        </section>
+      )}
+
       <section>
         <h2 className="mb-2 text-sm font-semibold">Item types</h2>
         <div className="overflow-x-auto rounded-lg border">
@@ -192,7 +314,9 @@ export default async function SettingsPage() {
               {types.map((t) => (
                 <tr key={t.id} className="border-b last:border-0">
                   <td className="px-3 py-2 font-medium">{t.name}</td>
-                  <td className="text-muted-foreground px-3 py-2">{t.code}</td>
+                  <td className="text-muted-foreground px-3 py-2">
+                    {t.kind === "sponsorship_item" ? "Sponsorship item" : "Signage"}
+                  </td>
                   <td className="text-muted-foreground px-3 py-2">
                     {t.defaultFixingMethod ? statusLabel(t.defaultFixingMethod) : "—"}
                   </td>

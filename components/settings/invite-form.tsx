@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { SelectNative } from "@/components/ui/select-native";
 import { inviteExternal, revokeGrant } from "@/app/actions/settings";
 
-type ScopeOption = { id: string; label: string };
+type ScopeOption = { id: string; label: string; editionId?: string };
 
 export function InviteExternalForm({
   editions,
@@ -16,14 +16,18 @@ export function InviteExternalForm({
   suppliers,
   exhibitors,
   sponsors,
+  showStandRoles = false,
 }: {
   editions: ScopeOption[];
   venues: ScopeOption[];
   suppliers: ScopeOption[];
   exhibitors: ScopeOption[];
   sponsors: ScopeOption[];
+  /** Stand approvals are hidden, so their roles are too. */
+  showStandRoles?: boolean;
 }) {
   const [role, setRole] = useState("venue");
+  const [editionId, setEditionId] = useState(editions[0]?.id ?? "");
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -39,6 +43,8 @@ export function InviteExternalForm({
     hs: { type: null, options: [] },
   };
   const scope = scopeMap[role];
+  // Sponsors and exhibitors belong to one show: offer only the chosen show's.
+  const scopeOptions = scope.options.filter((o) => !o.editionId || o.editionId === editionId);
 
   return (
     <form
@@ -71,7 +77,13 @@ export function InviteExternalForm({
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="inv-edition">Edition</Label>
-        <SelectNative id="inv-edition" name="editionId" required>
+        <SelectNative
+          id="inv-edition"
+          name="editionId"
+          required
+          value={editionId}
+          onChange={(e) => setEditionId(e.target.value)}
+        >
           {editions.map((e) => (
             <option key={e.id} value={e.id}>
               {e.label}
@@ -83,19 +95,28 @@ export function InviteExternalForm({
         <Label htmlFor="inv-role">Role</Label>
         <SelectNative id="inv-role" value={role} onChange={(e) => setRole(e.target.value)}>
           <option value="venue">Venue</option>
-          <option value="structural_engineer">Structural engineer</option>
-          <option value="hs">Health &amp; safety</option>
           <option value="supplier">Supplier</option>
-          <option value="exhibitor">Exhibitor</option>
-          <option value="contractor">Contractor</option>
           <option value="sponsor">Sponsor</option>
+          {showStandRoles && (
+            <>
+              <option value="structural_engineer">Structural engineer</option>
+              <option value="hs">Health &amp; safety</option>
+              <option value="exhibitor">Exhibitor</option>
+              <option value="contractor">Contractor</option>
+            </>
+          )}
         </SelectNative>
       </div>
       {scope.type && (
         <div className="space-y-1.5">
           <Label htmlFor="inv-scope">Scoped to</Label>
+          {scopeOptions.length === 0 && (
+            <p className="text-muted-foreground text-xs">
+              Nothing to choose yet — add a {role === "sponsor" ? "sponsor on the Sponsorship page" : `${role} first`}.
+            </p>
+          )}
           <SelectNative id="inv-scope" name="scopeId" required>
-            {scope.options.map((o) => (
+            {scopeOptions.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.label}
               </option>

@@ -7,11 +7,12 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { externalGrants, memberships, staffInvites, users } from "@/lib/db/schema";
+import { externalGrants, staffInvites, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
 import { DEV_COOKIE, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient } from "@/lib/auth/supabase-server";
 import { hashInviteToken } from "@/lib/auth/invite-token";
+import { claimStaffInvite } from "@/lib/auth/claim-staff-invite";
 
 export type InviteResult = { ok: true; message?: string } | { ok: false; error: string };
 
@@ -46,6 +47,7 @@ async function findValidStaffInvite(
   });
   if (!invite) return { error: "This invitation link is not valid." };
   if (invite.revokedAt) return { error: "This invitation has been revoked." };
+  if (invite.acceptedAt) return { error: "This invitation has already been used — sign in instead." };
   return { invite };
 }
 
@@ -158,41 +160,14 @@ async function acceptStaffInvite(
   if (!supabase) return { ok: false, error: "Authentication is not configured" };
   const { error } = await supabase.auth.signInWithOtp({
     email: invite.invitedEmail,
-    options: { emailRedirectTo: `${appUrl()}/auth/callback?next=/invite/${token}` },
+    options: {
+      emailRedirectTo: `${appUrl()}/auth/callback?next=${encodeURIComponent(
+        `/invite/${token}?name=${encodeURIComponent(fullName)}`,
+      )}`,
+    },
   });
   if (error) return { ok: false, error: "Could not send the sign-in link — try again shortly." };
   return { ok: true, message: `A sign-in link has been sent to ${invite.invitedEmail}.` };
-}
-
-async function claimStaffInvite(
-  invite: typeof staffInvites.$inferSelect,
-  userId: string,
-  fullName: string,
-) {
-  await db.transaction(async (tx) => {
-    await tx
-      .insert(memberships)
-      .values({
-        userId,
-        organisationId: invite.organisationId,
-        role: invite.role,
-        permissionOverrides: invite.permissionOverrides,
-      })
-      .onConflictDoNothing();
-    await tx
-      .update(staffInvites)
-      .set({ acceptedAt: new Date() })
-      .where(and(eq(staffInvites.id, invite.id), isNull(staffInvites.revokedAt)));
-    await tx.update(users).set({ fullName, isExternal: false }).where(eq(users.id, userId));
-    await writeAudit(tx, {
-      organisationId: invite.organisationId,
-      actorUserId: userId,
-      entityType: "staff_invite",
-      entityId: invite.id,
-      action: "invite",
-      summary: `Staff invitation accepted (${invite.role})`,
-    });
-  });
 }
 
 async function claimGrant(grantId: string, userId: string, fullName: string) {

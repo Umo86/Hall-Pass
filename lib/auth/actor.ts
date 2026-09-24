@@ -7,12 +7,12 @@ import {
   externalGrants,
   memberships,
   organisations,
-  staffInvites,
   users,
   type OrganisationSettings,
 } from "@/lib/db/schema";
 import type { Actor, ExternalActor, PermissionOverrides, StaffActor } from "@/lib/authz";
 import { createSupabaseServerClient, supabaseConfigured } from "./supabase-server";
+import { claimStaffInvite, openStaffInviteFor } from "./claim-staff-invite";
 
 export const DEV_COOKIE = "hp-dev-user";
 
@@ -55,28 +55,9 @@ async function loadSessionForUser(user: typeof users.$inferSelect): Promise<Sess
   if (!membership) {
     // First sign-in after a staff invitation: create the membership with the
     // invited role and overrides, then continue as ordinary staff.
-    const invite = await db.query.staffInvites.findFirst({
-      where: and(
-        eq(staffInvites.invitedEmail, user.email.toLowerCase()),
-        isNull(staffInvites.acceptedAt),
-        isNull(staffInvites.revokedAt),
-      ),
-    });
+    const invite = await openStaffInviteFor(user.email);
     if (invite) {
-      await db
-        .insert(memberships)
-        .values({
-          userId: user.id,
-          organisationId: invite.organisationId,
-          role: invite.role,
-          permissionOverrides: invite.permissionOverrides,
-        })
-        .onConflictDoNothing();
-      await db
-        .update(staffInvites)
-        .set({ acceptedAt: new Date() })
-        .where(eq(staffInvites.id, invite.id));
-      await db.update(users).set({ isExternal: false }).where(eq(users.id, user.id));
+      await claimStaffInvite(invite, user.id);
       membership = await db.query.memberships.findFirst({
         where: eq(memberships.userId, user.id),
       });

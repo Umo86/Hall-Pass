@@ -6,8 +6,13 @@ import { StatusBadge } from "@/components/status-badge";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
 import { formatDate, formatMoney } from "@/lib/format";
+import { and, count, eq, inArray, isNull } from "drizzle-orm";
+import { db } from "@/lib/db/client";
+import { signageItems, sponsorEntitlements, sponsors } from "@/lib/db/schema";
+import { editionIsReadOnly } from "@/lib/edition-lock";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { listSponsorshipRows } from "@/lib/queries/signage";
+import { SponsorsPanel } from "@/components/sponsorship/sponsors-panel";
 
 export const metadata = { title: "Sponsorship items" };
 export const dynamic = "force-dynamic";
@@ -27,9 +32,25 @@ export default async function SponsorshipPage({
   const ed = await getEditionByCode(editionCode.toUpperCase());
   if (!ed) notFound();
 
-  const rows = await listSponsorshipRows(ed.edition.id);
+  const [rows, sponsorRows, itemCounts] = await Promise.all([
+    listSponsorshipRows(ed.edition.id),
+    db.select().from(sponsors).where(eq(sponsors.editionId, ed.edition.id)).orderBy(sponsors.companyName),
+    db
+      .select({ sponsorId: signageItems.sponsorId, n: count() })
+      .from(signageItems)
+      .where(and(eq(signageItems.editionId, ed.edition.id), isNull(signageItems.deletedAt)))
+      .groupBy(signageItems.sponsorId),
+  ]);
+  const entitlementRows = sponsorRows.length
+    ? await db
+        .select()
+        .from(sponsorEntitlements)
+        .where(inArray(sponsorEntitlements.sponsorId, sponsorRows.map((sp) => sp.id)))
+    : [];
+  const counts = new Map(itemCounts.map((r) => [r.sponsorId, Number(r.n)]));
   const canSeeCosts = can(session.actor, { type: "costs.view" });
-  const canAdd = can(session.actor, { type: "sponsorship.create" });
+  const canAdd =
+    can(session.actor, { type: "sponsorship.create" }) && !editionIsReadOnly(ed.edition.status);
 
   return (
     <div className="flex flex-col gap-4 p-4 sm:p-6">
@@ -102,6 +123,21 @@ export default async function SponsorshipPage({
           </table>
         </div>
       )}
+      <SponsorsPanel
+        editionId={ed.edition.id}
+        canEdit={canAdd}
+        sponsors={sponsorRows.map((sp) => ({
+          id: sp.id,
+          companyName: sp.companyName,
+          contactName: sp.contactName,
+          contactEmail: sp.contactEmail,
+          packageName: sp.packageName,
+          itemCount: counts.get(sp.id) ?? 0,
+          entitlements: entitlementRows
+            .filter((e) => e.sponsorId === sp.id)
+            .map((e) => ({ description: e.description, quantity: e.quantity })),
+        }))}
+      />
     </div>
   );
 }

@@ -5,7 +5,15 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { and, count, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { memberships, staffInvites, users } from "@/lib/db/schema";
+import {
+  approvalInstances,
+  memberships,
+  staffInvites,
+  tasks,
+  users,
+  workflowSteps,
+  workflows,
+} from "@/lib/db/schema";
 import { can, type PermissionOverrides } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
@@ -59,9 +67,10 @@ export async function updateStaffRole(input: unknown): Promise<ActionResult> {
           );
         if (Number(admins.n) <= 1) throw new Error("There must always be at least one admin");
       }
+      // A new role starts from that role's defaults.
       await tx
         .update(memberships)
-        .set({ role: parsed.data.role })
+        .set({ role: parsed.data.role, permissionOverrides: {} })
         .where(eq(memberships.id, membership.id));
       const member = await tx.query.users.findFirst({ where: eq(users.id, membership.userId) });
       await writeAudit(tx, {
@@ -70,8 +79,8 @@ export async function updateStaffRole(input: unknown): Promise<ActionResult> {
         entityType: "membership",
         entityId: membership.id,
         action: "settings_change",
-        before: { role: membership.role },
-        after: { role: parsed.data.role },
+        before: { role: membership.role, overrides: membership.permissionOverrides },
+        after: { role: parsed.data.role, overrides: {} },
         summary: `${member?.email ?? "user"}: role ${membership.role} → ${parsed.data.role}`,
       });
     });
@@ -154,6 +163,18 @@ export async function inviteStaff(input: unknown): Promise<ActionResult<{ invite
   const token = generateInviteToken();
   try {
     await db.transaction(async (tx) => {
+      // A fresh invitation replaces any older one still open for this email.
+      await tx
+        .update(staffInvites)
+        .set({ revokedAt: new Date() })
+        .where(
+          and(
+            eq(staffInvites.organisationId, session.organisation.id),
+            eq(staffInvites.invitedEmail, email),
+            isNull(staffInvites.acceptedAt),
+            isNull(staffInvites.revokedAt),
+          ),
+        );
       const [invite] = await tx
         .insert(staffInvites)
         .values({
@@ -215,4 +236,95 @@ export async function revokeStaffInvite(input: unknown): Promise<ActionResult> {
   });
   revalidatePath("/settings");
   return success(undefined, "Invitation revoked");
+}
+
+/**
+ * Remove someone who has left. They lose access at once (their calendar
+ * feed stops too). Refused while they are named on a sign-off step or hold
+ * open sign-offs, so nothing gets stuck; their open tasks move to you.
+ */
+export async function removeStaffMember(input: unknown): Promise<ActionResult> {
+  const parsed = z.object({ membershipId: z.string().uuid() }).safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await requireSession();
+  if (!can(session.actor, { type: "users.manage" })) return fail("Only admins manage the team");
+  const orgId = session.organisation.id;
+
+  try {
+    const name = await db.transaction(async (tx) => {
+      const membership = await tx.query.memberships.findFirst({
+        where: and(eq(memberships.id, parsed.data.membershipId), eq(memberships.organisationId, orgId)),
+      });
+      if (!membership) throw new Error("Team member not found");
+      if (membership.userId === session.user.id) throw new Error("You can't remove yourself");
+      if (membership.role === "admin") {
+        const [admins] = await tx
+          .select({ n: count() })
+          .from(memberships)
+          .where(and(eq(memberships.organisationId, orgId), eq(memberships.role, "admin")));
+        if (Number(admins.n) <= 1) throw new Error("There must always be at least one admin");
+      }
+      const member = await tx.query.users.findFirst({ where: eq(users.id, membership.userId) });
+      const who = member?.fullName || member?.email || "This person";
+
+      const named = await tx
+        .select({ step: workflowSteps.name, workflow: workflows.name })
+        .from(workflowSteps)
+        .innerJoin(workflows, eq(workflowSteps.workflowId, workflows.id))
+        .where(and(eq(workflows.organisationId, orgId), eq(workflowSteps.approverUserId, membership.userId)));
+      if (named.length > 0) {
+        throw new Error(
+          `${who} is the named approver for ${named.map((n) => `“${n.step}”`).join(", ")} — pick someone else in Workflows first`,
+        );
+      }
+      const [open] = await tx
+        .select({ n: count() })
+        .from(approvalInstances)
+        .where(
+          and(eq(approvalInstances.assignedUserId, membership.userId), eq(approvalInstances.status, "pending")),
+        );
+      if (Number(open.n) > 0) {
+        throw new Error(`${who} has ${open.n} sign-off(s) waiting — delegate them first`);
+      }
+
+      await tx
+        .update(tasks)
+        .set({ assignedToUserId: session.user.id })
+        .where(
+          and(
+            eq(tasks.organisationId, orgId),
+            eq(tasks.assignedToUserId, membership.userId),
+            eq(tasks.status, "open"),
+          ),
+        );
+      if (member) {
+        await tx
+          .update(staffInvites)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(staffInvites.organisationId, orgId),
+              eq(staffInvites.invitedEmail, member.email.toLowerCase()),
+              isNull(staffInvites.acceptedAt),
+              isNull(staffInvites.revokedAt),
+            ),
+          );
+      }
+      await tx.delete(memberships).where(eq(memberships.id, membership.id));
+      await writeAudit(tx, {
+        organisationId: orgId,
+        actorUserId: session.user.id,
+        entityType: "membership",
+        entityId: membership.id,
+        action: "grant_revoke",
+        before: { userId: membership.userId, role: membership.role },
+        summary: `Removed ${member?.email ?? "a team member"} from the team`,
+      });
+      return who;
+    });
+    revalidatePath("/settings");
+    return success(undefined, `${name} removed — their open tasks are now yours`);
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : "Could not remove this person");
+  }
 }

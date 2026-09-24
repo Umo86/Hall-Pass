@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { auditLog, signageItems } from "@/lib/db/schema";
+import { auditLog, locations, signageItems } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
@@ -108,6 +108,8 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
   if (!can(session.actor, createAction)) return fail("You cannot create items");
 
   const data = applyRiggedRule(parsed.data);
+  // The hall always follows the chosen location.
+  if (data.locationId) data.hallId = (await hallOfLocation(data.locationId)) ?? data.hallId;
   try {
     const ref = await db.transaction(async (tx) => {
       // Locking not needed here; the counter row lock serialises the seq.
@@ -209,6 +211,7 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
   const canEditCosts = can(session.actor, { type: "costs.edit" });
   const { id, ...patchRaw } = parsed.data;
   const patch = applyRiggedRule(patchRaw);
+  if (patch.locationId) patch.hallId = (await hallOfLocation(patch.locationId)) ?? patch.hallId;
 
   try {
     const outcome = await db.transaction(async (tx) => {
@@ -309,6 +312,15 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
   } catch (err) {
     return fail(errMessage(err));
   }
+}
+
+async function hallOfLocation(locationId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ hallId: locations.hallId })
+    .from(locations)
+    .where(eq(locations.id, locationId))
+    .limit(1);
+  return row?.hallId ?? null;
 }
 
 /** Equality for stored vs submitted values ("1200.00" == 1200, null == ""). */

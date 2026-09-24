@@ -4,11 +4,19 @@ import { useState } from "react";
 import { Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { AppNav, type NavEdition } from "@/components/app-nav";
+import { AppNav, type NavEdition, type NavOptions } from "@/components/app-nav";
 import { Wordmark } from "@/components/wordmark";
 
 /** Hamburger + slide-out navigation for screens below the md breakpoint. */
-export function MobileNav({ editions, brandName }: { editions: NavEdition[]; brandName: string }) {
+export function MobileNav({
+  editions,
+  options,
+  brandName,
+}: {
+  editions: NavEdition[];
+  options: NavOptions;
+  brandName: string;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <Sheet open={open} onOpenChange={setOpen}>
@@ -22,7 +30,7 @@ export function MobileNav({ editions, brandName }: { editions: NavEdition[]; bra
           <Wordmark name={brandName} size="sm" />
         </SheetTitle>
         <div className="p-2">
-          <AppNav editions={editions} onNavigate={() => setOpen(false)} />
+          <AppNav editions={editions} options={options} onNavigate={() => setOpen(false)} />
         </div>
       </SheetContent>
     </Sheet>

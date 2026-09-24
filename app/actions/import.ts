@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import ExcelJS from "exceljs";
 import { z } from "zod";
-import { and, eq, ilike } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   halls,
@@ -18,6 +18,7 @@ import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { nextSignageRef } from "@/lib/refs";
+import { defaultSignageWorkflowId } from "@/lib/domain/signage";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 
 const rowSchema = z.object({
@@ -28,7 +29,7 @@ const rowSchema = z.object({
   location: z.string().trim().optional(),
   widthMm: z.coerce.number().int().positive().optional().nullable(),
   heightMm: z.coerce.number().int().positive().optional().nullable(),
-  quantity: z.coerce.number().int().positive().default(1),
+  quantity: z.coerce.number().int().positive().optional().nullable(),
   sided: z
     .string()
     .trim()
@@ -63,6 +64,13 @@ const rowSchema = z.object({
     .pipe(z.enum(["am", "pm", "overnight", ""]))
     .optional(),
   description: z.string().trim().optional(),
+  category: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .transform((v) => (v === "wayfinding" ? "directional" : v))
+    .pipe(z.enum(["directional", "venue", "sponsorship", ""]))
+    .optional(),
 });
 
 export type ImportOutcome = {
@@ -96,8 +104,11 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
   if (!edition) return fail("Edition not found");
   if (editionIsReadOnly(edition.status)) return fail(EDITION_LOCKED_MESSAGE);
 
-  const [typeRows, hallRows, locationRows, sponsorRows, supplierRows] = await Promise.all([
-    db.select().from(itemTypes).where(eq(itemTypes.organisationId, session.organisation.id)),
+  const [typeRows, hallRows, locationRows, sponsorRows, supplierRows, itemRows] = await Promise.all([
+    db
+      .select()
+      .from(itemTypes)
+      .where(and(eq(itemTypes.organisationId, session.organisation.id), eq(itemTypes.kind, "signage"))),
     db.select().from(halls).where(eq(halls.editionId, editionId)),
     db
       .select({ id: locations.id, name: locations.name, hallId: locations.hallId })
@@ -106,7 +117,28 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
       .where(eq(halls.editionId, editionId)),
     db.select().from(sponsors).where(eq(sponsors.editionId, editionId)),
     db.select().from(suppliers).where(eq(suppliers.organisationId, session.organisation.id)),
+    db
+      .select({
+        id: signageItems.id,
+        ref: signageItems.ref,
+        kind: signageItems.kind,
+        status: signageItems.status,
+        deletedAt: signageItems.deletedAt,
+      })
+      .from(signageItems)
+      .where(eq(signageItems.editionId, editionId)),
   ]);
+  const itemByRef = new Map(itemRows.map((i) => [i.ref.toUpperCase(), i]));
+  // Only items still being prepared can be overwritten from a spreadsheet;
+  // anything in sign-off changes on its own page so approvals stay honest.
+  const EDITABLE = new Set(["draft", "awaiting_artwork", "changes_requested"]);
+  /** The row's location: within its hall, or unique across halls when no hall is given. */
+  const findLocation = (name: string, hallId: string | undefined) => {
+    const matches = locationRows.filter(
+      (l) => l.name.toLowerCase() === name.toLowerCase().trim() && (!hallId || l.hallId === hallId),
+    );
+    return matches.length === 1 ? matches[0] : matches.length > 1 ? "ambiguous" : undefined;
+  };
   const byName = <T extends { name?: string; companyName?: string }>(rows: T[], name: string) =>
     rows.find(
       (r) => (r.name ?? r.companyName ?? "").toLowerCase() === name.toLowerCase().trim(),
@@ -132,7 +164,7 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
       location: cell(5),
       widthMm: cell(6) || null,
       heightMm: cell(7) || null,
-      quantity: cell(8) || 1,
+      quantity: cell(8) || null,
       sided: cell(9),
       material: cell(10),
       finish: cell(11),
@@ -144,36 +176,44 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
       installDate: cell(17),
       installSlot: cell(18),
       description: cell(19),
+      category: cell(20),
     };
     if (!raw.name && !raw.ref) return; // blank row
     const res = rowSchema.safeParse(raw);
     if (!res.success) {
       errors.push({ row: rowNumber, message: res.error.issues[0].message });
     } else {
+      const d = res.data;
+      const rowError = (message: string) => errors.push({ row: rowNumber, message });
+      if (d.installDate && !/^\d{4}-\d{2}-\d{2}$/.test(d.installDate)) {
+        return rowError(`Install date “${d.installDate}” — use YYYY-MM-DD (e.g. 2027-10-02)`);
+      }
+      if (d.ref) {
+        const existing = itemByRef.get(d.ref.toUpperCase());
+        if (!existing) return rowError(`No item ${d.ref} in this show — leave Ref blank to add a new one`);
+        if (existing.deletedAt) return rowError(`${d.ref} was deleted — restore it first`);
+        if (existing.kind !== "signage") return rowError(`${d.ref} is a sponsorship item, not signage`);
+        if (!EDITABLE.has(existing.status)) {
+          return rowError(`${d.ref} is already in sign-off — change it on its page`);
+        }
+      }
       // Unknown reference data is an error unless createMissing covers it.
-      if (res.data.type && !byName(typeRows, res.data.type)) {
-        errors.push({ row: rowNumber, message: `Unknown item type “${res.data.type}”` });
-        return;
-      }
-      if (res.data.hall && !byName(hallRows, res.data.hall)) {
-        errors.push({ row: rowNumber, message: `Unknown hall “${res.data.hall}”` });
-        return;
-      }
-      if (res.data.sponsor && !byName(sponsorRows, res.data.sponsor)) {
-        errors.push({ row: rowNumber, message: `Unknown sponsor “${res.data.sponsor}”` });
-        return;
-      }
-      if (!createMissing) {
-        if (res.data.supplier && !byName(supplierRows, res.data.supplier)) {
-          errors.push({ row: rowNumber, message: `Unknown supplier “${res.data.supplier}”` });
-          return;
+      if (d.type && !byName(typeRows, d.type)) return rowError(`Unknown item type “${d.type}”`);
+      if (d.sponsor && !byName(sponsorRows, d.sponsor)) return rowError(`Unknown sponsor “${d.sponsor}”`);
+      const hall = d.hall ? byName(hallRows, d.hall) : undefined;
+      if (d.hall && !hall && !createMissing) return rowError(`Unknown hall “${d.hall}”`);
+      if (d.location) {
+        const loc = hall ? findLocation(d.location, hall.id) : d.hall ? undefined : findLocation(d.location, undefined);
+        if (loc === "ambiguous") {
+          return rowError(`Location “${d.location}” is in more than one hall — add the hall`);
         }
-        if (res.data.location && !locationRows.find((l) => l.name.toLowerCase() === res.data.location!.toLowerCase())) {
-          errors.push({ row: rowNumber, message: `Unknown location “${res.data.location}”` });
-          return;
-        }
+        if (!loc && !createMissing) return rowError(`Unknown location “${d.location}”`);
+        if (!loc && !d.hall) return rowError(`Location “${d.location}” needs a hall`);
       }
-      parsed.push({ rowNumber, data: res.data });
+      if (!createMissing && d.supplier && !byName(supplierRows, d.supplier)) {
+        return rowError(`Unknown supplier “${d.supplier}”`);
+      }
+      parsed.push({ rowNumber, data: d });
     }
   });
 
@@ -187,7 +227,7 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
     let updated = 0;
     await db.transaction(async (tx) => {
       for (const { data } of parsed) {
-        let supplierId: string | null = null;
+        let supplierId: string | null | undefined;
         if (data.supplier) {
           const existing = byName(supplierRows, data.supplier);
           if (existing) supplierId = existing.id;
@@ -200,14 +240,22 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
             supplierId = ns.id;
           }
         }
-        const hall = data.hall ? byName(hallRows, data.hall) : undefined;
-        let locationId: string | null = null;
+        let hall = data.hall ? byName(hallRows, data.hall) : undefined;
+        if (data.hall && !hall) {
+          const [nh] = await tx
+            .insert(halls)
+            .values({ editionId, name: data.hall, sortOrder: hallRows.length })
+            .returning();
+          hallRows.push(nh);
+          hall = nh;
+        }
+        let locationId: string | undefined;
         if (data.location) {
-          const existing = locationRows.find(
-            (l) => l.name.toLowerCase() === data.location!.toLowerCase(),
-          );
-          if (existing) locationId = existing.id;
-          else if (hall) {
+          const found = findLocation(data.location, hall?.id);
+          if (found && found !== "ambiguous") {
+            locationId = found.id;
+            if (!hall) hall = hallRows.find((h) => h.id === found.hallId);
+          } else if (hall) {
             const [nl] = await tx
               .insert(locations)
               .values({ hallId: hall.id, name: data.location })
@@ -216,43 +264,55 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
             locationId = nl.id;
           }
         }
-        const values = {
-          name: data.name,
-          description: data.description || null,
-          itemTypeId: data.type ? (byName(typeRows, data.type)?.id ?? null) : null,
-          hallId: hall?.id ?? null,
-          locationId,
-          widthMm: data.widthMm ?? null,
-          heightMm: data.heightMm ?? null,
-          quantity: data.quantity,
-          sided: (data.sided || "single") as "single" | "double",
-          material: data.material || null,
-          finish: data.finish || null,
-          fixingMethod: (data.fixing || null) as typeof signageItems.$inferSelect.fixingMethod,
-          sponsorId: data.sponsor ? (byName(sponsorRows, data.sponsor)?.id ?? null) : null,
-          supplierId,
-          requiresVenueApproval: data.requiresVenueApproval ?? data.fixing === "rigged",
-          costEstimate: data.costEstimate != null ? String(data.costEstimate) : null,
-          installDate: data.installDate || null,
-          installSlot: (data.installSlot || null) as "am" | "pm" | "overnight" | null,
-        };
-        const existing = data.ref
-          ? await tx
-              .select()
-              .from(signageItems)
-              .where(and(eq(signageItems.editionId, editionId), ilike(signageItems.ref, data.ref)))
-              .limit(1)
-          : [];
-        if (existing.length > 0) {
-          await tx.update(signageItems).set(values).where(eq(signageItems.id, existing[0].id));
+        const itemTypeId = data.type ? (byName(typeRows, data.type)?.id ?? null) : undefined;
+        const sponsorId = data.sponsor ? (byName(sponsorRows, data.sponsor)?.id ?? null) : undefined;
+        // Blank cells leave existing values alone; only filled cells change.
+        const values = Object.fromEntries(
+          Object.entries({
+            name: data.name,
+            description: data.description || undefined,
+            itemTypeId,
+            hallId: hall?.id,
+            locationId,
+            widthMm: data.widthMm ?? undefined,
+            heightMm: data.heightMm ?? undefined,
+            quantity: data.quantity ?? undefined,
+            sided: (data.sided || undefined) as "single" | "double" | undefined,
+            material: data.material || undefined,
+            finish: data.finish || undefined,
+            fixingMethod: (data.fixing || undefined) as typeof signageItems.$inferSelect.fixingMethod | undefined,
+            sponsorId,
+            supplierId,
+            requiresVenueApproval:
+              data.requiresVenueApproval ?? (data.fixing === "rigged" ? true : undefined),
+            costEstimate: data.costEstimate != null ? String(data.costEstimate) : undefined,
+            installDate: data.installDate || undefined,
+            installSlot: (data.installSlot || undefined) as "am" | "pm" | "overnight" | undefined,
+            category: data.category || undefined,
+          }).filter(([, v]) => v !== undefined),
+        ) as Partial<typeof signageItems.$inferInsert>;
+        const existing = data.ref ? itemByRef.get(data.ref.toUpperCase()) : undefined;
+        if (existing) {
+          await tx.update(signageItems).set(values).where(eq(signageItems.id, existing.id));
           updated++;
         } else {
           const { ref, seq } = await nextSignageRef(tx, editionId, edition.code);
           await tx.insert(signageItems).values({
             ...values,
+            name: data.name,
             editionId,
             ref,
             seq,
+            kind: "signage",
+            // Blank category: sponsored rows are sponsorship signage, the rest venue.
+            category: data.category || (values.sponsorId ? "sponsorship" : "venue"),
+            ownerRole: "ops",
+            ownerUserId: session.user.id,
+            workflowId: await defaultSignageWorkflowId(
+              tx,
+              session.organisation.id,
+              values.itemTypeId ?? null,
+            ),
             isSponsorDeliverable: Boolean(values.sponsorId),
             createdBy: session.user.id,
           });

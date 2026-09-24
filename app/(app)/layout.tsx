@@ -9,6 +9,8 @@ import { db } from "@/lib/db/client";
 import { notifications } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { listEditions } from "@/lib/queries/editions";
+import { can } from "@/lib/authz";
+import { standsEnabled } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
@@ -26,11 +28,18 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     .from(notifications)
     .where(and(eq(notifications.userId, session.user.id), isNull(notifications.readAt)));
 
+  const navEditions = editions.map((e) => ({ code: e.edition.code, status: e.edition.status }));
+  const navOptions = {
+    canSetup: can(session.actor, { type: "settings.manage" }),
+    showStands: standsEnabled,
+  };
+
   return (
     <div className="flex min-h-screen flex-col">
       <header className="bg-background sticky top-0 z-40 flex h-14 items-center gap-2 border-b px-3 sm:gap-4 sm:px-4">
         <MobileNav
-          editions={editions.map((e) => ({ code: e.edition.code, status: e.edition.status }))}
+          editions={navEditions}
+          options={navOptions}
           brandName={session.organisation.brandName}
         />
         <Wordmark name={session.organisation.brandName} size="sm" />
@@ -60,9 +69,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       </header>
       <div className="flex flex-1">
         <aside className="bg-sidebar text-sidebar-foreground hidden w-56 shrink-0 border-r md:block">
-          <AppNav
-            editions={editions.map((e) => ({ code: e.edition.code, status: e.edition.status }))}
-          />
+          <AppNav editions={navEditions} options={navOptions} />
         </aside>
         <main className="min-w-0 flex-1">{children}</main>
       </div>

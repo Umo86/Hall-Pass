@@ -12,29 +12,64 @@ import {
   halls,
   locations,
   signageItems,
+  venues,
 } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 
-const createSchema = z.object({
-  eventId: z.string().uuid(),
-  venueId: z.string().uuid(),
-  name: z.string().trim().min(1).max(200),
-  code: z
-    .string()
-    .trim()
-    .min(2)
-    .max(20)
-    .regex(/^[A-Z0-9-]+$/i, "Use letters and numbers only"),
+type ShowDates = {
+  buildStart: string;
+  buildEnd: string;
+  openStart: string;
+  openEnd: string;
+  breakdownEnd: string;
+};
+
+/** Build → open → breakdown must run in order (ISO dates compare as strings). */
+function checkDateOrder(d: ShowDates, ctx: z.RefinementCtx) {
+  const order: Array<[keyof ShowDates, string]> = [
+    ["buildStart", "Build starts"],
+    ["buildEnd", "Build ends"],
+    ["openStart", "Show opens"],
+    ["openEnd", "Show closes"],
+    ["breakdownEnd", "Breakdown ends"],
+  ];
+  for (let i = 1; i < order.length; i++) {
+    const [prevKey, prevLabel] = order[i - 1];
+    const [key, label] = order[i];
+    if (d[key] < d[prevKey]) {
+      ctx.addIssue({ code: "custom", path: [key], message: `${label} can't be before ${prevLabel.toLowerCase()}` });
+      return;
+    }
+  }
+}
+
+const codeSchema = z
+  .string()
+  .trim()
+  .min(2)
+  .max(20)
+  .regex(/^[A-Z0-9-]+$/i, "Use letters and numbers only");
+
+const datesSchema = z.object({
   buildStart: z.string().date(),
   buildEnd: z.string().date(),
   openStart: z.string().date(),
   openEnd: z.string().date(),
   breakdownEnd: z.string().date(),
-  signageBudget: z.coerce.number().nonnegative().optional().nullable(),
 });
+
+const createSchema = datesSchema
+  .extend({
+    eventId: z.string().uuid(),
+    venueId: z.string().uuid(),
+    name: z.string().trim().min(1).max(200),
+    code: codeSchema,
+    signageBudget: z.coerce.number().nonnegative().optional().nullable(),
+  })
+  .superRefine(checkDateOrder);
 
 const DEFAULT_DEADLINES = [
   { key: "stand_design_due" as const, label: "Stand designs due", daysBeforeBuildStart: 42 },
@@ -58,6 +93,15 @@ export async function createEdition(input: unknown): Promise<ActionResult<{ code
   }
   const data = parsed.data;
   const code = data.code.toUpperCase();
+  const [event, venue] = await Promise.all([
+    db.query.events.findFirst({
+      where: and(eq(events.id, data.eventId), eq(events.organisationId, session.organisation.id)),
+    }),
+    db.query.venues.findFirst({
+      where: and(eq(venues.id, data.venueId), eq(venues.organisationId, session.organisation.id)),
+    }),
+  ]);
+  if (!event || !venue) return fail("Pick an event and a venue");
   const clash = await db.query.editions.findFirst({ where: eq(editions.code, code) });
   if (clash) return fail(`Edition code ${code} is already in use`);
   try {
@@ -87,17 +131,13 @@ export async function createEdition(input: unknown): Promise<ActionResult<{ code
   }
 }
 
-const cloneSchema = z.object({
-  sourceEditionId: z.string().uuid(),
-  name: z.string().trim().min(1).max(200),
-  code: z.string().trim().min(2).max(20),
-  buildStart: z.string().date(),
-  buildEnd: z.string().date(),
-  openStart: z.string().date(),
-  openEnd: z.string().date(),
-  breakdownEnd: z.string().date(),
-  includeExhibitors: z.coerce.boolean().default(false),
-});
+const cloneSchema = datesSchema
+  .extend({
+    sourceEditionId: z.string().uuid(),
+    name: z.string().trim().min(1).max(200),
+    code: codeSchema,
+  })
+  .superRefine(checkDateOrder);
 
 /**
  * Clone (brief §9 /editions): halls, locations, deadline offsets and signage
@@ -199,6 +239,8 @@ export async function cloneEdition(input: unknown): Promise<ActionResult<{ code:
           seq,
           name: item.name,
           description: item.description,
+          kind: item.kind,
+          category: item.category,
           itemTypeId: item.itemTypeId,
           hallId: item.hallId ? (hallMap.get(item.hallId) ?? null) : null,
           locationId: item.locationId ? (locMap.get(item.locationId) ?? null) : null,
@@ -247,11 +289,77 @@ export async function cloneEdition(input: unknown): Promise<ActionResult<{ code:
   }
 }
 
-export async function listEditionsWithEvents() {
-  await requireSession();
-  return db
-    .select()
+const updateSchema = datesSchema
+  .extend({
+    id: z.string().uuid(),
+    name: z.string().trim().min(1).max(200),
+    status: z.enum(["planning", "live", "closed", "archived"]),
+    signageBudget: z.coerce.number().nonnegative().optional().nullable(),
+  })
+  .superRefine(checkDateOrder);
+
+/**
+ * Edit a show's name, dates, budget and status. Deadlines are worked out
+ * from the build start when read, so they move with it. Archiving (which
+ * makes the show read-only) is admin-only; an archived show can only be
+ * un-archived.
+ */
+export async function updateEdition(input: unknown): Promise<ActionResult> {
+  const parsed = updateSchema.safeParse(input);
+  if (!parsed.success) return fail(parsed.error.issues[0].message);
+  const session = await requireSession();
+  if (!can(session.actor, { type: "settings.manage" })) {
+    return fail("Only admin and ops can edit editions");
+  }
+  const data = parsed.data;
+  const [row] = await db
+    .select({ edition: editions })
     .from(editions)
     .innerJoin(events, eq(editions.eventId, events.id))
-    .orderBy(editions.buildStart);
+    .where(and(eq(editions.id, data.id), eq(events.organisationId, session.organisation.id)))
+    .limit(1);
+  if (!row) return fail("Edition not found");
+  const current = row.edition;
+  const archiving = data.status === "archived" || current.status === "archived";
+  if (archiving && data.status !== current.status && !can(session.actor, { type: "users.manage" })) {
+    return fail("Only an admin can archive or un-archive a show");
+  }
+  const set =
+    current.status === "archived"
+      ? { status: data.status }
+      : {
+          name: data.name,
+          status: data.status,
+          buildStart: data.buildStart,
+          buildEnd: data.buildEnd,
+          openStart: data.openStart,
+          openEnd: data.openEnd,
+          breakdownEnd: data.breakdownEnd,
+          signageBudget: data.signageBudget?.toString() ?? null,
+        };
+  try {
+    await db.transaction(async (tx) => {
+      await tx.update(editions).set(set).where(eq(editions.id, current.id));
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        editionId: current.id,
+        actorUserId: session.user.id,
+        entityType: "edition",
+        entityId: current.id,
+        action: "update",
+        before: {
+          name: current.name,
+          status: current.status,
+          buildStart: current.buildStart,
+          breakdownEnd: current.breakdownEnd,
+        },
+        after: set,
+        summary: `Updated edition ${current.code}`,
+      });
+    });
+    revalidatePath("/", "layout");
+    return success(undefined, `${current.code} saved`);
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : "Something went wrong");
+  }
 }

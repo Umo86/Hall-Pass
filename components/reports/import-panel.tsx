@@ -38,7 +38,7 @@ export function ImportPanel({ editionId }: { editionId: string }) {
             checked={createMissing}
             onChange={(e) => setCreateMissing(e.target.checked)}
           />
-          Create missing suppliers and locations
+          Create missing halls, locations and suppliers
         </label>
         <Button
           size="sm"

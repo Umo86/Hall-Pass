@@ -9,6 +9,7 @@ test.describe("team management", () => {
     const ctx = await browser.newContext();
     await signInAs(ctx, "admin@media10.test", baseURL!);
     const page = await ctx.newPage();
+    page.on("dialog", (d) => d.accept()); // role changes ask for confirmation
     await page.goto(`${baseURL}/settings`);
 
     // Role change: Vic Viewer → Sales, then back.

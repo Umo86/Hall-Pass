@@ -1,13 +1,11 @@
-import { PlaceholderPage } from "@/components/placeholder-page";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "Floorplan" };
-
-export default function Page() {
-  return (
-    <PlaceholderPage
-      title="Floorplan"
-      description="Upload a floorplan per hall, place locations and see signage pins coloured by status."
-      phase="Phase 2"
-    />
-  );
+/** The floorplan placeholder became the Halls & locations page. */
+export default async function FloorplanRedirect({
+  params,
+}: {
+  params: Promise<{ editionCode: string }>;
+}) {
+  const { editionCode } = await params;
+  redirect(`/${editionCode}/halls`);
 }

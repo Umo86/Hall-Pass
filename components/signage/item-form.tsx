@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -172,6 +173,15 @@ export function ItemForm({
             <option value="marketing">Marketing</option>
           </SelectNative>
         </div>
+        {!isSponsorship && options.halls.length === 0 && (
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 sm:col-span-2 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+            This show has no halls yet — add them in{" "}
+            <Link href={`/${editionCode}/halls`} className="underline">
+              Halls &amp; locations
+            </Link>{" "}
+            so signs can be placed.
+          </p>
+        )}
         {!isSponsorship && (
           <>
             <div className="space-y-1.5">

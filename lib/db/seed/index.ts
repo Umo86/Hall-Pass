@@ -528,6 +528,20 @@ async function main() {
       requiresVenueApprovalDefault: false,
       kind: "sponsorship_item",
     },
+    // Catch-alls so staff can add something new without a code change.
+    {
+      name: "Other signage",
+      code: "other_signage",
+      defaultFixingMethod: null,
+      requiresVenueApprovalDefault: false,
+    },
+    {
+      name: "Other sponsorship item",
+      code: "other_sponsorship",
+      defaultFixingMethod: null,
+      requiresVenueApprovalDefault: false,
+      kind: "sponsorship_item",
+    },
   ];
   const itemTypeRows: Record<string, typeof s.itemTypes.$inferSelect> = {};
   for (const [i, it] of itemTypeDefs.entries()) {
@@ -1244,7 +1258,7 @@ async function main() {
     }),
     // Sponsorship items (separate register): sold deliverables, no location.
     P({
-      seq: 900,
+      seq: 31,
       name: "Branded lanyards — BuildCo",
       type: "lanyard",
       kind: "sponsorship_item",
@@ -1256,7 +1270,7 @@ async function main() {
       advance: [],
     }),
     P({
-      seq: 901,
+      seq: 32,
       name: "Show bags — BuildCo",
       type: "show_bag",
       kind: "sponsorship_item",

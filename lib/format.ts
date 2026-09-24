@@ -40,6 +40,28 @@ export function statusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 }
 
+/** Plain names for staff and external roles, as people say them. */
+export const ROLE_LABELS: Record<string, string> = {
+  admin: "Admin",
+  ops: "Operations",
+  marketing: "Marketing",
+  sales: "Sales",
+  event_director: "Senior management",
+  viewer: "Viewer (read-only)",
+  venue: "Venue",
+  structural_engineer: "Structural engineer",
+  hs: "Health & safety",
+  supplier: "Supplier",
+  exhibitor: "Exhibitor",
+  contractor: "Contractor",
+  sponsor: "Sponsor",
+};
+
+export function roleLabel(role: string | null | undefined): string {
+  if (!role) return "—";
+  return ROLE_LABELS[role] ?? statusLabel(role);
+}
+
 export function daysUntil(date: Date | string | null | undefined): number | null {
   if (!date) return null;
   const target = typeof date === "string" ? new Date(`${date}T12:00:00Z`) : date;

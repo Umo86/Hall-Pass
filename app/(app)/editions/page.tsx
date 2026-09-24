@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { events, venues } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
@@ -6,7 +7,11 @@ import { can } from "@/lib/authz";
 import { listEditions } from "@/lib/queries/editions";
 import { formatDate } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
-import { CloneEditionDialog, CreateEditionDialog } from "@/components/editions/edition-forms";
+import {
+  CloneEditionDialog,
+  CreateEditionDialog,
+  EditEditionDialog,
+} from "@/components/editions/edition-forms";
 import { Scene } from "@/components/scene";
 import { brandImage } from "@/lib/brand-images";
 
@@ -15,10 +20,14 @@ export const dynamic = "force-dynamic";
 
 export default async function EditionsPage() {
   const session = await requireStaffSession();
-  const rows = await listEditions();
-  const eventRows = await db.select().from(events);
-  const venueRows = await db.select().from(venues);
+  const orgId = session.organisation.id;
+  const [rows, eventRows, venueRows] = await Promise.all([
+    listEditions(),
+    db.select().from(events).where(eq(events.organisationId, orgId)),
+    db.select().from(venues).where(eq(venues.organisationId, orgId)),
+  ]);
   const canManage = can(session.actor, { type: "settings.manage" });
+  const canArchive = can(session.actor, { type: "users.manage" });
 
   return (
     <div className="flex flex-col gap-4 p-4 sm:p-6">
@@ -63,6 +72,7 @@ export default async function EditionsPage() {
                 <th className="px-3 py-2 font-medium">Build</th>
                 <th className="px-3 py-2 font-medium">Open</th>
                 <th className="px-3 py-2 font-medium">Status</th>
+                {canManage && <th className="px-3 py-2" />}
               </tr>
             </thead>
             <tbody>
@@ -84,6 +94,25 @@ export default async function EditionsPage() {
                   <td className="px-3 py-2">
                     <StatusBadge status={r.edition.status} />
                   </td>
+                  {canManage && (
+                    <td className="px-3 py-2 text-right">
+                      <EditEditionDialog
+                        edition={{
+                          id: r.edition.id,
+                          code: r.edition.code,
+                          name: r.edition.name,
+                          status: r.edition.status,
+                          buildStart: r.edition.buildStart,
+                          buildEnd: r.edition.buildEnd,
+                          openStart: r.edition.openStart,
+                          openEnd: r.edition.openEnd,
+                          breakdownEnd: r.edition.breakdownEnd,
+                          signageBudget: r.edition.signageBudget,
+                        }}
+                        canArchive={canArchive}
+                      />
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

@@ -21,6 +21,7 @@ export const IMPORT_COLUMNS = [
   "Install date",
   "Install slot",
   "Description",
+  "Category",
 ] as const;
 
 export async function buildImportTemplate(): Promise<Buffer> {
@@ -48,6 +49,7 @@ export async function buildImportTemplate(): Promise<Buffer> {
     "2027-10-02",
     "am",
     "Example row — delete before importing",
+    "directional",
   ]);
   ws.views = [{ state: "frozen", ySplit: 1 }];
   ws.columns.forEach((c) => {
