@@ -16,6 +16,7 @@ import { z } from "zod";
 import { buildStoragePath, getObject, putObject, sha256Hex } from "@/lib/storage";
 import { notify } from "@/lib/notify";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
+import { ARTWORK_TYPE_MESSAGE, artworkBlockedReason, artworkTypeAllowed } from "@/lib/artwork-rules";
 import {
   itemAuthzCtx,
   itemEntityCtx,
@@ -26,16 +27,6 @@ import {
   type ItemBundle,
 } from "@/lib/domain/signage";
 
-const ARTWORK_TYPES = [
-  "application/pdf",
-  "application/postscript",
-  "application/illustrator",
-  "image/svg+xml",
-  "image/png",
-  "image/jpeg",
-  "image/tiff",
-  "application/zip",
-];
 const MAX_ARTWORK_BYTES = 200 * 1024 * 1024;
 const PREVIEWABLE = ["image/png", "image/jpeg", "image/tiff", "image/svg+xml"];
 
@@ -87,17 +78,10 @@ export async function uploadArtwork(
   if (!can(session.actor, { type: "artwork.upload", item: itemAuthzCtx(bundle) })) {
     return fail("You cannot upload artwork for this item");
   }
-  if (
-    bundle.item.status === "installed" ||
-    bundle.item.status === "snagged" ||
-    bundle.item.status === "closed"
-  ) {
-    return fail("This item is installed — an admin or ops user must reopen it before new artwork");
-  }
+  const blocked = artworkBlockedReason(bundle.item.status);
+  if (blocked) return fail(blocked);
   if (file.size > MAX_ARTWORK_BYTES) return fail("Artwork files are limited to 200 MB");
-  if (file.type && !ARTWORK_TYPES.includes(file.type) && !/\.(ai|eps)$/i.test(file.name)) {
-    return fail("Unsupported file type — use PDF, AI, EPS, SVG, PNG, JPG, TIFF or ZIP");
-  }
+  if (!artworkTypeAllowed(file.type, file.name)) return fail(ARTWORK_TYPE_MESSAGE);
 
   const bytes = Buffer.from(await file.arrayBuffer());
   const sha256 = sha256Hex(bytes);
@@ -156,6 +140,9 @@ export async function recordUploadedArtwork(
   if (!can(session.actor, { type: "artwork.upload", item: itemAuthzCtx(bundle) })) {
     return fail("You cannot upload artwork for this item");
   }
+  const blocked = artworkBlockedReason(bundle.item.status);
+  if (blocked) return fail(blocked);
+  if (!artworkTypeAllowed(input.mimeType, input.fileName)) return fail(ARTWORK_TYPE_MESSAGE);
   const prefix = `artwork/${bundle.organisation.id}/${bundle.edition.id}/signage_item/${bundle.item.id}/`;
   if (!input.pathname.startsWith(prefix) || input.pathname.includes("..")) {
     return fail("Invalid upload path");

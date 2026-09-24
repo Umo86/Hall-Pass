@@ -1,5 +1,7 @@
 "use server";
 
+import { unstable_rethrow } from "next/navigation";
+
 import { appUrl } from "@/lib/app-url";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
@@ -36,9 +38,7 @@ const overridesSchema = z
 
 /** Change a staff member's role. Admin-only, with self and last-admin guards. */
 export async function updateStaffRole(input: unknown): Promise<ActionResult> {
-  const parsed = z
-    .object({ membershipId: z.string().uuid(), role: roleSchema })
-    .safeParse(input);
+  const parsed = z.object({ membershipId: z.string().uuid(), role: roleSchema }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
   if (!can(session.actor, { type: "users.manage" })) return fail("Only admins manage the team");
@@ -207,35 +207,41 @@ export async function inviteStaff(input: unknown): Promise<ActionResult<{ invite
 }
 
 export async function revokeStaffInvite(input: unknown): Promise<ActionResult> {
-  const parsed = z.object({ inviteId: z.string().uuid() }).safeParse(input);
-  if (!parsed.success) return fail("Invalid request");
-  const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) return fail("Only admins manage the team");
-  await db.transaction(async (tx) => {
-    const [invite] = await tx
-      .update(staffInvites)
-      .set({ revokedAt: new Date() })
-      .where(
-        and(
-          eq(staffInvites.id, parsed.data.inviteId),
-          eq(staffInvites.organisationId, session.organisation.id),
-          isNull(staffInvites.acceptedAt),
-        ),
-      )
-      .returning();
-    if (invite) {
-      await writeAudit(tx, {
-        organisationId: session.organisation.id,
-        actorUserId: session.user.id,
-        entityType: "staff_invite",
-        entityId: invite.id,
-        action: "grant_revoke",
-        summary: `Revoked staff invitation for ${invite.invitedEmail}`,
-      });
-    }
-  });
-  revalidatePath("/settings");
-  return success(undefined, "Invitation revoked");
+  try {
+    const parsed = z.object({ inviteId: z.string().uuid() }).safeParse(input);
+    if (!parsed.success) return fail("Invalid request");
+    const session = await requireSession();
+    if (!can(session.actor, { type: "users.manage" })) return fail("Only admins manage the team");
+    await db.transaction(async (tx) => {
+      const [invite] = await tx
+        .update(staffInvites)
+        .set({ revokedAt: new Date() })
+        .where(
+          and(
+            eq(staffInvites.id, parsed.data.inviteId),
+            eq(staffInvites.organisationId, session.organisation.id),
+            isNull(staffInvites.acceptedAt),
+          ),
+        )
+        .returning();
+      if (invite) {
+        await writeAudit(tx, {
+          organisationId: session.organisation.id,
+          actorUserId: session.user.id,
+          entityType: "staff_invite",
+          entityId: invite.id,
+          action: "grant_revoke",
+          summary: `Revoked staff invitation for ${invite.invitedEmail}`,
+        });
+      }
+    });
+    revalidatePath("/settings");
+    return success(undefined, "Invitation revoked");
+  } catch (err) {
+    unstable_rethrow(err);
+    console.error("revokeStaffInvite", err);
+    return fail("Could not save — please try again");
+  }
 }
 
 /**
@@ -253,7 +259,10 @@ export async function removeStaffMember(input: unknown): Promise<ActionResult> {
   try {
     const name = await db.transaction(async (tx) => {
       const membership = await tx.query.memberships.findFirst({
-        where: and(eq(memberships.id, parsed.data.membershipId), eq(memberships.organisationId, orgId)),
+        where: and(
+          eq(memberships.id, parsed.data.membershipId),
+          eq(memberships.organisationId, orgId),
+        ),
       });
       if (!membership) throw new Error("Team member not found");
       if (membership.userId === session.user.id) throw new Error("You can't remove yourself");
@@ -271,7 +280,12 @@ export async function removeStaffMember(input: unknown): Promise<ActionResult> {
         .select({ step: workflowSteps.name, workflow: workflows.name })
         .from(workflowSteps)
         .innerJoin(workflows, eq(workflowSteps.workflowId, workflows.id))
-        .where(and(eq(workflows.organisationId, orgId), eq(workflowSteps.approverUserId, membership.userId)));
+        .where(
+          and(
+            eq(workflows.organisationId, orgId),
+            eq(workflowSteps.approverUserId, membership.userId),
+          ),
+        );
       if (named.length > 0) {
         throw new Error(
           `${who} is the named approver for ${named.map((n) => `“${n.step}”`).join(", ")} — pick someone else in Workflows first`,
@@ -281,7 +295,10 @@ export async function removeStaffMember(input: unknown): Promise<ActionResult> {
         .select({ n: count() })
         .from(approvalInstances)
         .where(
-          and(eq(approvalInstances.assignedUserId, membership.userId), eq(approvalInstances.status, "pending")),
+          and(
+            eq(approvalInstances.assignedUserId, membership.userId),
+            eq(approvalInstances.status, "pending"),
+          ),
         );
       if (Number(open.n) > 0) {
         throw new Error(`${who} has ${open.n} sign-off(s) waiting — delegate them first`);

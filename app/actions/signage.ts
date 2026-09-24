@@ -1,5 +1,7 @@
 "use server";
 
+import { unstable_rethrow } from "next/navigation";
+
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { and, desc, eq, sql } from "drizzle-orm";
@@ -84,7 +86,11 @@ const createSchema = itemFields
       });
     }
     if (data.kind === "sponsorship_item" && !data.sponsorId) {
-      ctx.addIssue({ code: "custom", path: ["sponsorId"], message: "Choose the sponsor who bought it" });
+      ctx.addIssue({
+        code: "custom",
+        path: ["sponsorId"],
+        message: "Choose the sponsor who bought it",
+      });
     }
   });
 
@@ -93,9 +99,9 @@ function num(v: number | null | undefined): string | null {
 }
 
 /** Rigged items are always flagged for venue approval (brief 6.1). */
-function applyRiggedRule<T extends { fixingMethod?: string | null; requiresVenueApproval?: boolean }>(
-  data: T,
-): T {
+function applyRiggedRule<
+  T extends { fixingMethod?: string | null; requiresVenueApproval?: boolean },
+>(data: T): T {
   if (data.fixingMethod === "rigged") return { ...data, requiresVenueApproval: true };
   return data;
 }
@@ -220,7 +226,8 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
     const outcome = await db.transaction(async (tx) => {
       const set: Partial<typeof signageItems.$inferInsert> = {};
       const assign = <K extends keyof typeof patch>(key: K, dbKey: keyof typeof set) => {
-        if (patch[key] !== undefined) (set as Record<string, unknown>)[dbKey as string] = patch[key];
+        if (patch[key] !== undefined)
+          (set as Record<string, unknown>)[dbKey as string] = patch[key];
       };
       assign("name", "name");
       assign("description", "description");
@@ -278,7 +285,9 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
         } else if (item.status === "in_review" && item.currentRunNumber > 0) {
           const run = await loadRun(tx, "signage_item", item.id, item.currentRunNumber);
           restarted = run.some(
-            (i) => i.stepKind === "approval" && ["approved", "approved_with_conditions"].includes(i.status),
+            (i) =>
+              i.stepKind === "approval" &&
+              ["approved", "approved_with_conditions"].includes(i.status),
           );
         }
       }
@@ -334,64 +343,81 @@ function sameValue(a: unknown, b: unknown): boolean {
   if (x === "" || y === "") return x === y;
   const nx = Number(x);
   const ny = Number(y);
-  if (typeof x !== "boolean" && typeof y !== "boolean" && Number.isFinite(nx) && Number.isFinite(ny)) {
+  if (
+    typeof x !== "boolean" &&
+    typeof y !== "boolean" &&
+    Number.isFinite(nx) &&
+    Number.isFinite(ny)
+  ) {
     return nx === ny;
   }
   return String(x) === String(y);
 }
 
 export async function softDeleteSignageItem(input: unknown): Promise<ActionResult> {
-  const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
-  if (!parsed.success) return fail("Invalid request");
-  const session = await requireSession();
-  const bundle = await loadItemBundle(db, parsed.data.id);
-  if (!bundle || bundle.item.deletedAt) return fail("Item not found");
-  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
-  if (!can(session.actor, { type: "signage.delete" })) return fail("You cannot delete items");
-  await db.transaction(async (tx) => {
-    await tx
-      .update(signageItems)
-      .set({ deletedAt: new Date() })
-      .where(eq(signageItems.id, parsed.data.id));
-    await writeAudit(tx, {
-      organisationId: session.organisation.id,
-      editionId: bundle.edition.id,
-      actorUserId: session.user.id,
-      entityType: "signage_item",
-      entityId: parsed.data.id,
-      action: "soft_delete",
-      summary: `Deleted ${bundle.item.ref} — ${bundle.item.name}`,
+  try {
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
+    if (!parsed.success) return fail("Invalid request");
+    const session = await requireSession();
+    const bundle = await loadItemBundle(db, parsed.data.id);
+    if (!bundle || bundle.item.deletedAt) return fail("Item not found");
+    if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
+    if (!can(session.actor, { type: "signage.delete" })) return fail("You cannot delete items");
+    await db.transaction(async (tx) => {
+      await tx
+        .update(signageItems)
+        .set({ deletedAt: new Date() })
+        .where(eq(signageItems.id, parsed.data.id));
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        editionId: bundle.edition.id,
+        actorUserId: session.user.id,
+        entityType: "signage_item",
+        entityId: parsed.data.id,
+        action: "soft_delete",
+        summary: `Deleted ${bundle.item.ref} — ${bundle.item.name}`,
+      });
     });
-  });
-  revalidatePath("/", "layout");
-  return success(undefined, `Deleted ${bundle.item.ref} (restorable from Settings)`);
+    revalidatePath("/", "layout");
+    return success(undefined, `Deleted ${bundle.item.ref} (restorable from Settings)`);
+  } catch (err) {
+    unstable_rethrow(err);
+    console.error("softDeleteSignageItem", err);
+    return fail("Could not save — please try again");
+  }
 }
 
 export async function restoreSignageItem(input: unknown): Promise<ActionResult> {
-  const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
-  if (!parsed.success) return fail("Invalid request");
-  const session = await requireSession();
-  const bundle = await loadItemBundle(db, parsed.data.id);
-  if (!bundle || !bundle.item.deletedAt) return fail("Item not found");
-  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
-  if (!can(session.actor, { type: "signage.restore" })) return fail("You cannot restore items");
-  await db.transaction(async (tx) => {
-    await tx
-      .update(signageItems)
-      .set({ deletedAt: null })
-      .where(eq(signageItems.id, parsed.data.id));
-    await writeAudit(tx, {
-      organisationId: session.organisation.id,
-      editionId: bundle.edition.id,
-      actorUserId: session.user.id,
-      entityType: "signage_item",
-      entityId: parsed.data.id,
-      action: "restore",
-      summary: `Restored ${bundle.item.ref}`,
+  try {
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
+    if (!parsed.success) return fail("Invalid request");
+    const session = await requireSession();
+    const bundle = await loadItemBundle(db, parsed.data.id);
+    if (!bundle || !bundle.item.deletedAt) return fail("Item not found");
+    if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
+    if (!can(session.actor, { type: "signage.restore" })) return fail("You cannot restore items");
+    await db.transaction(async (tx) => {
+      await tx
+        .update(signageItems)
+        .set({ deletedAt: null })
+        .where(eq(signageItems.id, parsed.data.id));
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        editionId: bundle.edition.id,
+        actorUserId: session.user.id,
+        entityType: "signage_item",
+        entityId: parsed.data.id,
+        action: "restore",
+        summary: `Restored ${bundle.item.ref}`,
+      });
     });
-  });
-  revalidatePath("/", "layout");
-  return success(undefined, `Restored ${bundle.item.ref}`);
+    revalidatePath("/", "layout");
+    return success(undefined, `Restored ${bundle.item.ref}`);
+  } catch (err) {
+    unstable_rethrow(err);
+    console.error("restoreSignageItem", err);
+    return fail("Could not save — please try again");
+  }
 }
 
 /** Submit for review (brief 5.1): validates required fields, starts the run. */
@@ -578,10 +604,7 @@ export async function reopenSignageItem(input: unknown): Promise<ActionResult> {
     return transitionFail(err);
   }
   await db.transaction(async (tx) => {
-    await tx
-      .update(signageItems)
-      .set({ status: next })
-      .where(eq(signageItems.id, bundle.item.id));
+    await tx.update(signageItems).set({ status: next }).where(eq(signageItems.id, bundle.item.id));
     await writeAudit(tx, {
       organisationId: session.organisation.id,
       editionId: bundle.edition.id,

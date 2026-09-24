@@ -156,7 +156,7 @@ export async function resolveAssigneeUserIds(
   const staffRoles = ["admin", "ops", "marketing", "sales", "event_director", "viewer"];
   if (staffRoles.includes(role)) {
     const rows = await db
-      .select({ userId: memberships.userId })
+      .select({ userId: memberships.userId, overrides: memberships.permissionOverrides })
       .from(memberships)
       .where(
         and(
@@ -164,7 +164,10 @@ export async function resolveAssigneeUserIds(
           eq(memberships.role, role as (typeof memberships.$inferSelect)["role"]),
         ),
       );
-    return rows.map((r) => r.userId);
+    // People whose sign-off right is switched off aren't asked to sign off.
+    return rows
+      .filter((r) => (r.overrides as Record<string, unknown> | null)?.["approval.decide"] !== false)
+      .map((r) => r.userId);
   }
   const grants = await db
     .select()

@@ -9,7 +9,7 @@ import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
-import { statusLabel } from "@/lib/format";
+import { roleLabel } from "@/lib/format";
 
 const APPROVER_ROLES = [
   // Staff (viewer excluded — read-only by definition)
@@ -46,8 +46,8 @@ export async function updateStepApprover(input: unknown): Promise<ActionResult> 
   const parsed = schema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and ops manage workflows");
+  if (!can(session.actor, { type: "users.manage" })) {
+    return fail("Only admins choose who signs off");
   }
 
   try {
@@ -68,7 +68,7 @@ export async function updateStepApprover(input: unknown): Promise<ActionResult> 
       let label: string;
       if (parsed.data.approverType === "user") {
         const [member] = await tx
-          .select({ user: users })
+          .select({ user: users, membership: memberships })
           .from(memberships)
           .innerJoin(users, eq(memberships.userId, users.id))
           .where(
@@ -79,13 +79,21 @@ export async function updateStepApprover(input: unknown): Promise<ActionResult> 
           )
           .limit(1);
         if (!member) throw new Error("That person is not a staff member of this organisation");
+        if (member.membership.role === "viewer") {
+          throw new Error("Viewers are read-only and can't sign off — pick someone else");
+        }
+        if (
+          (member.membership.permissionOverrides as Record<string, unknown>)?.["approval.decide"] === false
+        ) {
+          throw new Error("That person's sign-off permission is switched off in Team — pick someone else");
+        }
         label = member.user.fullName || member.user.email;
         await tx
           .update(workflowSteps)
           .set({ approverType: "user", approverUserId: parsed.data.approverUserId, approverRole: null })
           .where(eq(workflowSteps.id, row.step.id));
       } else {
-        label = statusLabel(parsed.data.approverRole!);
+        label = roleLabel(parsed.data.approverRole!);
         await tx
           .update(workflowSteps)
           .set({ approverType: "role", approverRole: parsed.data.approverRole, approverUserId: null })

@@ -8,6 +8,7 @@ import { Wordmark } from "@/components/wordmark";
 import { db } from "@/lib/db/client";
 import { notifications } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
+import { DemoBanner } from "@/components/demo-banner";
 import { listEditions } from "@/lib/queries/editions";
 import { can } from "@/lib/authz";
 import { standsEnabled } from "@/lib/config";
@@ -39,6 +40,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex min-h-screen flex-col">
+      <DemoBanner />
       <header className="bg-background sticky top-0 z-40 flex h-14 items-center gap-2 border-b px-3 sm:gap-4 sm:px-4">
         <MobileNav
           editions={navEditions}

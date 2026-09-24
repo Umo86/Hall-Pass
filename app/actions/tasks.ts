@@ -1,5 +1,7 @@
 "use server";
 
+import { unstable_rethrow } from "next/navigation";
+
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
@@ -94,49 +96,55 @@ async function loadOwnTask(id: string, organisationId: string) {
 
 /** Toggle a task between open and done. */
 export async function completeTask(input: unknown): Promise<ActionResult> {
-  const parsed = z.object({ id: z.string().uuid(), done: z.boolean() }).safeParse(input);
-  if (!parsed.success) return fail("Invalid request");
-  const session = await requireSession();
-  const task = await loadOwnTask(parsed.data.id, session.organisation.id);
-  if (!task) return fail("Task not found");
-  if (
-    !can(session.actor, {
-      type: "task.update",
-      task: { assignedToUserId: task.assignedToUserId, createdByUserId: task.createdByUserId },
-    })
-  ) {
-    return fail("This task is not yours to update");
-  }
-  await db.transaction(async (tx) => {
-    await tx
-      .update(tasks)
-      .set({
-        status: parsed.data.done ? "done" : "open",
-        completedAt: parsed.data.done ? new Date() : null,
+  try {
+    const parsed = z.object({ id: z.string().uuid(), done: z.boolean() }).safeParse(input);
+    if (!parsed.success) return fail("Invalid request");
+    const session = await requireSession();
+    const task = await loadOwnTask(parsed.data.id, session.organisation.id);
+    if (!task) return fail("Task not found");
+    if (
+      !can(session.actor, {
+        type: "task.update",
+        task: { assignedToUserId: task.assignedToUserId, createdByUserId: task.createdByUserId },
       })
-      .where(eq(tasks.id, task.id));
-    await writeAudit(tx, {
-      organisationId: session.organisation.id,
-      editionId: task.editionId ?? undefined,
-      actorUserId: session.user.id,
-      entityType: "task",
-      entityId: task.id,
-      action: "update",
-      summary: `Task ${parsed.data.done ? "completed" : "reopened"}: ${task.title}`,
-    });
-    // Let whoever handed the task over know it's done.
-    if (parsed.data.done && task.createdByUserId !== session.user.id) {
-      await notify(tx, {
-        userIds: [task.createdByUserId],
-        kind: "task_assigned",
-        title: `Done: ${task.title}`,
-        body: `${session.user.fullName || session.user.email} completed this task.`,
-        link: "/approvals",
-      });
+    ) {
+      return fail("This task is not yours to update");
     }
-  });
-  revalidatePath("/approvals");
-  return success(undefined, parsed.data.done ? "Task completed" : "Task reopened");
+    await db.transaction(async (tx) => {
+      await tx
+        .update(tasks)
+        .set({
+          status: parsed.data.done ? "done" : "open",
+          completedAt: parsed.data.done ? new Date() : null,
+        })
+        .where(eq(tasks.id, task.id));
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        editionId: task.editionId ?? undefined,
+        actorUserId: session.user.id,
+        entityType: "task",
+        entityId: task.id,
+        action: "update",
+        summary: `Task ${parsed.data.done ? "completed" : "reopened"}: ${task.title}`,
+      });
+      // Let whoever handed the task over know it's done.
+      if (parsed.data.done && task.createdByUserId !== session.user.id) {
+        await notify(tx, {
+          userIds: [task.createdByUserId],
+          kind: "task_assigned",
+          title: `Done: ${task.title}`,
+          body: `${session.user.fullName || session.user.email} completed this task.`,
+          link: "/approvals",
+        });
+      }
+    });
+    revalidatePath("/approvals");
+    return success(undefined, parsed.data.done ? "Task completed" : "Task reopened");
+  } catch (err) {
+    unstable_rethrow(err);
+    console.error("completeTask", err);
+    return fail("Could not save — please try again");
+  }
 }
 
 const updateTaskSchema = z.object({
@@ -148,90 +156,105 @@ const updateTaskSchema = z.object({
 });
 
 export async function updateTask(input: unknown): Promise<ActionResult> {
-  const parsed = updateTaskSchema.safeParse(input);
-  if (!parsed.success) return fail("Check the task details");
-  const session = await requireSession();
-  const task = await loadOwnTask(parsed.data.id, session.organisation.id);
-  if (!task) return fail("Task not found");
-  if (
-    !can(session.actor, {
-      type: "task.update",
-      task: { assignedToUserId: task.assignedToUserId, createdByUserId: task.createdByUserId },
-    })
-  ) {
-    return fail("This task is not yours to update");
-  }
-  const reassigned =
-    parsed.data.assignedToUserId !== undefined &&
-    parsed.data.assignedToUserId !== task.assignedToUserId;
-  if (reassigned && !can(session.actor, { type: "task.assign" })) {
-    return fail("You cannot assign tasks to other people");
-  }
-  if (reassigned && !(await isTeamMember(parsed.data.assignedToUserId!, session.organisation.id))) {
-    return fail("That person isn't on the team");
-  }
-  await db.transaction(async (tx) => {
-    await tx
-      .update(tasks)
-      .set({
-        ...(parsed.data.title !== undefined ? { title: parsed.data.title } : {}),
-        ...(parsed.data.notes !== undefined
-          ? { notes: parsed.data.notes?.trim() ? parsed.data.notes.trim() : null }
-          : {}),
-        ...(parsed.data.dueDate !== undefined ? { dueDate: parsed.data.dueDate } : {}),
-        ...(parsed.data.assignedToUserId !== undefined
-          ? { assignedToUserId: parsed.data.assignedToUserId }
-          : {}),
+  try {
+    const parsed = updateTaskSchema.safeParse(input);
+    if (!parsed.success) return fail("Check the task details");
+    const session = await requireSession();
+    const task = await loadOwnTask(parsed.data.id, session.organisation.id);
+    if (!task) return fail("Task not found");
+    if (
+      !can(session.actor, {
+        type: "task.update",
+        task: { assignedToUserId: task.assignedToUserId, createdByUserId: task.createdByUserId },
       })
-      .where(eq(tasks.id, task.id));
-    await writeAudit(tx, {
-      organisationId: session.organisation.id,
-      editionId: task.editionId ?? undefined,
-      actorUserId: session.user.id,
-      entityType: "task",
-      entityId: task.id,
-      action: "update",
-      summary: `Task updated: ${parsed.data.title ?? task.title}`,
-    });
-    if (reassigned && parsed.data.assignedToUserId !== session.user.id) {
-      await notify(tx, {
-        userIds: [parsed.data.assignedToUserId!],
-        kind: "task_assigned",
-        title: `Task assigned: ${parsed.data.title ?? task.title}`,
-        link: "/approvals",
-      });
+    ) {
+      return fail("This task is not yours to update");
     }
-  });
-  revalidatePath("/approvals");
-  return success(undefined, "Task saved");
+    const reassigned =
+      parsed.data.assignedToUserId !== undefined &&
+      parsed.data.assignedToUserId !== task.assignedToUserId;
+    if (reassigned && !can(session.actor, { type: "task.assign" })) {
+      return fail("You cannot assign tasks to other people");
+    }
+    if (
+      reassigned &&
+      !(await isTeamMember(parsed.data.assignedToUserId!, session.organisation.id))
+    ) {
+      return fail("That person isn't on the team");
+    }
+    await db.transaction(async (tx) => {
+      await tx
+        .update(tasks)
+        .set({
+          ...(parsed.data.title !== undefined ? { title: parsed.data.title } : {}),
+          ...(parsed.data.notes !== undefined
+            ? { notes: parsed.data.notes?.trim() ? parsed.data.notes.trim() : null }
+            : {}),
+          ...(parsed.data.dueDate !== undefined ? { dueDate: parsed.data.dueDate } : {}),
+          ...(parsed.data.assignedToUserId !== undefined
+            ? { assignedToUserId: parsed.data.assignedToUserId }
+            : {}),
+        })
+        .where(eq(tasks.id, task.id));
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        editionId: task.editionId ?? undefined,
+        actorUserId: session.user.id,
+        entityType: "task",
+        entityId: task.id,
+        action: "update",
+        summary: `Task updated: ${parsed.data.title ?? task.title}`,
+      });
+      if (reassigned && parsed.data.assignedToUserId !== session.user.id) {
+        await notify(tx, {
+          userIds: [parsed.data.assignedToUserId!],
+          kind: "task_assigned",
+          title: `Task assigned: ${parsed.data.title ?? task.title}`,
+          link: "/approvals",
+        });
+      }
+    });
+    revalidatePath("/approvals");
+    return success(undefined, "Task saved");
+  } catch (err) {
+    unstable_rethrow(err);
+    console.error("updateTask", err);
+    return fail("Could not save — please try again");
+  }
 }
 
 export async function deleteTask(input: unknown): Promise<ActionResult> {
-  const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
-  if (!parsed.success) return fail("Invalid request");
-  const session = await requireSession();
-  const task = await loadOwnTask(parsed.data.id, session.organisation.id);
-  if (!task) return fail("Task not found");
-  if (
-    !can(session.actor, {
-      type: "task.delete",
-      task: { assignedToUserId: task.assignedToUserId, createdByUserId: task.createdByUserId },
-    })
-  ) {
-    return fail("Only the task's creator (or an admin) can delete it");
-  }
-  await db.transaction(async (tx) => {
-    await tx.delete(tasks).where(eq(tasks.id, task.id));
-    await writeAudit(tx, {
-      organisationId: session.organisation.id,
-      editionId: task.editionId ?? undefined,
-      actorUserId: session.user.id,
-      entityType: "task",
-      entityId: task.id,
-      action: "soft_delete",
-      summary: `Task deleted: ${task.title}`,
+  try {
+    const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
+    if (!parsed.success) return fail("Invalid request");
+    const session = await requireSession();
+    const task = await loadOwnTask(parsed.data.id, session.organisation.id);
+    if (!task) return fail("Task not found");
+    if (
+      !can(session.actor, {
+        type: "task.delete",
+        task: { assignedToUserId: task.assignedToUserId, createdByUserId: task.createdByUserId },
+      })
+    ) {
+      return fail("Only the task's creator (or an admin) can delete it");
+    }
+    await db.transaction(async (tx) => {
+      await tx.delete(tasks).where(eq(tasks.id, task.id));
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        editionId: task.editionId ?? undefined,
+        actorUserId: session.user.id,
+        entityType: "task",
+        entityId: task.id,
+        action: "soft_delete",
+        summary: `Task deleted: ${task.title}`,
+      });
     });
-  });
-  revalidatePath("/approvals");
-  return success(undefined, "Task deleted");
+    revalidatePath("/approvals");
+    return success(undefined, "Task deleted");
+  } catch (err) {
+    unstable_rethrow(err);
+    console.error("deleteTask", err);
+    return fail("Could not save — please try again");
+  }
 }

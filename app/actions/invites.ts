@@ -10,7 +10,7 @@ import { db } from "@/lib/db/client";
 import { externalGrants, staffInvites, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
 import { DEV_COOKIE, devAuthEnabled, getSession } from "@/lib/auth/actor";
-import { createSupabaseServerClient } from "@/lib/auth/supabase-server";
+import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
 import { hashInviteToken } from "@/lib/auth/invite-token";
 import { claimStaffInvite } from "@/lib/auth/claim-staff-invite";
 import { STAFF_HOME } from "@/lib/edition-path";
@@ -97,7 +97,8 @@ export async function acceptInvite(input: unknown): Promise<InviteResult> {
     redirect("/portal/approvals");
   }
 
-  if (devAuthEnabled()) {
+  // With real sign-in configured, invitees always get an email link.
+  if (devAuthEnabled() && !supabaseConfigured()) {
     // Development: create the user directly and sign them in by cookie.
     let user = await db.query.users.findFirst({ where: eq(users.email, grant.invitedEmail) });
     if (!user) {
@@ -141,7 +142,8 @@ async function acceptStaffInvite(
     redirect(STAFF_HOME);
   }
 
-  if (devAuthEnabled()) {
+  // With real sign-in configured, invitees always get an email link.
+  if (devAuthEnabled() && !supabaseConfigured()) {
     let user = await db.query.users.findFirst({ where: eq(users.email, invite.invitedEmail) });
     if (!user) {
       [user] = await db

@@ -20,7 +20,11 @@ export default async function SignagePage({
   const { editionCode } = await params;
   const ed = await getEditionByCode(editionCode.toUpperCase());
   if (!ed) notFound();
-  const rows = await listScheduleRows(ed.edition.id);
+  const canSeeCosts = can(session.actor, { type: "costs.view" });
+  // Cost figures never leave the server for people who can't see costs.
+  const rows = (await listScheduleRows(ed.edition.id)).map((r) =>
+    canSeeCosts ? r : { ...r, costEstimate: null, costActual: null, poNumber: null },
+  );
   const supplierRows = await db
     .select({ id: suppliers.id, name: suppliers.name })
     .from(suppliers)
@@ -38,7 +42,7 @@ export default async function SignagePage({
         editionCode={ed.edition.code}
         rows={rows}
         suppliers={supplierRows}
-        canSeeCosts={can(session.actor, { type: "costs.view" })}
+        canSeeCosts={canSeeCosts}
         canEdit={can(session.actor, { type: "signage.create" })}
         canEditCosts={can(session.actor, { type: "costs.edit" })}
         canDelete={can(session.actor, { type: "signage.delete" })}

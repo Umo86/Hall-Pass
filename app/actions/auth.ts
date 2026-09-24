@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { memberships, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
-import { DEV_COOKIE, devAuthEnabled, getSession } from "@/lib/auth/actor";
+import { DEV_COOKIE, demoEmailAllowed, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient } from "@/lib/auth/supabase-server";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 
@@ -60,6 +60,9 @@ export async function devSignIn(input: unknown): Promise<AuthResult> {
   if (!devAuthEnabled()) return { ok: false, error: "Development sign-in is disabled" };
   const parsed = emailSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
+  if (!demoEmailAllowed(parsed.data.email)) {
+    return { ok: false, error: "Demo sign-in only works for demo accounts — use your email link" };
+  }
   const user = await db.query.users.findFirst({ where: eq(users.email, parsed.data.email) });
   if (!user) return { ok: false, error: "No such user — run the seed first" };
   const store = await cookies();

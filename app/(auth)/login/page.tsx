@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { LoginCard, type DevUser } from "@/components/auth/login-card";
 import { brandName } from "@/lib/config";
-import { devAuthEnabled, getSession } from "@/lib/auth/actor";
+import { demoEmailAllowed, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 import { roleLabel } from "@/lib/format";
@@ -34,7 +34,7 @@ async function devUserList(): Promise<DevUser[]> {
           isExternal: !membership,
         };
       })
-      .filter((u): u is DevUser => u !== null)
+      .filter((u): u is DevUser => u !== null && demoEmailAllowed(u.email))
       .sort((a, b) => Number(a.isExternal) - Number(b.isExternal));
   } catch {
     return [];

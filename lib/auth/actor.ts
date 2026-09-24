@@ -33,6 +33,14 @@ export function devAuthEnabled(): boolean {
   return process.env.NODE_ENV === "development";
 }
 
+/**
+ * Once real sign-in (Supabase) is set up, demo sign-in may only be used for
+ * the seeded demo accounts (…@….test), never for real people's accounts.
+ */
+export function demoEmailAllowed(email: string): boolean {
+  return !supabaseConfigured() || email.toLowerCase().endsWith(".test");
+}
+
 export type Session = {
   actor: Actor;
   user: { id: string; email: string; fullName: string; isExternal: boolean };
@@ -150,7 +158,7 @@ export const getSession = cache(async (): Promise<Session | null> => {
   if (devAuthEnabled()) {
     const store = await cookies();
     const email = store.get(DEV_COOKIE)?.value;
-    if (!email) return null;
+    if (!email || !demoEmailAllowed(email)) return null;
     const user = await db.query.users.findFirst({ where: eq(users.email, email) });
     if (!user) return null;
     return loadSessionForUser(user);

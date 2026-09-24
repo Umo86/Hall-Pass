@@ -5,6 +5,7 @@ import { requireSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
 import { editionIsReadOnly } from "@/lib/edition-lock";
+import { artworkBlockedReason } from "@/lib/artwork-rules";
 
 const MAX_DIRECT_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
 
@@ -28,6 +29,8 @@ export async function POST(request: Request) {
         const bundle = await loadItemBundle(db, payload.itemId);
         if (!bundle || bundle.item.deletedAt) throw new Error("Item not found");
         if (editionIsReadOnly(bundle.edition.status)) throw new Error("Edition is read-only");
+        const blocked = artworkBlockedReason(bundle.item.status);
+        if (blocked) throw new Error(blocked);
         if (!can(session.actor, { type: "artwork.upload", item: itemAuthzCtx(bundle) })) {
           throw new Error("You cannot upload artwork for this item");
         }

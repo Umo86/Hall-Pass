@@ -412,16 +412,24 @@ export default async function SettingsPage() {
                           <span>
                             {st.sortOrder}. {st.name} — {st.kind} ·
                           </span>
-                          {canManage ? (
+                          {canUsers ? (
                             <WorkflowApproverForm
                               stepId={st.id}
                               approverType={st.approverType}
                               approverRole={st.approverRole}
                               approverUserId={st.approverUserId}
-                              staff={staff.map(({ u }) => ({
-                                id: u.id,
-                                name: u.fullName || u.email,
-                              }))}
+                              staff={staff
+                                .filter(
+                                  ({ m }) =>
+                                    m.role !== "viewer" &&
+                                    (m.permissionOverrides as Record<string, unknown>)?.[
+                                      "approval.decide"
+                                    ] !== false,
+                                )
+                                .map(({ u }) => ({
+                                  id: u.id,
+                                  name: u.fullName || u.email,
+                                }))}
                             />
                           ) : (
                             <span>
@@ -451,7 +459,7 @@ export default async function SettingsPage() {
             </div>
             <p className="text-muted-foreground mt-2 text-xs">
               Approver changes apply to future runs only — sign-offs already in flight keep the
-              approver they started with. Any staff member can be named directly on a step.
+              approver they started with. Only admins choose who signs off; any team member who can sign off can be named on a step.
             </p>
           </section>
         </>

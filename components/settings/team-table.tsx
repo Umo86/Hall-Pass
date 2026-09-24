@@ -28,7 +28,7 @@ const KEY_LABELS: Record<OverrideKey, string> = {
   "sponsorship.create": "Add sponsorship items",
   "costs.edit": "Edit costs",
   "approval.decide": "Approve / sign off (when assigned)",
-  "settings.manage": "Manage settings",
+  "settings.manage": "Manage editions & settings",
 };
 
 /** Mirrors the role defaults in lib/authz.ts so the checkboxes show the
