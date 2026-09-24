@@ -6,7 +6,7 @@ import { ArrowLeft, Building2, Check, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AccentRule, Wordmark } from "@/components/wordmark";
 import { Input } from "@/components/ui/input";
-import { devSignIn, signInWithMagicLink, signInWithPassword } from "@/app/actions/auth";
+import { devSignIn, signInWithMagicLink, signInWithPassword, signOut } from "@/app/actions/auth";
 import { Scene } from "@/components/scene";
 
 export type DevUser = {
@@ -32,9 +32,25 @@ type Props = {
   devUsers: DevUser[];
   configStatus: ConfigStatus;
   photo: string | null;
+  /** Where to continue after signing in. */
+  next?: string | null;
+  /** A problem to explain, e.g. an expired sign-in link. */
+  notice?: string | null;
+  /** Signed in with Supabase, but this email has no account here yet. */
+  unprovisionedEmail?: string | null;
 };
 
-export function LoginCard({ brandName, supabaseEnabled, devEnabled, devUsers, configStatus, photo }: Props) {
+export function LoginCard({
+  brandName,
+  supabaseEnabled,
+  devEnabled,
+  devUsers,
+  configStatus,
+  photo,
+  next = null,
+  notice = null,
+  unprovisionedEmail = null,
+}: Props) {
   const configured = supabaseEnabled || (devEnabled && devUsers.length > 0);
 
   return (
@@ -81,12 +97,32 @@ export function LoginCard({ brandName, supabaseEnabled, devEnabled, devUsers, co
               <Wordmark name={brandName} />
               <h1 className="mt-2 mb-6 text-xl font-semibold tracking-tight">Sign in</h1>
             </div>
-            {!configured ? (
+            {notice && (
+              <p className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                {notice}
+              </p>
+            )}
+            {unprovisionedEmail ? (
+              <div className="mx-auto max-w-sm space-y-3 text-sm">
+                <h2 className="text-lg font-semibold tracking-tight">
+                  Your account isn&apos;t set up yet
+                </h2>
+                <p className="text-muted-foreground">
+                  You&apos;re signed in as <strong>{unprovisionedEmail}</strong>, but nobody has
+                  invited that address yet. Ask an admin to invite it, then sign in again.
+                </p>
+                <form action={signOut}>
+                  <Button type="submit" variant="outline">
+                    Sign out
+                  </Button>
+                </form>
+              </div>
+            ) : !configured ? (
               <SetupPanel status={configStatus} />
             ) : devEnabled && devUsers.length > 0 ? (
-              <DevSignIn users={devUsers} supabaseEnabled={supabaseEnabled} />
+              <DevSignIn users={devUsers} supabaseEnabled={supabaseEnabled} next={next} />
             ) : (
-              <EmailSignIn />
+              <EmailSignIn next={next} />
             )}
           </main>
         </div>
@@ -95,7 +131,7 @@ export function LoginCard({ brandName, supabaseEnabled, devEnabled, devUsers, co
   );
 }
 
-function EmailSignIn() {
+function EmailSignIn({ next }: { next: string | null }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [mode, setMode] = useState<"magic" | "password">("magic");
@@ -118,8 +154,8 @@ function EmailSignIn() {
           start(async () => {
             const res =
               mode === "magic"
-                ? await signInWithMagicLink({ email })
-                : await signInWithPassword({ email, password });
+                ? await signInWithMagicLink({ email, next: next ?? undefined })
+                : await signInWithPassword({ email, password, next: next ?? undefined });
             if (res && !res.ok) setError(res.error);
             if (res && res.ok && res.message) setMessage(res.message);
           });
@@ -168,14 +204,22 @@ function EmailSignIn() {
         {error && <p className="text-destructive text-sm">{error}</p>}
       </form>
       <p className="text-muted-foreground mt-6 text-xs leading-relaxed">
-        No account? Venues, suppliers, sponsors and exhibitors receive an invitation link by email
-        — it signs you straight in.
+        No account? Venues, suppliers, sponsors and exhibitors receive an invitation link by email —
+        it signs you straight in.
       </p>
     </div>
   );
 }
 
-function DevSignIn({ users, supabaseEnabled }: { users: DevUser[]; supabaseEnabled: boolean }) {
+function DevSignIn({
+  users,
+  supabaseEnabled,
+  next,
+}: {
+  users: DevUser[];
+  supabaseEnabled: boolean;
+  next: string | null;
+}) {
   const [error, setError] = useState<string | null>(null);
   const [pendingEmail, setPendingEmail] = useState<string | null>(null);
   const [showEmail, setShowEmail] = useState(false);
@@ -192,7 +236,7 @@ function DevSignIn({ users, supabaseEnabled }: { users: DevUser[]; supabaseEnabl
         >
           ← Back to demo sign-in
         </button>
-        <EmailSignIn />
+        <EmailSignIn next={next} />
       </div>
     );
   }
@@ -201,7 +245,7 @@ function DevSignIn({ users, supabaseEnabled }: { users: DevUser[]; supabaseEnabl
     setError(null);
     setPendingEmail(email);
     start(async () => {
-      const res = await devSignIn({ email });
+      const res = await devSignIn({ email, next: next ?? undefined });
       if (res && !res.ok) {
         setError(res.error);
         setPendingEmail(null);
@@ -228,7 +272,13 @@ function DevSignIn({ users, supabaseEnabled }: { users: DevUser[]; supabaseEnabl
       </p>
       <div className="grid gap-1.5 sm:grid-cols-2">
         {staff.map((u) => (
-          <PersonButton key={u.email} user={u} busy={pendingEmail === u.email} disabled={pending} onClick={() => go(u.email)} />
+          <PersonButton
+            key={u.email}
+            user={u}
+            busy={pendingEmail === u.email}
+            disabled={pending}
+            onClick={() => go(u.email)}
+          />
         ))}
       </div>
 
@@ -239,7 +289,13 @@ function DevSignIn({ users, supabaseEnabled }: { users: DevUser[]; supabaseEnabl
           </p>
           <div className="grid gap-1.5 sm:grid-cols-2">
             {externals.map((u) => (
-              <PersonButton key={u.email} user={u} busy={pendingEmail === u.email} disabled={pending} onClick={() => go(u.email)} />
+              <PersonButton
+                key={u.email}
+                user={u}
+                busy={pendingEmail === u.email}
+                disabled={pending}
+                onClick={() => go(u.email)}
+              />
             ))}
           </div>
         </>
@@ -283,7 +339,9 @@ function PersonButton({
           .join("")}
       </span>
       <span className="min-w-0">
-        <span className="block truncate text-sm font-medium">{busy ? "Signing in…" : user.name}</span>
+        <span className="block truncate text-sm font-medium">
+          {busy ? "Signing in…" : user.name}
+        </span>
         <span className="text-muted-foreground block truncate text-xs">{user.role}</span>
       </span>
     </button>
@@ -292,19 +350,26 @@ function PersonButton({
 
 function SetupPanel({ status }: { status: ConfigStatus }) {
   const rows: Array<[string, boolean, string]> = [
-    ["Database connected", status.databaseUrl && status.databaseReachable,
+    [
+      "Database connected",
+      status.databaseUrl && status.databaseReachable,
       status.databaseUrl
-        ? (status.databaseError ?? "DATABASE_URL is set but unreachable — check the pooler URI and password")
-        : "Set DATABASE_URL (Supabase transaction pooler, port 6543)"],
-    ["Sign-in method", status.devAuth || (status.supabaseUrl && status.supabaseKey),
-      "Set DEV_AUTH=1 for demo sign-in, or NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY for real auth"],
+        ? (status.databaseError ??
+          "DATABASE_URL is set but unreachable — check the pooler URI and password")
+        : "Set DATABASE_URL (Supabase transaction pooler, port 6543)",
+    ],
+    [
+      "Sign-in method",
+      status.devAuth || (status.supabaseUrl && status.supabaseKey),
+      "Set DEV_AUTH=1 for demo sign-in, or NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY for real auth",
+    ],
   ];
   return (
     <div className="mx-auto max-w-sm">
       <h2 className="text-lg font-semibold tracking-tight">Almost there</h2>
       <p className="text-muted-foreground mt-1 mb-5 text-sm">
-        This deployment needs its environment variables before anyone can sign in. Add them in
-        your host&rsquo;s settings and redeploy — public variables only take effect on a fresh build.
+        This deployment needs its environment variables before anyone can sign in. Add them in your
+        host&rsquo;s settings and redeploy — public variables only take effect on a fresh build.
       </p>
       <ul className="space-y-3">
         {rows.map(([label, ok, hint]) => (

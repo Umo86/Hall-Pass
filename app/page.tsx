@@ -8,6 +8,7 @@ import { Scene } from "@/components/scene";
 import { brandImage } from "@/lib/brand-images";
 import { brandName } from "@/lib/config";
 import { getSession } from "@/lib/auth/actor";
+import { PORTAL_HOME, STAFF_HOME } from "@/lib/edition-path";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +37,7 @@ const PIPELINE = ["draft", "in_review", "approved", "in_production", "delivered"
 
 export default async function Home() {
   const session = await getSession().catch(() => null);
-  if (session) redirect(session.actor.kind === "staff" ? "/editions" : "/portal/approvals");
+  if (session) redirect(session.actor.kind === "staff" ? STAFF_HOME : PORTAL_HOME);
 
   return (
     <div className="bg-background flex min-h-screen flex-col">

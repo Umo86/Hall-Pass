@@ -107,6 +107,7 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
                 expectedLockedVersionId={item.currentArtworkVersionId ?? null}
                 requiresPhoto={
                   instance.stepNameSnapshot === "Installed" &&
+                  item.kind === "signage" &&
                   session.organisation.settings.install_photo_required
                 }
               />

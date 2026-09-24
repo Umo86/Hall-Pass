@@ -1,6 +1,6 @@
 import { appUrl } from "@/lib/app-url";
 import "server-only";
-import { and, count, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -12,7 +12,9 @@ import {
   organisations,
   reminderLog,
   signageItems,
+  notifications,
   standSubmissions,
+  tasks,
 } from "@/lib/db/schema";
 import { artworkDue, diffDaysIso, standDesignDue } from "@/lib/deadlines";
 import { editionForDeadlines } from "@/lib/queries/editions";
@@ -22,6 +24,7 @@ import { renderNotificationEmail } from "@/lib/email/template";
 import { brandName, standsEnabled } from "@/lib/config";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { writeAudit } from "@/lib/audit";
+import { formatDate } from "@/lib/format";
 
 export type JobResult = { job: string; sent: number; skipped: number };
 
@@ -224,13 +227,23 @@ export async function escalation(today: string): Promise<JobResult> {
   return { job: "escalation", sent, skipped };
 }
 
-/** Job 3 — missing artwork chasers for draft/awaiting items near or past due. */
+/**
+ * Job 3 — artwork chasers for items still waiting on artwork (or with
+ * artwork that was never submitted): 7 and 2 days before the due date, on
+ * the day, then weekly while overdue. Closed or finished shows are skipped.
+ */
+export function artworkChaseDay(diffDays: number): boolean {
+  if (diffDays > 0) return diffDays === 7 || diffDays === 2;
+  return diffDays % 7 === 0; // due day (0), then -7, -14 …
+}
+
 export async function missingArtwork(today: string): Promise<JobResult> {
   let sent = 0;
   let skipped = 0;
   const items = await db
-    .select()
+    .select({ item: signageItems, edition: editions })
     .from(signageItems)
+    .innerJoin(editions, eq(signageItems.editionId, editions.id))
     .where(
       and(
         inArray(signageItems.status, ["draft", "awaiting_artwork"]),
@@ -238,8 +251,9 @@ export async function missingArtwork(today: string): Promise<JobResult> {
       ),
     );
   const deadlineCache = new Map<string, Awaited<ReturnType<typeof editionForDeadlines>>>();
-  for (const item of items) {
+  for (const { item, edition } of items) {
     if (!item.ownerUserId) continue;
+    if (editionIsReadOnly(edition.status) || edition.breakdownEnd < today) continue;
     if (!deadlineCache.has(item.editionId)) {
       deadlineCache.set(item.editionId, await editionForDeadlines(item.editionId));
     }
@@ -248,20 +262,25 @@ export async function missingArtwork(today: string): Promise<JobResult> {
     const due = artworkDue({ artworkDueOverride: item.artworkDueOverride }, ed);
     if (!due) continue;
     const diff = diffDaysIso(due, today);
-    if (diff > 7) continue; // not yet in the window
+    if (!artworkChaseDay(diff)) continue;
     if (!(await recordSend("signage_item", item.id, "chaser", today))) {
       skipped++;
       continue;
     }
+    const hasArtwork = Boolean(item.currentArtworkVersionId);
+    const when =
+      diff < 0 ? `overdue (was due ${formatDate(due)})` : diff === 0 ? "due today" : `due in ${diff} days`;
     await db.transaction(async (tx) => {
       await notify(tx, {
         userIds: [item.ownerUserId!],
         kind: "artwork_chaser",
-        title:
-          diff < 0
-            ? `Artwork overdue: ${item.ref} (due ${due})`
-            : `Artwork due ${diff === 0 ? "today" : `in ${diff} days`}: ${item.ref}`,
-        body: `${item.name} has no artwork yet.`,
+        title: hasArtwork
+          ? `Artwork ready but not sent for sign-off: ${item.ref}`
+          : `Artwork ${when}: ${item.ref}`,
+        body: hasArtwork
+          ? `${item.name} has artwork uploaded — submit it for review (${when}).`
+          : `${item.name} has no artwork yet.`,
+        link: `/${edition.code}/${item.kind === "sponsorship_item" ? "sponsorship" : "signage"}/${item.ref}?tab=artwork`,
         entityType: "signage_item",
         entityId: item.id,
       });
@@ -442,6 +461,49 @@ export async function dailyDigest(today: string): Promise<JobResult> {
   return { job: "daily_digest", sent, skipped: 0 };
 }
 
+/**
+ * Job 7 — one morning reminder per person with tasks due today or overdue.
+ * Idempotent per day: skipped when they already had one in the last 20 hours.
+ */
+export async function taskReminders(today: string): Promise<JobResult> {
+  const due = await db
+    .select({ userId: tasks.assignedToUserId, n: count() })
+    .from(tasks)
+    .where(and(eq(tasks.status, "open"), lte(tasks.dueDate, today)))
+    .groupBy(tasks.assignedToUserId);
+  let sent = 0;
+  let skipped = 0;
+  const since = new Date(Date.now() - 20 * 3_600_000);
+  for (const { userId, n } of due) {
+    const [already] = await db
+      .select({ id: notifications.id })
+      .from(notifications)
+      .where(
+        and(
+          eq(notifications.userId, userId),
+          eq(notifications.kind, "task_reminder"),
+          gte(notifications.createdAt, since),
+        ),
+      )
+      .limit(1);
+    if (already) {
+      skipped++;
+      continue;
+    }
+    const count_ = Number(n);
+    await db.transaction(async (tx) => {
+      await notify(tx, {
+        userIds: [userId],
+        kind: "task_reminder",
+        title: `You have ${count_} task${count_ === 1 ? "" : "s"} due or overdue`,
+        link: "/approvals",
+      });
+    });
+    sent++;
+  }
+  return { job: "task_reminders", sent, skipped };
+}
+
 export async function runDailyJobs(today: string): Promise<JobResult[]> {
   const results: JobResult[] = [];
   results.push(await approvalReminders(today));
@@ -453,5 +515,6 @@ export async function runDailyJobs(today: string): Promise<JobResult[]> {
     results.push(await documentExpiry(today));
   }
   results.push(await dailyDigest(today));
+  results.push(await taskReminders(today));
   return results;
 }

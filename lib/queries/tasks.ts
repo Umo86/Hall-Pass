@@ -1,7 +1,9 @@
 import "server-only";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, ne } from "drizzle-orm";
 import { db } from "@/lib/db/client";
+import { alias } from "drizzle-orm/pg-core";
 import { editions, tasks, users } from "@/lib/db/schema";
+import { todayInLondon } from "@/lib/today";
 
 export type TaskRow = {
   id: string;
@@ -14,13 +16,19 @@ export type TaskRow = {
   assignedToUserId: string;
   createdByUserId: string;
   createdByName: string | null;
+  assignedToName: string | null;
   entityType: string | null;
   entityId: string | null;
   completedAt: string | null;
 };
 
 function toRow(
-  r: { task: typeof tasks.$inferSelect; editionCode: string | null; createdByName: string | null },
+  r: {
+    task: typeof tasks.$inferSelect;
+    editionCode: string | null;
+    createdByName: string | null;
+    assignedToName?: string | null;
+  },
   todayIso: string,
 ): TaskRow {
   return {
@@ -34,6 +42,7 @@ function toRow(
     assignedToUserId: r.task.assignedToUserId,
     createdByUserId: r.task.createdByUserId,
     createdByName: r.createdByName,
+    assignedToName: r.assignedToName ?? null,
     entityType: r.task.entityType,
     entityId: r.task.entityId,
     completedAt: r.task.completedAt?.toISOString() ?? null,
@@ -48,7 +57,7 @@ const baseSelect = {
 
 /** Open tasks assigned to the user, soonest due first (undated last). */
 export async function openTasksForUser(userId: string): Promise<TaskRow[]> {
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = todayInLondon();
   const rows = await db
     .select(baseSelect)
     .from(tasks)
@@ -61,7 +70,7 @@ export async function openTasksForUser(userId: string): Promise<TaskRow[]> {
 
 /** The most recently completed tasks, for a small "done" tail. */
 export async function recentlyCompletedForUser(userId: string, limit = 5): Promise<TaskRow[]> {
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = todayInLondon();
   const rows = await db
     .select(baseSelect)
     .from(tasks)
@@ -70,5 +79,27 @@ export async function recentlyCompletedForUser(userId: string, limit = 5): Promi
     .where(and(eq(tasks.assignedToUserId, userId), eq(tasks.status, "done")))
     .orderBy(desc(tasks.completedAt))
     .limit(limit);
+  return rows.map((r) => toRow(r, todayIso));
+}
+
+const assignee = alias(users, "task_assignee");
+
+/** Open tasks this user gave to other people, so they can follow them up. */
+export async function tasksAssignedByUser(userId: string): Promise<TaskRow[]> {
+  const todayIso = todayInLondon();
+  const rows = await db
+    .select({ ...baseSelect, assignedToName: assignee.fullName })
+    .from(tasks)
+    .leftJoin(editions, eq(tasks.editionId, editions.id))
+    .leftJoin(users, eq(tasks.createdByUserId, users.id))
+    .leftJoin(assignee, eq(tasks.assignedToUserId, assignee.id))
+    .where(
+      and(
+        eq(tasks.createdByUserId, userId),
+        ne(tasks.assignedToUserId, userId),
+        eq(tasks.status, "open"),
+      ),
+    )
+    .orderBy(asc(tasks.dueDate), asc(tasks.createdAt));
   return rows.map((r) => toRow(r, todayIso));
 }

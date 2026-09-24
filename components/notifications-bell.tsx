@@ -13,7 +13,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { markAllNotificationsRead } from "@/app/actions/notifications";
+import { markAllNotificationsRead, markNotificationRead } from "@/app/actions/notifications";
+import { formatDateTime } from "@/lib/format";
 
 export type BellNotification = {
   id: string;
@@ -37,6 +38,7 @@ export function NotificationsBell({
   // Live badge: polls a tiny count endpoint and refreshes the server-rendered
   // dropdown when it changes, so new notifications appear without navigating.
   const [polled, setPolled] = useState<number | null>(null);
+  const [readIds, setReadIds] = useState<Set<string>>(() => new Set());
   const liveCount = polled ?? unreadCount;
   const shownRef = useRef(liveCount);
   useEffect(() => {
@@ -81,7 +83,10 @@ export function NotificationsBell({
           )}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-96">
+      <DropdownMenuContent
+        align="end"
+        className="max-h-[70vh] w-[min(24rem,calc(100vw-1.5rem))] overflow-y-auto"
+      >
         <DropdownMenuLabel className="flex items-center justify-between">
           Notifications
           {liveCount > 0 && (
@@ -105,11 +110,23 @@ export function NotificationsBell({
           <p className="text-muted-foreground px-2 py-4 text-center text-sm">All caught up.</p>
         ) : (
           notifications.map((n) => (
-            <DropdownMenuItem key={n.id} asChild>
-              <Link href={n.link ?? "#"} className="flex flex-col items-start gap-0.5">
-                <span className={`text-sm ${n.unread ? "font-medium" : "text-muted-foreground"}`}>
+            <DropdownMenuItem
+              key={n.id}
+              asChild
+              onSelect={() => {
+                if (!n.unread || readIds.has(n.id)) return;
+                setReadIds((s) => new Set(s).add(n.id));
+                setPolled(Math.max(0, liveCount - 1));
+                void markNotificationRead({ id: n.id });
+              }}
+            >
+              <Link href={n.link ?? "/approvals"} className="flex flex-col items-start gap-0.5">
+                <span
+                  className={`text-sm ${n.unread && !readIds.has(n.id) ? "font-medium" : "text-muted-foreground"}`}
+                >
                   {n.title}
                 </span>
+                <span className="text-muted-foreground text-xs">{formatDateTime(n.createdAt)}</span>
               </Link>
             </DropdownMenuItem>
           ))

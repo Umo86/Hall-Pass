@@ -25,7 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { StatusBadge } from "@/components/status-badge";
-import { formatDate, formatMoney, statusLabel } from "@/lib/format";
+import { formatDate, formatMoney, statusLabel, roleLabel } from "@/lib/format";
 import type { ScheduleRow } from "@/lib/queries/signage";
 import { BulkActionsBar } from "./bulk-actions";
 
@@ -51,16 +51,42 @@ type Props = {
   suppliers: { id: string; name: string }[];
   canSeeCosts: boolean;
   canEdit: boolean;
+  canEditCosts: boolean;
+  canDelete: boolean;
 };
 
-export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdit }: Props) {
+// Shown by default; the rest stay one click away in the Columns menu.
+const DEFAULT_HIDDEN: VisibilityState = {
+  category: false,
+  typeName: false,
+  hallName: false,
+  size: false,
+  quantity: false,
+  fixingMethod: false,
+  sponsorName: false,
+  supplierName: false,
+  version: false,
+  costEstimate: false,
+  costActual: false,
+  poNumber: false,
+};
+
+export function ScheduleView({
+  editionCode,
+  rows,
+  suppliers,
+  canSeeCosts,
+  canEdit,
+  canEditCosts,
+  canDelete,
+}: Props) {
   const [view, setView] = useQueryState("view", parseAsString.withDefault("table"));
   const [status, setStatus] = useQueryState("status", parseAsString.withDefault(""));
   const [category, setCategory] = useQueryState("category", parseAsString.withDefault(""));
   const [q, setQ] = useQueryState("q", parseAsString.withDefault(""));
   const [group, setGroup] = useQueryState("group", parseAsString.withDefault(""));
   const [sorting, setSorting] = useState<SortingState>([]);
-  const [visibility, setVisibility] = useState<VisibilityState>({});
+  const [visibility, setVisibility] = useState<VisibilityState>(DEFAULT_HIDDEN);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -79,7 +105,7 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
   }, [rows, q, status, category]);
 
   const columns = useMemo<ColumnDef<ScheduleRow>[]>(() => {
-    const cols: ColumnDef<ScheduleRow>[] = [
+    const selectCol: ColumnDef<ScheduleRow>[] = [
       {
         id: "select",
         enableHiding: false,
@@ -103,6 +129,9 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
           />
         ),
       },
+    ];
+    const cols: ColumnDef<ScheduleRow>[] = [
+      ...(canEdit ? selectCol : []),
       {
         accessorKey: "ref",
         header: "Ref",
@@ -130,7 +159,7 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
           if (steps.length === 0) return <span className="text-muted-foreground">—</span>;
           return (
             <span className={steps.some((s) => s.overdue) ? "text-destructive font-medium" : ""}>
-              {steps.map((s) => `${s.name}${s.role ? ` (${statusLabel(s.role)})` : ""}`).join(", ")}
+              {steps.map((s) => `${s.name}${s.role ? ` (${roleLabel(s.role)})` : ""}`).join(", ")}
             </span>
           );
         },
@@ -164,7 +193,11 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
         },
       },
       { accessorKey: "sponsorName", header: "Sponsor", cell: ({ getValue }) => getValue() ?? "—" },
-      { accessorKey: "supplierName", header: "Supplier", cell: ({ getValue }) => getValue() ?? "—" },
+      {
+        accessorKey: "supplierName",
+        header: "Supplier",
+        cell: ({ getValue }) => getValue() ?? "—",
+      },
       {
         accessorKey: "installDate",
         header: "Install",
@@ -195,7 +228,7 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
       );
     }
     return cols;
-  }, [editionCode, canSeeCosts]);
+  }, [editionCode, canSeeCosts, canEdit]);
 
   const table = useReactTable({
     data: filtered,
@@ -331,6 +364,8 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
         <BulkActionsBar
           selectedIds={selectedIds}
           suppliers={suppliers}
+          canEditCosts={canEditCosts}
+          canDelete={canDelete}
           onDone={() => {
             setSelected({});
             startTransition(() => router.refresh());
@@ -338,72 +373,158 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
         />
       )}
 
-      {filtered.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="border-border text-muted-foreground flex h-40 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-sm">
-          No items match.
+          No signage yet.
           {canEdit && (
             <Button size="sm" variant="outline" asChild>
               <Link href={`/${editionCode}/signage/new`}>Create the first item</Link>
             </Button>
           )}
         </div>
+      ) : filtered.length === 0 ? (
+        <div className="border-border text-muted-foreground flex h-40 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-sm">
+          No items match your filters.
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              void setQ(null);
+              void setStatus(null);
+              void setCategory(null);
+            }}
+          >
+            Clear filters
+          </Button>
+        </div>
       ) : view === "kanban" ? (
         <KanbanView editionCode={editionCode} rows={filtered} />
-      ) : groups ? (
-        <div className="space-y-4">
-          {groups.map(([label, groupRows]) => (
-            <div key={label}>
-              <h3 className="text-muted-foreground mb-1 text-xs font-semibold tracking-wide uppercase">
-                {label} · {groupRows.length}
-              </h3>
-              <SimpleTable rows={groupRows} editionCode={editionCode} canSeeCosts={canSeeCosts} />
-            </div>
-          ))}
-        </div>
       ) : (
-        <div className="max-h-[70vh] overflow-auto rounded-lg border">
-          <table className="w-full text-sm">
-            {/* Opaque header: rows scroll underneath it inside the capped box. */}
-            <thead className="bg-muted sticky top-0 z-10">
-              {table.getHeaderGroups().map((hg) => (
-                <tr key={hg.id} className="border-b text-left">
-                  {hg.headers.map((h) => (
-                    <th key={h.id} className="text-muted-foreground px-3 py-2 font-medium">
-                      {h.isPlaceholder ? null : h.column.getCanSort() ? (
-                        <button
-                          className="flex items-center gap-1 hover:underline"
-                          onClick={h.column.getToggleSortingHandler()}
-                        >
-                          {flexRender(h.column.columnDef.header, h.getContext())}
-                          <ArrowUpDown className="size-3 opacity-40" />
-                        </button>
-                      ) : (
-                        flexRender(h.column.columnDef.header, h.getContext())
-                      )}
-                    </th>
-                  ))}
-                </tr>
-              ))}
-            </thead>
-            <tbody>
-              {table.getRowModel().rows.map((row) => (
-                <tr
-                  key={row.id}
-                  className="hover:bg-muted/30 cursor-pointer border-b last:border-0"
-                  onClick={() => router.push(`/${editionCode}/signage/${row.original.ref}`)}
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-3 py-2 whitespace-nowrap">
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <CardList rows={filtered} editionCode={editionCode} className="sm:hidden" />
+          <div className="hidden sm:block">
+            {groups ? (
+              <div className="space-y-4">
+                {groups.map(([label, groupRows]) => (
+                  <div key={label}>
+                    <h3 className="text-muted-foreground mb-1 text-xs font-semibold tracking-wide uppercase">
+                      {label} · {groupRows.length}
+                    </h3>
+                    <SimpleTable
+                      rows={groupRows}
+                      editionCode={editionCode}
+                      canSeeCosts={canSeeCosts}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="max-h-[70vh] overflow-auto rounded-lg border">
+                <table className="w-full text-sm">
+                  {/* Opaque header: rows scroll underneath it inside the capped box. */}
+                  <thead className="bg-muted sticky top-0 z-10">
+                    {table.getHeaderGroups().map((hg) => (
+                      <tr key={hg.id} className="border-b text-left">
+                        {hg.headers.map((h) => (
+                          <th key={h.id} className="text-muted-foreground px-3 py-2 font-medium">
+                            {h.isPlaceholder ? null : h.column.getCanSort() ? (
+                              <button
+                                className="flex items-center gap-1 hover:underline"
+                                onClick={h.column.getToggleSortingHandler()}
+                              >
+                                {flexRender(h.column.columnDef.header, h.getContext())}
+                                <ArrowUpDown className="size-3 opacity-40" />
+                              </button>
+                            ) : (
+                              flexRender(h.column.columnDef.header, h.getContext())
+                            )}
+                          </th>
+                        ))}
+                      </tr>
+                    ))}
+                  </thead>
+                  <tbody>
+                    {table.getRowModel().rows.map((row) => (
+                      <tr
+                        key={row.id}
+                        className="hover:bg-muted/30 cursor-pointer border-b last:border-0"
+                        onClick={() => router.push(`/${editionCode}/signage/${row.original.ref}`)}
+                      >
+                        {row.getVisibleCells().map((cell) => (
+                          <td key={cell.id} className="px-3 py-2 whitespace-nowrap">
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
       )}
     </div>
+  );
+}
+
+/** Phone layout: one tappable card per item. */
+function CardList({
+  rows,
+  editionCode,
+  className,
+}: {
+  rows: ScheduleRow[];
+  editionCode: string;
+  className?: string;
+}) {
+  return (
+    <ul className={`space-y-2 ${className ?? ""}`}>
+      {rows.map((r) => (
+        <li key={r.id}>
+          <ItemCard r={r} editionCode={editionCode} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ItemCard({
+  r,
+  editionCode,
+  showStatus = true,
+}: {
+  r: ScheduleRow;
+  editionCode: string;
+  showStatus?: boolean;
+}) {
+  return (
+    <Link
+      href={`/${editionCode}/signage/${r.ref}`}
+      className="bg-background block rounded-md border p-3 text-sm shadow-xs hover:shadow"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium">{r.ref}</span>
+        {showStatus ? (
+          <StatusBadge status={r.status} />
+        ) : r.currentVersion ? (
+          <span className="text-muted-foreground text-xs">v{r.currentVersion}</span>
+        ) : null}
+      </div>
+      <p className="mt-0.5 line-clamp-2">{r.name}</p>
+      <p className="text-muted-foreground mt-1 text-xs">
+        {[r.hallName, r.locationName].filter(Boolean).join(" · ") || "No location"}
+        {r.pendingSteps.length > 0 && (
+          <>
+            {" · "}
+            <span className={r.pendingSteps.some((s) => s.overdue) ? "text-destructive" : ""}>
+              {r.pendingSteps[0].name}
+              {r.pendingSteps[0].dueAt ? ` — due ${formatDate(r.pendingSteps[0].dueAt)}` : ""}
+            </span>
+          </>
+        )}
+      </p>
+    </Link>
   );
 }
 
@@ -419,6 +540,16 @@ function SimpleTable({
   return (
     <div className="max-h-[70vh] overflow-auto rounded-lg border">
       <table className="w-full text-sm">
+        <thead className="bg-muted sticky top-0 z-10">
+          <tr className="text-muted-foreground border-b text-left">
+            <th className="px-3 py-2 font-medium">Ref</th>
+            <th className="px-3 py-2 font-medium">Name</th>
+            <th className="px-3 py-2 font-medium">Status</th>
+            <th className="px-3 py-2 font-medium">Location</th>
+            <th className="px-3 py-2 font-medium">Install</th>
+            {canSeeCosts && <th className="px-3 py-2 font-medium">Estimate</th>}
+          </tr>
+        </thead>
         <tbody>
           {rows.map((r) => (
             <tr key={r.id} className="hover:bg-muted/30 border-b last:border-0">
@@ -456,31 +587,7 @@ function KanbanView({ editionCode, rows }: { editionCode: string; rows: Schedule
           </div>
           <div className="space-y-2">
             {byStatus.get(statusKey)!.map((r) => (
-              <Link
-                key={r.id}
-                href={`/${editionCode}/signage/${r.ref}`}
-                className="bg-background block rounded-md border p-3 text-sm shadow-xs hover:shadow"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-medium">{r.ref}</span>
-                  {r.currentVersion && (
-                    <span className="text-muted-foreground text-xs">v{r.currentVersion}</span>
-                  )}
-                </div>
-                <p className="mt-0.5 line-clamp-2">{r.name}</p>
-                <p className="text-muted-foreground mt-1 text-xs">
-                  {r.hallName ?? "No hall"}
-                  {r.pendingSteps.length > 0 && (
-                    <>
-                      {" · "}
-                      <span className={r.pendingSteps.some((s) => s.overdue) ? "text-destructive" : ""}>
-                        {r.pendingSteps[0].name}
-                        {r.pendingSteps[0].dueAt ? ` — due ${formatDate(r.pendingSteps[0].dueAt)}` : ""}
-                      </span>
-                    </>
-                  )}
-                </p>
-              </Link>
+              <ItemCard key={r.id} r={r} editionCode={editionCode} showStatus={false} />
             ))}
           </div>
         </div>

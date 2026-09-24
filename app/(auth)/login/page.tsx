@@ -2,8 +2,9 @@ import { redirect } from "next/navigation";
 import { LoginCard, type DevUser } from "@/components/auth/login-card";
 import { brandName } from "@/lib/config";
 import { devAuthEnabled, getSession } from "@/lib/auth/actor";
-import { supabaseConfigured } from "@/lib/auth/supabase-server";
-import { statusLabel } from "@/lib/format";
+import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
+import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
+import { roleLabel } from "@/lib/format";
 import { brandImage } from "@/lib/brand-images";
 
 export const metadata = { title: "Sign in" };
@@ -29,7 +30,7 @@ async function devUserList(): Promise<DevUser[]> {
         return {
           email: user.email,
           name: user.fullName || user.email.split("@")[0],
-          role: statusLabel(role),
+          role: roleLabel(role),
           isExternal: !membership,
         };
       })
@@ -40,9 +41,27 @@ async function devUserList(): Promise<DevUser[]> {
   }
 }
 
-export default async function LoginPage() {
+const NOTICES: Record<string, string> = {
+  auth: "That sign-in link has expired or was already used — ask for a new one below.",
+};
+
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string; error?: string }>;
+}) {
+  const { next: rawNext, error } = await searchParams;
+  const next = safeNext(rawNext);
   const session = await getSession().catch(() => null);
-  if (session) redirect(session.actor.kind === "staff" ? "/editions" : "/portal/approvals");
+  if (session) redirect(next ?? (session.actor.kind === "staff" ? STAFF_HOME : PORTAL_HOME));
+
+  // Signed in with Supabase but not invited: explain instead of looping.
+  let unprovisionedEmail: string | null = null;
+  const supabase = await createSupabaseServerClient().catch(() => null);
+  if (supabase) {
+    const { data } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
+    unprovisionedEmail = data.user?.email ?? null;
+  }
 
   // Self-diagnosis for the unconfigured state, so a misdeployed instance
   // says exactly what is missing instead of a dead end.
@@ -67,11 +86,14 @@ export default async function LoginPage() {
       devEnabled={devAuthEnabled()}
       devUsers={await devUserList()}
       photo={brandImage("login")}
+      next={next}
+      notice={error ? (NOTICES[error] ?? "Sign-in didn't work — please try again.") : null}
+      unprovisionedEmail={unprovisionedEmail}
       configStatus={{
         supabaseUrl: Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL),
         supabaseKey: Boolean(
           process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-            process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+          process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
         ),
         databaseUrl: Boolean(process.env.DATABASE_URL),
         databaseReachable,

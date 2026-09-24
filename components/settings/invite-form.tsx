@@ -112,7 +112,8 @@ export function InviteExternalForm({
           <Label htmlFor="inv-scope">Scoped to</Label>
           {scopeOptions.length === 0 && (
             <p className="text-muted-foreground text-xs">
-              Nothing to choose yet — add a {role === "sponsor" ? "sponsor on the Sponsorship page" : `${role} first`}.
+              Nothing to choose yet — add a{" "}
+              {role === "sponsor" ? "sponsor on the Sponsorship page" : `${role} first`}.
             </p>
           )}
           <SelectNative id="inv-scope" name="scopeId" required>
@@ -145,20 +146,31 @@ export function InviteExternalForm({
 
 export function RevokeGrantButton({ grantId }: { grantId: string }) {
   const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
   const router = useRouter();
   return (
-    <Button
-      size="sm"
-      variant="outline"
-      disabled={pending}
-      onClick={() =>
-        start(async () => {
-          await revokeGrant({ grantId });
-          router.refresh();
-        })
-      }
-    >
-      Revoke
-    </Button>
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={pending}
+        onClick={() => {
+          if (
+            !window.confirm(
+              "Revoke this person's access? They are signed out of this show straight away.",
+            )
+          )
+            return;
+          start(async () => {
+            const res = await revokeGrant({ grantId });
+            setError(res.ok ? null : res.error);
+            router.refresh();
+          });
+        }}
+      >
+        Revoke
+      </Button>
+      {error && <span className="text-destructive text-xs">{error}</span>}
+    </span>
   );
 }

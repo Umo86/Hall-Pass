@@ -1,7 +1,6 @@
 "use client";
 
-import { useTransition } from "react";
-import Link from "next/link";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -11,6 +10,7 @@ import type { TaskRow } from "@/lib/queries/tasks";
 
 function TaskItem({ task, currentUserId }: { task: TaskRow; currentUserId: string }) {
   const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
   const router = useRouter();
   const done = task.status === "done";
   const canDelete = task.createdByUserId === currentUserId;
@@ -25,7 +25,8 @@ function TaskItem({ task, currentUserId }: { task: TaskRow; currentUserId: strin
         aria-label={`Mark "${task.title}" ${done ? "open" : "done"}`}
         onChange={(e) =>
           start(async () => {
-            await completeTask({ id: task.id, done: e.target.checked });
+            const res = await completeTask({ id: task.id, done: e.target.checked });
+            setError(res.ok ? null : res.error);
             router.refresh();
           })
         }
@@ -49,15 +50,8 @@ function TaskItem({ task, currentUserId }: { task: TaskRow; currentUserId: strin
           )}
         </p>
         {task.notes && <p className="text-muted-foreground mt-1 text-xs">{task.notes}</p>}
+        {error && <p className="text-destructive mt-1 text-xs">{error}</p>}
       </div>
-      {task.entityType === "signage_item" && task.editionCode && task.entityId && (
-        <Link
-          href={`/${task.editionCode}/signage`}
-          className="text-muted-foreground text-xs hover:underline"
-        >
-          View schedule
-        </Link>
-      )}
       {canDelete && (
         <Button
           size="sm"
@@ -66,7 +60,8 @@ function TaskItem({ task, currentUserId }: { task: TaskRow; currentUserId: strin
           aria-label={`Delete "${task.title}"`}
           onClick={() =>
             start(async () => {
-              await deleteTask({ id: task.id });
+              const res = await deleteTask({ id: task.id });
+              setError(res.ok ? null : res.error);
               router.refresh();
             })
           }

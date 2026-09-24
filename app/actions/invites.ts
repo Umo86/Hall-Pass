@@ -13,6 +13,7 @@ import { DEV_COOKIE, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient } from "@/lib/auth/supabase-server";
 import { hashInviteToken } from "@/lib/auth/invite-token";
 import { claimStaffInvite } from "@/lib/auth/claim-staff-invite";
+import { STAFF_HOME } from "@/lib/edition-path";
 
 export type InviteResult = { ok: true; message?: string } | { ok: false; error: string };
 
@@ -137,7 +138,7 @@ async function acceptStaffInvite(
       return { ok: false, error: "This invitation was sent to a different email address." };
     }
     await claimStaffInvite(invite, session.user.id, fullName);
-    redirect("/editions");
+    redirect(STAFF_HOME);
   }
 
   if (devAuthEnabled()) {
@@ -151,7 +152,7 @@ async function acceptStaffInvite(
     await claimStaffInvite(invite, user.id, fullName);
     const store = await cookies();
     store.set(DEV_COOKIE, user.email, { httpOnly: true, sameSite: "lax", path: "/" });
-    redirect("/editions");
+    redirect(STAFF_HOME);
   }
 
   // Production: magic link; the membership is created by email match at

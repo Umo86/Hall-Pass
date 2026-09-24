@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runDailyJobs } from "@/lib/cron/jobs";
 import { dispatchNotificationEmails } from "@/lib/email/dispatch";
+import { todayInLondon } from "@/lib/today";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -9,16 +10,6 @@ function isAuthorised(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
   return request.headers.get("authorization") === `Bearer ${secret}`;
-}
-
-/** Today's date in Europe/London, whatever timezone the runtime uses. */
-function todayInLondon(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: process.env.APP_TIMEZONE ?? "Europe/London",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
 }
 
 /**

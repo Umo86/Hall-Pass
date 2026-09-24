@@ -4,7 +4,8 @@ import { db } from "@/lib/db/client";
 import { editionDeadlines, editions, events, venues } from "@/lib/db/schema";
 import type { EditionForDeadlines } from "@/lib/deadlines";
 
-export async function listEditions() {
+/** The organisation's editions, earliest build first. */
+export async function listEditions(organisationId: string) {
   return db
     .select({
       edition: editions,
@@ -14,6 +15,7 @@ export async function listEditions() {
     .from(editions)
     .innerJoin(events, eq(editions.eventId, events.id))
     .innerJoin(venues, eq(editions.venueId, venues.id))
+    .where(eq(events.organisationId, organisationId))
     .orderBy(editions.buildStart);
 }
 

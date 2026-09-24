@@ -16,10 +16,12 @@ import { bulkSignageAction } from "@/app/actions/signage-bulk";
 type Props = {
   selectedIds: string[];
   suppliers: { id: string; name: string }[];
+  canEditCosts: boolean;
+  canDelete: boolean;
   onDone: () => void;
 };
 
-export function BulkActionsBar({ selectedIds, suppliers, onDone }: Props) {
+export function BulkActionsBar({ selectedIds, suppliers, canEditCosts, canDelete, onDone }: Props) {
   const [dialog, setDialog] = useState<"supplier" | "install" | "delete" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -39,9 +41,11 @@ export function BulkActionsBar({ selectedIds, suppliers, onDone }: Props) {
   return (
     <div className="bg-muted/60 flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 text-sm">
       <span className="font-medium">{selectedIds.length} selected</span>
-      <Button size="sm" variant="outline" onClick={() => setDialog("supplier")}>
-        Set supplier
-      </Button>
+      {canEditCosts && (
+        <Button size="sm" variant="outline" onClick={() => setDialog("supplier")}>
+          Set supplier
+        </Button>
+      )}
       <Button size="sm" variant="outline" onClick={() => setDialog("install")}>
         Set install date
       </Button>
@@ -53,18 +57,18 @@ export function BulkActionsBar({ selectedIds, suppliers, onDone }: Props) {
       >
         Submit for review
       </Button>
-      <Button size="sm" variant="destructive" onClick={() => setDialog("delete")}>
-        Delete
-      </Button>
+      {canDelete && (
+        <Button size="sm" variant="destructive" onClick={() => setDialog("delete")}>
+          Delete
+        </Button>
+      )}
       {message && <span className="text-muted-foreground">{message}</span>}
 
       <Dialog open={dialog === "supplier"} onOpenChange={(o) => !o && setDialog(null)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Set supplier</DialogTitle>
-            <DialogDescription>
-              Applies to {selectedIds.length} selected item(s).
-            </DialogDescription>
+            <DialogDescription>Applies to {selectedIds.length} selected item(s).</DialogDescription>
           </DialogHeader>
           <select
             className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
@@ -92,12 +96,14 @@ export function BulkActionsBar({ selectedIds, suppliers, onDone }: Props) {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Set install date and slot</DialogTitle>
-            <DialogDescription>
-              Applies to {selectedIds.length} selected item(s).
-            </DialogDescription>
+            <DialogDescription>Applies to {selectedIds.length} selected item(s).</DialogDescription>
           </DialogHeader>
           <div className="flex gap-2">
-            <Input type="date" value={installDate} onChange={(e) => setInstallDate(e.target.value)} />
+            <Input
+              type="date"
+              value={installDate}
+              onChange={(e) => setInstallDate(e.target.value)}
+            />
             <select
               className="border-input h-9 rounded-md border bg-transparent px-3 text-sm"
               value={installSlot}

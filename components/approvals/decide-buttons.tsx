@@ -55,7 +55,7 @@ const LABELS: Record<DecisionKind, string> = {
 };
 
 const CONSEQUENCE: Record<DecisionKind, string> = {
-  approve: "Your approval is recorded against the current version and its SHA-256.",
+  approve: "Your approval is recorded against the current artwork version.",
   approve_with_conditions:
     "Your approval is recorded with the conditions below; they follow the item to installation.",
   request_changes:

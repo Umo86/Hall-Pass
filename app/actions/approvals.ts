@@ -110,6 +110,8 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
       if (
         row.stepNameSnapshot === "Installed" &&
         data.decision === "confirm" &&
+        isSignage &&
+        (bundle as { item: { kind: string } }).item.kind === "signage" &&
         session.organisation.settings.install_photo_required &&
         !data.photoPath
       ) {

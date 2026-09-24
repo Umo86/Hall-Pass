@@ -136,14 +136,18 @@ export function DocumentsPanel({
 
       <ul className="space-y-2">
         {documents.map((d) => (
-          <li key={d.id} className="flex flex-wrap items-center gap-3 rounded-lg border p-3 text-sm">
+          <li
+            key={d.id}
+            className="flex flex-wrap items-center gap-3 rounded-lg border p-3 text-sm"
+          >
             <FileText className="text-muted-foreground size-5" aria-hidden />
             <div className="min-w-0 flex-1">
               <p className="font-medium">
                 {DOC_LABELS[d.docType] ?? statusLabel(d.docType)} — {d.fileName}
               </p>
               <p className="text-muted-foreground text-xs">
-                v{d.submissionVersion ?? 1} · {d.uploaderName ?? "—"} · {formatDateTime(d.createdAt)}
+                v{d.submissionVersion ?? 1} · {d.uploaderName ?? "—"} ·{" "}
+                {formatDateTime(d.createdAt)}
                 {d.expiresAt ? ` · expires ${formatDate(d.expiresAt)}` : ""}
                 {d.reviewNote ? ` · “${d.reviewNote}”` : ""}
               </p>
@@ -167,7 +171,11 @@ export function DocumentsPanel({
                   disabled={pending}
                   onClick={() =>
                     start(async () => {
-                      await reviewStandDocument({ documentId: d.id, status: "accepted" });
+                      const res = await reviewStandDocument({
+                        documentId: d.id,
+                        status: "accepted",
+                      });
+                      setError(res.ok ? null : res.error);
                       router.refresh();
                     })
                   }
@@ -180,11 +188,12 @@ export function DocumentsPanel({
                   disabled={pending}
                   onClick={() =>
                     start(async () => {
-                      await reviewStandDocument({
+                      const res = await reviewStandDocument({
                         documentId: d.id,
                         status: "rejected",
                         reviewNote: "Not acceptable — see comments",
                       });
+                      setError(res.ok ? null : res.error);
                       router.refresh();
                     })
                   }
@@ -196,6 +205,7 @@ export function DocumentsPanel({
           </li>
         ))}
       </ul>
+      {error && <p className="text-destructive text-sm">{error}</p>}
     </div>
   );
 }

@@ -2,12 +2,20 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { approvalInstances, editionDeadlines, signageItems, standSubmissions, exhibitors } from "@/lib/db/schema";
+import {
+  approvalInstances,
+  editionDeadlines,
+  signageItems,
+  standSubmissions,
+  exhibitors,
+} from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { effectiveDeadline, type DeadlineKey } from "@/lib/deadlines";
 import { addMonths, monthGrid, monthLabel, parseMonthParam } from "@/lib/calendar";
 import { cn } from "@/lib/utils";
+import { standsEnabled } from "@/lib/config";
+import { formatDate } from "@/lib/format";
 
 export const metadata = { title: "Calendar" };
 export const dynamic = "force-dynamic";
@@ -51,16 +59,23 @@ export default async function CalendarPage({
         ref: signageItems.ref,
         name: signageItems.name,
         id: signageItems.id,
+        kind: signageItems.kind,
         installDate: signageItems.installDate,
         deliveryDate: signageItems.deliveryDate,
       })
       .from(signageItems)
       .where(and(eq(signageItems.editionId, edition.id), isNull(signageItems.deletedAt))),
-    db
-      .select({ id: standSubmissions.id, company: exhibitors.companyName })
-      .from(standSubmissions)
-      .innerJoin(exhibitors, eq(standSubmissions.exhibitorId, exhibitors.id))
-      .where(eq(standSubmissions.editionId, edition.id)),
+    standsEnabled
+      ? db
+          .select({
+            id: standSubmissions.id,
+            ref: standSubmissions.ref,
+            company: exhibitors.companyName,
+          })
+          .from(standSubmissions)
+          .innerJoin(exhibitors, eq(standSubmissions.exhibitorId, exhibitors.id))
+          .where(eq(standSubmissions.editionId, edition.id))
+      : [],
   ]);
 
   const entityIds = [...items.map((i) => i.id), ...stands.map((s) => s.id)];
@@ -103,15 +118,19 @@ export default async function CalendarPage({
   }
   add(edition.buildStart, { label: "Build-up starts", href: null, tone: "deadline" });
 
+  const itemHref = (item: { ref: string; kind: string }) =>
+    `/${editionCode}/${item.kind === "sponsorship_item" ? "sponsorship" : "signage"}/${item.ref}`;
   for (const item of items) {
-    add(item.installDate, {
-      label: `Install ${item.ref}`,
-      href: `/${editionCode}/signage/${item.ref}`,
-      tone: "install",
-    });
+    if (item.kind === "signage") {
+      add(item.installDate, {
+        label: `Install: ${item.name}`,
+        href: itemHref(item),
+        tone: "install",
+      });
+    }
     add(item.deliveryDate, {
-      label: `Deliver ${item.ref}`,
-      href: `/${editionCode}/signage/${item.ref}`,
+      label: `Delivery: ${item.name}`,
+      href: itemHref(item),
       tone: "delivery",
     });
   }
@@ -121,15 +140,20 @@ export default async function CalendarPage({
     const date = inst.dueAt.toISOString().slice(0, 10);
     const item = itemById.get(inst.entityId);
     const stand = standById.get(inst.entityId);
-    const target = item ? item.ref : (stand?.company ?? "stand");
+    if (!item && !stand) continue;
+    const target = item ? item.name : stand!.company;
     add(date, {
       label: `${inst.stepNameSnapshot}: ${target}`,
-      href: item ? `/${editionCode}/signage/${item.ref}?tab=approvals` : `/${editionCode}/stands`,
+      href: item ? `${itemHref(item)}?tab=artwork` : `/${editionCode}/stands/${stand!.ref}`,
       tone: date < todayIso ? "overdue" : "signoff",
     });
   }
 
   const weeks = monthGrid(year, month);
+  const monthPrefix = `${year}-${String(month).padStart(2, "0")}`;
+  const agenda = [...chips.entries()]
+    .filter(([iso]) => iso.startsWith(monthPrefix))
+    .sort((a, b) => a[0].localeCompare(b[0]));
   const prev = addMonths(year, month, -1);
   const next = addMonths(year, month, 1);
   const fmt = (ym: { year: number; month: number }) =>
@@ -146,25 +170,62 @@ export default async function CalendarPage({
           </p>
         </div>
         <div className="flex items-center gap-2 text-sm">
-          <Link href={`?m=${fmt(prev)}`} className="rounded-md border px-2.5 py-1.5 hover:bg-accent" aria-label="Previous month">
+          <Link
+            href={`?m=${fmt(prev)}`}
+            className="rounded-md border px-2.5 py-1.5 hover:bg-accent"
+            aria-label="Previous month"
+          >
             ←
           </Link>
           <span className="min-w-36 text-center font-medium">{monthLabel(year, month)}</span>
-          <Link href={`?m=${fmt(next)}`} className="rounded-md border px-2.5 py-1.5 hover:bg-accent" aria-label="Next month">
+          <Link
+            href={`?m=${fmt(next)}`}
+            className="rounded-md border px-2.5 py-1.5 hover:bg-accent"
+            aria-label="Next month"
+          >
             →
           </Link>
-          <Link href={`?m=${fmt(buildMonth)}`} className="text-muted-foreground ml-2 hover:underline">
+          <Link
+            href={`?m=${fmt(buildMonth)}`}
+            className="text-muted-foreground ml-2 hover:underline"
+          >
             Jump to build-up
           </Link>
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      {/* Phones: a simple list of the month's days that have something on. */}
+      <ol className="space-y-3 sm:hidden">
+        {agenda.length === 0 ? (
+          <li className="text-muted-foreground rounded-lg border border-dashed p-4 text-sm">
+            Nothing on this month.
+          </li>
+        ) : (
+          agenda.map(([iso, day]) => (
+            <li
+              key={iso}
+              className={cn("rounded-lg border p-3", iso === todayIso && "ring-primary ring-2")}
+            >
+              <p className="mb-1.5 text-sm font-medium">{formatDate(iso)}</p>
+              <div className="flex flex-col gap-1">
+                {day.map((chip, i) => (
+                  <ChipView key={i} chip={chip} large />
+                ))}
+              </div>
+            </li>
+          ))
+        )}
+      </ol>
+
+      <div className="hidden overflow-x-auto sm:block">
         <table className="w-full min-w-[760px] table-fixed border-collapse">
           <thead>
             <tr>
               {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
-                <th key={d} className="text-muted-foreground border p-1.5 text-left text-xs font-medium">
+                <th
+                  key={d}
+                  className="text-muted-foreground border p-1.5 text-left text-xs font-medium"
+                >
                   {d}
                 </th>
               ))}
@@ -184,28 +245,29 @@ export default async function CalendarPage({
                         cell.iso === todayIso && "ring-primary ring-2 ring-inset",
                       )}
                     >
-                      <p className={cn("mb-1 text-xs", cell.inMonth ? "font-medium" : "text-muted-foreground")}>
+                      <p
+                        className={cn(
+                          "mb-1 text-xs",
+                          cell.inMonth ? "font-medium" : "text-muted-foreground",
+                        )}
+                      >
                         {Number(cell.iso.slice(8))}
                       </p>
                       <div className="flex flex-col gap-0.5">
-                        {day.slice(0, 4).map((chip, i) =>
-                          chip.href ? (
-                            <Link
-                              key={i}
-                              href={chip.href}
-                              className={cn("truncate rounded px-1 py-0.5 text-[11px] leading-4 hover:opacity-80", TONE_CLASSES[chip.tone])}
-                              title={chip.label}
-                            >
-                              {chip.label}
-                            </Link>
-                          ) : (
-                            <span key={i} className={cn("truncate rounded px-1 py-0.5 text-[11px] leading-4", TONE_CLASSES[chip.tone])} title={chip.label}>
-                              {chip.label}
-                            </span>
-                          ),
-                        )}
+                        {day.slice(0, 4).map((chip, i) => (
+                          <ChipView key={i} chip={chip} />
+                        ))}
                         {day.length > 4 && (
-                          <span className="text-muted-foreground text-[11px]">+{day.length - 4} more</span>
+                          <details className="text-[11px]">
+                            <summary className="text-muted-foreground cursor-pointer select-none">
+                              +{day.length - 4} more
+                            </summary>
+                            <div className="mt-0.5 flex flex-col gap-0.5">
+                              {day.slice(4).map((chip, i) => (
+                                <ChipView key={i} chip={chip} />
+                              ))}
+                            </div>
+                          </details>
                         )}
                       </div>
                     </td>
@@ -233,5 +295,22 @@ export default async function CalendarPage({
         ))}
       </div>
     </div>
+  );
+}
+
+function ChipView({ chip, large = false }: { chip: Chip; large?: boolean }) {
+  const cls = cn(
+    "truncate rounded px-1 py-0.5",
+    large ? "text-sm leading-5" : "text-[11px] leading-4",
+    TONE_CLASSES[chip.tone],
+  );
+  return chip.href ? (
+    <Link href={chip.href} className={cn(cls, "hover:opacity-80")} title={chip.label}>
+      {chip.label}
+    </Link>
+  ) : (
+    <span className={cls} title={chip.label}>
+      {chip.label}
+    </span>
   );
 }

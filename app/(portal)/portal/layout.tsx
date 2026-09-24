@@ -2,8 +2,6 @@ import Link from "next/link";
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { requirePortalSession } from "@/lib/auth/actor";
 import { Wordmark } from "@/components/wordmark";
-import { Scene } from "@/components/scene";
-import { brandImage } from "@/lib/brand-images";
 
 export const dynamic = "force-dynamic";
 
@@ -40,14 +38,6 @@ export default async function PortalLayout({ children }: { children: React.React
           <SignOutButton />
         </div>
       </header>
-      <div className="mx-auto w-full max-w-5xl px-4 pt-4 sm:px-6 sm:pt-6">
-        <Scene
-          kind="stand"
-          photo={brandImage("portal")}
-          alt="Contractor and operations manager checking a stand build"
-          className="max-h-40 [&>svg]:h-40 [&>img]:h-40"
-        />
-      </div>
       <main className="min-w-0 flex-1">{children}</main>
     </div>
   );

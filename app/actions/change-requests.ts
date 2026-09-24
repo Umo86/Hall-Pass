@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { eq, and } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { changeRequests, memberships, signageItems, type FieldChange } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
@@ -38,6 +38,9 @@ const CHANGEABLE = z.object({
   deliveryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
 });
 
+// Before sign-off the item is edited directly; requests are for locked items.
+const NOT_YET_SIGNED_OFF = ["draft", "awaiting_artwork", "in_review", "changes_requested"];
+
 const raiseSchema = z.object({
   itemId: z.string().uuid(),
   reason: z.string().min(5, "Give a reason (at least a sentence)").max(2000),
@@ -54,6 +57,12 @@ export async function raiseChangeRequest(input: unknown): Promise<ActionResult> 
   const bundle = await loadItemBundle(db, parsed.data.itemId);
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
+  if (NOT_YET_SIGNED_OFF.includes(bundle.item.status)) {
+    return fail("This item isn't signed off yet — change it directly on the Details tab");
+  }
+  if (bundle.item.kind !== "signage" && parsed.data.changes.installDate !== undefined) {
+    return fail("Sponsorship items have no install date");
+  }
 
   const item = bundle.item as unknown as Record<string, unknown>;
   const fieldChanges: FieldChange[] = Object.entries(parsed.data.changes)
@@ -82,17 +91,17 @@ export async function raiseChangeRequest(input: unknown): Promise<ActionResult> 
         after: { itemRef: bundle.item.ref, reason: parsed.data.reason, fieldChanges },
         summary: `Change request raised on ${bundle.item.ref}`,
       });
-      const opsUsers = await tx
+      const deciders = await tx
         .select({ userId: memberships.userId })
         .from(memberships)
         .where(
           and(
             eq(memberships.organisationId, session.organisation.id),
-            eq(memberships.role, "ops"),
+            inArray(memberships.role, ["admin", "ops"]),
           ),
         );
       await notify(tx, {
-        userIds: opsUsers.map((u) => u.userId),
+        userIds: deciders.map((u) => u.userId).filter((id) => id !== session.user.id),
         kind: "change_request",
         title: `Change request on ${bundle.item.ref}`,
         body: parsed.data.reason,
@@ -115,6 +124,9 @@ const decideSchema = z.object({
 export async function decideChangeRequest(input: unknown): Promise<ActionResult> {
   const parsed = decideSchema.safeParse(input);
   if (!parsed.success) return fail("Invalid request");
+  if (parsed.data.decision === "reject" && (parsed.data.comment?.trim().length ?? 0) < 5) {
+    return fail("Say why you're rejecting it (at least a few words) — the requester sees this");
+  }
   const session = await requireSession();
   if (!can(session.actor, { type: "change_request.approve" })) {
     return fail("Only admin or ops can decide change requests");
@@ -214,12 +226,12 @@ export async function decideChangeRequest(input: unknown): Promise<ActionResult>
         entityId: cr.id,
         action: "decide",
         after: { itemRef: bundle.item.ref, comment: parsed.data.comment ?? null },
-        summary: `Change request ${parsed.data.decision}d on ${bundle.item.ref}`,
+        summary: `Change request ${parsed.data.decision === "approve" ? "accepted" : "rejected"} on ${bundle.item.ref}${parsed.data.comment ? `: ${parsed.data.comment}` : ""}`,
       });
       await notify(tx, {
         userIds: [cr.requestedBy],
         kind: "change_request",
-        title: `Your change request on ${bundle.item.ref} was ${parsed.data.decision}d`,
+        title: `Your change request on ${bundle.item.ref} was ${parsed.data.decision === "approve" ? "accepted" : "rejected"}`,
         body: parsed.data.comment,
         link: `/${bundle.edition.code}/signage/${bundle.item.ref}?tab=changes`,
       });

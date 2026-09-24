@@ -10,10 +10,14 @@ import { memberships, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
 import { DEV_COOKIE, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient } from "@/lib/auth/supabase-server";
+import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 
 export type AuthResult = { ok: true; message?: string } | { ok: false; error: string };
 
-const emailSchema = z.object({ email: z.string().email("Enter a valid email address") });
+const emailSchema = z.object({
+  email: z.string().email("Enter a valid email address"),
+  next: z.string().max(500).optional(),
+});
 const passwordSchema = emailSchema.extend({
   password: z.string().min(1, "Enter your password"),
 });
@@ -26,7 +30,7 @@ export async function signInWithPassword(input: unknown): Promise<AuthResult> {
   if (!supabase) return { ok: false, error: "Authentication is not configured" };
   const { error } = await supabase.auth.signInWithPassword(parsed.data);
   if (error) return { ok: false, error: "Incorrect email or password" };
-  redirect("/");
+  redirect(safeNext(parsed.data.next) ?? "/");
 }
 
 /** Magic link for staff and external users alike. */
@@ -38,7 +42,11 @@ export async function signInWithMagicLink(input: unknown): Promise<AuthResult> {
   const base = appUrl();
   const { error } = await supabase.auth.signInWithOtp({
     email: parsed.data.email,
-    options: { emailRedirectTo: `${base}/auth/callback` },
+    options: {
+      emailRedirectTo: `${base}/auth/callback${
+        safeNext(parsed.data.next) ? `?next=${encodeURIComponent(safeNext(parsed.data.next)!)}` : ""
+      }`,
+    },
   });
   if (error) return { ok: false, error: "Could not send the magic link — try again shortly" };
   return { ok: true, message: "Check your inbox for a sign-in link." };
@@ -68,7 +76,7 @@ export async function devSignIn(input: unknown): Promise<AuthResult> {
       summary: `${user.email} signed in (development)`,
     });
   });
-  redirect(membership ? "/editions" : "/portal/approvals");
+  redirect(safeNext(parsed.data.next) ?? (membership ? STAFF_HOME : PORTAL_HOME));
 }
 
 export async function signOut(): Promise<void> {
@@ -82,5 +90,5 @@ export async function signOut(): Promise<void> {
 export async function currentSessionRedirect(): Promise<void> {
   const session = await getSession();
   if (!session) redirect("/login");
-  redirect(session.actor.kind === "staff" ? "/editions" : "/portal/approvals");
+  redirect(session.actor.kind === "staff" ? STAFF_HOME : PORTAL_HOME);
 }

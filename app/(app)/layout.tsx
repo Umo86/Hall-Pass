@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, count, desc, eq, isNull } from "drizzle-orm";
 import { AppNav } from "@/components/app-nav";
 import { EditionSwitcher } from "@/components/edition-switcher";
 import { MobileNav } from "@/components/mobile-nav";
@@ -11,22 +11,25 @@ import { requireStaffSession } from "@/lib/auth/actor";
 import { listEditions } from "@/lib/queries/editions";
 import { can } from "@/lib/authz";
 import { standsEnabled } from "@/lib/config";
+import { roleLabel } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await requireStaffSession();
-  const editions = await listEditions();
-  const recentNotifications = await db
-    .select()
-    .from(notifications)
-    .where(eq(notifications.userId, session.user.id))
-    .orderBy(desc(notifications.createdAt))
-    .limit(12);
-  const unread = await db
-    .select({ id: notifications.id })
-    .from(notifications)
-    .where(and(eq(notifications.userId, session.user.id), isNull(notifications.readAt)));
+  const [editions, recentNotifications, [unread]] = await Promise.all([
+    listEditions(session.organisation.id),
+    db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, session.user.id))
+      .orderBy(desc(notifications.createdAt))
+      .limit(12),
+    db
+      .select({ n: count() })
+      .from(notifications)
+      .where(and(eq(notifications.userId, session.user.id), isNull(notifications.readAt))),
+  ]);
 
   const navEditions = editions.map((e) => ({ code: e.edition.code, status: e.edition.status }));
   const navOptions = {
@@ -52,7 +55,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         />
         <div className="ml-auto flex items-center gap-2">
           <NotificationsBell
-            unreadCount={unread.length}
+            unreadCount={Number(unread?.n ?? 0)}
             notifications={recentNotifications.map((n) => ({
               id: n.id,
               title: n.title,
@@ -62,7 +65,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             }))}
           />
           <span className="text-muted-foreground hidden text-xs sm:inline">
-            {session.user.fullName || session.user.email} · {session.actor.role}
+            {session.user.fullName || session.user.email} · {roleLabel(session.actor.role)}
           </span>
           <SignOutButton />
         </div>

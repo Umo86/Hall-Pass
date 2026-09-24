@@ -10,6 +10,7 @@ export const MUTABLE_KINDS = [
   "delegation",
   "item_created",
   "task_assigned",
+  "task_reminder",
   "daily_digest",
 ] as const;
 
@@ -25,6 +26,7 @@ export const KIND_LABELS: Record<MutableKind, string> = {
   change_request: "Change requests",
   delegation: "A sign-off is delegated to me",
   item_created: "New items in my area",
-  task_assigned: "A task is assigned to me",
+  task_assigned: "A task is assigned to me (or one I gave out is done)",
+  task_reminder: "Morning reminder of my tasks due",
   daily_digest: "Daily digest",
 };

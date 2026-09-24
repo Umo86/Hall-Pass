@@ -1,5 +1,5 @@
 import { StatusBadge } from "@/components/status-badge";
-import { formatDateTime, statusLabel } from "@/lib/format";
+import { formatDateTime, roleLabel, statusLabel } from "@/lib/format";
 import { DecideButtons } from "./decide-buttons";
 import { DelegateButton } from "./delegate-button";
 
@@ -20,6 +20,8 @@ export type ChainInstance = {
   dueAt: Date | null;
   delegatedFromName?: string | null;
   noSupplierFallback?: boolean;
+  /** Name of the named person the step is assigned to, if any. */
+  assigneeName?: string | null;
 };
 
 export function ApprovalChain({
@@ -49,7 +51,7 @@ export function ApprovalChain({
         <div key={run}>
           {runNumbers.length > 1 && (
             <h3 className="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">
-              Run {run}
+              Round {run}
               {run === currentRun ? " (current)" : ""}
             </h3>
           )}
@@ -70,9 +72,9 @@ export function ApprovalChain({
                     <span className="font-medium">{inst.stepName}</span>
                     <span className="text-muted-foreground text-sm">
                       {inst.assignedUserId
-                        ? "named user"
+                        ? (inst.assigneeName ?? "a named person")
                         : inst.assignedRole
-                          ? statusLabel(inst.assignedRole)
+                          ? roleLabel(inst.assignedRole)
                           : ""}
                       {inst.noSupplierFallback ? " (no supplier set — assigned to ops)" : ""}
                     </span>

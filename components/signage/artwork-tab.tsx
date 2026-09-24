@@ -248,7 +248,7 @@ export function ArtworkTab({
                   </select>
                   <VersionPreview version={chosen} />
                   <p className="text-muted-foreground text-xs">
-                    SHA-256 {chosen.sha256.slice(0, 12)}… · {formatDateTime(chosen.createdAt)}
+                    Uploaded {formatDateTime(chosen.createdAt)}
                   </p>
                 </div>
               ))}
@@ -276,7 +276,7 @@ export function ArtworkTab({
                   )}
                 </p>
                 <p className="text-muted-foreground text-xs">
-                  {(v.fileSize / 1024).toFixed(0)} KB · SHA-256 {v.sha256.slice(0, 12)}… · uploaded
+                  {(v.fileSize / 1024).toFixed(0)} KB · uploaded
                   by {v.uploaderName ?? "—"} {formatDateTime(v.createdAt)}
                 </p>
                 {v.notes && <p className="text-muted-foreground mt-1 text-xs">“{v.notes}”</p>}

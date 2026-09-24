@@ -29,7 +29,7 @@ export default async function PortalApprovalsPage() {
         <ol className="space-y-2">
           {rows.map(({ raw, bundle, isSignage, isOverdue }) => {
             const b = bundle as never as {
-              item?: { ref: string; name: string; currentArtworkVersionId: string | null };
+              item?: { ref: string; name: string; kind: string; currentArtworkVersionId: string | null };
               sub?: { ref: string; submissionVersion: number };
               exhibitor?: { companyName: string; standNumber: string };
             };
@@ -71,6 +71,8 @@ export default async function PortalApprovalsPage() {
                   }
                   requiresPhoto={
                     raw.stepNameSnapshot === "Installed" &&
+                    isSignage &&
+                    b.item!.kind === "signage" &&
                     session.organisation.settings.install_photo_required
                   }
                   compact

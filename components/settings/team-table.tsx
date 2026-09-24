@@ -7,7 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SelectNative } from "@/components/ui/select-native";
 import { roleLabel } from "@/lib/format";
-import { OVERRIDE_KEYS, type OverrideKey, type PermissionOverrides, type StaffRole } from "@/lib/authz";
+import {
+  OVERRIDE_KEYS,
+  type OverrideKey,
+  type PermissionOverrides,
+  type StaffRole,
+} from "@/lib/authz";
 import {
   inviteStaff,
   removeStaffMember,
@@ -100,7 +105,10 @@ function MemberRow({ member, isSelf }: { member: TeamMember; isSelf: boolean }) 
     }
     setError(null);
     start(async () => {
-      const res = await updateStaffOverrides({ membershipId: member.membershipId, overrides: next });
+      const res = await updateStaffOverrides({
+        membershipId: member.membershipId,
+        overrides: next,
+      });
       if (!res.ok) setError(res.error);
       router.refresh();
     });
@@ -295,18 +303,27 @@ export function TeamTable({
             {invites.map((inv) => (
               <li key={inv.id} className="flex items-center gap-2 text-sm">
                 <span className="min-w-0 flex-1 truncate">
-                  {inv.email} <span className="text-muted-foreground">· {roleLabel(inv.role)} · invited</span>
+                  {inv.email}{" "}
+                  <span className="text-muted-foreground">· {roleLabel(inv.role)} · invited</span>
                 </span>
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={pending}
-                  onClick={() =>
+                  onClick={() => {
+                    if (
+                      !window.confirm(
+                        `Cancel the invitation for ${inv.email}? The link stops working.`,
+                      )
+                    )
+                      return;
+                    setError(null);
                     start(async () => {
-                      await revokeStaffInvite({ inviteId: inv.id });
+                      const res = await revokeStaffInvite({ inviteId: inv.id });
+                      if (!res.ok) setError(res.error);
                       router.refresh();
-                    })
-                  }
+                    });
+                  }}
                 >
                   Revoke
                 </Button>

@@ -19,6 +19,24 @@ export async function markAllNotificationsRead(): Promise<ActionResult> {
   return success();
 }
 
+/** Mark one of my notifications read (tapping it in the bell). */
+export async function markNotificationRead(input: unknown): Promise<ActionResult> {
+  const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await requireSession();
+  await db
+    .update(notifications)
+    .set({ readAt: new Date() })
+    .where(
+      and(
+        eq(notifications.id, parsed.data.id),
+        eq(notifications.userId, session.user.id),
+        isNull(notifications.readAt),
+      ),
+    );
+  return success();
+}
+
 const prefsSchema = z.record(z.enum(MUTABLE_KINDS), z.boolean());
 
 /** Per-kind email/notification mutes, merged over the user's existing prefs. */

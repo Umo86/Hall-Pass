@@ -22,7 +22,7 @@ export default async function EditionsPage() {
   const session = await requireStaffSession();
   const orgId = session.organisation.id;
   const [rows, eventRows, venueRows] = await Promise.all([
-    listEditions(),
+    listEditions(session.organisation.id),
     db.select().from(events).where(eq(events.organisationId, orgId)),
     db.select().from(venues).where(eq(venues.organisationId, orgId)),
   ]);

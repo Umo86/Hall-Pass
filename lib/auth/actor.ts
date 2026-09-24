@@ -1,5 +1,5 @@
 import "server-only";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
@@ -13,6 +13,7 @@ import {
 import type { Actor, ExternalActor, PermissionOverrides, StaffActor } from "@/lib/authz";
 import { createSupabaseServerClient, supabaseConfigured } from "./supabase-server";
 import { claimStaffInvite, openStaffInviteFor } from "./claim-staff-invite";
+import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 
 export const DEV_COOKIE = "hp-dev-user";
 
@@ -155,18 +156,22 @@ export async function getSession(): Promise<Session | null> {
 
 export async function requireSession(): Promise<Session> {
   const session = await getSession();
-  if (!session) redirect("/login");
+  if (!session) {
+    // Come back to the page they asked for once signed in (path set in proxy.ts).
+    const path = safeNext((await headers()).get("x-hp-path"));
+    redirect(path && path !== "/" ? `/login?next=${encodeURIComponent(path)}` : "/login");
+  }
   return session;
 }
 
 export async function requireStaffSession(): Promise<Session & { actor: StaffActor }> {
   const session = await requireSession();
-  if (session.actor.kind !== "staff") redirect("/portal/approvals");
+  if (session.actor.kind !== "staff") redirect(PORTAL_HOME);
   return session as Session & { actor: StaffActor };
 }
 
 export async function requirePortalSession(): Promise<Session & { actor: ExternalActor }> {
   const session = await requireSession();
-  if (session.actor.kind !== "external") redirect("/editions");
+  if (session.actor.kind !== "external") redirect(STAFF_HOME);
   return session as Session & { actor: ExternalActor };
 }

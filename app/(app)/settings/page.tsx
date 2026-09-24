@@ -19,7 +19,7 @@ import {
 } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, type PermissionOverrides } from "@/lib/authz";
-import { formatDate, formatDateTime, statusLabel } from "@/lib/format";
+import { formatDate, formatDateTime, roleLabel, statusLabel } from "@/lib/format";
 import { InviteExternalForm, RevokeGrantButton } from "@/components/settings/invite-form";
 import { TeamTable } from "@/components/settings/team-table";
 import { DirectorySection } from "@/components/settings/directory-section";
@@ -34,57 +34,89 @@ import { emailConfigured } from "@/lib/email/dispatch";
 export const metadata = { title: "Settings" };
 export const dynamic = "force-dynamic";
 
+const CONDITION_LABELS: Record<string, string> = {
+  if_sponsored: "for sponsored items",
+  if_requires_venue_approval: "when venue approval is needed",
+  if_requires_event_director: "when senior management sign-off is ticked",
+  if_cost_over_threshold: "over the cost threshold",
+  if_rigged: "for rigged items",
+  if_complex_structure: "for complex stands",
+  if_venue_requires_stand_approval: "when the venue approves stands",
+};
+
 export default async function SettingsPage() {
   const session = await requireStaffSession();
   const canManage = can(session.actor, { type: "settings.manage" });
   const canUsers = can(session.actor, { type: "users.manage" });
 
   const [me] = await db.select().from(users).where(eq(users.id, session.user.id));
-  const [staff, grants, types, wfs, steps, deleted, editionRows, venueRows, supplierRows, exhibitorRows, sponsorRows, pendingInvites, eventRows, contractorRows] =
-    await Promise.all([
-      db
-        .select({ m: memberships, u: users })
-        .from(memberships)
-        .innerJoin(users, eq(memberships.userId, users.id))
-        .where(eq(memberships.organisationId, session.organisation.id)),
-      db
-        .select({ g: externalGrants, u: users })
-        .from(externalGrants)
-        .leftJoin(users, eq(externalGrants.userId, users.id))
-        .where(eq(externalGrants.organisationId, session.organisation.id))
-        .orderBy(desc(externalGrants.createdAt)),
-      db.select().from(itemTypes).where(eq(itemTypes.organisationId, session.organisation.id)).orderBy(itemTypes.sortOrder),
-      db.select().from(workflows).where(eq(workflows.organisationId, session.organisation.id)),
-      db.select().from(workflowSteps).orderBy(workflowSteps.sortOrder),
-      db
-        .select()
-        .from(signageItems)
-        .where(isNotNull(signageItems.deletedAt))
-        .orderBy(desc(signageItems.deletedAt))
-        .limit(50),
-      db.select().from(editions),
-      db.select().from(venues).where(eq(venues.organisationId, session.organisation.id)),
-      db.select().from(suppliers).where(eq(suppliers.organisationId, session.organisation.id)),
-      db.select().from(exhibitors),
-      db.select().from(sponsors),
-      db
-        .select()
-        .from(staffInvites)
-        .where(
-          and(
-            eq(staffInvites.organisationId, session.organisation.id),
-            isNull(staffInvites.acceptedAt),
-            isNull(staffInvites.revokedAt),
-          ),
-        )
-        .orderBy(desc(staffInvites.createdAt)),
-      db.select().from(events).where(eq(events.organisationId, session.organisation.id)).orderBy(events.name),
-      db
-        .select()
-        .from(contractors)
-        .where(eq(contractors.organisationId, session.organisation.id))
-        .orderBy(contractors.name),
-    ]);
+  const [
+    staff,
+    grants,
+    types,
+    wfs,
+    steps,
+    deleted,
+    editionRows,
+    venueRows,
+    supplierRows,
+    exhibitorRows,
+    sponsorRows,
+    pendingInvites,
+    eventRows,
+    contractorRows,
+  ] = await Promise.all([
+    db
+      .select({ m: memberships, u: users })
+      .from(memberships)
+      .innerJoin(users, eq(memberships.userId, users.id))
+      .where(eq(memberships.organisationId, session.organisation.id)),
+    db
+      .select({ g: externalGrants, u: users })
+      .from(externalGrants)
+      .leftJoin(users, eq(externalGrants.userId, users.id))
+      .where(eq(externalGrants.organisationId, session.organisation.id))
+      .orderBy(desc(externalGrants.createdAt)),
+    db
+      .select()
+      .from(itemTypes)
+      .where(eq(itemTypes.organisationId, session.organisation.id))
+      .orderBy(itemTypes.sortOrder),
+    db.select().from(workflows).where(eq(workflows.organisationId, session.organisation.id)),
+    db.select().from(workflowSteps).orderBy(workflowSteps.sortOrder),
+    db
+      .select()
+      .from(signageItems)
+      .where(isNotNull(signageItems.deletedAt))
+      .orderBy(desc(signageItems.deletedAt))
+      .limit(50),
+    db.select().from(editions),
+    db.select().from(venues).where(eq(venues.organisationId, session.organisation.id)),
+    db.select().from(suppliers).where(eq(suppliers.organisationId, session.organisation.id)),
+    db.select().from(exhibitors),
+    db.select().from(sponsors),
+    db
+      .select()
+      .from(staffInvites)
+      .where(
+        and(
+          eq(staffInvites.organisationId, session.organisation.id),
+          isNull(staffInvites.acceptedAt),
+          isNull(staffInvites.revokedAt),
+        ),
+      )
+      .orderBy(desc(staffInvites.createdAt)),
+    db
+      .select()
+      .from(events)
+      .where(eq(events.organisationId, session.organisation.id))
+      .orderBy(events.name),
+    db
+      .select()
+      .from(contractors)
+      .where(eq(contractors.organisationId, session.organisation.id))
+      .orderBy(contractors.name),
+  ]);
 
   const staffById = new Map(staff.map(({ u }) => [u.id, u.fullName || u.email]));
 
@@ -98,8 +130,8 @@ export default async function SettingsPage() {
           {session.organisation.brandName} · currency {session.organisation.settings.currency} ·
           Event Director threshold £
           {session.organisation.settings.cost_threshold_for_director.toLocaleString("en-GB")} ·
-          escalate after {session.organisation.settings.escalate_after_days} days overdue ·
-          install photo {session.organisation.settings.install_photo_required ? "required" : "optional"}
+          escalate after {session.organisation.settings.escalate_after_days} days overdue · install
+          photo {session.organisation.settings.install_photo_required ? "required" : "optional"}
         </p>
       </section>
 
@@ -121,8 +153,8 @@ export default async function SettingsPage() {
         </p>
         {!emailConfigured() && (
           <p className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-            Email is off, so notifications only appear in the app (the bell). An admin can
-            switch email on by adding a Resend API key in the hosting settings.
+            Email is off, so notifications only appear in the app (the bell). An admin can switch
+            email on by adding a Resend API key in the hosting settings.
           </p>
         )}
         <NotificationPrefsForm initial={me?.notificationPrefs ?? {}} />
@@ -132,9 +164,9 @@ export default async function SettingsPage() {
         <h2 className="mb-2 text-sm font-semibold">Team</h2>
         {canUsers && (
           <p className="text-muted-foreground mb-2 text-sm">
-            Set each person&rsquo;s role, fine-tune what they can do under Permissions, and
-            invite new staff. Approving stays tied to sign-off assignment — the checkbox can
-            only take it away.
+            Set each person&rsquo;s role, fine-tune what they can do under Permissions, and invite
+            new staff. Approving stays tied to sign-off assignment — the checkbox can only take it
+            away.
           </p>
         )}
         <TeamTable
@@ -146,7 +178,11 @@ export default async function SettingsPage() {
             role: m.role,
             overrides: m.permissionOverrides as PermissionOverrides,
           }))}
-          invites={pendingInvites.map((inv) => ({ id: inv.id, email: inv.invitedEmail, role: inv.role }))}
+          invites={pendingInvites.map((inv) => ({
+            id: inv.id,
+            email: inv.invitedEmail,
+            role: inv.role,
+          }))}
           currentUserId={session.user.id}
           canManage={canUsers}
         />
@@ -180,7 +216,7 @@ export default async function SettingsPage() {
                 {grants.map(({ g, u }) => (
                   <tr key={g.id} className="border-b last:border-0">
                     <td className="px-3 py-2 font-medium">{u?.fullName || g.invitedEmail}</td>
-                    <td className="px-3 py-2">{statusLabel(g.role)}</td>
+                    <td className="px-3 py-2">{roleLabel(g.role)}</td>
                     <td className="text-muted-foreground px-3 py-2">
                       {g.revokedAt
                         ? `Revoked ${formatDateTime(g.revokedAt)}`
@@ -213,8 +249,20 @@ export default async function SettingsPage() {
             noun="Event"
             canEdit={canManage}
             fields={[
-              { key: "name", label: "Name", required: true, listed: true, placeholder: "UK Construction Week" },
-              { key: "code", label: "Short code", required: true, listed: true, placeholder: "UKCW" },
+              {
+                key: "name",
+                label: "Name",
+                required: true,
+                listed: true,
+                placeholder: "UK Construction Week",
+              },
+              {
+                key: "code",
+                label: "Short code",
+                required: true,
+                listed: true,
+                placeholder: "UKCW",
+              },
             ]}
             rows={eventRows.map((e) => ({ id: e.id, name: e.name, code: e.code }))}
           />
@@ -223,8 +271,20 @@ export default async function SettingsPage() {
             noun="Venue"
             canEdit={canManage}
             fields={[
-              { key: "name", label: "Name", required: true, listed: true, placeholder: "NEC Birmingham" },
-              { key: "code", label: "Short code", required: true, listed: true, placeholder: "NEC" },
+              {
+                key: "name",
+                label: "Name",
+                required: true,
+                listed: true,
+                placeholder: "NEC Birmingham",
+              },
+              {
+                key: "code",
+                label: "Short code",
+                required: true,
+                listed: true,
+                placeholder: "NEC",
+              },
               { key: "address", label: "Address", listed: true },
               { key: "riggingContactName", label: "Rigging contact" },
               { key: "riggingContactEmail", label: "Rigging contact email", type: "email" },
@@ -306,86 +366,96 @@ export default async function SettingsPage() {
         </section>
       )}
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Item types</h2>
-        <div className="overflow-x-auto rounded-lg border">
-          <table className="w-full text-sm">
-            <tbody>
-              {types.map((t) => (
-                <tr key={t.id} className="border-b last:border-0">
-                  <td className="px-3 py-2 font-medium">{t.name}</td>
-                  <td className="text-muted-foreground px-3 py-2">
-                    {t.kind === "sponsorship_item" ? "Sponsorship item" : "Signage"}
-                  </td>
-                  <td className="text-muted-foreground px-3 py-2">
-                    {t.defaultFixingMethod ? statusLabel(t.defaultFixingMethod) : "—"}
-                  </td>
-                  <td className="px-3 py-2">
-                    {t.requiresVenueApprovalDefault ? "Venue approval by default" : ""}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Workflows</h2>
-        <div className="space-y-4">
-          {wfs.map((wf) => (
-            <div key={wf.id} className="rounded-lg border p-4">
-              <p className="mb-2 text-sm font-medium">
-                {wf.name}{" "}
-                <span className="text-muted-foreground font-normal">
-                  ({wf.appliesTo}
-                  {wf.isDefault ? ", default" : ""})
-                </span>
-              </p>
-              <ol className="text-muted-foreground space-y-1.5 text-sm">
-                {steps
-                  .filter((st) => st.workflowId === wf.id)
-                  .map((st) => (
-                    <li key={st.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <span>
-                        {st.sortOrder}. {st.name} — {st.kind} ·
-                      </span>
-                      {canManage ? (
-                        <WorkflowApproverForm
-                          stepId={st.id}
-                          approverType={st.approverType}
-                          approverRole={st.approverRole}
-                          approverUserId={st.approverUserId}
-                          staff={staff.map(({ u }) => ({ id: u.id, name: u.fullName || u.email }))}
-                        />
-                      ) : (
-                        <span>
-                          {st.approverType === "user"
-                            ? (staffById.get(st.approverUserId ?? "") ?? "named user")
-                            : st.approverRole
-                              ? statusLabel(st.approverRole)
-                              : "named user"}
-                        </span>
-                      )}
-                      <span>
-                        · SLA {st.slaDays}d
-                        {st.parallelGroup != null ? ` · group ${st.parallelGroup}` : ""}
-                        {st.invalidateOnNewVersion ? " · invalidates on new version" : ""}
-                        {st.conditions.filter((c) => c !== "always").length > 0
-                          ? ` · when ${st.conditions.join(" or ")}`
-                          : ""}
-                      </span>
-                    </li>
+      {(canManage || canUsers) && (
+        <>
+          <section>
+            <h2 className="mb-2 text-sm font-semibold">Item types</h2>
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full text-sm">
+                <tbody>
+                  {types.map((t) => (
+                    <tr key={t.id} className="border-b last:border-0">
+                      <td className="px-3 py-2 font-medium">{t.name}</td>
+                      <td className="text-muted-foreground px-3 py-2">
+                        {t.kind === "sponsorship_item" ? "Sponsorship item" : "Signage"}
+                      </td>
+                      <td className="text-muted-foreground px-3 py-2">
+                        {t.defaultFixingMethod ? statusLabel(t.defaultFixingMethod) : "—"}
+                      </td>
+                      <td className="px-3 py-2">
+                        {t.requiresVenueApprovalDefault ? "Venue approval by default" : ""}
+                      </td>
+                    </tr>
                   ))}
-              </ol>
+                </tbody>
+              </table>
             </div>
-          ))}
-        </div>
-        <p className="text-muted-foreground mt-2 text-xs">
-          Approver changes apply to future runs only — sign-offs already in flight keep the
-          approver they started with. Any staff member can be named directly on a step.
-        </p>
-      </section>
+          </section>
+
+          <section>
+            <h2 className="mb-2 text-sm font-semibold">Workflows</h2>
+            <div className="space-y-4">
+              {wfs.map((wf) => (
+                <div key={wf.id} className="rounded-lg border p-4">
+                  <p className="mb-2 text-sm font-medium">
+                    {wf.name}{" "}
+                    <span className="text-muted-foreground font-normal">
+                      ({wf.appliesTo}
+                      {wf.isDefault ? ", default" : ""})
+                    </span>
+                  </p>
+                  <ol className="text-muted-foreground space-y-1.5 text-sm">
+                    {steps
+                      .filter((st) => st.workflowId === wf.id)
+                      .map((st) => (
+                        <li key={st.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span>
+                            {st.sortOrder}. {st.name} — {st.kind} ·
+                          </span>
+                          {canManage ? (
+                            <WorkflowApproverForm
+                              stepId={st.id}
+                              approverType={st.approverType}
+                              approverRole={st.approverRole}
+                              approverUserId={st.approverUserId}
+                              staff={staff.map(({ u }) => ({
+                                id: u.id,
+                                name: u.fullName || u.email,
+                              }))}
+                            />
+                          ) : (
+                            <span>
+                              {st.approverType === "user"
+                                ? (staffById.get(st.approverUserId ?? "") ?? "a named person")
+                                : st.approverRole
+                                  ? roleLabel(st.approverRole)
+                                  : "a named person"}
+                            </span>
+                          )}
+                          <span>
+                            · {st.slaDays} days to decide
+                            {st.parallelGroup != null ? " · at the same time as others" : ""}
+                            {st.invalidateOnNewVersion ? " · asked again when artwork changes" : ""}
+                            {st.conditions.filter((c) => c !== "always").length > 0
+                              ? ` · only ${st.conditions
+                                  .filter((c) => c !== "always")
+                                  .map((c) => CONDITION_LABELS[c] ?? statusLabel(c))
+                                  .join(" or ")}`
+                              : ""}
+                          </span>
+                        </li>
+                      ))}
+                  </ol>
+                </div>
+              ))}
+            </div>
+            <p className="text-muted-foreground mt-2 text-xs">
+              Approver changes apply to future runs only — sign-offs already in flight keep the
+              approver they started with. Any staff member can be named directly on a step.
+            </p>
+          </section>
+        </>
+      )}
 
       {canManage && (
         <section>
@@ -429,7 +499,7 @@ function FeedLink({ userId }: { userId: string }) {
   if (!url) {
     return (
       <p className="text-muted-foreground text-sm">
-        Calendar feeds need CRON_SECRET and the app URL configured on the server.
+        The calendar feed isn&apos;t switched on for this site yet — ask your administrator.
       </p>
     );
   }

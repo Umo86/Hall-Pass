@@ -9,6 +9,7 @@ import {
   standSubmissions,
 } from "@/lib/db/schema";
 import { effectiveDeadline, type DeadlineKey } from "@/lib/deadlines";
+import { todayInLondon } from "@/lib/today";
 import { editionForDeadlines } from "./editions";
 import { standsEnabled } from "@/lib/config";
 
@@ -86,14 +87,13 @@ export async function dashboardData(editionId: string) {
 
   // Deadlines in the next 7 days.
   const keys: DeadlineKey[] = [
-    "stand_design_due",
-    "insurance_due",
+    ...(standsEnabled ? (["stand_design_due", "insurance_due"] as DeadlineKey[]) : []),
     "venue_rigging_submission",
     "artwork_due",
     "print_deadline",
     "delivery",
   ];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInLondon();
   const in7 = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
   const upcomingDeadlines = forDeadlines
     ? keys

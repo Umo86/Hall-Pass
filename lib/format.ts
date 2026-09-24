@@ -3,7 +3,13 @@ import { appTimezone } from "./config";
 
 export function formatDate(value: Date | string | null | undefined): string {
   if (!value) return "—";
-  const date = typeof value === "string" ? new Date(`${value}T12:00:00Z`) : value;
+  // Plain dates ("2027-03-12") are read at midday so no timezone shifts the day;
+  // full timestamps are used as they are.
+  const date =
+    typeof value === "string"
+      ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T12:00:00Z` : value)
+      : value;
+  if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
     month: "short",

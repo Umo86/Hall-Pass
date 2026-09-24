@@ -37,37 +37,63 @@ function fmt(v: unknown): string {
   return String(v);
 }
 
+const NOT_YET_SIGNED_OFF = ["draft", "awaiting_artwork", "in_review", "changes_requested"];
+
+type FieldDef = readonly [key: string, label: string, type: "text" | "number" | "date"];
+
 export function ChangesTab({
   itemId,
   requests,
   canRaise,
   canDecide,
+  status,
+  kind,
+  current,
 }: {
   itemId: string;
   requests: ChangeRequestRow[];
   canRaise: boolean;
   canDecide: boolean;
+  status: string;
+  kind: "signage" | "sponsorship_item";
+  /** Current values, shown as "Now: …" in each box. */
+  current: Record<string, string | number | null>;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [fields, setFields] = useState<Record<string, string>>({});
+  const [notes, setNotes] = useState<Record<string, string>>({});
+
+  const defs: FieldDef[] = [
+    ["name", "Name", "text"],
+    ["widthMm", "Width (mm)", "number"],
+    ["heightMm", "Height (mm)", "number"],
+    ...(kind === "signage" ? ([["depthMm", "Depth (mm)", "number"]] as FieldDef[]) : []),
+    ["quantity", "Quantity", "number"],
+    ["material", "Material", "text"],
+    ["finish", "Finish", "text"],
+    ...(kind === "signage" ? ([["installDate", "Install date", "date"]] as FieldDef[]) : []),
+    ["deliveryDate", "Delivery date", "date"],
+  ];
 
   function raise() {
     setError(null);
     const changes: Record<string, unknown> = {};
-    const num = (k: string) => (fields[k]?.trim() ? Number(fields[k]) : undefined);
-    if (fields.name?.trim()) changes.name = fields.name.trim();
-    for (const k of ["widthMm", "heightMm", "quantity"]) {
-      const v = num(k);
-      if (v !== undefined && Number.isFinite(v)) changes[k] = v;
-    }
-    for (const k of ["material", "finish"]) {
-      if (fields[k]?.trim()) changes[k] = fields[k].trim();
-    }
-    for (const k of ["installDate", "deliveryDate"]) {
-      if (fields[k]) changes[k] = fields[k];
+    for (const [key, label, type] of defs) {
+      const raw = fields[key]?.trim();
+      if (!raw) continue;
+      if (type === "number") {
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n <= 0) {
+          setError(`${label} must be a whole number above 0`);
+          return;
+        }
+        changes[key] = n;
+      } else {
+        changes[key] = raw;
+      }
     }
     start(async () => {
       const res = await raiseChangeRequest({ itemId, reason, changes });
@@ -83,57 +109,63 @@ export function ChangesTab({
   function decide(id: string, decision: "approve" | "reject") {
     setError(null);
     start(async () => {
-      const res = await decideChangeRequest({ id, decision });
+      const res = await decideChangeRequest({ id, decision, comment: notes[id] || undefined });
       if (!res.ok) setError(res.error);
       else router.refresh();
     });
   }
 
+  const showRaise = canRaise && !NOT_YET_SIGNED_OFF.includes(status);
+
   return (
     <div className="max-w-3xl space-y-4">
-      {canRaise && (
+      {NOT_YET_SIGNED_OFF.includes(status) && (
+        <p className="text-muted-foreground rounded-lg border p-4 text-sm">
+          This item isn&apos;t signed off yet — change it directly on the Details tab. Change
+          requests are for items that are already approved.
+        </p>
+      )}
+      {showRaise && (
         <div className="rounded-lg border p-4">
           <h3 className="mb-1 text-sm font-semibold">Request a change</h3>
           <p className="text-muted-foreground mb-3 text-sm">
-            For items already through approval: describe what needs to change. When ops approve,
-            the change is applied and any affected sign-offs reopen — never silently.
+            Say what needs to change and fill in only the new values. When admin or ops accept it,
+            the change is applied; if the size or material changes, the sign-offs it affects are
+            asked again.
           </p>
           <Textarea
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             placeholder="Why does this need to change?"
+            aria-label="Reason for the change"
             className="mb-3"
           />
-          <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {(
-              [
-                ["name", "New name", "text"],
-                ["widthMm", "Width (mm)", "number"],
-                ["heightMm", "Height (mm)", "number"],
-                ["quantity", "Quantity", "number"],
-                ["material", "Material", "text"],
-                ["finish", "Finish", "text"],
-                ["installDate", "Install date", "date"],
-                ["deliveryDate", "Delivery date", "date"],
-              ] as const
-            ).map(([key, label, type]) => (
+          <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {defs.map(([key, label, type]) => (
               <label key={key} className="text-xs">
                 <span className="text-muted-foreground mb-0.5 block">{label}</span>
                 <input
                   type={type}
+                  min={type === "number" ? 1 : undefined}
                   value={fields[key] ?? ""}
+                  placeholder={type === "date" ? undefined : `Now: ${fmt(current[key])}`}
                   onChange={(e) => setFields((f) => ({ ...f, [key]: e.target.value }))}
                   className="w-full rounded-md border px-2 py-1.5 text-sm"
                 />
+                {type === "date" && (
+                  <span className="text-muted-foreground mt-0.5 block">
+                    Now: {fmt(current[key])}
+                  </span>
+                )}
               </label>
             ))}
           </div>
           <Button disabled={pending || reason.trim().length < 5} onClick={raise}>
             Raise change request
           </Button>
-          {error && <p className="text-destructive mt-2 text-sm">{error}</p>}
         </div>
       )}
+      {error && <p className="text-destructive text-sm">{error}</p>}
 
       {requests.length === 0 ? (
         <p className="text-muted-foreground text-sm">No change requests on this item.</p>
@@ -152,7 +184,8 @@ export function ChangesTab({
                 <ul className="text-muted-foreground mt-2 space-y-0.5 text-xs">
                   {cr.fieldChanges.map((c) => (
                     <li key={c.field}>
-                      {FIELD_LABELS[c.field] ?? c.field}: {fmt(c.from)} → <strong>{fmt(c.to)}</strong>
+                      {FIELD_LABELS[c.field] ?? c.field}: {fmt(c.from)} →{" "}
+                      <strong>{fmt(c.to)}</strong>
                     </li>
                   ))}
                 </ul>
@@ -165,13 +198,33 @@ export function ChangesTab({
                 </p>
               )}
               {cr.status === "open" && canDecide && (
-                <div className="mt-3 flex gap-2">
-                  <Button size="sm" disabled={pending} onClick={() => decide(cr.id, "approve")}>
-                    Approve & apply
-                  </Button>
-                  <Button size="sm" variant="outline" disabled={pending} onClick={() => decide(cr.id, "reject")}>
-                    Reject
-                  </Button>
+                <div className="mt-3 space-y-2">
+                  <Textarea
+                    value={notes[cr.id] ?? ""}
+                    onChange={(e) => setNotes((n) => ({ ...n, [cr.id]: e.target.value }))}
+                    placeholder="Note to the requester (needed to reject)"
+                    aria-label="Note to the requester"
+                    className="min-h-16"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" disabled={pending} onClick={() => decide(cr.id, "approve")}>
+                      {cr.fieldChanges.length > 0 ? "Accept & apply" : "Accept"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={pending || (notes[cr.id]?.trim().length ?? 0) < 5}
+                      onClick={() => decide(cr.id, "reject")}
+                    >
+                      Reject
+                    </Button>
+                  </div>
+                  {cr.fieldChanges.length === 0 && (
+                    <p className="text-muted-foreground text-xs">
+                      No field changes were given — accepting just records it; make the change on
+                      the Details tab.
+                    </p>
+                  )}
                 </div>
               )}
             </li>

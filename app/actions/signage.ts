@@ -83,6 +83,9 @@ const createSchema = itemFields
         message: "Choose a category — directional, venue or sponsorship",
       });
     }
+    if (data.kind === "sponsorship_item" && !data.sponsorId) {
+      ctx.addIssue({ code: "custom", path: ["sponsorId"], message: "Choose the sponsor who bought it" });
+    }
   });
 
 function num(v: number | null | undefined): string | null {

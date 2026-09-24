@@ -218,6 +218,25 @@ d("daily cron jobs", () => {
     expect(Number(n)).toBe(1);
   });
 
+  it("chases artwork a week and two days ahead, on the day, then weekly", () => {
+    const days = Array.from({ length: 30 }, (_, i) => 10 - i).filter(jobs.artworkChaseDay);
+    expect(days).toEqual([7, 2, 0, -7, -14]);
+  });
+
+  it("task reminders go out once per person per day", async () => {
+    await db.insert(schema.tasks).values({
+      organisationId: (await db.select().from(schema.organisations).limit(1))[0].id,
+      title: "Cron test task",
+      dueDate: TODAY,
+      assignedToUserId: opsUserId,
+      createdByUserId: opsUserId,
+    });
+    const first = await jobs.taskReminders(TODAY);
+    expect(first.sent).toBeGreaterThanOrEqual(1);
+    const second = await jobs.taskReminders(TODAY);
+    expect(second.sent).toBe(0);
+  });
+
   it("reminder_log rows exist for the instance and exhibitor", async () => {
     const rows = await db
       .select()

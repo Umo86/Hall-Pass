@@ -111,7 +111,7 @@ export default async function SponsorshipPage({
               {rows.map((r) => (
                 <tr key={r.id} className="hover:bg-muted/30 border-b last:border-0">
                   <td className="px-3 py-2 font-medium whitespace-nowrap">
-                    <Link href={`/${editionCode}/signage/${r.ref}`} className="hover:underline">
+                    <Link href={`/${editionCode}/sponsorship/${r.ref}`} className="hover:underline">
                       {r.ref}
                     </Link>
                   </td>

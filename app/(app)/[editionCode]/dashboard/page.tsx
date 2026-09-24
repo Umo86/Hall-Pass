@@ -5,7 +5,7 @@ import { can } from "@/lib/authz";
 import { standsEnabled } from "@/lib/config";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { dashboardData, refsForInstanceEntities } from "@/lib/queries/dashboard";
-import { formatDate, formatDateTime, formatMoney, statusLabel } from "@/lib/format";
+import { formatDate, formatDateTime, formatMoney, roleLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 
 export const metadata = { title: "Dashboard" };
@@ -27,7 +27,14 @@ const SIGNAGE_ORDER = [
   "on_hold",
 ];
 
-const FUNNEL = ["not_submitted", "in_review", "changes_requested", "approved", "approved_with_conditions", "rejected"];
+const FUNNEL = [
+  "not_submitted",
+  "in_review",
+  "changes_requested",
+  "approved",
+  "approved_with_conditions",
+  "rejected",
+];
 
 const DEADLINE_LABELS: Record<string, string> = {
   stand_design_due: "Stand designs due",
@@ -58,9 +65,10 @@ export default async function DashboardPage({
   ) {
     const entry = map.get(inst.entityId);
     if (!entry) return null;
-    const href = inst.entityType === "signage_item"
-      ? `/${editionCode}/signage/${entry.ref}`
-      : `/${editionCode}/stands/${entry.ref}`;
+    const href =
+      inst.entityType === "signage_item"
+        ? `/${editionCode}/signage/${entry.ref}`
+        : `/${editionCode}/stands/${entry.ref}`;
     return { ...entry, href };
   }
 
@@ -87,7 +95,9 @@ export default async function DashboardPage({
           <span className="font-medium">{mostOverdueRef.ref}</span> —{" "}
           {data.mostOverdue.stepNameSnapshot} sitting with{" "}
           <span className="font-medium">
-            {data.mostOverdue.assignedRole ? statusLabel(data.mostOverdue.assignedRole) : "a named user"}
+            {data.mostOverdue.assignedRole
+              ? roleLabel(data.mostOverdue.assignedRole)
+              : "a named person"}
           </span>
           , due {formatDateTime(data.mostOverdue.dueAt)}
         </Link>
@@ -117,23 +127,23 @@ export default async function DashboardPage({
         </div>
 
         {canSeeCosts && (
-        <div className="rounded-lg border p-4">
-          <h2 className="mb-3 text-sm font-semibold">Signage budget</h2>
-          <dl className="space-y-2 text-sm">
-            <div className="flex justify-between">
-              <dt className="text-muted-foreground">Budget</dt>
-              <dd className="font-medium">{formatMoney(data.budget.budget)}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-muted-foreground">Estimated</dt>
-              <dd className="font-medium">{formatMoney(data.budget.estimate)}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-muted-foreground">Actual</dt>
-              <dd className="font-medium">{formatMoney(data.budget.actual)}</dd>
-            </div>
-          </dl>
-        </div>
+          <div className="rounded-lg border p-4">
+            <h2 className="mb-3 text-sm font-semibold">Signage budget</h2>
+            <dl className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <dt className="text-muted-foreground">Budget</dt>
+                <dd className="font-medium">{formatMoney(data.budget.budget)}</dd>
+              </div>
+              <div className="flex justify-between">
+                <dt className="text-muted-foreground">Estimated</dt>
+                <dd className="font-medium">{formatMoney(data.budget.estimate)}</dd>
+              </div>
+              <div className="flex justify-between">
+                <dt className="text-muted-foreground">Actual</dt>
+                <dd className="font-medium">{formatMoney(data.budget.actual)}</dd>
+              </div>
+            </dl>
+          </div>
         )}
       </section>
 
@@ -151,7 +161,7 @@ export default async function DashboardPage({
             <ul className="space-y-1.5 text-sm">
               {data.sittingWith.map(([role, n]) => (
                 <li key={role} className="flex justify-between">
-                  <span>{statusLabel(role)}</span>
+                  <span>{roleLabel(role)}</span>
                   <span className="font-semibold">{n}</span>
                 </li>
               ))}
@@ -175,9 +185,7 @@ export default async function DashboardPage({
                     {target ? (
                       <Link href={target.href} className="hover:underline">
                         <span className="font-medium">{target.ref}</span> — {inst.stepNameSnapshot}{" "}
-                        <span className="text-muted-foreground">
-                          due {formatDate(inst.dueAt)}
-                        </span>
+                        <span className="text-muted-foreground">due {formatDate(inst.dueAt)}</span>
                       </Link>
                     ) : (
                       inst.stepNameSnapshot
@@ -207,21 +215,21 @@ export default async function DashboardPage({
       </section>
 
       {standsEnabled && (
-      <section className="rounded-lg border p-4">
-        <h2 className="mb-3 text-sm font-semibold">Stand submissions — space-only exhibitors</h2>
-        <div className="flex flex-wrap gap-2">
-          {FUNNEL.map((s) => (
-            <Link
-              key={s}
-              href={`/${editionCode}/stands?status=${s}`}
-              className="hover:bg-muted/50 flex items-center gap-2 rounded-md border px-3 py-2"
-            >
-              <StatusBadge status={s} />
-              <span className="text-sm font-semibold">{data.standCounts[s] ?? 0}</span>
-            </Link>
-          ))}
-        </div>
-      </section>
+        <section className="rounded-lg border p-4">
+          <h2 className="mb-3 text-sm font-semibold">Stand submissions — space-only exhibitors</h2>
+          <div className="flex flex-wrap gap-2">
+            {FUNNEL.map((s) => (
+              <Link
+                key={s}
+                href={`/${editionCode}/stands?status=${s}`}
+                className="hover:bg-muted/50 flex items-center gap-2 rounded-md border px-3 py-2"
+              >
+                <StatusBadge status={s} />
+                <span className="text-sm font-semibold">{data.standCounts[s] ?? 0}</span>
+              </Link>
+            ))}
+          </div>
+        </section>
       )}
     </div>
   );

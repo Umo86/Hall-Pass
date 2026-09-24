@@ -6,9 +6,9 @@ test.describe("staff flow", () => {
     await page.goto("/login");
     await expect(page.getByRole("heading", { name: "Choose who to sign in as" })).toBeVisible();
     await page.getByRole("button", { name: /Olivia Ops/ }).click();
-    await page.waitForURL("**/editions");
-    await expect(page.getByRole("heading", { name: "Editions" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "BIRM27" })).toBeVisible();
+    // Staff land on their own work.
+    await page.waitForURL("**/approvals");
+    await expect(page.getByRole("heading", { name: "My Work" })).toBeVisible();
   });
 
   test("dashboard, schedule and item detail render seeded data", async ({ page, context, baseURL }) => {
@@ -70,7 +70,7 @@ test.describe("staff flow", () => {
     await expect(row).toBeVisible();
     await row.getByRole("button", { name: "Approve", exact: true }).click();
     await expect(
-      mkt.getByText("Your approval is recorded against the current version"),
+      mkt.getByText("Your approval is recorded against the current artwork version"),
     ).toBeVisible();
     await mkt.getByRole("dialog").getByRole("button", { name: "Approve", exact: true }).click();
     await expect(row).toHaveCount(0);

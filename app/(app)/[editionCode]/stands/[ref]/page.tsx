@@ -248,7 +248,7 @@ export default async function StandDetailPage({
               <div>
                 <p>{entry.summary}</p>
                 <p className="text-muted-foreground text-xs">
-                  {actor?.fullName ?? actor?.email ?? entry.actorType} · {entry.action}
+                  {actor?.fullName || actor?.email || "System"}
                 </p>
               </div>
             </li>

@@ -27,6 +27,9 @@ test.describe("mobile navigation", () => {
     // Sheet closes after navigating; the schedule renders.
     await expect(sheetNav).toBeHidden();
     await expect(page.getByPlaceholder("Search ref, name, location…")).toBeVisible();
+    // Phones get a card per item instead of the wide table.
+    await expect(page.locator("ul a", { hasText: "SIG-BIRM27-001" })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Ref" })).toBeHidden();
     await ctx.close();
   });
 });

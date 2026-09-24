@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { tasks } from "@/lib/db/schema";
+import { memberships, tasks } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
@@ -30,6 +30,9 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
   const assignee = parsed.data.assignedToUserId ?? session.user.id;
   if (assignee !== session.user.id && !can(session.actor, { type: "task.assign" })) {
     return fail("You cannot assign tasks to other people");
+  }
+  if (!(await isTeamMember(assignee, session.organisation.id))) {
+    return fail("That person isn't on the team");
   }
 
   try {
@@ -76,6 +79,13 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
   }
 }
 
+async function isTeamMember(userId: string, organisationId: string) {
+  const row = await db.query.memberships.findFirst({
+    where: and(eq(memberships.userId, userId), eq(memberships.organisationId, organisationId)),
+  });
+  return Boolean(row);
+}
+
 async function loadOwnTask(id: string, organisationId: string) {
   return db.query.tasks.findFirst({
     where: and(eq(tasks.id, id), eq(tasks.organisationId, organisationId)),
@@ -114,6 +124,16 @@ export async function completeTask(input: unknown): Promise<ActionResult> {
       action: "update",
       summary: `Task ${parsed.data.done ? "completed" : "reopened"}: ${task.title}`,
     });
+    // Let whoever handed the task over know it's done.
+    if (parsed.data.done && task.createdByUserId !== session.user.id) {
+      await notify(tx, {
+        userIds: [task.createdByUserId],
+        kind: "task_assigned",
+        title: `Done: ${task.title}`,
+        body: `${session.user.fullName || session.user.email} completed this task.`,
+        link: "/approvals",
+      });
+    }
   });
   revalidatePath("/approvals");
   return success(undefined, parsed.data.done ? "Task completed" : "Task reopened");
@@ -146,6 +166,9 @@ export async function updateTask(input: unknown): Promise<ActionResult> {
     parsed.data.assignedToUserId !== task.assignedToUserId;
   if (reassigned && !can(session.actor, { type: "task.assign" })) {
     return fail("You cannot assign tasks to other people");
+  }
+  if (reassigned && !(await isTeamMember(parsed.data.assignedToUserId!, session.organisation.id))) {
+    return fail("That person isn't on the team");
   }
   await db.transaction(async (tx) => {
     await tx

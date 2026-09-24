@@ -19,7 +19,7 @@ test.describe("sponsorship items", () => {
     await page.getByLabel("Item type").selectOption({ label: "Show bags" });
     await page.getByLabel("Sponsor", { exact: true }).selectOption({ label: "BuildCo" });
     await page.getByRole("button", { name: "Create item" }).click();
-    await page.waitForURL("**/signage/SIG-BIRM27-*");
+    await page.waitForURL("**/sponsorship/SIG-BIRM27-*");
     await expect(page.getByRole("heading", { name })).toBeVisible();
 
     // A sponsorship item has no hall or location, and can still go for sign-off.
