@@ -56,6 +56,7 @@ type Props = {
 export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdit }: Props) {
   const [view, setView] = useQueryState("view", parseAsString.withDefault("table"));
   const [status, setStatus] = useQueryState("status", parseAsString.withDefault(""));
+  const [category, setCategory] = useQueryState("category", parseAsString.withDefault(""));
   const [q, setQ] = useQueryState("q", parseAsString.withDefault(""));
   const [group, setGroup] = useQueryState("group", parseAsString.withDefault(""));
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -68,13 +69,14 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
     const needle = q.trim().toLowerCase();
     return rows.filter((r) => {
       if (status && r.status !== status) return false;
+      if (category && r.category !== category) return false;
       if (!needle) return true;
       return [r.ref, r.name, r.locationName ?? "", r.hallName ?? "", r.typeName ?? ""]
         .join(" ")
         .toLowerCase()
         .includes(needle);
     });
-  }, [rows, q, status]);
+  }, [rows, q, status, category]);
 
   const columns = useMemo<ColumnDef<ScheduleRow>[]>(() => {
     const cols: ColumnDef<ScheduleRow>[] = [
@@ -131,6 +133,14 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
               {steps.map((s) => `${s.name}${s.role ? ` (${statusLabel(s.role)})` : ""}`).join(", ")}
             </span>
           );
+        },
+      },
+      {
+        accessorKey: "category",
+        header: "Category",
+        cell: ({ getValue }) => {
+          const v = getValue<string | null>();
+          return v ? statusLabel(v) : "—";
         },
       },
       { accessorKey: "typeName", header: "Type" },
@@ -245,6 +255,17 @@ export function ScheduleView({ editionCode, rows, suppliers, canSeeCosts, canEdi
               {statusLabel(s)}
             </option>
           ))}
+        </select>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value || null)}
+          className="border-input h-8 rounded-md border bg-transparent px-2 text-sm"
+          aria-label="Filter by category"
+        >
+          <option value="">All categories</option>
+          <option value="directional">Directional</option>
+          <option value="venue">Venue</option>
+          <option value="sponsorship">Sponsorship</option>
         </select>
         <select
           value={group}

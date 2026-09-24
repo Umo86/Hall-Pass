@@ -21,6 +21,7 @@ export type ScheduleRow = {
   ref: string;
   name: string;
   status: string;
+  category: string | null;
   typeName: string | null;
   hallName: string | null;
   locationName: string | null;
@@ -63,7 +64,13 @@ export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]
     .leftJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
     .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
     .leftJoin(artworkVersions, eq(signageItems.currentArtworkVersionId, artworkVersions.id))
-    .where(and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt)))
+    .where(
+      and(
+        eq(signageItems.editionId, editionId),
+        eq(signageItems.kind, "signage"),
+        isNull(signageItems.deletedAt),
+      ),
+    )
     .orderBy(asc(signageItems.seq));
 
   const ids = rows.map((r) => r.item.id);
@@ -92,6 +99,7 @@ export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]
     ref: r.item.ref,
     name: r.item.name,
     status: r.item.status,
+    category: r.item.category,
     typeName: r.typeName,
     hallName: r.hallName,
     locationName: r.locationName,

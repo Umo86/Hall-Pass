@@ -252,6 +252,7 @@ export default async function ItemDetailPage({
             id: item.id,
             name: item.name,
             description: item.description,
+            category: item.category,
             itemTypeId: item.itemTypeId,
             hallId: item.hallId,
             locationId: item.locationId,

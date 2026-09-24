@@ -25,6 +25,7 @@ export type ItemFormValues = {
   editionId?: string;
   name?: string;
   description?: string | null;
+  category?: string | null;
   itemTypeId?: string | null;
   hallId?: string | null;
   locationId?: string | null;
@@ -134,6 +135,15 @@ export function ItemForm({
         <div className="space-y-1.5 sm:col-span-2">
           <Label htmlFor="description">Description</Label>
           <Textarea id="description" name="description" defaultValue={values.description ?? ""} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="category">Category</Label>
+          <SelectNative id="category" name="category" defaultValue={values.category ?? ""} required>
+            <option value="">— Select —</option>
+            <option value="directional">Directional (wayfinding)</option>
+            <option value="venue">Venue</option>
+            <option value="sponsorship">Sponsorship (sold)</option>
+          </SelectNative>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="itemTypeId">Item type</Label>

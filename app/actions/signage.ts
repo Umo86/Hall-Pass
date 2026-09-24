@@ -18,6 +18,7 @@ import {
   itemAuthzCtx,
   loadItemBundle,
   resolveAssigneeUserIds,
+  resolveItemCreationRecipients,
   startItemRun,
 } from "@/lib/domain/signage";
 import { diffDaysIso } from "@/lib/deadlines";
@@ -26,6 +27,7 @@ import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 const itemFields = z.object({
   name: z.string().trim().min(1, "Name is required").max(300),
   description: z.string().max(5000).optional().nullable(),
+  category: z.enum(["directional", "venue", "sponsorship"]).optional().nullable(),
   itemTypeId: z.string().uuid().optional().nullable(),
   hallId: z.string().uuid().optional().nullable(),
   locationId: z.string().uuid().optional().nullable(),
@@ -59,10 +61,21 @@ const itemFields = z.object({
   installContractorId: z.string().uuid().optional().nullable(),
 });
 
-const createSchema = itemFields.extend({
-  editionId: z.string().uuid(),
-  workflowId: z.string().uuid().optional().nullable(),
-});
+const createSchema = itemFields
+  .extend({
+    editionId: z.string().uuid(),
+    kind: z.enum(["signage", "sponsorship_item"]).default("signage"),
+    workflowId: z.string().uuid().optional().nullable(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.kind === "signage" && !data.category) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["category"],
+        message: "Choose a category — directional, venue or sponsorship",
+      });
+    }
+  });
 
 function num(v: number | null | undefined): string | null {
   return v == null ? null : String(v);
@@ -80,7 +93,11 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
   const parsed = createSchema.safeParse(input);
   if (!parsed.success) return fail("Check the highlighted fields", zodErrors(parsed.error));
   const session = await requireSession();
-  if (!can(session.actor, { type: "signage.create" })) return fail("You cannot create items");
+  const createAction =
+    parsed.data.kind === "sponsorship_item"
+      ? ({ type: "sponsorship.create" } as const)
+      : ({ type: "signage.create" } as const);
+  if (!can(session.actor, createAction)) return fail("You cannot create items");
 
   const data = applyRiggedRule(parsed.data);
   try {
@@ -100,6 +117,8 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
           seq,
           name: data.name,
           description: data.description ?? null,
+          kind: data.kind,
+          category: data.kind === "signage" ? (data.category ?? null) : null,
           itemTypeId: data.itemTypeId ?? null,
           hallId: data.hallId ?? null,
           locationId: data.locationId ?? null,
@@ -142,6 +161,22 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
         after: { ref, name: data.name },
         summary: `Created ${ref} — ${data.name}`,
       });
+      // The owning team (and sales, for anything sponsorship) hears about
+      // every new item straight away, not only at submit-for-review.
+      const recipients = await resolveItemCreationRecipients(
+        tx,
+        session.organisation.id,
+        { kind: data.kind, category: data.category ?? null, ownerRole: data.ownerRole },
+        session.user.id,
+      );
+      await notify(tx, {
+        userIds: recipients,
+        kind: "item_created",
+        title: `New ${data.kind === "sponsorship_item" ? "sponsorship item" : "signage"}: ${ref} — ${data.name}`,
+        link: `/${edition.code}/signage/${ref}`,
+        entityType: "signage_item",
+        entityId: item.id,
+      });
       return ref;
     });
     revalidatePath("/", "layout");
@@ -175,6 +210,7 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
       };
       assign("name", "name");
       assign("description", "description");
+      assign("category", "category");
       assign("itemTypeId", "itemTypeId");
       assign("hallId", "hallId");
       assign("locationId", "locationId");

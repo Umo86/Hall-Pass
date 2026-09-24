@@ -34,6 +34,7 @@ test.describe("staff flow", () => {
     await page.goto(`${baseURL}/BIRM27/signage/new`);
     const name = `E2E test sign ${Date.now()}`;
     await page.getByLabel("Name", { exact: true }).fill(name);
+    await page.getByLabel("Category").selectOption("venue");
     await page.getByLabel("Item type").selectOption({ label: "Foamex board" });
     await page.getByLabel("Hall", { exact: true }).selectOption({ label: "Hall 1" });
     await page.getByLabel("Location").selectOption({ label: "Registration" });

@@ -1,5 +1,5 @@
 import { notFound, redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   contractors,
@@ -32,7 +32,10 @@ export default async function NewItemPage({
 
   const [typeRows, hallRows, locationRows, sponsorRows, entRows, supplierRows, contractorRows, wfRows] =
     await Promise.all([
-      db.select().from(itemTypes).where(eq(itemTypes.organisationId, session.organisation.id)),
+      db
+        .select()
+        .from(itemTypes)
+        .where(and(eq(itemTypes.organisationId, session.organisation.id), eq(itemTypes.kind, "signage"))),
       db.select().from(halls).where(eq(halls.editionId, ed.edition.id)),
       db
         .select({ id: locations.id, name: locations.name, hallId: locations.hallId })

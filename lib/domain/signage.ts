@@ -100,6 +100,44 @@ export async function startItemRun(tx: Tx, bundle: ItemBundle, now: Date): Promi
   return persisted;
 }
 
+/**
+ * Who hears about a newly created item: members of the owning role, plus
+ * sales for anything sponsorship (their team sells it) — never the creator.
+ * Pure so the rules are unit-testable.
+ */
+export function itemCreationRecipients(
+  members: Array<{ userId: string; role: string }>,
+  item: {
+    kind: "signage" | "sponsorship_item";
+    category: string | null;
+    ownerRole: "ops" | "marketing";
+  },
+  creatorUserId: string,
+): string[] {
+  const roles = new Set<string>([item.ownerRole]);
+  if (item.kind === "sponsorship_item" || item.category === "sponsorship") roles.add("sales");
+  return [
+    ...new Set(members.filter((m) => roles.has(m.role)).map((m) => m.userId)),
+  ].filter((id) => id !== creatorUserId);
+}
+
+export async function resolveItemCreationRecipients(
+  db: Db | Tx,
+  organisationId: string,
+  item: {
+    kind: "signage" | "sponsorship_item";
+    category: string | null;
+    ownerRole: "ops" | "marketing";
+  },
+  creatorUserId: string,
+): Promise<string[]> {
+  const members = await db
+    .select({ userId: memberships.userId, role: memberships.role })
+    .from(memberships)
+    .where(eq(memberships.organisationId, organisationId));
+  return itemCreationRecipients(members, item, creatorUserId);
+}
+
 /** User ids that can decide an instance — used for notifications. */
 export async function resolveAssigneeUserIds(
   db: Db | Tx,
