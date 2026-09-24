@@ -43,6 +43,18 @@ export const OVERRIDE_KEYS = [
   "settings.manage",
 ] as const;
 export type OverrideKey = (typeof OVERRIDE_KEYS)[number];
+
+/**
+ * Which roles have each overridable ability by default. The single source
+ * for can() and for the Team screen's checkboxes.
+ */
+export const OVERRIDE_ROLE_DEFAULTS: Record<OverrideKey, readonly StaffRole[]> = {
+  "signage.create": ["admin", "ops", "marketing"],
+  "sponsorship.create": ["admin", "ops", "sales"],
+  "costs.edit": ["admin", "ops"],
+  "approval.decide": ["admin", "ops", "marketing", "sales", "event_director", "viewer"],
+  "settings.manage": ["admin", "ops"],
+};
 export type PermissionOverrides = Partial<Record<OverrideKey, boolean>>;
 
 export type StaffActor = {
@@ -333,10 +345,9 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return true;
 
     case "signage.create":
-      return role === "admin" || role === "ops" || role === "marketing";
     case "sponsorship.create":
       // Sales sell sponsorship items; ops also manage them.
-      return role === "admin" || role === "ops" || role === "sales";
+      return OVERRIDE_ROLE_DEFAULTS[action.type].includes(role);
 
     case "task.create":
       return true; // everyone keeps their own to-do list, viewers included
@@ -406,7 +417,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       if (actor.overrides?.["costs.edit"] === true) return true;
       return role === "admin" || role === "ops" || role === "marketing" || role === "event_director";
     case "costs.edit":
-      return role === "admin" || role === "ops";
+      return OVERRIDE_ROLE_DEFAULTS["costs.edit"].includes(role);
 
     case "comment.internal.write":
       return role !== "viewer";
@@ -425,31 +436,10 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return true;
 
     case "settings.manage":
-      return role === "admin" || role === "ops";
+      return OVERRIDE_ROLE_DEFAULTS["settings.manage"].includes(role);
 
     case "users.manage":
       return role === "admin";
   }
 }
 
-/** Fields a supplier is allowed to see on a signage item. */
-export const supplierVisibleFields = [
-  "ref",
-  "name",
-  "widthMm",
-  "heightMm",
-  "depthMm",
-  "quantity",
-  "sided",
-  "material",
-  "finish",
-  "fixingMethod",
-  "weightKg",
-  "deliveryDate",
-  "installDate",
-  "installSlot",
-  "poNumber",
-] as const;
-
-/** Venue users never see costs, PO numbers or internal comments. */
-export const venueHiddenFields = ["costEstimate", "costActual", "poNumber", "budgetLine"] as const;

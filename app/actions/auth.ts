@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { memberships, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
-import { DEV_COOKIE, demoEmailAllowed, devAuthEnabled, getSession } from "@/lib/auth/actor";
+import { DEV_COOKIE, demoEmailAllowed, devAuthEnabled } from "@/lib/auth/actor";
 import { createSupabaseServerClient } from "@/lib/auth/supabase-server";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 
@@ -90,8 +90,3 @@ export async function signOut(): Promise<void> {
   redirect("/login");
 }
 
-export async function currentSessionRedirect(): Promise<void> {
-  const session = await getSession();
-  if (!session) redirect("/login");
-  redirect(session.actor.kind === "staff" ? STAFF_HOME : PORTAL_HOME);
-}

@@ -12,7 +12,7 @@ See `PLAN.md` for the build plan and current status, `CLAUDE.md` for conventions
 - **Team management** — admins set each member's role, fine-tune per-user abilities (add signage, add sponsorship items, edit costs, approve, manage settings) and invite staff by email; sign-off steps can be assigned to a role or to any named staff member from Settings.
 - **Stand design approvals** — structure questionnaire with automatic complex-structure classification, required documents with expiry flags, venue-rules checklist, engineer/H&S/venue review chain, exhibitor portal with submit/resubmit.
 - **Shared engine** — configurable workflows with conditions, parallel groups, SLAs, delegation and optimistic locking; creation and assignment notifications with a self-updating bell; internal/external comments; transactional email; daily cron (reminders, escalation, chasers, expiry, digest) with idempotency; append-only audit trail enforced by the database; deny-by-default RLS; external portals scoped per grant; mobile navigation throughout.
-- **Tests** — 512 unit tests (authz + override matrix, status machines, workflow engine, deadlines, DB-backed ref concurrency/RLS/audit-trigger/cron idempotency) and 15 Playwright end-to-end tests.
+- **Tests** — 544 unit tests (authz + override matrix, status machines, workflow engine, deadlines, exports and labels, DB-backed ref concurrency/RLS/audit-trigger/cron idempotency/staff invitations) and 22 Playwright end-to-end tests (full signage lifecycle to installed with a photo, sponsorship items, exports, partner item page, team, setup, phone layouts).
 
 ## Local development
 
@@ -36,7 +36,11 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/hallpass_test
 CRON_SECRET=dev-cron-secret
 ```
 
-Without Supabase configured, the login page offers **development sign-in** as any seeded user (admin/ops/marketing/sales/director/viewer @media10.test, plus the external venue/engineer/H&S/supplier/exhibitor/sponsor users). This mode disables itself as soon as Supabase Auth is configured.
+Without Supabase configured, the login page offers **development sign-in** as any seeded user (admin/ops/marketing/sales/director/viewer @media10.test, plus the external venue/engineer/H&S/supplier/exhibitor/sponsor users). `DEV_AUTH=1` keeps it on even with Supabase configured — then it only accepts the seeded `…@….test` accounts, and every page shows a red "Demo sign-in is on" bar.
+
+**Going live:** invite yourself as admin (Settings → Team), sign in with the emailed link, then remove `DEV_AUTH` and redeploy.
+
+Stand approvals are built but hidden; set `STANDS_ENABLED=1` to show them.
 
 Checks:
 
@@ -60,7 +64,8 @@ pnpm build
    with large artwork going browser → Blob directly (up to 2 GB per file). Without it,
    uploads fall back to the serverless filesystem, which does not persist.
 5. Remaining env vars (Settings → Environment Variables):
-   - `DEV_AUTH=1` — demo sign-in (one-click seeded users)
+   - `DEV_AUTH=1` — demo sign-in (one-click seeded users; remove before real use)
+   - `STANDS_ENABLED=1` — optional; shows stand approvals (hidden by default)
    - `CRON_SECRET` — any long random string (Vercel Cron sends it automatically)
    - `RESEND_API_KEY` + `EMAIL_FROM` — transactional email (optional; sends are logged until set)
    - `NEXT_PUBLIC_APP_URL` — optional; auto-detected from the Vercel domain when unset

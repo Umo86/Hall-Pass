@@ -9,6 +9,7 @@ import { SelectNative } from "@/components/ui/select-native";
 import { roleLabel } from "@/lib/format";
 import {
   OVERRIDE_KEYS,
+  OVERRIDE_ROLE_DEFAULTS,
   type OverrideKey,
   type PermissionOverrides,
   type StaffRole,
@@ -31,15 +32,7 @@ const KEY_LABELS: Record<OverrideKey, string> = {
   "settings.manage": "Manage editions & settings",
 };
 
-/** Mirrors the role defaults in lib/authz.ts so the checkboxes show the
- * effective ability; only differences from the default are stored. */
-const ROLE_DEFAULTS: Record<OverrideKey, StaffRole[]> = {
-  "signage.create": ["admin", "ops", "marketing"],
-  "sponsorship.create": ["admin", "ops", "sales"],
-  "costs.edit": ["admin", "ops"],
-  "approval.decide": ["admin", "ops", "marketing", "sales", "event_director", "viewer"],
-  "settings.manage": ["admin", "ops"],
-};
+const ROLE_DEFAULTS = OVERRIDE_ROLE_DEFAULTS;
 
 export type TeamMember = {
   membershipId: string;

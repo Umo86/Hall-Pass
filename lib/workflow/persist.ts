@@ -86,21 +86,6 @@ export async function loadRun(
   return rows.map(rowToInstance);
 }
 
-export async function loadAllRuns(
-  db: Db | Tx,
-  entityType: ApprovalEntityType,
-  entityId: string,
-): Promise<Instance[]> {
-  const rows = await db
-    .select()
-    .from(approvalInstances)
-    .where(
-      and(eq(approvalInstances.entityType, entityType), eq(approvalInstances.entityId, entityId)),
-    )
-    .orderBy(approvalInstances.runNumber, approvalInstances.sortOrderSnapshot);
-  return rows.map(rowToInstance);
-}
-
 function instanceToRow(entityType: ApprovalEntityType, entityId: string, i: Instance) {
   return {
     entityType,

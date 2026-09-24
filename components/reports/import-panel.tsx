@@ -18,7 +18,6 @@ export function ImportPanel({ editionId }: { editionId: string }) {
     <div className="space-y-3 rounded-lg border p-4">
       <h3 className="text-sm font-semibold">Import an existing schedule (Excel)</h3>
       <p className="text-muted-foreground text-sm">
-        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- file download */}
         <a href="/api/exports/import-template" className="text-primary underline-offset-2 hover:underline" download>
           Download the template
         </a>

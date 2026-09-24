@@ -4,7 +4,7 @@ A one-line log of choices made where the build brief is silent, with the reason.
 
 | Date       | Decision                                                       | Reason                                                                                                                                                                                                                                           |
 | ---------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2026-09-17 | Development sign-in (`DEV_AUTH=1`) assumes seeded users by cookie | Lets the platform be demonstrated with only a database; hard-disabled the moment Supabase Auth is configured. |
+| 2026-09-17 | Development sign-in (`DEV_AUTH=1`) assumes seeded users by cookie | Lets the platform be demonstrated with only a database. Superseded 2026-09-24: see "Demo sign-in safeguards" below — `DEV_AUTH=1` keeps it on even with Supabase configured, so it is now fenced to demo accounts and flagged on every page. |
 | 2026-09-17 | Storage falls back to the local filesystem when Supabase is unconfigured | Keeps uploads working in development/demo; production uses Supabase Storage private buckets with signed URLs. Vercel's filesystem is ephemeral, so demo uploads there do not persist across deploys. |
 | 2026-09-17 | Seeded artwork/documents are metadata-only (`seed/` paths, no real files) | Real files need object storage; hashes and versions still exercise the whole approval flow. |
 | 2026-09-17 | Default-workflow confirmation names drive item status (Sent to print → in_production, etc.) | Simplest testable mapping; custom workflows that rename confirmations record decisions without moving item status. |
@@ -62,3 +62,46 @@ marketing teams together. The load-bearing choices:
   the `entity_type` pg enum was left untouched (task notifications simply
   leave their nullable entity fields empty), avoiding an ALTER TYPE with
   transaction-ordering constraints.
+
+## Platform review (2026-09-24)
+
+A full process and code review (126 confirmed findings → 75 fixes, shipped in
+stages A–G). Owner decisions and the choices made along the way:
+
+- **Sign-off completes on the last approval.** The workflow engine treats a
+  run as approved once every *approval* step is settled; the confirmation
+  steps (Sent to print, Delivered, Installed) then follow in order. Before
+  this, real items stayed "in review" for ever.
+- **Approved items can still be edited; spec changes restart sign-off.**
+  Changing size, material, fixing, type or sponsor on a signed-off item
+  reopens the approvals it affects (never silently); dates, supplier and
+  costs change freely. Installed/closed items must be reopened first.
+- **Stands are hidden for now** (`STANDS_ENABLED=1` brings them back). Nav,
+  dashboard widgets, reports, calendar chips, deadlines, stand invite roles
+  and the stand chasers are all switched off; routes and data are kept.
+- **Demo sign-in safeguards.** While `DEV_AUTH=1`, every page shows a red
+  "Demo sign-in is on" bar. Once Supabase Auth is configured, demo sign-in
+  only works for the seeded `…@….test` accounts and invitees always get an
+  email link. Go-live: invite yourself as admin → sign in by the emailed
+  link → remove `DEV_AUTH` → redeploy.
+- **Staff land on My Work**; admins see their own sign-offs there with an
+  "All open sign-offs" switch. Partners land on their sign-offs.
+- **Only admins choose who signs off**; viewers and people whose sign-off
+  right is switched off can't be named and aren't sent sign-off requests.
+- **Signage comments are staff-only**; partners see the item page (artwork,
+  spec, label, their sign-off buttons) instead.
+- **Item page has five tabs** — Details, Artwork & sign-off, Change requests,
+  Comments, History — and old tab links still resolve.
+- **Change requests are only for signed-off items**; before sign-off the item
+  is edited directly.
+- **Exports are generated on demand, not stored**; the exports table is the
+  history. PDFs embed Noto Sans (OFL, in `lib/exports/fonts/`) so every name
+  prints.
+- **Install confirmation takes a real photo** (downscaled on the phone,
+  stored in the private `photos` bucket, path checked on the server).
+- **Artwork chasers**: 7 and 2 days before the due date, on the day, then
+  weekly; one morning reminder per person for tasks due.
+- **Seeded sponsorship items use refs 031/032** and "Other signage" / "Other
+  sponsorship item" types exist so nothing is forced into a wrong type.
+- **Vercel functions run in Frankfurt (fra1)**, next to the database.
+

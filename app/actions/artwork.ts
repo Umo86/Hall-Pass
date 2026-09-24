@@ -44,23 +44,6 @@ async function generatePreview(bytes: Buffer, mimeType: string): Promise<Buffer 
   }
 }
 
-/**
- * How many approvals a new version would invalidate — shown in the upload
- * dialog ("This will invalidate 3 approvals") before the user confirms.
- */
-export async function artworkInvalidationPreview(
-  itemId: string,
-): Promise<{ count: number; steps: string[] }> {
-  const bundle = await loadItemBundle(db, itemId);
-  if (!bundle || bundle.item.currentRunNumber === 0) return { count: 0, steps: [] };
-  const run = await loadRun(db, "signage_item", itemId, bundle.item.currentRunNumber);
-  const decided = run.filter(
-    (i) =>
-      ["approved", "approved_with_conditions", "confirmed"].includes(i.status) &&
-      i.invalidateOnNewVersion,
-  );
-  return { count: decided.length, steps: decided.map((i) => i.stepName) };
-}
 
 /** Direct upload through the server (dev/local backend and small files). */
 export async function uploadArtwork(

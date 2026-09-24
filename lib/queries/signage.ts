@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -17,6 +17,8 @@ import {
   users,
 } from "@/lib/db/schema";
 import type { LabelRow } from "@/lib/exports/label-fields";
+import { loadItemBundle } from "@/lib/domain/signage";
+import { loadRun } from "@/lib/workflow/persist";
 
 export type ScheduleRow = {
   id: string;
@@ -294,10 +296,20 @@ export async function getItemSnags(itemId: string) {
   return db.select().from(snags).where(eq(snags.signageItemId, itemId)).orderBy(desc(snags.createdAt));
 }
 
-export async function listDeletedItems(editionId: string) {
-  return db
-    .select()
-    .from(signageItems)
-    .where(and(eq(signageItems.editionId, editionId), isNotNull(signageItems.deletedAt)))
-    .orderBy(desc(signageItems.deletedAt));
+/**
+ * How many approvals a new version would invalidate — shown in the upload
+ * dialog ("This will invalidate 3 approvals") before the user confirms.
+ */
+export async function artworkInvalidationPreview(
+  itemId: string,
+): Promise<{ count: number; steps: string[] }> {
+  const bundle = await loadItemBundle(db, itemId);
+  if (!bundle || bundle.item.currentRunNumber === 0) return { count: 0, steps: [] };
+  const run = await loadRun(db, "signage_item", itemId, bundle.item.currentRunNumber);
+  const decided = run.filter(
+    (i) =>
+      ["approved", "approved_with_conditions", "confirmed"].includes(i.status) &&
+      i.invalidateOnNewVersion,
+  );
+  return { count: decided.length, steps: decided.map((i) => i.stepName) };
 }

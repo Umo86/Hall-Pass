@@ -16,7 +16,7 @@ import {
   workflowSteps,
   workflows,
 } from "@/lib/db/schema";
-import { can, type PermissionOverrides } from "@/lib/authz";
+import { can, OVERRIDE_KEYS, type OverrideKey, type PermissionOverrides } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { generateInviteToken, hashInviteToken } from "@/lib/auth/invite-token";
@@ -27,13 +27,12 @@ const roleSchema = z.enum(["admin", "ops", "marketing", "sales", "event_director
 // Strict: unknown keys are rejected, so only the whitelisted abilities in
 // lib/authz.ts can ever be stored.
 const overridesSchema = z
-  .object({
-    "signage.create": z.boolean().optional(),
-    "sponsorship.create": z.boolean().optional(),
-    "costs.edit": z.boolean().optional(),
-    "approval.decide": z.boolean().optional(),
-    "settings.manage": z.boolean().optional(),
-  })
+  .object(
+    Object.fromEntries(OVERRIDE_KEYS.map((k) => [k, z.boolean().optional()])) as Record<
+      OverrideKey,
+      z.ZodOptional<z.ZodBoolean>
+    >,
+  )
   .strict();
 
 /** Change a staff member's role. Admin-only, with self and last-admin guards. */
@@ -181,7 +180,7 @@ export async function inviteStaff(input: unknown): Promise<ActionResult<{ invite
           organisationId: session.organisation.id,
           invitedEmail: email,
           role: parsed.data.role,
-          permissionOverrides: parsed.data.overrides ?? {},
+          permissionOverrides: (parsed.data.overrides ?? {}) as PermissionOverrides,
           invitedBy: session.user.id,
           inviteTokenHash: hashInviteToken(token),
         })

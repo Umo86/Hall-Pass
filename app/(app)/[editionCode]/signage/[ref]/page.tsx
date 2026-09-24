@@ -15,9 +15,9 @@ import {
   getItemInstances,
   getItemSnags,
   getItemVersions,
+  artworkInvalidationPreview,
 } from "@/lib/queries/signage";
 import { itemFormOptions } from "@/lib/queries/item-form-options";
-import { artworkInvalidationPreview } from "@/app/actions/artwork";
 import { blobEnabled, getDownloadUrl, getInlineUrl } from "@/lib/storage";
 import { formatDateTime, statusLabel } from "@/lib/format";
 import { editionIsReadOnly } from "@/lib/edition-lock";
