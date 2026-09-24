@@ -1,13 +1,20 @@
 import Link from "next/link";
+import { eq } from "drizzle-orm";
+import { db } from "@/lib/db/client";
+import { memberships, users } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
+import { can } from "@/lib/authz";
 import { pendingInstancesForUser } from "@/lib/queries/approvals";
+import { openTasksForUser, recentlyCompletedForUser } from "@/lib/queries/tasks";
 import { formatDateTime, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import { DecideButtons } from "@/components/approvals/decide-buttons";
+import { TaskForm } from "@/components/tasks/task-form";
+import { TaskList } from "@/components/tasks/task-list";
 import { Scene } from "@/components/scene";
 import { brandImage } from "@/lib/brand-images";
 
-export const metadata = { title: "My Sign-offs" };
+export const metadata = { title: "My Work" };
 export const dynamic = "force-dynamic";
 
 export default async function ApprovalsPage({
@@ -17,15 +24,46 @@ export default async function ApprovalsPage({
 }) {
   const session = await requireStaffSession();
   const { overdue } = await searchParams;
-  const rows = await pendingInstancesForUser();
+  const [rows, openTasks, completedTasks, staff] = await Promise.all([
+    pendingInstancesForUser(),
+    openTasksForUser(session.user.id),
+    recentlyCompletedForUser(session.user.id),
+    db
+      .select({ id: users.id, name: users.fullName, email: users.email })
+      .from(memberships)
+      .innerJoin(users, eq(memberships.userId, users.id))
+      .where(eq(memberships.organisationId, session.organisation.id)),
+  ]);
   const filtered = overdue === "1" ? rows.filter((r) => r.isOverdue) : rows;
+  const canAssign = can(session.actor, { type: "task.assign" });
 
   return (
-    <div className="flex flex-col gap-4 p-4 sm:p-6">
+    <div className="flex flex-col gap-6 p-4 sm:p-6">
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight">My Work</h1>
+        <p className="text-muted-foreground text-sm">
+          Your to-do list and the sign-offs waiting on you, across all editions.
+        </p>
+      </div>
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold">
+          My tasks{" "}
+          <span className="text-muted-foreground font-normal">({openTasks.length} open)</span>
+        </h2>
+        <TaskForm
+          currentUserId={session.user.id}
+          assignees={staff.map((s) => ({ id: s.id, name: s.name || s.email }))}
+          canAssign={canAssign}
+        />
+        <TaskList open={openTasks} completed={completedTasks} currentUserId={session.user.id} />
+      </section>
+
+      <section className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-xl font-semibold tracking-tight">My Sign-offs</h1>
+        <h2 className="text-sm font-semibold">My sign-offs</h2>
         <span className="text-muted-foreground text-sm">
-          {filtered.length} waiting on you across all editions
+          {filtered.length} waiting on you
         </span>
         <div className="ml-auto flex gap-2 text-sm">
           <Link
@@ -109,6 +147,7 @@ export default async function ApprovalsPage({
           })}
         </ol>
       )}
+      </section>
     </div>
   );
 }

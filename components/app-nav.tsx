@@ -46,7 +46,7 @@ export function AppNav({
       ]
     : [];
   const globalItems: NavItem[] = [
-    { label: "My Sign-offs", href: "/approvals", icon: ClipboardCheck },
+    { label: "My Work", href: "/approvals", icon: ClipboardCheck },
     { label: "Editions", href: "/editions", icon: Layers },
     { label: "Settings", href: "/settings", icon: Settings },
   ];
