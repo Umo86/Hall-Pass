@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { and, eq, isNull } from "drizzle-orm";
@@ -120,8 +121,11 @@ async function loadSessionForUser(user: typeof users.$inferSelect): Promise<Sess
   };
 }
 
-/** The current session, or null when signed out. */
-export async function getSession(): Promise<Session | null> {
+/**
+ * The current session, or null when signed out. Cached for the request, so
+ * layouts, pages and actions share one lookup.
+ */
+export const getSession = cache(async (): Promise<Session | null> => {
   const supabase = await createSupabaseServerClient();
   if (supabase) {
     const {
@@ -152,7 +156,7 @@ export async function getSession(): Promise<Session | null> {
     return loadSessionForUser(user);
   }
   return null;
-}
+});
 
 export async function requireSession(): Promise<Session> {
   const session = await getSession();
