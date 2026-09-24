@@ -1,4 +1,4 @@
-import { desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   editions,
@@ -8,6 +8,7 @@ import {
   memberships,
   signageItems,
   sponsors,
+  staffInvites,
   suppliers,
   users,
   venues,
@@ -15,9 +16,10 @@ import {
   workflowSteps,
 } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, type PermissionOverrides } from "@/lib/authz";
 import { formatDate, formatDateTime, statusLabel } from "@/lib/format";
 import { InviteExternalForm, RevokeGrantButton } from "@/components/settings/invite-form";
+import { TeamTable } from "@/components/settings/team-table";
 import { RestoreItemButton } from "@/components/settings/restore-button";
 import { icalToken } from "@/lib/ical";
 import { appUrl } from "@/lib/app-url";
@@ -32,7 +34,7 @@ export default async function SettingsPage() {
   const canUsers = can(session.actor, { type: "users.manage" });
 
   const [me] = await db.select().from(users).where(eq(users.id, session.user.id));
-  const [staff, grants, types, wfs, steps, deleted, editionRows, venueRows, supplierRows, exhibitorRows, sponsorRows] =
+  const [staff, grants, types, wfs, steps, deleted, editionRows, venueRows, supplierRows, exhibitorRows, sponsorRows, pendingInvites] =
     await Promise.all([
       db
         .select({ m: memberships, u: users })
@@ -59,6 +61,17 @@ export default async function SettingsPage() {
       db.select().from(suppliers).where(eq(suppliers.organisationId, session.organisation.id)),
       db.select().from(exhibitors),
       db.select().from(sponsors),
+      db
+        .select()
+        .from(staffInvites)
+        .where(
+          and(
+            eq(staffInvites.organisationId, session.organisation.id),
+            isNull(staffInvites.acceptedAt),
+            isNull(staffInvites.revokedAt),
+          ),
+        )
+        .orderBy(desc(staffInvites.createdAt)),
     ]);
 
   return (
@@ -96,20 +109,27 @@ export default async function SettingsPage() {
       </section>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold">Staff</h2>
-        <div className="overflow-x-auto rounded-lg border">
-          <table className="w-full text-sm">
-            <tbody>
-              {staff.map(({ m, u }) => (
-                <tr key={m.id} className="border-b last:border-0">
-                  <td className="px-3 py-2 font-medium">{u.fullName || u.email}</td>
-                  <td className="text-muted-foreground px-3 py-2">{u.email}</td>
-                  <td className="px-3 py-2">{statusLabel(m.role)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <h2 className="mb-2 text-sm font-semibold">Team</h2>
+        {canUsers && (
+          <p className="text-muted-foreground mb-2 text-sm">
+            Set each person&rsquo;s role, fine-tune what they can do under Permissions, and
+            invite new staff. Approving stays tied to sign-off assignment — the checkbox can
+            only take it away.
+          </p>
+        )}
+        <TeamTable
+          members={staff.map(({ m, u }) => ({
+            membershipId: m.id,
+            userId: u.id,
+            name: u.fullName,
+            email: u.email,
+            role: m.role,
+            overrides: m.permissionOverrides as PermissionOverrides,
+          }))}
+          invites={pendingInvites.map((inv) => ({ id: inv.id, email: inv.invitedEmail, role: inv.role }))}
+          currentUserId={session.user.id}
+          canManage={canUsers}
+        />
       </section>
 
       {canUsers && (

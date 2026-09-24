@@ -1443,14 +1443,16 @@ async function main() {
       });
     }
   }
-  // Counter reflects the highest seeded seq so new items continue from 31.
+  // Counter continues from the highest existing seq — never backwards, so a
+  // re-seed can't hand out refs that live items already use.
   await db
     .insert(s.editionCounters)
     .values({ editionId: edition.id, key: "signage", value: 30 })
-    .onConflictDoUpdate({
-      target: [s.editionCounters.editionId, s.editionCounters.key],
-      set: { value: 30 },
-    });
+    .onConflictDoNothing();
+  await client`
+    UPDATE edition_counters ec
+    SET value = GREATEST(ec.value, (SELECT COALESCE(max(seq), 0) FROM signage_items si WHERE si.edition_id = ec.edition_id))
+    WHERE ec.edition_id = ${edition.id} AND ec.key = 'signage'`;
 
   // -------------------------------------------------------- stand submissions
   type StandPlan = {

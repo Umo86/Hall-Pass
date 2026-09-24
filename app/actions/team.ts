@@ -1,0 +1,218 @@
+"use server";
+
+import { appUrl } from "@/lib/app-url";
+import { revalidatePath } from "next/cache";
+import { z } from "zod";
+import { and, count, eq, isNull } from "drizzle-orm";
+import { db } from "@/lib/db/client";
+import { memberships, staffInvites, users } from "@/lib/db/schema";
+import { can, type PermissionOverrides } from "@/lib/authz";
+import { writeAudit } from "@/lib/audit";
+import { requireSession } from "@/lib/auth/actor";
+import { generateInviteToken, hashInviteToken } from "@/lib/auth/invite-token";
+import { fail, success, type ActionResult } from "@/lib/actions/result";
+
+const roleSchema = z.enum(["admin", "ops", "marketing", "sales", "event_director", "viewer"]);
+
+// Strict: unknown keys are rejected, so only the whitelisted abilities in
+// lib/authz.ts can ever be stored.
+const overridesSchema = z
+  .object({
+    "signage.create": z.boolean().optional(),
+    "sponsorship.create": z.boolean().optional(),
+    "costs.edit": z.boolean().optional(),
+    "approval.decide": z.boolean().optional(),
+    "settings.manage": z.boolean().optional(),
+  })
+  .strict();
+
+/** Change a staff member's role. Admin-only, with self and last-admin guards. */
+export async function updateStaffRole(input: unknown): Promise<ActionResult> {
+  const parsed = z
+    .object({ membershipId: z.string().uuid(), role: roleSchema })
+    .safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await requireSession();
+  if (!can(session.actor, { type: "users.manage" })) return fail("Only admins manage the team");
+
+  try {
+    await db.transaction(async (tx) => {
+      const membership = await tx.query.memberships.findFirst({
+        where: and(
+          eq(memberships.id, parsed.data.membershipId),
+          eq(memberships.organisationId, session.organisation.id),
+        ),
+      });
+      if (!membership) throw new Error("Team member not found");
+      if (membership.userId === session.user.id) {
+        throw new Error("You cannot change your own role — ask another admin");
+      }
+      if (membership.role === "admin" && parsed.data.role !== "admin") {
+        const [admins] = await tx
+          .select({ n: count() })
+          .from(memberships)
+          .where(
+            and(
+              eq(memberships.organisationId, session.organisation.id),
+              eq(memberships.role, "admin"),
+            ),
+          );
+        if (Number(admins.n) <= 1) throw new Error("There must always be at least one admin");
+      }
+      await tx
+        .update(memberships)
+        .set({ role: parsed.data.role })
+        .where(eq(memberships.id, membership.id));
+      const member = await tx.query.users.findFirst({ where: eq(users.id, membership.userId) });
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        actorUserId: session.user.id,
+        entityType: "membership",
+        entityId: membership.id,
+        action: "settings_change",
+        before: { role: membership.role },
+        after: { role: parsed.data.role },
+        summary: `${member?.email ?? "user"}: role ${membership.role} → ${parsed.data.role}`,
+      });
+    });
+    revalidatePath("/settings");
+    return success(undefined, "Role updated");
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : "Could not update the role");
+  }
+}
+
+/** Replace a staff member's permission overrides. Admin-only. */
+export async function updateStaffOverrides(input: unknown): Promise<ActionResult> {
+  const parsed = z
+    .object({ membershipId: z.string().uuid(), overrides: overridesSchema })
+    .safeParse(input);
+  if (!parsed.success) return fail("Invalid permissions");
+  const session = await requireSession();
+  if (!can(session.actor, { type: "users.manage" })) return fail("Only admins manage the team");
+
+  // Drop unset keys so the stored object holds only explicit true/false.
+  const overrides: PermissionOverrides = {};
+  for (const [k, v] of Object.entries(parsed.data.overrides)) {
+    if (typeof v === "boolean") overrides[k as keyof PermissionOverrides] = v;
+  }
+
+  try {
+    await db.transaction(async (tx) => {
+      const membership = await tx.query.memberships.findFirst({
+        where: and(
+          eq(memberships.id, parsed.data.membershipId),
+          eq(memberships.organisationId, session.organisation.id),
+        ),
+      });
+      if (!membership) throw new Error("Team member not found");
+      if (membership.role === "admin") throw new Error("Admins always have full access");
+      await tx
+        .update(memberships)
+        .set({ permissionOverrides: overrides })
+        .where(eq(memberships.id, membership.id));
+      const member = await tx.query.users.findFirst({ where: eq(users.id, membership.userId) });
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        actorUserId: session.user.id,
+        entityType: "membership",
+        entityId: membership.id,
+        action: "settings_change",
+        before: { overrides: membership.permissionOverrides },
+        after: { overrides },
+        summary: `${member?.email ?? "user"}: permissions updated`,
+      });
+    });
+    revalidatePath("/settings");
+    return success(undefined, "Permissions updated — effective on their next page load");
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : "Could not update permissions");
+  }
+}
+
+/** Invite a staff member; the membership is created at their first sign-in. */
+export async function inviteStaff(input: unknown): Promise<ActionResult<{ inviteUrl: string }>> {
+  const parsed = z
+    .object({ email: z.string().email(), role: roleSchema, overrides: overridesSchema.optional() })
+    .safeParse(input);
+  if (!parsed.success) return fail("Enter a valid email and role");
+  const session = await requireSession();
+  if (!can(session.actor, { type: "users.manage" })) return fail("Only admins manage the team");
+
+  const email = parsed.data.email.toLowerCase();
+  const existingUser = await db.query.users.findFirst({ where: eq(users.email, email) });
+  if (existingUser) {
+    const membership = await db.query.memberships.findFirst({
+      where: and(
+        eq(memberships.userId, existingUser.id),
+        eq(memberships.organisationId, session.organisation.id),
+      ),
+    });
+    if (membership) return fail("That person is already on the team");
+  }
+
+  const token = generateInviteToken();
+  try {
+    await db.transaction(async (tx) => {
+      const [invite] = await tx
+        .insert(staffInvites)
+        .values({
+          organisationId: session.organisation.id,
+          invitedEmail: email,
+          role: parsed.data.role,
+          permissionOverrides: parsed.data.overrides ?? {},
+          invitedBy: session.user.id,
+          inviteTokenHash: hashInviteToken(token),
+        })
+        .returning();
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        actorUserId: session.user.id,
+        entityType: "staff_invite",
+        entityId: invite.id,
+        action: "invite",
+        after: { email, role: parsed.data.role },
+        summary: `Invited ${email} to staff as ${parsed.data.role}`,
+      });
+    });
+    revalidatePath("/settings");
+    return success(
+      { inviteUrl: `${appUrl()}/invite/${token}` },
+      "Invitation created — share the link",
+    );
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : "Something went wrong");
+  }
+}
+
+export async function revokeStaffInvite(input: unknown): Promise<ActionResult> {
+  const parsed = z.object({ inviteId: z.string().uuid() }).safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await requireSession();
+  if (!can(session.actor, { type: "users.manage" })) return fail("Only admins manage the team");
+  await db.transaction(async (tx) => {
+    const [invite] = await tx
+      .update(staffInvites)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(staffInvites.id, parsed.data.inviteId),
+          eq(staffInvites.organisationId, session.organisation.id),
+          isNull(staffInvites.acceptedAt),
+        ),
+      )
+      .returning();
+    if (invite) {
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        actorUserId: session.user.id,
+        entityType: "staff_invite",
+        entityId: invite.id,
+        action: "grant_revoke",
+        summary: `Revoked staff invitation for ${invite.invitedEmail}`,
+      });
+    }
+  });
+  revalidatePath("/settings");
+  return success(undefined, "Invitation revoked");
+}

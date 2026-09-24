@@ -7,7 +7,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { externalGrants, users } from "@/lib/db/schema";
+import { externalGrants, memberships, staffInvites, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
 import { DEV_COOKIE, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient } from "@/lib/auth/supabase-server";
@@ -36,24 +36,52 @@ async function findValidGrant(
   return { grant };
 }
 
+type StaffInvite = typeof staffInvites.$inferSelect;
+
+async function findValidStaffInvite(
+  token: string,
+): Promise<{ invite: StaffInvite; error?: never } | { invite?: never; error: string }> {
+  const invite = await db.query.staffInvites.findFirst({
+    where: eq(staffInvites.inviteTokenHash, hashInviteToken(token)),
+  });
+  if (!invite) return { error: "This invitation link is not valid." };
+  if (invite.revokedAt) return { error: "This invitation has been revoked." };
+  return { invite };
+}
+
 export async function inviteDetails(token: string) {
   const res = await findValidGrant(token);
-  if (res.error !== undefined) return { ok: false as const, error: res.error };
+  if (res.error === undefined) {
+    return {
+      ok: true as const,
+      kind: "external" as const,
+      invitedEmail: res.grant.invitedEmail,
+      role: res.grant.role,
+      accepted: Boolean(res.grant.acceptedAt),
+    };
+  }
+  const staffRes = await findValidStaffInvite(token);
+  if (staffRes.error !== undefined) return { ok: false as const, error: res.error };
   return {
     ok: true as const,
-    invitedEmail: res.grant.invitedEmail,
-    role: res.grant.role,
-    accepted: Boolean(res.grant.acceptedAt),
+    kind: "staff" as const,
+    invitedEmail: staffRes.invite.invitedEmail,
+    role: staffRes.invite.role,
+    accepted: Boolean(staffRes.invite.acceptedAt),
   };
 }
 
-/** Accept an external grant: set name, link the user, land in the portal. */
+/** Accept an invitation (external grant or staff) and land in the right place. */
 export async function acceptInvite(input: unknown): Promise<InviteResult> {
   const parsed = acceptSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
   const { token, fullName } = parsed.data;
   const res = await findValidGrant(token);
-  if (res.error !== undefined) return { ok: false, error: res.error };
+  if (res.error !== undefined) {
+    const staffRes = await findValidStaffInvite(token);
+    if (staffRes.error !== undefined) return { ok: false, error: res.error };
+    return acceptStaffInvite(staffRes.invite, token, fullName);
+  }
   const grant = res.grant;
 
   const session = await getSession();
@@ -92,6 +120,79 @@ export async function acceptInvite(input: unknown): Promise<InviteResult> {
   });
   if (error) return { ok: false, error: "Could not send the sign-in link — try again shortly." };
   return { ok: true, message: `A sign-in link has been sent to ${grant.invitedEmail}.` };
+}
+
+/** Staff invitation: create the membership now (or via first sign-in). */
+async function acceptStaffInvite(
+  invite: typeof staffInvites.$inferSelect,
+  token: string,
+  fullName: string,
+): Promise<InviteResult> {
+  const session = await getSession();
+
+  if (session) {
+    if (session.user.email.toLowerCase() !== invite.invitedEmail.toLowerCase()) {
+      return { ok: false, error: "This invitation was sent to a different email address." };
+    }
+    await claimStaffInvite(invite, session.user.id, fullName);
+    redirect("/editions");
+  }
+
+  if (devAuthEnabled()) {
+    let user = await db.query.users.findFirst({ where: eq(users.email, invite.invitedEmail) });
+    if (!user) {
+      [user] = await db
+        .insert(users)
+        .values({ id: randomUUID(), email: invite.invitedEmail, fullName })
+        .returning();
+    }
+    await claimStaffInvite(invite, user.id, fullName);
+    const store = await cookies();
+    store.set(DEV_COOKIE, user.email, { httpOnly: true, sameSite: "lax", path: "/" });
+    redirect("/editions");
+  }
+
+  // Production: magic link; the membership is created by email match at
+  // first sign-in (lib/auth/actor.ts).
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return { ok: false, error: "Authentication is not configured" };
+  const { error } = await supabase.auth.signInWithOtp({
+    email: invite.invitedEmail,
+    options: { emailRedirectTo: `${appUrl()}/auth/callback?next=/invite/${token}` },
+  });
+  if (error) return { ok: false, error: "Could not send the sign-in link — try again shortly." };
+  return { ok: true, message: `A sign-in link has been sent to ${invite.invitedEmail}.` };
+}
+
+async function claimStaffInvite(
+  invite: typeof staffInvites.$inferSelect,
+  userId: string,
+  fullName: string,
+) {
+  await db.transaction(async (tx) => {
+    await tx
+      .insert(memberships)
+      .values({
+        userId,
+        organisationId: invite.organisationId,
+        role: invite.role,
+        permissionOverrides: invite.permissionOverrides,
+      })
+      .onConflictDoNothing();
+    await tx
+      .update(staffInvites)
+      .set({ acceptedAt: new Date() })
+      .where(and(eq(staffInvites.id, invite.id), isNull(staffInvites.revokedAt)));
+    await tx.update(users).set({ fullName, isExternal: false }).where(eq(users.id, userId));
+    await writeAudit(tx, {
+      organisationId: invite.organisationId,
+      actorUserId: userId,
+      entityType: "staff_invite",
+      entityId: invite.id,
+      action: "invite",
+      summary: `Staff invitation accepted (${invite.role})`,
+    });
+  });
 }
 
 async function claimGrant(grantId: string, userId: string, fullName: string) {
