@@ -86,6 +86,20 @@ describe("run creation (6.1)", () => {
     expect(byName(run, "Ops technical check").status).toBe("waiting");
   });
 
+  it("a user-assigned step snapshots the named user, not a role", () => {
+    // Guards the Settings approver picker: what the admin sets on the step is
+    // what the run copies at creation.
+    const steps = defaultSignageSteps.map((s) =>
+      s.name === "Marketing brand check"
+        ? { ...s, approverType: "user" as const, approverRole: null, approverUserId: "user-42" }
+        : s,
+    );
+    const run = createRun({ steps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    const inst = byName(run, "Marketing brand check");
+    expect(inst.assignedUserId).toBe("user-42");
+    expect(inst.assignedRole).toBeNull();
+  });
+
   it("evaluates every condition with any-of semantics", () => {
     const run = createRun({ steps: defaultSignageSteps, entity: richSignage, settings, runNumber: 1, now: NOW });
     expect(byName(run, "Sponsor approval").status).toBe("pending"); // if_sponsored, group A with marketing

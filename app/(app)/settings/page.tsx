@@ -20,6 +20,7 @@ import { can, type PermissionOverrides } from "@/lib/authz";
 import { formatDate, formatDateTime, statusLabel } from "@/lib/format";
 import { InviteExternalForm, RevokeGrantButton } from "@/components/settings/invite-form";
 import { TeamTable } from "@/components/settings/team-table";
+import { WorkflowApproverForm } from "@/components/settings/workflow-approver-form";
 import { RestoreItemButton } from "@/components/settings/restore-button";
 import { icalToken } from "@/lib/ical";
 import { appUrl } from "@/lib/app-url";
@@ -73,6 +74,8 @@ export default async function SettingsPage() {
         )
         .orderBy(desc(staffInvites.createdAt)),
     ]);
+
+  const staffById = new Map(staff.map(({ u }) => [u.id, u.fullName || u.email]));
 
   return (
     <div className="flex max-w-5xl flex-col gap-8 p-4 sm:p-6">
@@ -208,19 +211,39 @@ export default async function SettingsPage() {
                   {wf.isDefault ? ", default" : ""})
                 </span>
               </p>
-              <ol className="text-muted-foreground space-y-1 text-sm">
+              <ol className="text-muted-foreground space-y-1.5 text-sm">
                 {steps
                   .filter((st) => st.workflowId === wf.id)
                   .map((st) => (
-                    <li key={st.id}>
-                      {st.sortOrder}. {st.name} — {st.kind} ·{" "}
-                      {st.approverRole ? statusLabel(st.approverRole) : "named user"} · SLA{" "}
-                      {st.slaDays}d
-                      {st.parallelGroup != null ? ` · group ${st.parallelGroup}` : ""}
-                      {st.invalidateOnNewVersion ? " · invalidates on new version" : ""}
-                      {st.conditions.filter((c) => c !== "always").length > 0
-                        ? ` · when ${st.conditions.join(" or ")}`
-                        : ""}
+                    <li key={st.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span>
+                        {st.sortOrder}. {st.name} — {st.kind} ·
+                      </span>
+                      {canManage ? (
+                        <WorkflowApproverForm
+                          stepId={st.id}
+                          approverType={st.approverType}
+                          approverRole={st.approverRole}
+                          approverUserId={st.approverUserId}
+                          staff={staff.map(({ u }) => ({ id: u.id, name: u.fullName || u.email }))}
+                        />
+                      ) : (
+                        <span>
+                          {st.approverType === "user"
+                            ? (staffById.get(st.approverUserId ?? "") ?? "named user")
+                            : st.approverRole
+                              ? statusLabel(st.approverRole)
+                              : "named user"}
+                        </span>
+                      )}
+                      <span>
+                        · SLA {st.slaDays}d
+                        {st.parallelGroup != null ? ` · group ${st.parallelGroup}` : ""}
+                        {st.invalidateOnNewVersion ? " · invalidates on new version" : ""}
+                        {st.conditions.filter((c) => c !== "always").length > 0
+                          ? ` · when ${st.conditions.join(" or ")}`
+                          : ""}
+                      </span>
                     </li>
                   ))}
               </ol>
@@ -228,8 +251,8 @@ export default async function SettingsPage() {
           ))}
         </div>
         <p className="text-muted-foreground mt-2 text-xs">
-          Workflow editing arrives with the Phase 3 builder; runs always use snapshots so edits
-          never change work in flight.
+          Approver changes apply to future runs only — sign-offs already in flight keep the
+          approver they started with. Any staff member can be named directly on a step.
         </p>
       </section>
 
