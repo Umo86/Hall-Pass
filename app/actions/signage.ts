@@ -2,22 +2,30 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { signageItems } from "@/lib/db/schema";
+import { auditLog, signageItems } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
-import { signageTransition, IllegalTransitionError } from "@/lib/status/signage";
+import {
+  IllegalTransitionError,
+  INVALIDATABLE_STATUSES,
+  signageTransition,
+  type SignageStatus,
+} from "@/lib/status/signage";
 import { applyHoldShift } from "@/lib/workflow";
 import { loadRun, persistRun } from "@/lib/workflow/persist";
 import { nextSignageRef } from "@/lib/refs";
 import { notify } from "@/lib/notify";
 import {
+  changedSpecKeys,
+  defaultSignageWorkflowId,
   itemAuthzCtx,
   loadItemBundle,
-  resolveAssigneeUserIds,
+  missingSubmitFields,
+  notifyPendingAssignees,
   resolveItemCreationRecipients,
   startItemRun,
 } from "@/lib/domain/signage";
@@ -203,7 +211,7 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
   const patch = applyRiggedRule(patchRaw);
 
   try {
-    await db.transaction(async (tx) => {
+    const outcome = await db.transaction(async (tx) => {
       const set: Partial<typeof signageItems.$inferInsert> = {};
       const assign = <K extends keyof typeof patch>(key: K, dbKey: keyof typeof set) => {
         if (patch[key] !== undefined) (set as Record<string, unknown>)[dbKey as string] = patch[key];
@@ -241,8 +249,40 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
         if (patch.costEstimate !== undefined) set.costEstimate = num(patch.costEstimate);
         if (patch.costActual !== undefined) set.costActual = num(patch.costActual);
       }
-      if (Object.keys(set).length === 0) return;
+      // The form posts every field; keep only real changes so History and
+      // the sign-off rules see what actually moved.
+      for (const key of Object.keys(set) as Array<keyof typeof set>) {
+        if (sameValue((bundle.item as Record<string, unknown>)[key], set[key])) delete set[key];
+      }
+      if (Object.keys(set).length === 0) return "unchanged" as const;
+
+      const item = bundle.item;
+      const specChanged = changedSpecKeys(item as Record<string, unknown>, set);
+      let restarted = false;
+      if (specChanged.length > 0) {
+        if (["installed", "snagged", "closed"].includes(item.status)) {
+          throw new Error(
+            `This item is already installed — its ${specChanged.join(", ")} can no longer change`,
+          );
+        }
+        if (INVALIDATABLE_STATUSES.includes(item.status)) {
+          // What was approved no longer matches: sign-off starts again.
+          set.status = signageTransition(item.status, "new_version_after_approval");
+          restarted = true;
+        } else if (item.status === "in_review" && item.currentRunNumber > 0) {
+          const run = await loadRun(tx, "signage_item", item.id, item.currentRunNumber);
+          restarted = run.some(
+            (i) => i.stepKind === "approval" && ["approved", "approved_with_conditions"].includes(i.status),
+          );
+        }
+      }
+
       await tx.update(signageItems).set(set).where(eq(signageItems.id, id));
+      if (restarted) {
+        const updated = { ...bundle, item: { ...item, ...set } as typeof item };
+        const instances = await startItemRun(tx, updated, new Date());
+        await notifyPendingAssignees(tx, updated, instances);
+      }
       await writeAudit(tx, {
         organisationId: session.organisation.id,
         editionId: bundle.edition.id,
@@ -250,16 +290,39 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
         entityType: "signage_item",
         entityId: id,
         action: "update",
-        before: pickKeys(bundle.item, Object.keys(set)),
+        before: pickKeys(item, Object.keys(set)),
         after: set,
-        summary: `Updated ${bundle.item.ref} (${Object.keys(set).join(", ")})`,
+        summary: `Updated ${item.ref} (${Object.keys(set).join(", ")})${
+          restarted ? " — spec changed, sign-off restarted" : ""
+        }`,
       });
+      return restarted ? ("restarted" as const) : ("saved" as const);
     });
     revalidatePath("/", "layout");
-    return success(undefined, "Saved");
+    if (outcome === "unchanged") return success(undefined, "No changes to save");
+    return success(
+      undefined,
+      outcome === "restarted"
+        ? "Saved — the spec changed, so sign-off has restarted and approvers have been told"
+        : "Saved",
+    );
   } catch (err) {
     return fail(errMessage(err));
   }
+}
+
+/** Equality for stored vs submitted values ("1200.00" == 1200, null == ""). */
+function sameValue(a: unknown, b: unknown): boolean {
+  const norm = (v: unknown) => (v === null || v === undefined || v === "" ? "" : v);
+  const x = norm(a);
+  const y = norm(b);
+  if (x === "" || y === "") return x === y;
+  const nx = Number(x);
+  const ny = Number(y);
+  if (typeof x !== "boolean" && typeof y !== "boolean" && Number.isFinite(nx) && Number.isFinite(ny)) {
+    return nx === ny;
+  }
+  return String(x) === String(y);
 }
 
 export async function softDeleteSignageItem(input: unknown): Promise<ActionResult> {
@@ -328,18 +391,16 @@ export async function submitForReview(input: unknown): Promise<ActionResult> {
     return fail("You cannot submit items for review");
   }
   const i = bundle.item;
-  const missing: string[] = [];
-  if (!i.hallId) missing.push("hall");
-  if (!i.locationId) missing.push("location");
-  if (!i.itemTypeId) missing.push("item type");
-  if (!i.widthMm) missing.push("width");
-  if (!i.heightMm) missing.push("height");
-  if (!i.quantity) missing.push("quantity");
-  if (!i.fixingMethod) missing.push("fixing method");
+  const missing = missingSubmitFields(i);
   if (missing.length > 0) {
     return fail(`Cannot submit yet — missing: ${missing.join(", ")}`);
   }
-  if (!i.workflowId) return fail("No workflow is assigned to this item");
+  // Items created by import (or before a workflow existed) get the default.
+  let workflowId = i.workflowId;
+  if (!workflowId) {
+    workflowId = await defaultSignageWorkflowId(db, session.organisation.id, i.itemTypeId);
+    if (!workflowId) return fail("No sign-off workflow is set up yet — ask an admin");
+  }
 
   const hasArtwork = Boolean(i.currentArtworkVersionId);
   let next;
@@ -351,28 +412,17 @@ export async function submitForReview(input: unknown): Promise<ActionResult> {
 
   try {
     await db.transaction(async (tx) => {
-      await tx.update(signageItems).set({ status: next }).where(eq(signageItems.id, i.id));
+      await tx
+        .update(signageItems)
+        .set({ status: next, workflowId })
+        .where(eq(signageItems.id, i.id));
       if (next === "in_review") {
-        const instances = await startItemRun(tx, bundle, new Date());
-        for (const inst of instances.filter((x) => x.status === "pending")) {
-          const assignees = await resolveAssigneeUserIds(
-            tx,
-            session.organisation.id,
-            bundle.edition.id,
-            bundle.venue.id,
-            i,
-            inst,
-          );
-          await notify(tx, {
-            userIds: assignees,
-            kind: "approval_requested",
-            title: `Approval requested: ${i.ref}`,
-            body: `${inst.stepName} for ${i.name}`,
-            link: `/${bundle.edition.code}/signage/${i.ref}`,
-            entityType: "signage_item",
-            entityId: i.id,
-          });
-        }
+        const instances = await startItemRun(
+          tx,
+          { ...bundle, item: { ...i, workflowId } },
+          new Date(),
+        );
+        await notifyPendingAssignees(tx, bundle, instances);
       }
       await writeAudit(tx, {
         organisationId: session.organisation.id,
@@ -442,7 +492,7 @@ export async function resumeSignageItem(input: unknown): Promise<ActionResult> {
   if (!bundle) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.resume" })) return fail("You cannot resume items");
-  let next;
+  let next: SignageStatus;
   try {
     next = signageTransition(bundle.item.status, "resume", {
       previousStatus: bundle.item.previousStatus ?? undefined,
@@ -450,20 +500,35 @@ export async function resumeSignageItem(input: unknown): Promise<ActionResult> {
   } catch (err) {
     return transitionFail(err);
   }
-  // Due dates shift by the hold duration (calendar days).
-  const heldDays = Math.max(
-    0,
-    diffDaysIso(
-      new Date().toISOString().slice(0, 10),
-      bundle.item.updatedAt.toISOString().slice(0, 10),
-    ),
-  );
+  // Artwork uploaded while held: go straight to review instead of waiting.
+  const startReview = next === "awaiting_artwork" && Boolean(bundle.item.currentArtworkVersionId);
+  if (startReview) next = "in_review";
+  // Due dates shift by how long the item was actually on hold (calendar
+  // days), measured from when it was held — not its last edit.
+  const [heldAt] = await db
+    .select({ at: auditLog.createdAt })
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.entityType, "signage_item"),
+        eq(auditLog.entityId, bundle.item.id),
+        eq(auditLog.action, "status_change"),
+        sql`${auditLog.after}->>'status' = 'on_hold'`,
+      ),
+    )
+    .orderBy(desc(auditLog.createdAt))
+    .limit(1);
+  const heldSince = (heldAt?.at ?? bundle.item.updatedAt).toISOString().slice(0, 10);
+  const heldDays = Math.max(0, diffDaysIso(new Date().toISOString().slice(0, 10), heldSince));
   await db.transaction(async (tx) => {
     await tx
       .update(signageItems)
       .set({ status: next, previousStatus: null, onHoldReason: null })
       .where(eq(signageItems.id, bundle.item.id));
-    if (bundle.item.currentRunNumber > 0 && heldDays > 0) {
+    if (startReview) {
+      const instances = await startItemRun(tx, bundle, new Date());
+      await notifyPendingAssignees(tx, bundle, instances);
+    } else if (bundle.item.currentRunNumber > 0 && heldDays > 0) {
       const run = await loadRun(tx, "signage_item", bundle.item.id, bundle.item.currentRunNumber);
       await persistRun(tx, "signage_item", bundle.item.id, applyHoldShift(run, heldDays));
     }

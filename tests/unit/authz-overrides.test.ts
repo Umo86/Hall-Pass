@@ -172,3 +172,32 @@ describe("sales and sponsorship items", () => {
     expect(can(sales, { type: "signage.submit", item })).toBe(false);
   });
 });
+
+describe("overrides carry granted users through to sign-off", () => {
+  const own = (userId: string, kind: "signage" | "sponsorship_item" = "signage"): SignageItemCtx => ({
+    ...item,
+    kind,
+    ownerUserId: userId,
+  });
+
+  it("sales granted 'add signage' can edit, upload and submit their own signage", () => {
+    const sales = staff("sales", { "signage.create": true });
+    for (const type of ["signage.edit", "artwork.upload", "signage.submit"] as const) {
+      expect(can(sales, { type, item: own("sales-user") })).toBe(true);
+      // …but not somebody else's
+      expect(can(sales, { type, item: own("someone-else") })).toBe(false);
+    }
+  });
+
+  it("event director granted 'add sponsorship items' can submit their own", () => {
+    const director = staff("event_director", { "sponsorship.create": true });
+    expect(
+      can(director, { type: "signage.submit", item: own("event_director-user", "sponsorship_item") }),
+    ).toBe(true);
+  });
+
+  it("'edit costs' also reveals costs", () => {
+    expect(can(staff("sales"), { type: "costs.view" })).toBe(false);
+    expect(can(staff("sales", { "costs.edit": true }), { type: "costs.view" })).toBe(true);
+  });
+});

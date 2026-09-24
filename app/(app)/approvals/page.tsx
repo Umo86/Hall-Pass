@@ -20,12 +20,14 @@ export const dynamic = "force-dynamic";
 export default async function ApprovalsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ overdue?: string }>;
+  searchParams: Promise<{ overdue?: string; all?: string }>;
 }) {
   const session = await requireStaffSession();
-  const { overdue } = await searchParams;
+  const { overdue, all } = await searchParams;
+  const isAdmin = session.actor.role === "admin";
+  const showAll = isAdmin && all === "1";
   const [rows, openTasks, completedTasks, staff] = await Promise.all([
-    pendingInstancesForUser(),
+    pendingInstancesForUser(session, { all: showAll }),
     openTasksForUser(session.user.id),
     recentlyCompletedForUser(session.user.id),
     db
@@ -61,23 +63,33 @@ export default async function ApprovalsPage({
 
       <section className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
-        <h2 className="text-sm font-semibold">My sign-offs</h2>
+        <h2 className="text-sm font-semibold">
+          {showAll ? "All open sign-offs" : "My sign-offs"}
+        </h2>
         <span className="text-muted-foreground text-sm">
-          {filtered.length} waiting on you
+          {filtered.length} {showAll ? "open" : "waiting on you"}
         </span>
-        <div className="ml-auto flex gap-2 text-sm">
+        <div className="ml-auto flex flex-wrap gap-3 text-sm">
           <Link
-            href="/approvals"
+            href={showAll ? "/approvals?all=1" : "/approvals"}
             className={!overdue ? "font-medium underline" : "text-muted-foreground hover:underline"}
           >
-            All
+            Everything
           </Link>
           <Link
-            href="/approvals?overdue=1"
+            href={showAll ? "/approvals?all=1&overdue=1" : "/approvals?overdue=1"}
             className={overdue ? "font-medium underline" : "text-muted-foreground hover:underline"}
           >
             Overdue only
           </Link>
+          {isAdmin && (
+            <Link
+              href={showAll ? "/approvals" : "/approvals?all=1"}
+              className="text-muted-foreground hover:underline"
+            >
+              {showAll ? "Just mine" : "All open sign-offs (admin)"}
+            </Link>
+          )}
         </div>
       </div>
 

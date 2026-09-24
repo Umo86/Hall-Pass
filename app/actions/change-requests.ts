@@ -22,6 +22,9 @@ import { notify } from "@/lib/notify";
  * and, on a decided run, invalidates the affected steps (never silently).
  */
 
+// Fields that change what was signed off; dates and the name do not.
+const SPEC_FIELDS = new Set(["widthMm", "heightMm", "depthMm", "quantity", "material", "finish"]);
+
 // Only plain, safely-applicable columns can change through a request.
 const CHANGEABLE = z.object({
   name: z.string().min(1).max(300).optional(),
@@ -126,16 +129,27 @@ export async function decideChangeRequest(input: unknown): Promise<ActionResult>
     return fail("You cannot change this item");
   }
 
+  const touchesItem = cr.fieldChanges.some((c) => Object.hasOwn(CHANGEABLE.shape, c.field));
+  if (parsed.data.decision === "approve" && touchesItem && bundle.item.status === "on_hold") {
+    return fail("Resume the item before applying changes");
+  }
+
   try {
     let message = "Change request rejected";
     await db.transaction(async (tx) => {
       const now = new Date();
-      if (parsed.data.decision === "reject") {
-        await tx
-          .update(changeRequests)
-          .set({ status: "rejected", decidedBy: session.user.id, decidedAt: now })
-          .where(eq(changeRequests.id, cr.id));
-      } else {
+      // Claim the request first: only one decision can ever apply it.
+      const claimed = await tx
+        .update(changeRequests)
+        .set({
+          status: parsed.data.decision === "reject" ? "rejected" : "approved",
+          decidedBy: session.user.id,
+          decidedAt: now,
+        })
+        .where(and(eq(changeRequests.id, cr.id), eq(changeRequests.status, "open")))
+        .returning({ id: changeRequests.id });
+      if (claimed.length === 0) throw new Error("This change request was already decided");
+      if (parsed.data.decision === "approve") {
         // Apply the whitelisted field changes.
         const set: Record<string, unknown> = {};
         for (const change of cr.fieldChanges) {
@@ -143,7 +157,8 @@ export async function decideChangeRequest(input: unknown): Promise<ActionResult>
         }
         let reopenedIds: string[] = [];
         let status = bundle.item.status;
-        if (Object.keys(set).length > 0 && INVALIDATABLE_STATUSES.includes(status)) {
+        const specChanged = Object.keys(set).some((f) => SPEC_FIELDS.has(f));
+        if (specChanged && INVALIDATABLE_STATUSES.includes(status)) {
           // Same rule as new artwork: decided steps that invalidate reopen.
           const run = await loadRun(tx, "signage_item", bundle.item.id, bundle.item.currentRunNumber);
           const res = invalidateOnNewVersion(run, { entity: itemEntityCtx(bundle), now });
@@ -156,20 +171,33 @@ export async function decideChangeRequest(input: unknown): Promise<ActionResult>
               userIds: inst.decidedBy ? [inst.decidedBy] : [],
               kind: "approval_invalidated",
               title: `Approved change reopens your sign-off — ${bundle.item.ref}`,
-              body: `${inst.stepName}: the item changed after your decision, so it returns to you for re-approval.`,
+              body: `${inst.stepName}: the item's spec changed after your decision and needs re-approval.`,
               link: `/${bundle.edition.code}/signage/${bundle.item.ref}?tab=approvals`,
             });
           }
         }
         if (Object.keys(set).length > 0) {
           await tx.update(signageItems).set(set).where(eq(signageItems.id, bundle.item.id));
+          // Item-level history so the item's History tab shows the change.
+          const item = bundle.item as unknown as Record<string, unknown>;
+          await writeAudit(tx, {
+            organisationId: session.organisation.id,
+            editionId: bundle.edition.id,
+            actorUserId: session.user.id,
+            entityType: "signage_item",
+            entityId: bundle.item.id,
+            action: "update",
+            before: Object.fromEntries(Object.keys(set).map((k) => [k, item[k] ?? null])),
+            after: set,
+            summary: `Change request applied to ${bundle.item.ref} (${Object.keys(set)
+              .filter((k) => k !== "status")
+              .join(", ")})`,
+          });
         }
         await tx
           .update(changeRequests)
           .set({
             status: cr.fieldChanges.length > 0 ? "applied" : "approved",
-            decidedBy: session.user.id,
-            decidedAt: now,
             reopenedInstanceIds: reopenedIds,
           })
           .where(eq(changeRequests.id, cr.id));

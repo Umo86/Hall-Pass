@@ -16,6 +16,7 @@ import {
   type SignageEntityCtx,
   type StandEntityCtx,
 } from "@/lib/workflow";
+import { signageTransition, type SignageStatus } from "@/lib/status/signage";
 
 const NOW = new Date("2027-03-01T09:00:00Z");
 const settings: EngineSettings = { costThresholdForDirector: 5000 };
@@ -160,14 +161,47 @@ describe("activation (6.2)", () => {
 });
 
 describe("decisions (6.3)", () => {
-  it("full happy path completes the run as approved", () => {
+  it("the run is approved when the last approval step settles, before production", () => {
     let run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
     run = decideOk(run, "Marketing brand check").instances;
-    run = decideOk(run, "Ops technical check").instances;
-    run = decideOk(run, "Sent to print", "confirm").instances;
-    run = decideOk(run, "Delivered", "confirm").instances;
-    const final = decideOk(run, "Installed", "confirm");
-    expect(final.entityEvent.type).toBe("run_approved");
+    const approved = decideOk(run, "Ops technical check");
+    expect(approved.entityEvent.type).toBe("run_approved");
+    // Production tracking starts straight away.
+    expect(byName(approved.instances, "Sent to print").status).toBe("pending");
+    run = approved.instances;
+    for (const step of ["Sent to print", "Delivered", "Installed"]) {
+      const res = decideOk(run, step, "confirm");
+      // Confirmations never re-approve; the action maps them to their own events.
+      expect(res.entityEvent.type).toBe("none");
+      run = res.instances;
+    }
+    expect(run.every((i) => ["approved", "confirmed", "skipped"].includes(i.status))).toBe(true);
+  });
+
+  it("an item walks from review to installed through legal transitions only", () => {
+    let run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    let status: SignageStatus = "in_review";
+    const CONFIRMATION_EVENTS = {
+      "Sent to print": "sent_to_print",
+      Delivered: "delivered",
+      Installed: "installed",
+    } as const;
+    const steps: Array<[string, "approve" | "confirm"]> = [
+      ["Marketing brand check", "approve"],
+      ["Ops technical check", "approve"],
+      ["Sent to print", "confirm"],
+      ["Delivered", "confirm"],
+      ["Installed", "confirm"],
+    ];
+    for (const [name, type] of steps) {
+      const res = decideOk(run, name, type);
+      run = res.instances;
+      if (res.entityEvent.type === "run_approved") status = signageTransition(status, "run_approved");
+      else if (type === "confirm") {
+        status = signageTransition(status, CONFIRMATION_EVENTS[name as keyof typeof CONFIRMATION_EVENTS]);
+      }
+    }
+    expect(status).toBe("installed");
   });
 
   it("any conditions anywhere make the run approved_with_conditions", () => {
@@ -185,10 +219,7 @@ describe("decisions (6.3)", () => {
       lockedVersionId: null,
       lockedSha256: null,
     }).instances;
-    run = decideOk(run, "Ops technical check").instances;
-    run = decideOk(run, "Sent to print", "confirm").instances;
-    run = decideOk(run, "Delivered", "confirm").instances;
-    const final = decideOk(run, "Installed", "confirm");
+    const final = decideOk(run, "Ops technical check");
     expect(final.entityEvent.type).toBe("run_approved_with_conditions");
   });
 

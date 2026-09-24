@@ -19,7 +19,8 @@ import { editionForDeadlines } from "@/lib/queries/editions";
 import { notify } from "@/lib/notify";
 import { sendEmail } from "@/lib/email/send";
 import { renderNotificationEmail } from "@/lib/email/template";
-import { brandName } from "@/lib/config";
+import { brandName, standsEnabled } from "@/lib/config";
+import { editionIsReadOnly } from "@/lib/edition-lock";
 import { writeAudit } from "@/lib/audit";
 
 export type JobResult = { job: string; sent: number; skipped: number };
@@ -72,6 +73,9 @@ async function pendingWithContext(): Promise<PendingRow[]> {
       const { loadItemBundle, resolveAssigneeUserIds } = await import("@/lib/domain/signage");
       const bundle = await loadItemBundle(db, instance.entityId);
       if (!bundle) continue;
+      // Deleted, held and archived items take no reminders or escalations.
+      if (bundle.item.deletedAt || bundle.item.status === "on_hold") continue;
+      if (editionIsReadOnly(bundle.edition.status)) continue;
       out.push({
         instance,
         ref: bundle.item.ref,
@@ -89,6 +93,7 @@ async function pendingWithContext(): Promise<PendingRow[]> {
         ),
       });
     } else {
+      if (!standsEnabled) continue;
       const { loadStandBundle } = await import("@/lib/domain/stand");
       const { resolveAssigneeUserIds } = await import("@/lib/domain/signage");
       const bundle = await loadStandBundle(db, instance.entityId);
@@ -442,8 +447,11 @@ export async function runDailyJobs(today: string): Promise<JobResult[]> {
   results.push(await approvalReminders(today));
   results.push(await escalation(today));
   results.push(await missingArtwork(today));
-  results.push(await standChasers(today));
-  results.push(await documentExpiry(today));
+  // Stand chasers and stand-document expiry only run while Stands is on.
+  if (standsEnabled) {
+    results.push(await standChasers(today));
+    results.push(await documentExpiry(today));
+  }
   results.push(await dailyDigest(today));
   return results;
 }

@@ -42,6 +42,8 @@ export type VersionRow = {
   previewUrl: string | null;
   mimeType: string;
   isCurrent: boolean;
+  /** Demo records carry no real file. */
+  sample?: boolean;
 };
 
 function VersionPreview({ version, className }: { version: VersionRow; className?: string }) {
@@ -50,26 +52,38 @@ function VersionPreview({ version, className }: { version: VersionRow; className
       <div
         className={`text-muted-foreground flex items-center justify-center rounded-lg border border-dashed p-6 text-xs ${className ?? ""}`}
       >
-        No preview for this file type — download to view.
+        {version.sample
+          ? "Sample record — no file attached."
+          : "No preview for this file type — download to view."}
       </div>
     );
   }
-  if (version.mimeType === "application/pdf") {
-    return (
-      <iframe
-        src={version.previewUrl}
-        title={`Preview of v${version.versionNumber} — ${version.fileName}`}
-        className={`h-[480px] w-full rounded-lg border ${className ?? ""}`}
-      />
-    );
-  }
   return (
-    // eslint-disable-next-line @next/next/no-img-element -- artwork previews have unknown dimensions
-    <img
-      src={version.previewUrl}
-      alt={`Preview of v${version.versionNumber} — ${version.fileName}`}
-      className={`bg-muted/30 max-h-[480px] w-full rounded-lg border object-contain ${className ?? ""}`}
-    />
+    <div className={`space-y-1 ${className ?? ""}`}>
+      {version.mimeType === "application/pdf" ? (
+        <iframe
+          src={version.previewUrl}
+          title={`Preview of v${version.versionNumber} — ${version.fileName}`}
+          className="h-[480px] w-full rounded-lg border"
+        />
+      ) : (
+        // eslint-disable-next-line @next/next/no-img-element -- artwork previews have unknown dimensions
+        <img
+          src={version.previewUrl}
+          alt={`Preview of v${version.versionNumber} — ${version.fileName}`}
+          className="bg-muted/30 max-h-[480px] w-full rounded-lg border object-contain"
+        />
+      )}
+      {/* Phone browsers often won't show a PDF inside a frame. */}
+      <a
+        href={version.previewUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-muted-foreground text-xs underline"
+      >
+        Open full size
+      </a>
+    </div>
   );
 }
 

@@ -156,6 +156,7 @@ export default async function ItemDetailPage({
           : null,
       mimeType: version.mimeType,
       isCurrent: version.id === item.currentArtworkVersionId,
+      sample: version.filePath.startsWith("seed/"),
     })),
   );
 
@@ -224,6 +225,7 @@ export default async function ItemDetailPage({
             canSubmit={can(session.actor, { type: "signage.submit", item: itemCtx })}
             canHold={can(session.actor, { type: "signage.hold" })}
             canDelete={can(session.actor, { type: "signage.delete" })}
+            listHref={`/${editionCode}/${item.kind === "sponsorship_item" ? "sponsorship" : "signage"}`}
           />
         </div>
       </div>
@@ -249,6 +251,7 @@ export default async function ItemDetailPage({
         <ItemForm
           mode="edit"
           kind={item.kind}
+          status={item.status}
           values={{
             id: item.id,
             name: item.name,
@@ -403,7 +406,7 @@ export default async function ItemDetailPage({
             createdAt: comment.createdAt.toISOString(),
           }))}
           canWriteInternal={can(session.actor, { type: "comment.internal.write" })}
-          canWriteExternal={can(session.actor, { type: "comment.external.write", entity: itemCtx })}
+          canWriteExternal={false}
           isStaff
         />
       )}

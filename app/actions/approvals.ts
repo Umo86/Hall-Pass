@@ -2,9 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { approvalInstances, signageItems, standSubmissions } from "@/lib/db/schema";
+import { approvalInstances, memberships, signageItems, standSubmissions } from "@/lib/db/schema";
 import { can, type ApprovalStepCtx } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
@@ -26,6 +26,8 @@ import {
   itemAuthzCtx,
   itemEntityCtx,
   loadItemBundle,
+  newlyPending,
+  notifyPendingAssignees,
   resolveAssigneeUserIds,
   startItemRun,
 } from "@/lib/domain/signage";
@@ -72,6 +74,7 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
         : await loadStandBundle(tx, row.entityId);
       if (!bundle) throw new WorkflowError("Record not found");
       if (editionIsReadOnly(bundle.edition.status)) throw new WorkflowError(EDITION_LOCKED_MESSAGE);
+      assertItemOpen(bundle);
 
       const stepCtx: ApprovalStepCtx = {
         assignedRole: row.assignedRole,
@@ -175,27 +178,11 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
             entityId: item.id,
           });
         }
-        for (const inst of res.instances.filter(
-          (x) => x.status === "pending" && x.id !== data.instanceId,
-        )) {
-          const assignees = await resolveAssigneeUserIds(
-            tx,
-            session.organisation.id,
-            edition.id,
-            (b as { venue: { id: string } }).venue.id,
-            item,
-            inst,
-          );
-          await notify(tx, {
-            userIds: assignees,
-            kind: "approval_requested",
-            title: `Approval requested: ${item.ref}`,
-            body: `${inst.stepName} for ${item.name}`,
-            link: `/${edition.code}/signage/${item.ref}`,
-            entityType: "signage_item",
-            entityId: item.id,
-          });
-        }
+        await notifyPendingAssignees(
+          tx,
+          b as NonNullable<Awaited<ReturnType<typeof loadItemBundle>>>,
+          newlyPending(run, res.instances),
+        );
         await writeAudit(tx, {
           organisationId: session.organisation.id,
           editionId: edition.id,
@@ -335,6 +322,7 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
         : await loadStandBundle(tx, row.entityId);
       if (!bundle) throw new WorkflowError("Record not found");
       if (editionIsReadOnly(bundle.edition.status)) throw new WorkflowError(EDITION_LOCKED_MESSAGE);
+      assertItemOpen(bundle);
       const stepCtx: ApprovalStepCtx = {
         assignedRole: row.assignedRole,
         assignedUserId: row.assignedUserId,
@@ -344,6 +332,22 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
       };
       if (!can(session.actor, { type: "approval.delegate", step: stepCtx })) {
         throw new WorkflowError("You cannot delegate this step");
+      }
+      const [target] = await tx
+        .select({ role: memberships.role })
+        .from(memberships)
+        .where(
+          and(
+            eq(memberships.userId, parsed.data.toUserId),
+            eq(memberships.organisationId, session.organisation.id),
+          ),
+        )
+        .limit(1);
+      if (!target || target.role === "viewer") {
+        throw new WorkflowError("Pick a team member who can sign off");
+      }
+      if (parsed.data.toUserId === (row.assignedUserId ?? session.user.id)) {
+        throw new WorkflowError("This step is already with that person");
       }
       const run = await loadRun(tx, row.entityType, row.entityId, row.runNumber);
       const updated = applyDelegation(run, {
@@ -400,10 +404,12 @@ export async function resubmitSignageItem(input: unknown): Promise<ActionResult>
       const run = await loadRun(tx, "signage_item", bundle.item.id, bundle.item.currentRunNumber);
       const res = resubmitAfterChanges(run, { entity: itemEntityCtx(bundle), now: new Date() });
       if (res.mode === "restart_from_step") {
-        await persistRun(tx, "signage_item", bundle.item.id, res.instances);
+        const persisted = await persistRun(tx, "signage_item", bundle.item.id, res.instances);
+        await notifyPendingAssignees(tx, bundle, newlyPending(run, persisted));
       } else {
         // Whole run restarts as a new run; the old one stays in history.
-        await startItemRun(tx, bundle, new Date());
+        const instances = await startItemRun(tx, bundle, new Date());
+        await notifyPendingAssignees(tx, bundle, instances);
       }
       await tx
         .update(signageItems)
@@ -424,5 +430,15 @@ export async function resubmitSignageItem(input: unknown): Promise<ActionResult>
     return success(undefined, "Resubmitted for review");
   } catch (err) {
     return fail(err instanceof Error ? err.message : "Something went wrong");
+  }
+}
+
+/** Deleted or held items take no decisions until restored or resumed. */
+function assertItemOpen(bundle: object) {
+  const item = (bundle as { item?: { deletedAt: Date | null; status: string } }).item;
+  if (!item) return;
+  if (item.deletedAt) throw new WorkflowError("This item has been deleted");
+  if (item.status === "on_hold") {
+    throw new WorkflowError("This item is on hold — decisions resume when it is resumed");
   }
 }

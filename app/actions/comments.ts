@@ -2,14 +2,15 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { comments } from "@/lib/db/schema";
+import { comments, users } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { notify } from "@/lib/notify";
-import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
+import { commentRecipients, itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
 import { loadStandBundle, standAuthzCtx, stepActiveFlags } from "@/lib/domain/stand";
 import { loadRun } from "@/lib/workflow/persist";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
@@ -41,6 +42,7 @@ export async function addComment(input: unknown): Promise<ActionResult> {
   let ref = "";
   let link = "";
   let ownerId: string | null = null;
+  let createdBy: string | null = null;
   if (data.entityType === "signage_item") {
     const bundle = await loadItemBundle(db, data.entityId);
     if (!bundle) return fail("Record not found");
@@ -48,6 +50,7 @@ export async function addComment(input: unknown): Promise<ActionResult> {
     editionId = bundle.edition.id;
     ref = bundle.item.ref;
     ownerId = bundle.item.ownerUserId;
+    createdBy = bundle.item.createdBy;
     link = `/${bundle.edition.code}/signage/${bundle.item.ref}?tab=comments`;
     if (!data.isInternal) {
       if (!can(session.actor, { type: "comment.external.write", entity: itemAuthzCtx(bundle) })) {
@@ -92,13 +95,22 @@ export async function addComment(input: unknown): Promise<ActionResult> {
         })
         .returning();
 
-      // One notification per person even with several mentions in a comment.
-      const recipients = new Set(data.mentionUserIds);
-      if (ownerId && ownerId !== session.user.id) recipients.add(ownerId);
-      recipients.delete(session.user.id);
-      if (recipients.size > 0) {
+      // The owner and everyone already in the conversation hear about it.
+      const priorAuthors = await tx
+        .selectDistinct({ id: users.id, isExternal: users.isExternal })
+        .from(comments)
+        .innerJoin(users, eq(comments.authorId, users.id))
+        .where(and(eq(comments.entityType, data.entityType), eq(comments.entityId, data.entityId)));
+      const recipients = commentRecipients({
+        authorId: session.user.id,
+        ownerId,
+        createdBy,
+        priorAuthors,
+        isInternal: data.isInternal,
+      });
+      if (recipients.length > 0) {
         await notify(tx, {
-          userIds: [...recipients],
+          userIds: recipients,
           kind: "comment",
           title: `Comment on ${ref}`,
           body: data.body.slice(0, 200),

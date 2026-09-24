@@ -75,6 +75,50 @@ test.describe("staff flow", () => {
     await mkt.getByRole("dialog").getByRole("button", { name: "Approve", exact: true }).click();
     await expect(row).toHaveCount(0);
     await mktCtx.close();
+
+    // Ops completes the technical check — the item is now approved — then
+    // tracks production through to installation (no supplier is set, so the
+    // print and delivery confirmations fall back to ops).
+    const opsCtx2 = await browser.newContext();
+    await signInAs(opsCtx2, "ops@media10.test", baseURL!);
+    const ops = await opsCtx2.newPage();
+    const decide = async (button: "Approve" | "Confirm", photo?: string) => {
+      await ops.goto(`${baseURL}/approvals`);
+      const opsRow = ops.locator("li", { hasText: ref });
+      await opsRow.getByRole("button", { name: button, exact: true }).click();
+      const dialog = ops.getByRole("dialog");
+      if (photo) await dialog.getByLabel(/photo/i).fill(photo);
+      await dialog.getByRole("button", { name: button, exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+    };
+    await decide("Approve"); // Ops technical check → approved
+    await ops.goto(`${baseURL}/BIRM27/signage/${ref}`);
+    await expect(ops.getByText("Approved", { exact: true }).first()).toBeVisible();
+    await decide("Confirm"); // Sent to print → in production
+    await decide("Confirm"); // Delivered
+    await decide("Confirm", "IMG_0001.jpg"); // Installed (photo required)
+    await ops.goto(`${baseURL}/BIRM27/signage/${ref}`);
+    await expect(ops.getByText("Installed", { exact: true }).first()).toBeVisible();
+    await opsCtx2.close();
+  });
+
+  test("deleting an item returns to the schedule", async ({ browser, baseURL }) => {
+    const ctx = await browser.newContext();
+    await signInAs(ctx, "ops@media10.test", baseURL!);
+    const page = await ctx.newPage();
+    await page.goto(`${baseURL}/BIRM27/signage/new`);
+    const name = `E2E delete me ${Date.now()}`;
+    await page.getByLabel("Name", { exact: true }).fill(name);
+    await page.getByLabel("Category").selectOption("venue");
+    await page.getByRole("button", { name: "Create item" }).click();
+    await page.waitForURL("**/signage/SIG-BIRM27-*");
+    page.once("dialog", (d) => d.accept());
+    await page.getByRole("button", { name: /delete/i }).first().click();
+    const confirmBtn = page.getByRole("dialog").getByRole("button", { name: /delete/i });
+    if (await confirmBtn.count()) await confirmBtn.click();
+    await page.waitForURL("**/BIRM27/signage");
+    await expect(page.getByText(name)).toHaveCount(0);
+    await ctx.close();
   });
 
 });

@@ -230,21 +230,23 @@ export function applyDecision(instances: Instance[], opts: DecideOpts): DecideRe
       break;
   }
 
-  const active = result.filter((i) => i.status !== "invalidated");
-  const allSettled = active.every(isSettled);
-  if (allSettled) {
-    const anyConditions = active.some((i) => i.conditionsText && i.conditionsText.trim());
-    return {
-      instances: result,
-      entityEvent: { type: anyConditions ? "run_approved_with_conditions" : "run_approved" },
-      decided: inst,
-    };
+  // The run is approved once every approval-kind step is settled. The
+  // confirmation steps that follow (sent to print, delivered, installed,
+  // build check) then track production on an approved item; they move the
+  // entity through their own events in the action, never re-approving it.
+  const next = activate(result, { entity: opts.entity, now: opts.now });
+  if (inst.stepKind === "approval") {
+    const approvals = result.filter((i) => i.status !== "invalidated" && i.stepKind === "approval");
+    if (approvals.every(isSettled)) {
+      const anyConditions = approvals.some((i) => i.conditionsText && i.conditionsText.trim());
+      return {
+        instances: next,
+        entityEvent: { type: anyConditions ? "run_approved_with_conditions" : "run_approved" },
+        decided: inst,
+      };
+    }
   }
-  return {
-    instances: activate(result, { entity: opts.entity, now: opts.now }),
-    entityEvent: { type: "none" },
-    decided: inst,
-  };
+  return { instances: next, entityEvent: { type: "none" }, decided: inst };
 }
 
 export type ResubmitResult =

@@ -46,11 +46,17 @@ export function CommentThread({
             <li key={c.id} className="rounded-lg border p-3">
               <p className="text-muted-foreground text-xs">
                 <span className="text-foreground font-medium">{c.authorName}</span> ·{" "}
-                {formatDateTime(c.createdAt)} ·{" "}
-                {c.isInternal ? (
-                  <span className="text-amber-700 dark:text-amber-400">Internal</span>
-                ) : (
-                  <span>Visible to external parties</span>
+                {formatDateTime(c.createdAt)}
+                {/* Visibility only matters where both kinds of comment are possible. */}
+                {canWriteInternal && canWriteExternal && (
+                  <>
+                    {" · "}
+                    {c.isInternal ? (
+                      <span className="text-amber-700 dark:text-amber-400">Staff only</span>
+                    ) : (
+                      <span>Shared</span>
+                    )}
+                  </>
                 )}
               </p>
               <p className="mt-1 text-sm whitespace-pre-wrap">{c.body}</p>
@@ -83,7 +89,7 @@ export function CommentThread({
           <Textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
-            placeholder="Write a comment… (@ mentions arrive with the notification centre)"
+            placeholder="Write a comment…"
             required
           />
           <div className="flex items-center gap-3">

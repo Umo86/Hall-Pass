@@ -67,6 +67,7 @@ export function ItemForm({
   canEditCosts,
   editionCode,
   kind = "signage",
+  status,
 }: {
   mode: "create" | "edit";
   values: ItemFormValues;
@@ -76,6 +77,8 @@ export function ItemForm({
   editionCode: string;
   /** Sponsorship items skip category, location and install fields. */
   kind?: "signage" | "sponsorship_item";
+  /** Current status on edit, to warn that spec changes restart sign-off. */
+  status?: string;
 }) {
   const isSponsorship = kind === "sponsorship_item";
   const [error, setError] = useState<string | null>(null);
@@ -106,7 +109,7 @@ export function ItemForm({
         const res = await updateSignageItem({ ...clean, id: values.id });
         if (!res.ok) setError(res.error);
         else {
-          setMessage("Saved");
+          setMessage(res.message ?? "Saved");
           router.refresh();
         }
       }
@@ -405,6 +408,14 @@ export function ItemForm({
         </section>
       </details>
 
+      {mode === "edit" &&
+        status &&
+        ["approved", "approved_with_conditions", "in_production", "delivered"].includes(status) && (
+          <p className="text-sm text-amber-800 dark:text-amber-300">
+            This item is signed off. Changing its size, material, fixing, type or sponsor sends it
+            back for sign-off; dates, supplier and costs can change freely.
+          </p>
+        )}
       <div className="flex items-center gap-3">
         <Button type="submit" disabled={pending}>
           {mode === "create" ? "Create item" : "Save changes"}

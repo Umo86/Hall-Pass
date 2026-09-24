@@ -2,16 +2,19 @@
  * Domain glue between signage items, the status machine and the workflow
  * engine. Used by server actions; kept out of components entirely.
  */
-import { and, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import type { Db, Tx } from "@/lib/db/client";
 import {
   editions,
   externalGrants,
+  itemTypes,
   memberships,
   organisations,
   signageItems,
   venues,
+  workflows,
 } from "@/lib/db/schema";
+import { notify } from "@/lib/notify";
 import type { SignageItemCtx } from "@/lib/authz";
 import { createRun, type EngineSettings, type EntityCtx, type Instance } from "@/lib/workflow";
 import { loadStepDefs, persistRun } from "@/lib/workflow/persist";
@@ -190,4 +193,169 @@ export async function resolveAssigneeUserIds(
     })
     .map((g) => g.userId)
     .filter((id): id is string => Boolean(id));
+}
+
+/**
+ * Fields an item needs before it can go for sign-off. Sponsorship items
+ * (bags, lanyards) have no hall, location or fixing, so only signage needs
+ * those.
+ */
+export function missingSubmitFields(item: {
+  kind: "signage" | "sponsorship_item";
+  hallId: string | null;
+  locationId: string | null;
+  itemTypeId: string | null;
+  widthMm: number | null;
+  heightMm: number | null;
+  quantity: number | null;
+  fixingMethod: string | null;
+}): string[] {
+  const missing: string[] = [];
+  if (item.kind === "signage") {
+    if (!item.hallId) missing.push("hall");
+    if (!item.locationId) missing.push("location");
+  }
+  if (!item.itemTypeId) missing.push("item type");
+  if (item.kind === "signage") {
+    if (!item.widthMm) missing.push("width");
+    if (!item.heightMm) missing.push("height");
+  }
+  if (!item.quantity) missing.push("quantity");
+  if (item.kind === "signage" && !item.fixingMethod) missing.push("fixing method");
+  return missing;
+}
+
+/**
+ * The workflow a new or imported item should use: its item type's default,
+ * else the organisation's default (then first) live signage workflow.
+ */
+export async function defaultSignageWorkflowId(
+  db: Db | Tx,
+  organisationId: string,
+  itemTypeId: string | null,
+): Promise<string | null> {
+  if (itemTypeId) {
+    const [type] = await db
+      .select({ wf: itemTypes.defaultWorkflowId })
+      .from(itemTypes)
+      .where(eq(itemTypes.id, itemTypeId))
+      .limit(1);
+    if (type?.wf) return type.wf;
+  }
+  const rows = await db
+    .select({ id: workflows.id, isDefault: workflows.isDefault })
+    .from(workflows)
+    .where(
+      and(
+        eq(workflows.organisationId, organisationId),
+        eq(workflows.appliesTo, "signage"),
+        eq(workflows.isArchived, false),
+      ),
+    )
+    .orderBy(asc(workflows.createdAt));
+  return (rows.find((r) => r.isDefault) ?? rows[0])?.id ?? null;
+}
+
+/**
+ * Tell whoever holds each given pending step that it is now their turn.
+ * Callers pass only newly pending instances so nobody is told twice.
+ */
+export async function notifyPendingAssignees(
+  tx: Tx,
+  bundle: ItemBundle,
+  instances: Array<{
+    status: string;
+    stepName: string;
+    assignedRole: string | null;
+    assignedUserId: string | null;
+  }>,
+): Promise<void> {
+  const item = bundle.item;
+  for (const inst of instances.filter((x) => x.status === "pending")) {
+    const assignees = await resolveAssigneeUserIds(
+      tx,
+      bundle.organisation.id,
+      bundle.edition.id,
+      bundle.venue.id,
+      item,
+      inst,
+    );
+    await notify(tx, {
+      userIds: assignees,
+      kind: "approval_requested",
+      title: `${inst.stepName}: ${item.ref} — ${item.name}`,
+      body: "It's your turn to sign off.",
+      link: `/${bundle.edition.code}/signage/${item.ref}?tab=approvals`,
+      entityType: "signage_item",
+      entityId: item.id,
+    });
+  }
+}
+
+/** Instances that are pending now but were not pending before. */
+export function newlyPending<T extends { id: string; stepId?: string; status: string }>(
+  before: T[],
+  after: T[],
+): T[] {
+  const wasPending = new Set(before.filter((i) => i.status === "pending").map((i) => i.id));
+  return after.filter((i) => i.status === "pending" && !wasPending.has(i.id));
+}
+
+/**
+ * Spec fields that an approval certifies. Changing any of them after
+ * sign-off sends the item back for sign-off; dates, supplier, PO and costs
+ * stay freely editable.
+ */
+export const SPEC_KEYS = [
+  "name",
+  "itemTypeId",
+  "widthMm",
+  "heightMm",
+  "depthMm",
+  "quantity",
+  "sided",
+  "material",
+  "finish",
+  "fixingMethod",
+  "requiresVenueApproval",
+  "requiresEventDirector",
+  "sponsorId",
+] as const;
+
+function normalise(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "";
+  return String(v);
+}
+
+/** Spec keys whose submitted value differs from the stored one. */
+export function changedSpecKeys(
+  current: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): string[] {
+  return SPEC_KEYS.filter(
+    (k) => patch[k] !== undefined && normalise(patch[k]) !== normalise(current[k]),
+  );
+}
+
+/**
+ * Who hears about a new comment: the item's owner (or creator, for imported
+ * items with no owner) and everyone who commented before — never the author,
+ * and never external users on a staff-only comment. Pure for unit testing.
+ */
+export function commentRecipients(input: {
+  authorId: string;
+  ownerId: string | null;
+  createdBy: string | null;
+  priorAuthors: Array<{ id: string; isExternal: boolean }>;
+  isInternal: boolean;
+}): string[] {
+  const ids = new Set<string>();
+  const owner = input.ownerId ?? input.createdBy;
+  if (owner) ids.add(owner);
+  for (const a of input.priorAuthors) {
+    if (input.isInternal && a.isExternal) continue;
+    ids.add(a.id);
+  }
+  ids.delete(input.authorId);
+  return [...ids];
 }

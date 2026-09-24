@@ -22,6 +22,10 @@ test.describe("sponsorship items", () => {
     await page.waitForURL("**/signage/SIG-BIRM27-*");
     await expect(page.getByRole("heading", { name })).toBeVisible();
 
+    // A sponsorship item has no hall or location, and can still go for sign-off.
+    await page.getByRole("button", { name: "Submit for review" }).click();
+    await expect(page.getByText("Awaiting artwork", { exact: true })).toBeVisible();
+
     // Listed in the sponsorship register…
     await page.goto(`${baseURL}/BIRM27/sponsorship`);
     await expect(page.getByText(name)).toBeVisible();

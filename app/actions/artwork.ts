@@ -20,6 +20,7 @@ import {
   itemAuthzCtx,
   itemEntityCtx,
   loadItemBundle,
+  notifyPendingAssignees,
   resolveAssigneeUserIds,
   startItemRun,
   type ItemBundle,
@@ -231,14 +232,20 @@ async function recordArtworkVersion(
       };
 
       let summarySuffix = "";
+      let reviewStarted = false;
       if (item.status === "awaiting_artwork") {
         set.status = signageTransition(item.status, "artwork_uploaded");
         await tx.update(signageItems).set(set).where(eq(signageItems.id, item.id));
-        await startItemRun(tx, bundle, new Date());
+        const instances = await startItemRun(tx, bundle, new Date());
+        await notifyPendingAssignees(tx, bundle, instances);
+        reviewStarted = true;
         summarySuffix = " — review started";
-      } else if (INVALIDATABLE_STATUSES.includes(item.status)) {
-        // Never silently: decided steps configured to invalidate are superseded.
-        set.status = signageTransition(item.status, "new_version_after_approval");
+      } else if (INVALIDATABLE_STATUSES.includes(item.status) || item.status === "in_review") {
+        // Never silently: decided steps configured to invalidate are superseded,
+        // including approvals already given earlier in the current review.
+        if (item.status !== "in_review") {
+          set.status = signageTransition(item.status, "new_version_after_approval");
+        }
         await tx.update(signageItems).set(set).where(eq(signageItems.id, item.id));
         const run = await loadRun(tx, "signage_item", item.id, item.currentRunNumber);
         const res = invalidateOnNewVersion(run, { entity: itemEntityCtx(bundle), now: new Date() });
@@ -249,19 +256,22 @@ async function recordArtworkVersion(
             userIds: approvers,
             kind: "approval_invalidated",
             title: `New artwork supersedes your approval — ${item.ref}`,
-            body: `${inst.stepName}: approved v${item.currentRunNumber} decision now superseded by v${versionNumber}. Compare the versions and re-approve.`,
+            body: `${inst.stepName}: your approval of the previous artwork is superseded by v${versionNumber}. Compare the versions and re-approve.`,
             link: `/${bundle.edition.code}/signage/${item.ref}?tab=artwork&compare=${versionNumber}`,
             entityType: "signage_item",
             entityId: item.id,
           });
         }
-        summarySuffix = ` — ${res.invalidated.length} approval(s) invalidated, back in review`;
+        summarySuffix =
+          res.invalidated.length > 0
+            ? ` — ${res.invalidated.length} approval(s) invalidated, back in review`
+            : "";
       } else {
         await tx.update(signageItems).set(set).where(eq(signageItems.id, item.id));
       }
 
       // Approvers with pending instances hear about new artwork.
-      if (item.currentRunNumber > 0) {
+      if (!reviewStarted && item.currentRunNumber > 0) {
         const run = await loadRun(tx, "signage_item", item.id, item.currentRunNumber);
         for (const inst of run.filter((i) => i.status === "pending")) {
           const assignees = await resolveAssigneeUserIds(

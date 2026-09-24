@@ -33,7 +33,7 @@ async function run(request: Request) {
   const url = new URL(request.url);
   const today = url.searchParams.get("today") ?? todayInLondon();
   const jobs = await runDailyJobs(today);
-  const emailed = await dispatchNotificationEmails(500);
+  const emailed = await dispatchNotificationEmails({ limit: 500 });
   return NextResponse.json({ ok: true, today, jobs, emailed });
 }
 

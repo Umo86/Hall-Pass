@@ -24,12 +24,21 @@ import { resubmitSignageItem } from "@/app/actions/approvals";
 type Props = {
   itemId: string;
   status: string;
+  /** Where to go after deleting: the item's own register. */
+  listHref: string;
   canSubmit: boolean;
   canHold: boolean;
   canDelete: boolean;
 };
 
-export function LifecycleButtons({ itemId, status, canSubmit, canHold, canDelete }: Props) {
+export function LifecycleButtons({
+  itemId,
+  status,
+  canSubmit,
+  canHold,
+  canDelete,
+  listHref,
+}: Props) {
   const [dialog, setDialog] = useState<"hold" | "delete" | null>(null);
   const [reason, setReason] = useState("");
   const [message, setMessage] = useState<string | null>(null);
@@ -127,7 +136,7 @@ export function LifecycleButtons({ itemId, status, canSubmit, canHold, canDelete
               onClick={() =>
                 run(async () => {
                   const res = await softDeleteSignageItem({ id: itemId });
-                  if (res.ok) router.push("../");
+                  if (res.ok) router.push(listHref);
                   return res;
                 })
               }

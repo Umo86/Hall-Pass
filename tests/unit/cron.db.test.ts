@@ -17,6 +17,8 @@ const d = describe.skipIf(!url);
 // The jobs module imports lib/db/client which reads DATABASE_URL, so point
 // it at the test database before importing.
 if (url) process.env.DATABASE_URL = url;
+// Stands are hidden in the product for now; this suite still covers their chasers.
+process.env.STANDS_ENABLED = "1";
 
 let client: ReturnType<typeof postgres>;
 let db: ReturnType<typeof drizzle<typeof schema>>;

@@ -260,6 +260,15 @@ function staffCanDecide(actor: StaffActor, step: ApprovalStepCtx): boolean {
 
 const sponsorScopedRoles: StaffRole[] = ["sales"];
 
+/**
+ * Someone granted "add signage" / "add sponsorship items" by override can
+ * also carry their own items through to sign-off (edit, artwork, submit).
+ */
+function ownsGrantedCreation(actor: StaffActor, item: SignageItemCtx): boolean {
+  const key = item.kind === "sponsorship_item" ? "sponsorship.create" : "signage.create";
+  return actor.overrides?.[key] === true && item.ownerUserId === actor.userId;
+}
+
 function isSponsorItem(item: SignageItemCtx) {
   return item.sponsorId != null;
 }
@@ -343,6 +352,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return role === "admin" || action.task.createdByUserId === actor.userId;
 
     case "signage.edit":
+      if (ownsGrantedCreation(actor, action.item)) return true;
       if (role === "admin" || role === "ops" || role === "marketing") return true;
       if (sponsorScopedRoles.includes(role)) {
         return isSponsorItem(action.item) || action.item.kind === "sponsorship_item";
@@ -354,6 +364,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return role === "admin" || role === "ops";
 
     case "artwork.upload":
+      if (ownsGrantedCreation(actor, action.item)) return true;
       if (role === "admin" || role === "ops" || role === "marketing") return true;
       if (role === "sales") {
         return isSponsorItem(action.item) || action.item.kind === "sponsorship_item";
@@ -361,6 +372,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return false;
 
     case "signage.submit":
+      if (ownsGrantedCreation(actor, action.item)) return true;
       if (role === "admin" || role === "ops" || role === "marketing") return true;
       if (role === "sales") {
         return isSponsorItem(action.item) || action.item.kind === "sponsorship_item";
@@ -391,6 +403,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return false; // staff never submit on behalf of exhibitors
 
     case "costs.view":
+      if (actor.overrides?.["costs.edit"] === true) return true;
       return role === "admin" || role === "ops" || role === "marketing" || role === "event_director";
     case "costs.edit":
       return role === "admin" || role === "ops";
