@@ -55,7 +55,7 @@ export default async function DashboardPage({
   const session = await requireStaffSession();
   const canSeeCosts = can(session.actor, { type: "costs.view" });
   const { editionCode } = await params;
-  const ed = await getEditionByCode(editionCode.toUpperCase());
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
   const { notice } = await searchParams;
   const [data, logoUrl] = await Promise.all([
@@ -82,8 +82,8 @@ export default async function DashboardPage({
     <div className="flex flex-col gap-6 p-4 sm:p-6">
       {notice && (
         <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-          The show was created, but the logo wasn&apos;t saved: {notice}. Add it again from Shows
-          → Edit.
+          The show was created, but the logo wasn&apos;t saved: {notice}. Add it again from Shows →
+          Edit.
         </p>
       )}
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -99,9 +99,9 @@ export default async function DashboardPage({
           <h1 className="text-xl font-semibold tracking-tight">{ed.edition.name}</h1>
           <p className="text-muted-foreground text-sm">
             {ed.venue.name}
-            {ed.venue.address ? `, ${ed.venue.address}` : ""} · build {formatDate(ed.edition.buildStart)} –{" "}
-            {formatDate(ed.edition.buildEnd)} · open {formatDate(ed.edition.openStart)} –{" "}
-            {formatDate(ed.edition.openEnd)}
+            {ed.venue.address ? `, ${ed.venue.address}` : ""} · build{" "}
+            {formatDate(ed.edition.buildStart)} – {formatDate(ed.edition.buildEnd)} · open{" "}
+            {formatDate(ed.edition.openStart)} – {formatDate(ed.edition.openEnd)}
           </p>
         </div>
         <StatusBadge status={ed.edition.status} />

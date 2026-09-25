@@ -47,10 +47,7 @@ function candidateFilter(session: Session, all: boolean): SQL | undefined {
  * the ones addressed to them unless `all` is set. Deleted, held and archived
  * items are left out until they are restored or resumed.
  */
-export async function pendingInstancesForUser(
-  existing?: Session,
-  opts: { all?: boolean } = {},
-) {
+export async function pendingInstancesForUser(existing?: Session, opts: { all?: boolean } = {}) {
   const session = existing ?? (await requireSession());
   const filter = candidateFilter(session, opts.all ?? false);
   const rows = await db
@@ -68,8 +65,8 @@ export async function pendingInstancesForUser(
   const bundles = await Promise.all(
     rows.map((row) =>
       row.entityType === "signage_item"
-        ? loadItemBundle(db, row.entityId)
-        : loadStandBundle(db, row.entityId),
+        ? loadItemBundle(db, row.entityId, { organisationId: session.organisation.id })
+        : loadStandBundle(db, row.entityId, { organisationId: session.organisation.id }),
     ),
   );
 

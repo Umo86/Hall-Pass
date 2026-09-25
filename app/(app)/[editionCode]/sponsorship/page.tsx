@@ -36,7 +36,7 @@ export default async function SponsorshipPage({
   const { editionCode } = await params;
   const { tab: rawTab } = await searchParams;
   const tab = rawTab === "sponsors" ? "sponsors" : "items";
-  const ed = await getEditionByCode(editionCode.toUpperCase());
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
 
   const [rows, sponsorRows] = await Promise.all([

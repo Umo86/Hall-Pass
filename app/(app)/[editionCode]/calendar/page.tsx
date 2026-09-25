@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -8,6 +8,7 @@ import {
   signageItems,
   standSubmissions,
   exhibitors,
+  tasks,
 } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { getEditionByCode } from "@/lib/queries/editions";
@@ -20,19 +21,26 @@ import { formatDate } from "@/lib/format";
 export const metadata = { title: "Calendar" };
 export const dynamic = "force-dynamic";
 
-type Chip = {
-  label: string;
-  href: string | null;
-  tone: "deadline" | "install" | "delivery" | "signoff" | "overdue";
+type Tone = "deadline" | "overdue" | "show" | "delivery" | "install";
+
+type Chip = { label: string; href: string | null; tone: Tone };
+
+/** Every deadline is red (solid once it has passed); the rest by type. */
+const TONE_CLASSES: Record<Tone, string> = {
+  deadline: "bg-red-600 text-white font-medium",
+  overdue: "bg-red-900 text-white font-semibold",
+  show: "bg-violet-100 text-violet-900 dark:bg-violet-950 dark:text-violet-200",
+  delivery: "bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-200",
+  install: "bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200",
 };
 
-const TONE_CLASSES: Record<Chip["tone"], string> = {
-  deadline: "bg-indigo-100 text-indigo-900 dark:bg-indigo-950 dark:text-indigo-200",
-  install: "bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200",
-  delivery: "bg-sky-100 text-sky-900 dark:bg-sky-950 dark:text-sky-200",
-  signoff: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200",
-  overdue: "bg-rose-100 text-rose-900 dark:bg-rose-950 dark:text-rose-200",
-};
+const LEGEND: [Tone, string][] = [
+  ["deadline", "Deadline"],
+  ["overdue", "Deadline passed"],
+  ["show", "Show dates"],
+  ["delivery", "Delivery"],
+  ["install", "Install"],
+];
 
 export default async function CalendarPage({
   params,
@@ -41,10 +49,10 @@ export default async function CalendarPage({
   params: Promise<{ editionCode: string }>;
   searchParams: Promise<{ m?: string }>;
 }) {
-  await requireStaffSession();
+  const session = await requireStaffSession();
   const { editionCode } = await params;
   const { m } = await searchParams;
-  const ed = await getEditionByCode(editionCode.toUpperCase());
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
   const edition = ed.edition;
 
@@ -52,7 +60,7 @@ export default async function CalendarPage({
   const todayIso = today.toISOString().slice(0, 10);
   const { year, month } = parseMonthParam(m, today);
 
-  const [deadlineRows, items, stands] = await Promise.all([
+  const [deadlineRows, items, stands, myTasks] = await Promise.all([
     db.select().from(editionDeadlines).where(eq(editionDeadlines.editionId, edition.id)),
     db
       .select({
@@ -62,6 +70,11 @@ export default async function CalendarPage({
         kind: signageItems.kind,
         installDate: signageItems.installDate,
         deliveryDate: signageItems.deliveryDate,
+        printDeadline: signageItems.printDeadline,
+        artworkDueOverride: signageItems.artworkDueOverride,
+        orderByDate: signageItems.orderByDate,
+        sponsorId: signageItems.sponsorId,
+        status: signageItems.status,
       })
       .from(signageItems)
       .where(and(eq(signageItems.editionId, edition.id), isNull(signageItems.deletedAt))),
@@ -76,6 +89,17 @@ export default async function CalendarPage({
           .innerJoin(exhibitors, eq(standSubmissions.exhibitorId, exhibitors.id))
           .where(eq(standSubmissions.editionId, edition.id))
       : [],
+    // Your own jobs for this show that have a deadline.
+    db
+      .select({ title: tasks.title, dueDate: tasks.dueDate, status: tasks.status })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.editionId, edition.id),
+          eq(tasks.assignedToUserId, session.user.id),
+          isNotNull(tasks.dueDate),
+        ),
+      ),
   ]);
 
   const entityIds = [...items.map((i) => i.id), ...stands.map((s) => s.id)];
@@ -96,6 +120,10 @@ export default async function CalendarPage({
   const chips = new Map<string, Chip[]>();
   const add = (date: string | null | undefined, chip: Chip) => {
     if (!date) return;
+    // A deadline that has passed turns solid red.
+    if (chip.tone === "deadline" && date < todayIso) {
+      chip = { ...chip, tone: "overdue", label: `⚠ ${chip.label}` };
+    }
     const list = chips.get(date) ?? [];
     list.push(chip);
     chips.set(date, list);
@@ -111,16 +139,40 @@ export default async function CalendarPage({
   };
   for (const row of deadlineRows) {
     add(effectiveDeadline(deadlineCtx, row.key as DeadlineKey), {
-      label: row.label,
+      label: `Deadline: ${row.label}`,
       href: `/${editionCode}/dashboard`,
       tone: "deadline",
     });
   }
-  add(edition.buildStart, { label: "Build-up starts", href: null, tone: "deadline" });
+  add(edition.buildStart, { label: "Build-up starts", href: null, tone: "show" });
+  add(edition.openStart, { label: "Show opens", href: null, tone: "show" });
+  if (edition.openEnd !== edition.openStart) {
+    add(edition.openEnd, { label: "Show closes", href: null, tone: "show" });
+  }
+  add(edition.breakdownEnd, { label: "Breakdown ends", href: null, tone: "show" });
 
   const itemHref = (item: { ref: string; kind: string }) =>
     `/${editionCode}/${item.kind === "sponsorship_item" ? "sponsorship" : "signage"}/${item.ref}`;
+  const settled = ["installed", "snagged", "closed"];
   for (const item of items) {
+    const open = !settled.includes(item.status);
+    if (open) {
+      add(item.printDeadline, {
+        label: `Print deadline: ${item.name}`,
+        href: itemHref(item),
+        tone: "deadline",
+      });
+      add(item.artworkDueOverride, {
+        label: `Artwork due: ${item.name}`,
+        href: itemHref(item),
+        tone: "deadline",
+      });
+      add(item.orderByDate, {
+        label: `${item.sponsorId ? "Order by" : "Sell & order by"}: ${item.name}`,
+        href: itemHref(item),
+        tone: "deadline",
+      });
+    }
     if (item.kind === "signage") {
       add(item.installDate, {
         label: `Install: ${item.name}`,
@@ -143,11 +195,18 @@ export default async function CalendarPage({
     if (!item && !stand) continue;
     const target = item ? item.name : stand!.company;
     add(date, {
-      label: `${inst.stepNameSnapshot}: ${target}`,
+      label: `Sign-off due: ${inst.stepNameSnapshot} — ${target}`,
       href: item ? `${itemHref(item)}?tab=artwork` : `/${editionCode}/stands/${stand!.ref}`,
-      tone: date < todayIso ? "overdue" : "signoff",
+      tone: "deadline",
     });
   }
+  for (const t of myTasks) {
+    if (t.status === "done") continue;
+    add(t.dueDate, { label: `Task due: ${t.title}`, href: "/my-work", tone: "deadline" });
+  }
+  // Deadlines first on each day.
+  const rank: Record<Tone, number> = { overdue: 0, deadline: 1, show: 2, delivery: 3, install: 4 };
+  for (const list of chips.values()) list.sort((a, b) => rank[a.tone] - rank[b.tone]);
 
   const weeks = monthGrid(year, month);
   const monthPrefix = `${year}-${String(month).padStart(2, "0")}`;
@@ -166,7 +225,7 @@ export default async function CalendarPage({
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Calendar</h1>
           <p className="text-muted-foreground text-sm">
-            {edition.name} — deadlines, deliveries, installs and open sign-offs.
+            {edition.name} — every deadline in red, plus show dates, deliveries and installs.
           </p>
         </div>
         <div className="flex items-center gap-2 text-sm">
@@ -192,6 +251,14 @@ export default async function CalendarPage({
             Jump to build-up
           </Link>
         </div>
+      </div>
+
+      <div className="text-muted-foreground flex flex-wrap gap-3 text-xs" aria-label="Key">
+        {LEGEND.map(([tone, label]) => (
+          <span key={tone} className="flex items-center gap-1.5">
+            <span className={cn("size-3 rounded", TONE_CLASSES[tone])} /> {label}
+          </span>
+        ))}
       </div>
 
       {/* Phones: a simple list of the month's days that have something on. */}
@@ -277,22 +344,6 @@ export default async function CalendarPage({
             ))}
           </tbody>
         </table>
-      </div>
-
-      <div className="text-muted-foreground flex flex-wrap gap-3 text-xs">
-        {(
-          [
-            ["deadline", "Edition deadline"],
-            ["delivery", "Delivery"],
-            ["install", "Install"],
-            ["signoff", "Sign-off due"],
-            ["overdue", "Overdue sign-off"],
-          ] as const
-        ).map(([tone, label]) => (
-          <span key={tone} className="flex items-center gap-1.5">
-            <span className={cn("size-3 rounded", TONE_CLASSES[tone])} /> {label}
-          </span>
-        ))}
       </div>
     </div>
   );

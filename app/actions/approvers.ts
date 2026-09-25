@@ -9,7 +9,7 @@ import { approvers, departments, memberships, users } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession, type Session } from "@/lib/auth/actor";
-import { createStaffInvite, sendInviteEmail } from "@/lib/auth/staff-invite";
+import { createStaffInvite, deliverInvite } from "@/lib/auth/staff-invite";
 import { openStaffInviteFor } from "@/lib/auth/claim-staff-invite";
 import { syncDepartmentSteps } from "@/lib/domain/departments";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -37,7 +37,10 @@ async function orgDepartment(tx: Tx, organisationId: string, id: string) {
 const departmentSchema = z.object({
   id: z.string().uuid().optional(),
   name: z.string().trim().min(1, "Give the department a name").max(60),
-  defaultFor: z.array(z.enum(["organiser", "sponsor"])).max(2).default([]),
+  defaultFor: z
+    .array(z.enum(["organiser", "sponsor"]))
+    .max(2)
+    .default([]),
   signsLast: z.boolean().default(false),
 });
 
@@ -92,7 +95,10 @@ export async function saveDepartment(input: unknown): Promise<ActionResult> {
       await syncDepartmentSteps(tx, orgId);
     });
     refresh();
-    return success(undefined, data.id ? "Department saved" : `${data.name} added — now add its approvers`);
+    return success(
+      undefined,
+      data.id ? "Department saved" : `${data.name} added — now add its approvers`,
+    );
   } catch (err) {
     unstable_rethrow(err);
     if (isUniqueViolation(err)) return fail("There is already a department with that name");
@@ -166,7 +172,10 @@ export async function moveDepartment(input: unknown): Promise<ActionResult> {
       [list[at], list[to]] = [list[to], list[at]];
       for (const [i, d] of list.entries()) {
         if (d.sortOrder !== i + 1) {
-          await tx.update(departments).set({ sortOrder: i + 1 }).where(eq(departments.id, d.id));
+          await tx
+            .update(departments)
+            .set({ sortOrder: i + 1 })
+            .where(eq(departments.id, d.id));
         }
       }
       await syncDepartmentSteps(tx, orgId);
@@ -241,26 +250,24 @@ async function emailInvite(
   if (invite === "pending") {
     return { message: `${to.name} saved — they already have an invitation waiting` };
   }
-  const emailed = await sendInviteEmail({
-    to: to.email,
+  const delivery = await deliverInvite({
+    email: to.email,
     name: to.name,
     inviterName: session.user.fullName || session.user.email,
     reason: `You've been added as an approver for ${to.departmentName} at ${session.organisation.brandName}. You'll get an email whenever signage artwork needs your sign-off.`,
     inviteUrl: invite.inviteUrl,
     inviteId: invite.inviteId,
   });
-  return emailed
+  return delivery.emailed
     ? { message: `${to.name} added — invitation emailed to ${to.email}` }
     : {
-        message: `${to.name} added — email isn't set up, so send them this link`,
-        inviteUrl: invite.inviteUrl,
+        message: `${to.name} added — email isn't set up here, so send them this link yourself`,
+        inviteUrl: delivery.fallbackUrl,
       };
 }
 
 /** Add or change an approver: name, job title, email, main approver. */
-export async function saveApprover(
-  input: unknown,
-): Promise<ActionResult<{ inviteUrl?: string }>> {
+export async function saveApprover(input: unknown): Promise<ActionResult<{ inviteUrl?: string }>> {
   const parsed = approverSchema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();

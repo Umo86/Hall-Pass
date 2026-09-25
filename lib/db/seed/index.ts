@@ -1828,6 +1828,43 @@ async function main() {
       entityType: firstItem ? "signage_item" : null,
       entityId: firstItem?.id ?? null,
     });
+    // A job in progress with subtasks, one of them late.
+    const iso = (days: number) =>
+      new Date(NOW.getTime() + days * 86_400_000).toISOString().slice(0, 10);
+    const [build] = await db
+      .insert(s.tasks)
+      .values({
+        organisationId: org.id,
+        editionId: edition.id,
+        title: "Finalise the Hall 1 wayfinding plan",
+        status: "in_progress",
+        dueDate: iso(10),
+        assignedToUserId: byRole.ops,
+        createdByUserId: byRole.ops,
+      })
+      .returning();
+    await db.insert(s.tasks).values([
+      {
+        organisationId: org.id,
+        editionId: edition.id,
+        parentTaskId: build.id,
+        title: "Walk the hall with the venue",
+        status: "done",
+        dueDate: iso(-5),
+        completedAt: NOW,
+        assignedToUserId: byRole.ops,
+        createdByUserId: byRole.ops,
+      },
+      {
+        organisationId: org.id,
+        editionId: edition.id,
+        parentTaskId: build.id,
+        title: "Send sign positions to the printer",
+        dueDate: iso(-1),
+        assignedToUserId: byRole.ops,
+        createdByUserId: byRole.ops,
+      },
+    ]);
   }
 
   console.log("Seed complete.");

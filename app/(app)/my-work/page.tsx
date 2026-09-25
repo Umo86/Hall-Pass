@@ -5,80 +5,94 @@ import { memberships, users } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
 import { pendingInstancesForUser } from "@/lib/queries/approvals";
-import {
-  openTasksForUser,
-  recentlyCompletedForUser,
-  tasksAssignedByUser,
-} from "@/lib/queries/tasks";
-import { formatDate } from "@/lib/format";
+import { boardTasks, type BoardScope } from "@/lib/queries/tasks";
 import { StatusBadge } from "@/components/status-badge";
 import { TaskForm } from "@/components/tasks/task-form";
-import { TaskList } from "@/components/tasks/task-list";
+import { TaskBoard } from "@/components/tasks/task-board";
 
 export const metadata = { title: "My Work" };
 
 export const dynamic = "force-dynamic";
 
-export default async function MyWorkPage() {
+const SCOPES: { id: BoardScope; label: string; adminOnly?: boolean }[] = [
+  { id: "mine", label: "My tasks" },
+  { id: "given", label: "Given to others" },
+  { id: "everyone", label: "Everyone's", adminOnly: true },
+];
+
+export default async function MyWorkPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ view?: string }>;
+}) {
   const session = await requireStaffSession();
-  const [rows, openTasks, completedTasks, givenTasks, staff] = await Promise.all([
+  const { view } = await searchParams;
+  const isAdmin = session.actor.role === "admin";
+  const scope: BoardScope =
+    view === "given" || (view === "everyone" && isAdmin) ? (view as BoardScope) : "mine";
+  const [rows, board, staff] = await Promise.all([
     pendingInstancesForUser(session),
-    openTasksForUser(session.user.id),
-    recentlyCompletedForUser(session.user.id),
-    tasksAssignedByUser(session.user.id),
+    boardTasks({
+      organisationId: session.organisation.id,
+      userId: session.user.id,
+      isAdmin,
+      scope,
+    }),
     db
       .select({ id: users.id, name: users.fullName, email: users.email })
       .from(memberships)
       .innerJoin(users, eq(memberships.userId, users.id))
-      .where(eq(memberships.organisationId, session.organisation.id)),
+      .where(eq(memberships.organisationId, session.organisation.id))
+      .orderBy(users.fullName),
   ]);
   const overdueCount = rows.filter((r) => r.isOverdue).length;
   const canAssign = can(session.actor, { type: "task.assign" });
+  const overdueTasks = board.filter(
+    (t) => t.status !== "done" && (t.overdue || t.overdueSubtasks > 0),
+  ).length;
+  const people = staff.map((s) => ({ id: s.id, name: s.name || s.email }));
 
   return (
     <div className="flex flex-col gap-6 p-4 sm:p-6">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">My Work</h1>
         <p className="text-muted-foreground text-sm">
-          Your to-do list across all shows. Artwork sign-offs are under Approvals.
+          Your jobs across all shows. Drag a card between columns (or use its menu); open it for
+          subtasks, deadlines and files.
         </p>
       </div>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-semibold">
-          My tasks{" "}
-          <span className="text-muted-foreground font-normal">({openTasks.length} open)</span>
-        </h2>
-        <TaskForm
+        <div className="flex flex-wrap items-center gap-2">
+          <nav className="flex gap-1" aria-label="Whose tasks">
+            {SCOPES.filter((sc) => !sc.adminOnly || isAdmin).map((sc) => (
+              <Link
+                key={sc.id}
+                href={sc.id === "mine" ? "/my-work" : `/my-work?view=${sc.id}`}
+                aria-current={scope === sc.id ? "page" : undefined}
+                className={`rounded-full border px-3 py-1 text-sm ${
+                  scope === sc.id
+                    ? "bg-foreground text-background border-foreground"
+                    : "hover:bg-muted"
+                }`}
+              >
+                {sc.label}
+              </Link>
+            ))}
+          </nav>
+          {overdueTasks > 0 && (
+            <span className="rounded-full bg-red-600 px-3 py-1 text-sm font-semibold text-white">
+              {overdueTasks} overdue — needs attention
+            </span>
+          )}
+        </div>
+        <TaskForm currentUserId={session.user.id} assignees={people} canAssign={canAssign} />
+        <TaskBoard
+          tasks={board}
           currentUserId={session.user.id}
-          assignees={staff.map((s) => ({ id: s.id, name: s.name || s.email }))}
+          people={people}
           canAssign={canAssign}
         />
-        <TaskList open={openTasks} completed={completedTasks} currentUserId={session.user.id} />
-        {givenTasks.length > 0 && (
-          <details className="rounded-lg border">
-            <summary className="cursor-pointer px-3 py-2 text-sm font-medium select-none">
-              Assigned by me ({givenTasks.length} open)
-            </summary>
-            <ul className="divide-y border-t text-sm">
-              {givenTasks.map((t) => (
-                <li key={t.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
-                  <span className="min-w-0 flex-1">{t.title}</span>
-                  <span className="text-muted-foreground text-xs">
-                    to {t.assignedToName || "a colleague"}
-                    {t.dueDate && (
-                      <span className={t.overdue ? "text-destructive font-medium" : ""}>
-                        {" "}
-                        · due {formatDate(t.dueDate)}
-                        {t.overdue ? " — overdue" : ""}
-                      </span>
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </details>
-        )}
       </section>
 
       <section className="space-y-2">

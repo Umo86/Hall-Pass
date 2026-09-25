@@ -197,6 +197,7 @@ export function TeamTable({
   canManage: boolean;
 }) {
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -242,7 +243,8 @@ export function TeamTable({
               const res = await inviteStaff({ email: fd.get("email"), role: fd.get("role") });
               if (!res.ok) setError(res.error);
               else {
-                setInviteUrl(res.data?.inviteUrl ?? null);
+                setInviteUrl(res.data?.inviteUrl || null);
+                setNotice(res.message ?? null);
                 router.refresh();
               }
             });
@@ -263,9 +265,14 @@ export function TeamTable({
             </SelectNative>
           </div>
           <Button type="submit" disabled={pending}>
-            Create invitation
+            Send invitation
           </Button>
         </form>
+        {notice && (
+          <p role="status" className="mt-2 text-sm text-green-700 dark:text-green-400">
+            {notice}
+          </p>
+        )}
         {inviteUrl && (
           <div className="mt-2 space-y-1 text-sm">
             <div className="flex flex-wrap items-center gap-2">
@@ -285,8 +292,7 @@ export function TeamTable({
               </Button>
             </div>
             <p className="text-muted-foreground text-xs">
-              Send them this link — or just ask them to sign in with that email address; the
-              invitation is applied automatically.
+              Only send it to them — it creates their account.
             </p>
           </div>
         )}

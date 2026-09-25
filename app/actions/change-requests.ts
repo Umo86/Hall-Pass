@@ -34,8 +34,16 @@ const CHANGEABLE = z.object({
   quantity: z.number().int().positive().optional(),
   material: z.string().max(200).nullable().optional(),
   finish: z.string().max(200).nullable().optional(),
-  installDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
-  deliveryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  installDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable()
+    .optional(),
+  deliveryDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable()
+    .optional(),
 });
 
 // Before sign-off the item is edited directly; requests are for locked items.
@@ -54,7 +62,9 @@ export async function raiseChangeRequest(input: unknown): Promise<ActionResult> 
   if (!can(session.actor, { type: "change_request.raise" })) {
     return fail("You cannot raise change requests");
   }
-  const bundle = await loadItemBundle(db, parsed.data.itemId);
+  const bundle = await loadItemBundle(db, parsed.data.itemId, {
+    organisationId: session.organisation.id,
+  });
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (NOT_YET_SIGNED_OFF.includes(bundle.item.status)) {
@@ -134,7 +144,7 @@ export async function decideChangeRequest(input: unknown): Promise<ActionResult>
   const [cr] = await db.select().from(changeRequests).where(eq(changeRequests.id, parsed.data.id));
   if (!cr || cr.entityType !== "signage_item") return fail("Change request not found");
   if (cr.status !== "open") return fail("This change request is already decided");
-  const bundle = await loadItemBundle(db, cr.entityId);
+  const bundle = await loadItemBundle(db, cr.entityId, { organisationId: session.organisation.id });
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.edit", item: itemAuthzCtx(bundle) })) {
@@ -172,7 +182,12 @@ export async function decideChangeRequest(input: unknown): Promise<ActionResult>
         const specChanged = Object.keys(set).some((f) => SPEC_FIELDS.has(f));
         if (specChanged && INVALIDATABLE_STATUSES.includes(status)) {
           // Same rule as new artwork: decided steps that invalidate reopen.
-          const run = await loadRun(tx, "signage_item", bundle.item.id, bundle.item.currentRunNumber);
+          const run = await loadRun(
+            tx,
+            "signage_item",
+            bundle.item.id,
+            bundle.item.currentRunNumber,
+          );
           const res = invalidateOnNewVersion(run, { entity: itemEntityCtx(bundle), now });
           await persistRun(tx, "signage_item", bundle.item.id, res.instances);
           reopenedIds = res.invalidated.map((i) => i.id);

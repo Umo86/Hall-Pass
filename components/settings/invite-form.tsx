@@ -29,6 +29,7 @@ export function InviteExternalForm({
   const [role, setRole] = useState("venue");
   const [editionId, setEditionId] = useState(editions[0]?.id ?? "");
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
@@ -65,7 +66,8 @@ export function InviteExternalForm({
           });
           if (!res.ok) setError(res.error);
           else {
-            setInviteUrl(res.data?.inviteUrl ?? null);
+            setInviteUrl(res.data?.inviteUrl || null);
+            setNotice(res.message ?? null);
             router.refresh();
           }
         });
@@ -131,9 +133,14 @@ export function InviteExternalForm({
       </div>
       <div className="flex items-end">
         <Button type="submit" disabled={pending}>
-          Create invitation
+          Send invitation
         </Button>
       </div>
+      {notice && (
+        <p role="status" className="text-sm text-green-700 dark:text-green-400">
+          {notice}
+        </p>
+      )}
       {inviteUrl && (
         <p className="text-sm sm:col-span-2">
           Share this link: <code className="bg-muted rounded px-1.5 py-0.5">{inviteUrl}</code>

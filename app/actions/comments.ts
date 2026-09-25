@@ -44,7 +44,9 @@ export async function addComment(input: unknown): Promise<ActionResult> {
   let ownerId: string | null = null;
   let createdBy: string | null = null;
   if (data.entityType === "signage_item") {
-    const bundle = await loadItemBundle(db, data.entityId);
+    const bundle = await loadItemBundle(db, data.entityId, {
+      organisationId: session.organisation.id,
+    });
     if (!bundle) return fail("Record not found");
     if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
     editionId = bundle.edition.id;
@@ -60,7 +62,9 @@ export async function addComment(input: unknown): Promise<ActionResult> {
       return fail("You cannot write internal comments");
     }
   } else {
-    const bundle = await loadStandBundle(db, data.entityId);
+    const bundle = await loadStandBundle(db, data.entityId, {
+      organisationId: session.organisation.id,
+    });
     if (!bundle) return fail("Record not found");
     if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
     editionId = bundle.edition.id;
@@ -78,6 +82,21 @@ export async function addComment(input: unknown): Promise<ActionResult> {
     } else if (session.actor.kind === "external") {
       return fail("You cannot write internal comments");
     }
+  }
+
+  // A reply must answer a comment on the same record.
+  if (data.parentId) {
+    const [parent] = await db
+      .select({ id: comments.id })
+      .from(comments)
+      .where(
+        and(
+          eq(comments.id, data.parentId),
+          eq(comments.entityType, data.entityType),
+          eq(comments.entityId, data.entityId),
+        ),
+      );
+    if (!parent) return fail("That comment no longer exists");
   }
 
   try {

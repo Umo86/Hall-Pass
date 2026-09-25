@@ -19,7 +19,7 @@ export default async function ReportsPage({
 }) {
   const session = await requireStaffSession();
   const { editionCode } = await params;
-  const ed = await getEditionByCode(editionCode.toUpperCase());
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
 
   const canImport = can(session.actor, { type: "signage.create" });
@@ -49,7 +49,8 @@ export default async function ReportsPage({
     {
       kind: "sponsor_report",
       title: "Sponsor report (Excel)",
-      description: "Everything sold to each sponsor — signage and sponsorship items — with sign-off status.",
+      description:
+        "Everything sold to each sponsor — signage and sponsorship items — with sign-off status.",
       href: `/api/exports/sponsorship/${code}`,
     },
     {
@@ -97,11 +98,14 @@ export default async function ReportsPage({
             <div className="rounded-lg border p-4">
               <p className="text-sm font-semibold">Spec labels (PDF)</p>
               <p className="text-muted-foreground mt-1 text-sm">
-                One A6 label per item showing where it goes, install slot and a QR code — print
-                them all or one hall at a time.
+                One A6 label per item showing where it goes, install slot and a QR code — print them
+                all or one hall at a time.
               </p>
               <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm">
-                <a className="text-primary hover:underline" href={`/api/exports/spec-labels/${code}`}>
+                <a
+                  className="text-primary hover:underline"
+                  href={`/api/exports/spec-labels/${code}`}
+                >
                   All items
                 </a>
                 {hallRows.map((h) => (

@@ -17,10 +17,10 @@ export default async function StandsPage({
   params: Promise<{ editionCode: string }>;
   searchParams: Promise<{ status?: string }>;
 }) {
-  await requireStaffSession();
+  const session = await requireStaffSession();
   const { editionCode } = await params;
   const { status } = await searchParams;
-  const ed = await getEditionByCode(editionCode.toUpperCase());
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
   const rows = await listStandRows(ed.edition.id);
   const deadlines = await editionForDeadlines(ed.edition.id);
@@ -70,7 +70,10 @@ export default async function StandsPage({
                 <tr key={r.exhibitor.id} className="hover:bg-muted/30 border-b last:border-0">
                   <td className="px-3 py-2 font-medium">
                     {r.sub ? (
-                      <Link href={`/${editionCode}/stands/${r.sub.ref}`} className="hover:underline">
+                      <Link
+                        href={`/${editionCode}/stands/${r.sub.ref}`}
+                        className="hover:underline"
+                      >
                         {r.exhibitor.standNumber}
                       </Link>
                     ) : (

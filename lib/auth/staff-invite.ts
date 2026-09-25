@@ -9,6 +9,7 @@ import { brandName } from "@/lib/config";
 import { renderNotificationEmail } from "@/lib/email/template";
 import { sendEmail } from "@/lib/email/send";
 import { generateInviteToken, hashInviteToken } from "./invite-token";
+import { sendAccountEmail } from "./account-link";
 
 /**
  * Create a staff invitation (replacing any older one still open for the
@@ -91,4 +92,41 @@ export async function sendInviteEmail(opts: {
     entityType: "staff_invite",
     entityId: opts.inviteId,
   }).catch(() => false);
+}
+
+export type InviteDelivery = {
+  /** The invitation reached their inbox (Supabase, or our own email). */
+  emailed: boolean;
+  /**
+   * Only when nothing could be emailed (e.g. a local setup without email):
+   * the link to pass on by hand.
+   */
+  fallbackUrl?: string;
+};
+
+/**
+ * Get an invitation to the person. First choice: Supabase emails them a link
+ * to create their account (or to sign in, if they have one). If Supabase
+ * can't, our own email with the invitation link; failing that, the link is
+ * handed back for the admin to send.
+ */
+export async function deliverInvite(opts: {
+  email: string;
+  name?: string | null;
+  inviterName: string;
+  reason: string;
+  inviteUrl: string;
+  inviteId: string;
+}): Promise<InviteDelivery> {
+  const viaSupabase = await sendAccountEmail(opts.email, { fullName: opts.name });
+  if (viaSupabase !== "not_sent") return { emailed: true };
+  const viaEmail = await sendInviteEmail({
+    to: opts.email,
+    name: opts.name,
+    inviterName: opts.inviterName,
+    reason: opts.reason,
+    inviteUrl: opts.inviteUrl,
+    inviteId: opts.inviteId,
+  });
+  return viaEmail ? { emailed: true } : { emailed: false, fallbackUrl: opts.inviteUrl };
 }

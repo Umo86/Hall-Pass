@@ -26,9 +26,12 @@ export const DEV_COOKIE = "hp-dev-user";
  * An explicit DEV_AUTH=1 always enables it (even with Supabase configured,
  * so a project without auth users yet is never locked out); the automatic
  * enable in local development applies only while Supabase is unconfigured.
- * Remove DEV_AUTH before real users arrive.
+ * On Vercel deployments with Supabase configured it is always off.
  */
 export function devAuthEnabled(): boolean {
+  // Never on a real deployment with Supabase sign-in: only invited people
+  // with their own accounts get in there, whatever DEV_AUTH says.
+  if (process.env.VERCEL_ENV && supabaseConfigured()) return false;
   if (process.env.DEV_AUTH === "1") return true;
   if (supabaseConfigured()) return false;
   return process.env.NODE_ENV === "development";

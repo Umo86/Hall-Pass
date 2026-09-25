@@ -4,7 +4,7 @@ import { unstable_rethrow } from "next/navigation";
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { and, count, eq, isNull } from "drizzle-orm";
+import { and, count, eq, isNull, ne } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -18,7 +18,7 @@ import {
 import { can, OVERRIDE_KEYS, type OverrideKey, type PermissionOverrides } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
-import { createStaffInvite, sendInviteEmail } from "@/lib/auth/staff-invite";
+import { createStaffInvite, deliverInvite } from "@/lib/auth/staff-invite";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 
 const roleSchema = z.enum(["admin", "ops", "marketing", "sales", "event_director", "viewer"]);
@@ -169,20 +169,21 @@ export async function inviteStaff(input: unknown): Promise<ActionResult<{ invite
         summary: `Invited ${email} to staff as ${parsed.data.role}`,
       }),
     );
-    const emailed = await sendInviteEmail({
-      to: email,
+    const delivery = await deliverInvite({
+      email,
       inviterName: session.user.fullName || session.user.email,
       reason: `You've been added to the ${session.organisation.brandName} team.`,
       inviteUrl: invite.inviteUrl,
       inviteId: invite.inviteId,
     });
     revalidatePath("/settings");
-    return success(
-      { inviteUrl: invite.inviteUrl },
-      emailed
-        ? `Invitation emailed to ${email}`
-        : "Invitation created — email isn't set up, so share the link",
-    );
+    // The link is only handed over when no email could be sent.
+    return delivery.emailed
+      ? success({ inviteUrl: "" }, `Invitation emailed to ${email}`)
+      : success(
+          { inviteUrl: delivery.fallbackUrl! },
+          "Invitation created — email isn't set up here, so send them this link yourself",
+        );
   } catch (err) {
     unstable_rethrow(err);
     console.error("inviteStaff", err);
@@ -295,7 +296,7 @@ export async function removeStaffMember(input: unknown): Promise<ActionResult> {
           and(
             eq(tasks.organisationId, orgId),
             eq(tasks.assignedToUserId, membership.userId),
-            eq(tasks.status, "open"),
+            ne(tasks.status, "done"),
           ),
         );
       if (member) {

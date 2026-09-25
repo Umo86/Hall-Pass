@@ -1,105 +1,135 @@
 import "server-only";
-import { and, asc, desc, eq, ne } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { alias } from "drizzle-orm/pg-core";
-import { editions, tasks, users } from "@/lib/db/schema";
+import { editions, taskAttachments, tasks, users } from "@/lib/db/schema";
 import { todayInLondon } from "@/lib/today";
 
-export type TaskRow = {
+export type BoardAttachment = { id: string; fileName: string; fileSize: number };
+
+export type BoardSubtask = {
   id: string;
   title: string;
-  notes: string | null;
-  status: string;
+  status: "open" | "in_progress" | "done";
   dueDate: string | null;
   overdue: boolean;
-  editionCode: string | null;
+  attachments: BoardAttachment[];
+};
+
+export type BoardTask = BoardSubtask & {
+  notes: string | null;
   assignedToUserId: string;
+  assignedToName: string;
   createdByUserId: string;
-  createdByName: string | null;
-  assignedToName: string | null;
-  entityType: string | null;
-  entityId: string | null;
-  completedAt: string | null;
+  createdByName: string;
+  editionCode: string | null;
+  subtasks: BoardSubtask[];
+  /** Subtasks past their date and not done. */
+  overdueSubtasks: number;
+  canDelete: boolean;
 };
 
-function toRow(
-  r: {
-    task: typeof tasks.$inferSelect;
-    editionCode: string | null;
-    createdByName: string | null;
-    assignedToName?: string | null;
-  },
-  todayIso: string,
-): TaskRow {
-  return {
-    id: r.task.id,
-    title: r.task.title,
-    notes: r.task.notes,
-    status: r.task.status,
-    dueDate: r.task.dueDate,
-    overdue: r.task.status === "open" && Boolean(r.task.dueDate && r.task.dueDate < todayIso),
-    editionCode: r.editionCode,
-    assignedToUserId: r.task.assignedToUserId,
-    createdByUserId: r.task.createdByUserId,
-    createdByName: r.createdByName,
-    assignedToName: r.assignedToName ?? null,
-    entityType: r.task.entityType,
-    entityId: r.task.entityId,
-    completedAt: r.task.completedAt?.toISOString() ?? null,
-  };
-}
+export type BoardScope = "mine" | "given" | "everyone";
 
-const baseSelect = {
-  task: tasks,
-  editionCode: editions.code,
-  createdByName: users.fullName,
-};
-
-/** Open tasks assigned to the user, soonest due first (undated last). */
-export async function openTasksForUser(userId: string): Promise<TaskRow[]> {
+/**
+ * The My Work board: top-level tasks with their subtasks and attachments.
+ * "mine" = assigned to me; "given" = I handed to others; "everyone" (admins).
+ * Completed tasks drop off after 30 days.
+ */
+export async function boardTasks(opts: {
+  organisationId: string;
+  userId: string;
+  isAdmin: boolean;
+  scope: BoardScope;
+}): Promise<BoardTask[]> {
   const todayIso = todayInLondon();
-  const rows = await db
-    .select(baseSelect)
+  const creator = alias(users, "task_creator");
+  const owner = alias(users, "task_owner");
+  const cutoff = new Date(Date.now() - 30 * 86_400_000);
+  const scopeFilter =
+    opts.scope === "given"
+      ? and(eq(tasks.createdByUserId, opts.userId), ne(tasks.assignedToUserId, opts.userId))
+      : opts.scope === "everyone" && opts.isAdmin
+        ? undefined
+        : eq(tasks.assignedToUserId, opts.userId);
+  const top = await db
+    .select({
+      task: tasks,
+      editionCode: editions.code,
+      creatorName: creator.fullName,
+      creatorEmail: creator.email,
+      ownerName: owner.fullName,
+      ownerEmail: owner.email,
+    })
     .from(tasks)
     .leftJoin(editions, eq(tasks.editionId, editions.id))
-    .leftJoin(users, eq(tasks.createdByUserId, users.id))
-    .where(and(eq(tasks.assignedToUserId, userId), eq(tasks.status, "open")))
-    .orderBy(asc(tasks.dueDate), asc(tasks.createdAt));
-  return rows.map((r) => toRow(r, todayIso));
-}
-
-/** The most recently completed tasks, for a small "done" tail. */
-export async function recentlyCompletedForUser(userId: string, limit = 5): Promise<TaskRow[]> {
-  const todayIso = todayInLondon();
-  const rows = await db
-    .select(baseSelect)
-    .from(tasks)
-    .leftJoin(editions, eq(tasks.editionId, editions.id))
-    .leftJoin(users, eq(tasks.createdByUserId, users.id))
-    .where(and(eq(tasks.assignedToUserId, userId), eq(tasks.status, "done")))
-    .orderBy(desc(tasks.completedAt))
-    .limit(limit);
-  return rows.map((r) => toRow(r, todayIso));
-}
-
-const assignee = alias(users, "task_assignee");
-
-/** Open tasks this user gave to other people, so they can follow them up. */
-export async function tasksAssignedByUser(userId: string): Promise<TaskRow[]> {
-  const todayIso = todayInLondon();
-  const rows = await db
-    .select({ ...baseSelect, assignedToName: assignee.fullName })
-    .from(tasks)
-    .leftJoin(editions, eq(tasks.editionId, editions.id))
-    .leftJoin(users, eq(tasks.createdByUserId, users.id))
-    .leftJoin(assignee, eq(tasks.assignedToUserId, assignee.id))
+    .innerJoin(creator, eq(tasks.createdByUserId, creator.id))
+    .innerJoin(owner, eq(tasks.assignedToUserId, owner.id))
     .where(
       and(
-        eq(tasks.createdByUserId, userId),
-        ne(tasks.assignedToUserId, userId),
-        eq(tasks.status, "open"),
+        eq(tasks.organisationId, opts.organisationId),
+        isNull(tasks.parentTaskId),
+        scopeFilter,
+        or(ne(tasks.status, "done"), gte(tasks.completedAt, cutoff)),
       ),
     )
-    .orderBy(asc(tasks.dueDate), asc(tasks.createdAt));
-  return rows.map((r) => toRow(r, todayIso));
+    .orderBy(sql`${tasks.dueDate} ASC NULLS LAST`, asc(tasks.createdAt))
+    .limit(300);
+  const ids = top.map((t) => t.task.id);
+  const subs = ids.length
+    ? await db
+        .select()
+        .from(tasks)
+        .where(inArray(tasks.parentTaskId, ids))
+        .orderBy(sql`${tasks.dueDate} ASC NULLS LAST`, asc(tasks.createdAt))
+    : [];
+  const allIds = [...ids, ...subs.map((s) => s.id)];
+  const files = allIds.length
+    ? await db
+        .select({
+          id: taskAttachments.id,
+          taskId: taskAttachments.taskId,
+          fileName: taskAttachments.fileName,
+          fileSize: taskAttachments.fileSize,
+        })
+        .from(taskAttachments)
+        .where(inArray(taskAttachments.taskId, allIds))
+        .orderBy(asc(taskAttachments.createdAt))
+    : [];
+  const filesOf = (id: string) =>
+    files
+      .filter((f) => f.taskId === id)
+      .map(({ id: fid, fileName, fileSize }) => ({ id: fid, fileName, fileSize }));
+  const isOverdue = (t: { status: string; dueDate: string | null }) =>
+    t.status !== "done" && Boolean(t.dueDate && t.dueDate < todayIso);
+
+  return top.map(({ task, editionCode, creatorName, creatorEmail, ownerName, ownerEmail }) => {
+    const subtasks = subs
+      .filter((s) => s.parentTaskId === task.id)
+      .map((s) => ({
+        id: s.id,
+        title: s.title,
+        status: s.status,
+        dueDate: s.dueDate,
+        overdue: isOverdue(s),
+        attachments: filesOf(s.id),
+      }));
+    return {
+      id: task.id,
+      title: task.title,
+      notes: task.notes,
+      status: task.status,
+      dueDate: task.dueDate,
+      overdue: isOverdue(task),
+      attachments: filesOf(task.id),
+      assignedToUserId: task.assignedToUserId,
+      assignedToName: ownerName || ownerEmail,
+      createdByUserId: task.createdByUserId,
+      createdByName: creatorName || creatorEmail,
+      editionCode,
+      subtasks,
+      overdueSubtasks: subtasks.filter((s) => s.overdue).length,
+      canDelete: opts.isAdmin || task.createdByUserId === opts.userId,
+    };
+  });
 }

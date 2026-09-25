@@ -5,12 +5,19 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db, Tx } from "@/lib/db/client";
 import {
+  contractors,
   editions,
+  events,
   externalGrants,
+  halls,
   itemTypes,
+  locations,
   memberships,
   organisations,
   signageItems,
+  sponsorEntitlements,
+  sponsors,
+  suppliers,
   venues,
   workflows,
 } from "@/lib/db/schema";
@@ -40,19 +47,30 @@ export type ItemBundle = {
   organisation: typeof organisations.$inferSelect;
 };
 
-export async function loadItemBundle(db: Db | Tx, itemId: string): Promise<ItemBundle | null> {
+/**
+ * An item with its show, venue and organisation. Pass the caller's
+ * organisation to get null for anyone else's item.
+ */
+export async function loadItemBundle(
+  db: Db | Tx,
+  itemId: string,
+  scope?: { organisationId: string },
+): Promise<ItemBundle | null> {
   const [row] = await db
     .select()
     .from(signageItems)
     .innerJoin(editions, eq(signageItems.editionId, editions.id))
     .innerJoin(venues, eq(editions.venueId, venues.id))
+    .innerJoin(events, eq(editions.eventId, events.id))
     .where(eq(signageItems.id, itemId))
     .limit(1);
   if (!row) return null;
+  if (scope && row.events.organisationId !== scope.organisationId) return null;
   const [org] = await db
     .select()
     .from(organisations)
-    .where(eq(organisations.id, row.venues.organisationId))
+    // The show's organisation (through its event) owns the record.
+    .where(eq(organisations.id, row.events.organisationId))
     .limit(1);
   return {
     item: row.signage_items,
@@ -64,6 +82,7 @@ export async function loadItemBundle(db: Db | Tx, itemId: string): Promise<ItemB
 
 export function itemAuthzCtx(bundle: ItemBundle): SignageItemCtx {
   return {
+    organisationId: bundle.organisation.id,
     editionId: bundle.edition.id,
     venueId: bundle.venue.id,
     kind: bundle.item.kind,
@@ -465,4 +484,134 @@ export async function normaliseSignoffs(
     }
   }
   return sameSignoffs(plan, defaultSignoffs(steps, opts.category)) ? null : plan;
+}
+
+/** Ids an item can link to, as they arrive from a form, import or bulk edit. */
+export type ItemLinks = {
+  itemTypeId?: string | null;
+  hallId?: string | null;
+  locationId?: string | null;
+  sponsorId?: string | null;
+  sponsorEntitlementId?: string | null;
+  supplierId?: string | null;
+  installContractorId?: string | null;
+  workflowId?: string | null;
+};
+
+/**
+ * Every id linked to an item must belong to the same organisation — and,
+ * for halls, locations, sponsors and entitlements, to the item's own show.
+ * Throws a plain-language error otherwise (nothing is linked across shows
+ * or organisations, whatever a request says).
+ */
+export async function assertItemLinks(
+  db: Db | Tx,
+  opts: { organisationId: string; editionId: string; links: ItemLinks },
+): Promise<void> {
+  const l = opts.links;
+  const bad = (what: string) => {
+    throw new Error(`That ${what} isn't part of this show — reload the page and try again`);
+  };
+  const one = async <T>(q: Promise<T[]>) => (await q).length > 0;
+  if (l.itemTypeId) {
+    const ok = await one(
+      db
+        .select({ id: itemTypes.id })
+        .from(itemTypes)
+        .where(
+          and(eq(itemTypes.id, l.itemTypeId), eq(itemTypes.organisationId, opts.organisationId)),
+        ),
+    );
+    if (!ok) bad("item type");
+  }
+  if (l.hallId) {
+    const ok = await one(
+      db
+        .select({ id: halls.id })
+        .from(halls)
+        .where(and(eq(halls.id, l.hallId), eq(halls.editionId, opts.editionId))),
+    );
+    if (!ok) bad("hall");
+  }
+  if (l.locationId) {
+    const ok = await one(
+      db
+        .select({ id: locations.id })
+        .from(locations)
+        .innerJoin(halls, eq(locations.hallId, halls.id))
+        .where(and(eq(locations.id, l.locationId), eq(halls.editionId, opts.editionId))),
+    );
+    if (!ok) bad("location");
+  }
+  if (l.sponsorId) {
+    const ok = await one(
+      db
+        .select({ id: sponsors.id })
+        .from(sponsors)
+        .where(and(eq(sponsors.id, l.sponsorId), eq(sponsors.editionId, opts.editionId))),
+    );
+    if (!ok) bad("sponsor");
+  }
+  if (l.sponsorEntitlementId) {
+    const ok = await one(
+      db
+        .select({ id: sponsorEntitlements.id })
+        .from(sponsorEntitlements)
+        .innerJoin(sponsors, eq(sponsorEntitlements.sponsorId, sponsors.id))
+        .where(
+          and(
+            eq(sponsorEntitlements.id, l.sponsorEntitlementId),
+            eq(sponsors.editionId, opts.editionId),
+          ),
+        ),
+    );
+    if (!ok) bad("sponsor entitlement");
+  }
+  if (l.supplierId) {
+    const ok = await one(
+      db
+        .select({ id: suppliers.id })
+        .from(suppliers)
+        .where(
+          and(eq(suppliers.id, l.supplierId), eq(suppliers.organisationId, opts.organisationId)),
+        ),
+    );
+    if (!ok) bad("supplier");
+  }
+  if (l.installContractorId) {
+    const ok = await one(
+      db
+        .select({ id: contractors.id })
+        .from(contractors)
+        .where(
+          and(
+            eq(contractors.id, l.installContractorId),
+            eq(contractors.organisationId, opts.organisationId),
+          ),
+        ),
+    );
+    if (!ok) bad("contractor");
+  }
+  if (l.workflowId) {
+    const ok = await one(
+      db
+        .select({ id: workflows.id })
+        .from(workflows)
+        .where(
+          and(eq(workflows.id, l.workflowId), eq(workflows.organisationId, opts.organisationId)),
+        ),
+    );
+    if (!ok) bad("sign-off workflow");
+  }
+}
+
+/** The show, if it belongs to the organisation. */
+export async function ownEdition(db: Db | Tx, organisationId: string, editionId: string) {
+  const [row] = await db
+    .select({ edition: editions })
+    .from(editions)
+    .innerJoin(events, eq(editions.eventId, events.id))
+    .where(and(eq(editions.id, editionId), eq(events.organisationId, organisationId)))
+    .limit(1);
+  return row?.edition ?? null;
 }

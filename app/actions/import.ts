@@ -1,18 +1,13 @@
 "use server";
 
+import { ownEdition } from "@/lib/domain/signage";
+
 import { revalidatePath } from "next/cache";
 import ExcelJS from "exceljs";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import {
-  halls,
-  itemTypes,
-  locations,
-  signageItems,
-  sponsors,
-  suppliers,
-} from "@/lib/db/schema";
+import { halls, itemTypes, locations, signageItems, sponsors, suppliers } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
@@ -44,7 +39,16 @@ const rowSchema = z.object({
     .toLowerCase()
     .transform((v) => v.replace(/[ -]/g, "_"))
     .pipe(
-      z.enum(["rigged", "freestanding", "wall_mounted", "shell_mounted", "floor", "digital", "other", ""]),
+      z.enum([
+        "rigged",
+        "freestanding",
+        "wall_mounted",
+        "shell_mounted",
+        "floor",
+        "digital",
+        "other",
+        "",
+      ]),
     )
     .optional(),
   sponsor: z.string().trim().optional(),
@@ -76,7 +80,9 @@ const rowSchema = z.object({
           ? "sponsor"
           : v,
     )
-    .pipe(z.enum(["organiser", "sponsor", ""], { message: "Category must be Organiser or Sponsor" }))
+    .pipe(
+      z.enum(["organiser", "sponsor", ""], { message: "Category must be Organiser or Sponsor" }),
+    )
     .optional(),
 });
 
@@ -105,36 +111,39 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
   const ws = wb.worksheets[0];
   if (!ws) return fail("The workbook has no sheets");
 
-  const [edition] = await db.execute<{ code: string; status: string }>(
-    (await import("drizzle-orm")).sql`SELECT code, status FROM editions WHERE id = ${editionId}`,
-  );
+  // Only into this organisation's own shows.
+  const edition = await ownEdition(db, session.organisation.id, editionId);
   if (!edition) return fail("Edition not found");
   if (editionIsReadOnly(edition.status)) return fail(EDITION_LOCKED_MESSAGE);
 
-  const [typeRows, hallRows, locationRows, sponsorRows, supplierRows, itemRows] = await Promise.all([
-    db
-      .select()
-      .from(itemTypes)
-      .where(and(eq(itemTypes.organisationId, session.organisation.id), eq(itemTypes.kind, "signage"))),
-    db.select().from(halls).where(eq(halls.editionId, editionId)),
-    db
-      .select({ id: locations.id, name: locations.name, hallId: locations.hallId })
-      .from(locations)
-      .innerJoin(halls, eq(locations.hallId, halls.id))
-      .where(eq(halls.editionId, editionId)),
-    db.select().from(sponsors).where(eq(sponsors.editionId, editionId)),
-    db.select().from(suppliers).where(eq(suppliers.organisationId, session.organisation.id)),
-    db
-      .select({
-        id: signageItems.id,
-        ref: signageItems.ref,
-        kind: signageItems.kind,
-        status: signageItems.status,
-        deletedAt: signageItems.deletedAt,
-      })
-      .from(signageItems)
-      .where(eq(signageItems.editionId, editionId)),
-  ]);
+  const [typeRows, hallRows, locationRows, sponsorRows, supplierRows, itemRows] = await Promise.all(
+    [
+      db
+        .select()
+        .from(itemTypes)
+        .where(
+          and(eq(itemTypes.organisationId, session.organisation.id), eq(itemTypes.kind, "signage")),
+        ),
+      db.select().from(halls).where(eq(halls.editionId, editionId)),
+      db
+        .select({ id: locations.id, name: locations.name, hallId: locations.hallId })
+        .from(locations)
+        .innerJoin(halls, eq(locations.hallId, halls.id))
+        .where(eq(halls.editionId, editionId)),
+      db.select().from(sponsors).where(eq(sponsors.editionId, editionId)),
+      db.select().from(suppliers).where(eq(suppliers.organisationId, session.organisation.id)),
+      db
+        .select({
+          id: signageItems.id,
+          ref: signageItems.ref,
+          kind: signageItems.kind,
+          status: signageItems.status,
+          deletedAt: signageItems.deletedAt,
+        })
+        .from(signageItems)
+        .where(eq(signageItems.editionId, editionId)),
+    ],
+  );
   const itemByRef = new Map(itemRows.map((i) => [i.ref.toUpperCase(), i]));
   // Only items still being prepared can be overwritten from a spreadsheet;
   // anything in sign-off changes on its own page so approvals stay honest.
@@ -147,9 +156,7 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
     return matches.length === 1 ? matches[0] : matches.length > 1 ? "ambiguous" : undefined;
   };
   const byName = <T extends { name?: string; companyName?: string }>(rows: T[], name: string) =>
-    rows.find(
-      (r) => (r.name ?? r.companyName ?? "").toLowerCase() === name.toLowerCase().trim(),
-    );
+    rows.find((r) => (r.name ?? r.companyName ?? "").toLowerCase() === name.toLowerCase().trim());
 
   const parsed: Array<{ rowNumber: number; data: z.infer<typeof rowSchema> }> = [];
   const errors: { row: number; message: string }[] = [];
@@ -197,20 +204,27 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
       }
       if (d.ref) {
         const existing = itemByRef.get(d.ref.toUpperCase());
-        if (!existing) return rowError(`No item ${d.ref} in this show — leave Ref blank to add a new one`);
+        if (!existing)
+          return rowError(`No item ${d.ref} in this show — leave Ref blank to add a new one`);
         if (existing.deletedAt) return rowError(`${d.ref} was deleted — restore it first`);
-        if (existing.kind !== "signage") return rowError(`${d.ref} is a sponsorship item, not signage`);
+        if (existing.kind !== "signage")
+          return rowError(`${d.ref} is a sponsorship item, not signage`);
         if (!EDITABLE.has(existing.status)) {
           return rowError(`${d.ref} is already in sign-off — change it on its page`);
         }
       }
       // Unknown reference data is an error unless createMissing covers it.
       if (d.type && !byName(typeRows, d.type)) return rowError(`Unknown item type “${d.type}”`);
-      if (d.sponsor && !byName(sponsorRows, d.sponsor)) return rowError(`Unknown sponsor “${d.sponsor}”`);
+      if (d.sponsor && !byName(sponsorRows, d.sponsor))
+        return rowError(`Unknown sponsor “${d.sponsor}”`);
       const hall = d.hall ? byName(hallRows, d.hall) : undefined;
       if (d.hall && !hall && !createMissing) return rowError(`Unknown hall “${d.hall}”`);
       if (d.location) {
-        const loc = hall ? findLocation(d.location, hall.id) : d.hall ? undefined : findLocation(d.location, undefined);
+        const loc = hall
+          ? findLocation(d.location, hall.id)
+          : d.hall
+            ? undefined
+            : findLocation(d.location, undefined);
         if (loc === "ambiguous") {
           return rowError(`Location “${d.location}” is in more than one hall — add the hall`);
         }
@@ -241,7 +255,11 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
           else {
             const [ns] = await tx
               .insert(suppliers)
-              .values({ organisationId: session.organisation.id, name: data.supplier, kind: "other" })
+              .values({
+                organisationId: session.organisation.id,
+                name: data.supplier,
+                kind: "other",
+              })
               .returning();
             supplierRows.push(ns);
             supplierId = ns.id;
@@ -272,7 +290,9 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
           }
         }
         const itemTypeId = data.type ? (byName(typeRows, data.type)?.id ?? null) : undefined;
-        const sponsorId = data.sponsor ? (byName(sponsorRows, data.sponsor)?.id ?? null) : undefined;
+        const sponsorId = data.sponsor
+          ? (byName(sponsorRows, data.sponsor)?.id ?? null)
+          : undefined;
         // Blank cells leave existing values alone; only filled cells change.
         const values = Object.fromEntries(
           Object.entries({
@@ -287,7 +307,8 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
             sided: (data.sided || undefined) as "single" | "double" | undefined,
             material: data.material || undefined,
             finish: data.finish || undefined,
-            fixingMethod: (data.fixing || undefined) as typeof signageItems.$inferSelect.fixingMethod | undefined,
+            fixingMethod: (data.fixing || undefined) as
+              typeof signageItems.$inferSelect.fixingMethod | undefined,
             sponsorId,
             supplierId,
             requiresVenueApproval:

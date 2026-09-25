@@ -21,7 +21,7 @@ async function editableItem(
   session: Session,
   itemId: string,
 ): Promise<{ bundle: Bundle; error?: never } | { error: string; bundle?: never }> {
-  const bundle = await loadItemBundle(db, itemId);
+  const bundle = await loadItemBundle(db, itemId, { organisationId: session.organisation.id });
   if (!bundle || bundle.item.deletedAt) return { error: "Item not found" };
   if (bundle.organisation.id !== session.organisation.id) return { error: "Item not found" };
   if (editionIsReadOnly(bundle.edition.status)) return { error: EDITION_LOCKED_MESSAGE };

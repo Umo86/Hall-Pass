@@ -17,6 +17,14 @@ export type Bucket = "artwork" | "documents" | "photos" | "floorplans" | "export
 
 const LOCAL_ROOT = path.join(process.cwd(), ".data", "uploads");
 
+/** A file under the local store — never outside it (no "../" tricks). */
+function localPath(bucket: Bucket, storagePath: string): string {
+  const root = path.resolve(LOCAL_ROOT, bucket);
+  const full = path.resolve(root, storagePath);
+  if (!full.startsWith(root + path.sep)) throw new Error("Invalid storage path");
+  return full;
+}
+
 export function blobEnabled(): boolean {
   return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 }
@@ -80,7 +88,7 @@ export async function putObject(bucket: Bucket, storagePath: string, data: Buffe
     if (error) throw new Error(`Storage upload failed: ${error.message}`);
     return;
   }
-  const full = path.join(LOCAL_ROOT, bucket, storagePath);
+  const full = localPath(bucket, storagePath);
   await mkdir(path.dirname(full), { recursive: true });
   await writeFile(full, data);
 }
@@ -97,7 +105,7 @@ export async function getObject(bucket: Bucket, storagePath: string): Promise<Bu
     if (error || !data) throw new Error(`Storage download failed: ${error?.message}`);
     return Buffer.from(await data.arrayBuffer());
   }
-  return readFile(path.join(LOCAL_ROOT, bucket, storagePath));
+  return readFile(localPath(bucket, storagePath));
 }
 
 /**

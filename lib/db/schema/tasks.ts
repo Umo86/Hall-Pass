@@ -1,11 +1,20 @@
-import { date, index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import {
+  date,
+  index,
+  integer,
+  pgTable,
+  text,
+  timestamp,
+  type AnyPgColumn,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { entityType, taskStatus } from "./enums";
 import { editions } from "./events";
 import { organisations, timestamps, users } from "./tenancy";
 
 /**
- * Personal to-dos: self-created or assigned by a colleague. Deliberately flat —
- * a title, an owner, an optional due date and an optional link to a record.
+ * Jobs on the My Work board: self-created or assigned by a colleague, with a
+ * due date, subtasks (tasks with a parent) and attachments.
  */
 export const tasks = pgTable(
   "tasks",
@@ -15,6 +24,10 @@ export const tasks = pgTable(
       .notNull()
       .references(() => organisations.id),
     editionId: uuid("edition_id").references(() => editions.id),
+    /** Set on subtasks: the task they belong to. */
+    parentTaskId: uuid("parent_task_id").references((): AnyPgColumn => tasks.id, {
+      onDelete: "cascade",
+    }),
     title: text("title").notNull(),
     notes: text("notes"),
     status: taskStatus("status").notNull().default("open"),
@@ -36,5 +49,29 @@ export const tasks = pgTable(
     index("tasks_org_idx").on(t.organisationId),
     index("tasks_edition_idx").on(t.editionId),
     index("tasks_created_by_idx").on(t.createdByUserId),
+    index("tasks_parent_idx").on(t.parentTaskId),
+  ],
+);
+
+/** Files attached to a task or subtask (documents bucket). */
+export const taskAttachments = pgTable(
+  "task_attachments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    filePath: text("file_path").notNull(),
+    fileName: text("file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    fileSize: integer("file_size").notNull(),
+    uploadedBy: uuid("uploaded_by")
+      .notNull()
+      .references(() => users.id),
+    ...timestamps,
+  },
+  (t) => [
+    index("task_attachments_task_idx").on(t.taskId),
+    index("task_attachments_uploaded_by_idx").on(t.uploadedBy),
   ],
 );

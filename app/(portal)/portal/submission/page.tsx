@@ -16,11 +16,23 @@ import { SubmitStandButton } from "@/components/stands/submit-button";
 export const metadata = { title: "My Submission" };
 export const dynamic = "force-dynamic";
 
+type Grant = Awaited<ReturnType<typeof requirePortalSession>>["actor"]["grants"][number];
+
+/** Only live invitations count: revoked or expired ones show nothing. */
+function liveExhibitorGrant(grants: Grant[]): Grant | undefined {
+  const now = Date.now();
+  return grants.find(
+    (g) =>
+      (g.role === "exhibitor" || g.role === "contractor") &&
+      g.scopeType === "exhibitor" &&
+      !g.revokedAt &&
+      (!g.expiresAt || g.expiresAt.getTime() > now),
+  );
+}
+
 export default async function PortalSubmissionPage() {
   const session = await requirePortalSession();
-  const grant = session.actor.grants.find(
-    (g) => (g.role === "exhibitor" || g.role === "contractor") && g.scopeType === "exhibitor",
-  );
+  const grant = liveExhibitorGrant(session.actor.grants);
   if (!grant?.scopeId) {
     return (
       <div className="p-4 sm:p-6">

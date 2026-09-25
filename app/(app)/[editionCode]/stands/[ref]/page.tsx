@@ -33,8 +33,8 @@ export default async function StandDetailPage({
   const { editionCode, ref } = await params;
   const sub = await getStandByRef(decodeURIComponent(ref));
   if (!sub) notFound();
-  const bundle = await loadStandBundle(db, sub.id);
-  if (!bundle) notFound();
+  const bundle = await loadStandBundle(db, sub.id, { organisationId: session.organisation.id });
+  if (!bundle || bundle.edition.code !== editionCode.toUpperCase()) notFound();
 
   const [docs, instanceRows, comments, audit, rules] = await Promise.all([
     getStandDocuments(sub.id),
@@ -75,18 +75,17 @@ export default async function StandDetailPage({
     decidedAt: instance.decidedAt,
     decisionComment: instance.decisionComment,
     conditionsText: instance.conditionsText,
-    lockedVersionLabel: instance.lockedVersionId
-      ? `submission v${instance.lockedVersionId}`
-      : null,
+    lockedVersionLabel: instance.lockedVersionId ? `submission v${instance.lockedVersionId}` : null,
     dueAt: instance.dueAt,
   }));
 
-  const checkerIds = sub.rulesChecklist.map((c) => c.checked_by).filter((x): x is string => Boolean(x));
+  const checkerIds = sub.rulesChecklist
+    .map((c) => c.checked_by)
+    .filter((x): x is string => Boolean(x));
   const checkers = checkerIds.length
     ? await db.select().from(users).where(inArray(users.id, checkerIds))
     : [];
-  const checkerName = (id: string | null) =>
-    checkers.find((u) => u.id === id)?.fullName ?? null;
+  const checkerName = (id: string | null) => checkers.find((u) => u.id === id)?.fullName ?? null;
 
   const ruleById = new Map(rules.map((r) => [r.id, r]));
   const checklistItems = sub.rulesChecklist

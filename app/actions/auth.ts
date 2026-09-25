@@ -8,8 +8,9 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { memberships, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
-import { DEV_COOKIE, demoEmailAllowed, devAuthEnabled } from "@/lib/auth/actor";
-import { createSupabaseServerClient } from "@/lib/auth/supabase-server";
+import { DEV_COOKIE, demoEmailAllowed, devAuthEnabled, getSession } from "@/lib/auth/actor";
+import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
+import { emailIsInvited, sendAccountEmail } from "@/lib/auth/account-link";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 
 export type AuthResult = { ok: true; message?: string } | { ok: false; error: string };
@@ -22,34 +23,50 @@ const passwordSchema = emailSchema.extend({
   password: z.string().min(1, "Enter your password"),
 });
 
-/** Email and password sign-in: how everyone signs in once their account is set up. */
+/**
+ * Email and password sign-in: how everyone signs in once their account is
+ * set up. An account alone isn't enough — the person must still be on the
+ * team or hold a live partner invitation.
+ */
 export async function signInWithPassword(input: unknown): Promise<AuthResult> {
   const parsed = passwordSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
   const supabase = await createSupabaseServerClient();
   if (!supabase) return { ok: false, error: "Authentication is not configured" };
-  const { error } = await supabase.auth.signInWithPassword(parsed.data);
+  const { error } = await supabase.auth.signInWithPassword({
+    email: parsed.data.email.trim().toLowerCase(),
+    password: parsed.data.password,
+  });
   if (error) return { ok: false, error: "Incorrect email or password" };
+  if (!(await emailIsInvited(parsed.data.email))) {
+    await supabase.auth.signOut();
+    return {
+      ok: false,
+      error: "This account doesn't have access to Hall Pass — ask your admin for an invitation.",
+    };
+  }
   redirect(safeNext(parsed.data.next) ?? "/");
 }
 
-/** Magic link for staff and external users alike. */
+/** Same reply whoever asks, so nobody can find out who has an account. */
+const LINK_SENT = "If you've been invited, a link is on its way to your inbox.";
+
+/**
+ * "Email me a link". Only invited people get anything: a link to create
+ * their account the first time, or to sign in. Nobody else is emailed and no
+ * account is ever created for them — there is no sign-up.
+ */
 export async function signInWithMagicLink(input: unknown): Promise<AuthResult> {
   const parsed = emailSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
-  const supabase = await createSupabaseServerClient();
-  if (!supabase) return { ok: false, error: "Authentication is not configured" };
-  const base = appUrl();
-  const { error } = await supabase.auth.signInWithOtp({
-    email: parsed.data.email,
-    options: {
-      emailRedirectTo: `${base}/auth/callback${
-        safeNext(parsed.data.next) ? `?next=${encodeURIComponent(safeNext(parsed.data.next)!)}` : ""
-      }`,
-    },
-  });
-  if (error) return { ok: false, error: "Could not send the magic link — try again shortly" };
-  return { ok: true, message: "Check your inbox for a sign-in link." };
+  if (!supabaseConfigured()) return { ok: false, error: "Authentication is not configured" };
+  if (await emailIsInvited(parsed.data.email)) {
+    const sent = await sendAccountEmail(parsed.data.email);
+    if (sent === "not_sent") {
+      return { ok: false, error: "Could not send the email — try again in a few minutes" };
+    }
+  }
+  return { ok: true, message: LINK_SENT };
 }
 
 const newPasswordSchema = z
@@ -65,6 +82,13 @@ export async function sendPasswordReset(input: unknown): Promise<AuthResult> {
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
   const supabase = await createSupabaseServerClient();
   if (!supabase) return { ok: false, error: "Authentication is not configured" };
+  // Only people with access are emailed; the reply is the same either way.
+  if (!(await emailIsInvited(parsed.data.email))) {
+    return {
+      ok: true,
+      message: "If that email has an account, a link to choose a new password is on its way.",
+    };
+  }
   const { error } = await supabase.auth.resetPasswordForEmail(parsed.data.email, {
     redirectTo: `${appUrl()}/auth/callback?next=/reset-password`,
   });
@@ -87,7 +111,8 @@ export async function updatePassword(input: unknown): Promise<AuthResult> {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) return { ok: false, error: "The link has expired — ask for a new one from the sign-in page" };
+  if (!user)
+    return { ok: false, error: "The link has expired — ask for a new one from the sign-in page" };
   const { error } = await supabase.auth.updateUser({ password: parsed.data.password });
   if (error) {
     return {
@@ -107,6 +132,63 @@ export async function updatePassword(input: unknown): Promise<AuthResult> {
     });
   });
   redirect("/");
+}
+
+const completeSchema = z
+  .object({
+    fullName: z.string().trim().min(1, "Enter your name").max(200),
+    password: z.string().min(8, "Use at least 8 characters").max(200),
+    confirm: z.string(),
+  })
+  .refine((d) => d.password === d.confirm, { message: "The two passwords don't match" });
+
+/**
+ * Finish creating an account from the invitation email: the link has signed
+ * the person in; now they choose their name and password. Their invitation
+ * (team or partner) is applied at the same time.
+ */
+export async function completeAccount(input: unknown): Promise<AuthResult> {
+  const parsed = completeSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return { ok: false, error: "Authentication is not configured" };
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user?.email) {
+    return {
+      ok: false,
+      error: "This link has expired — ask your admin to send the invitation again",
+    };
+  }
+  if (!(await emailIsInvited(user.email))) {
+    await supabase.auth.signOut();
+    return { ok: false, error: "This invitation has been withdrawn — ask your admin" };
+  }
+  const { error } = await supabase.auth.updateUser({
+    password: parsed.data.password,
+    data: { full_name: parsed.data.fullName },
+  });
+  if (error && !/different|same/i.test(error.message)) {
+    return { ok: false, error: "Could not save your password — try again" };
+  }
+  await db
+    .insert(users)
+    .values({ id: user.id, email: user.email.toLowerCase(), fullName: parsed.data.fullName })
+    .onConflictDoUpdate({ target: users.id, set: { fullName: parsed.data.fullName } });
+  await db.transaction(async (tx) => {
+    await writeAudit(tx, {
+      actorUserId: user.id,
+      entityType: "user",
+      entityId: user.id,
+      action: "login",
+      summary: `${user.email} set up their account`,
+    });
+  });
+  // Loading the session applies their invitation (membership or partner access).
+  const session = await getSession();
+  if (!session) return { ok: false, error: "Your invitation couldn't be found — ask your admin" };
+  redirect(session.actor.kind === "staff" ? STAFF_HOME : PORTAL_HOME);
 }
 
 /**
@@ -146,4 +228,3 @@ export async function signOut(): Promise<void> {
   store.delete(DEV_COOKIE);
   redirect("/login");
 }
-

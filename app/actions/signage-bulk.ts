@@ -2,9 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { signageItems } from "@/lib/db/schema";
+import { signageItems, suppliers } from "@/lib/db/schema";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { can } from "@/lib/authz";
@@ -21,7 +21,9 @@ const schema = z.object({
   installSlot: z.enum(["am", "pm", "overnight"]).optional().nullable(),
 });
 
-export async function bulkSignageAction(input: unknown): Promise<ActionResult<{ done: number; failed: number }>> {
+export async function bulkSignageAction(
+  input: unknown,
+): Promise<ActionResult<{ done: number; failed: number }>> {
   const parsed = schema.safeParse(input);
   if (!parsed.success) return fail("Invalid bulk action");
   const session = await requireSession();
@@ -36,7 +38,10 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<{ 
       if (res.ok) done += 1;
       else failed += 1;
     }
-    return success({ done, failed }, `${done} submitted${failed ? `, ${failed} could not be` : ""}`);
+    return success(
+      { done, failed },
+      `${done} submitted${failed ? `, ${failed} could not be` : ""}`,
+    );
   }
   if (action === "delete") {
     if (!can(session.actor, { type: "signage.delete" })) return fail("You cannot delete items");
@@ -55,6 +60,18 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<{ 
   if (action === "set_supplier" && !can(session.actor, { type: "costs.edit" })) {
     return fail("You cannot set suppliers");
   }
+  if (action === "set_supplier" && parsed.data.supplierId) {
+    const [own] = await db
+      .select({ id: suppliers.id })
+      .from(suppliers)
+      .where(
+        and(
+          eq(suppliers.id, parsed.data.supplierId),
+          eq(suppliers.organisationId, session.organisation.id),
+        ),
+      );
+    if (!own) return fail("Supplier not found");
+  }
   const set: Partial<typeof signageItems.$inferInsert> = {};
   if (action === "set_supplier") set.supplierId = parsed.data.supplierId ?? null;
   if (action === "set_install") {
@@ -65,7 +82,7 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<{ 
   let failed = 0;
   for (const id of ids) {
     try {
-      const bundle = await loadItemBundle(db, id);
+      const bundle = await loadItemBundle(db, id, { organisationId: session.organisation.id });
       if (
         !bundle ||
         bundle.item.deletedAt ||

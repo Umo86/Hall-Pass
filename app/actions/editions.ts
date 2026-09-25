@@ -1,5 +1,7 @@
 "use server";
 
+import { ownEdition } from "@/lib/domain/signage";
+
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { and, eq, isNull } from "drizzle-orm";
@@ -249,9 +251,8 @@ export async function cloneEdition(input: unknown): Promise<ActionResult<{ code:
   }
   const data = parsed.data;
   const code = data.code.toUpperCase();
-  const source = await db.query.editions.findFirst({
-    where: eq(editions.id, data.sourceEditionId),
-  });
+  // Only this organisation's shows can be copied.
+  const source = await ownEdition(db, session.organisation.id, data.sourceEditionId);
   if (!source) return fail("Source edition not found");
   const clash = await db.query.editions.findFirst({ where: eq(editions.code, code) });
   if (clash) return fail(`Edition code ${code} is already in use`);

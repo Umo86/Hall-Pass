@@ -16,7 +16,7 @@ export default async function NewItemPage({
   const session = await requireStaffSession();
   if (!can(session.actor, { type: "signage.create" })) redirect("../signage");
   const { editionCode } = await params;
-  const ed = await getEditionByCode(editionCode.toUpperCase());
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
 
   const options = await itemFormOptions({

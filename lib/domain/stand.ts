@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import type { Db, Tx } from "@/lib/db/client";
 import {
   editions,
+  events,
   exhibitors,
   organisations,
   standSubmissions,
@@ -20,20 +21,28 @@ export type StandBundle = {
   organisation: typeof organisations.$inferSelect;
 };
 
-export async function loadStandBundle(db: Db | Tx, subId: string): Promise<StandBundle | null> {
+/** A stand submission with its show; scoped to an organisation when given. */
+export async function loadStandBundle(
+  db: Db | Tx,
+  subId: string,
+  scope?: { organisationId: string },
+): Promise<StandBundle | null> {
   const [row] = await db
     .select()
     .from(standSubmissions)
     .innerJoin(exhibitors, eq(standSubmissions.exhibitorId, exhibitors.id))
     .innerJoin(editions, eq(standSubmissions.editionId, editions.id))
     .innerJoin(venues, eq(editions.venueId, venues.id))
+    .innerJoin(events, eq(editions.eventId, events.id))
     .where(eq(standSubmissions.id, subId))
     .limit(1);
   if (!row) return null;
+  if (scope && row.events.organisationId !== scope.organisationId) return null;
   const [org] = await db
     .select()
     .from(organisations)
-    .where(eq(organisations.id, row.venues.organisationId))
+    // The show's organisation (through its event) owns the record.
+    .where(eq(organisations.id, row.events.organisationId))
     .limit(1);
   return {
     sub: row.stand_submissions,
@@ -53,7 +62,14 @@ export function stepActiveFlags(instances: Instance[]): {
   engineerStepActive: boolean;
   hsStepActive: boolean;
 } {
-  const activeStatuses = ["pending", "approved", "approved_with_conditions", "changes_requested", "rejected", "confirmed"];
+  const activeStatuses = [
+    "pending",
+    "approved",
+    "approved_with_conditions",
+    "changes_requested",
+    "rejected",
+    "confirmed",
+  ];
   const activeFor = (role: string) =>
     instances.some((i) => i.assignedRole === role && activeStatuses.includes(i.status));
   return {
@@ -68,6 +84,7 @@ export function standAuthzCtx(
   flags?: ReturnType<typeof stepActiveFlags>,
 ): StandSubmissionCtx {
   return {
+    organisationId: bundle.organisation.id,
     editionId: bundle.edition.id,
     venueId: bundle.venue.id,
     exhibitorId: bundle.exhibitor.id,

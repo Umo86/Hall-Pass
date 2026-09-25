@@ -14,12 +14,18 @@ import { resubmitAfterChanges } from "@/lib/workflow";
 import { loadRun, persistRun } from "@/lib/workflow/persist";
 import { buildStoragePath, putObject, sha256Hex } from "@/lib/storage";
 import { notify } from "@/lib/notify";
-import { loadStandBundle, standAuthzCtx, standEntityCtx, startStandRun, stepActiveFlags } from "@/lib/domain/stand";
+import {
+  loadStandBundle,
+  standAuthzCtx,
+  standEntityCtx,
+  startStandRun,
+  stepActiveFlags,
+} from "@/lib/domain/stand";
 import { resolveAssigneeUserIds } from "@/lib/domain/signage";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 
-async function bundleWithFlags(subId: string) {
-  const bundle = await loadStandBundle(db, subId);
+async function bundleWithFlags(subId: string, organisationId: string) {
+  const bundle = await loadStandBundle(db, subId, { organisationId });
   if (!bundle) return null;
   const run =
     bundle.sub.currentRunNumber > 0
@@ -44,7 +50,7 @@ export async function saveStandQuestionnaire(input: unknown): Promise<ActionResu
   const parsed = questionnaireSchema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  const loaded = await bundleWithFlags(parsed.data.submissionId);
+  const loaded = await bundleWithFlags(parsed.data.submissionId, session.organisation.id);
   if (!loaded) return fail("Submission not found");
   const { bundle, flags } = loaded;
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
@@ -129,7 +135,7 @@ export async function uploadStandDocument(formData: FormData): Promise<ActionRes
     return fail("Invalid upload");
   }
   const session = await requireSession();
-  const loaded = await bundleWithFlags(submissionId);
+  const loaded = await bundleWithFlags(submissionId, session.organisation.id);
   if (!loaded) return fail("Submission not found");
   const { bundle, flags } = loaded;
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
@@ -186,7 +192,7 @@ export async function submitStandSubmission(input: unknown): Promise<ActionResul
   const parsed = z.object({ submissionId: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  const loaded = await bundleWithFlags(parsed.data.submissionId);
+  const loaded = await bundleWithFlags(parsed.data.submissionId, session.organisation.id);
   if (!loaded) return fail("Submission not found");
   const { bundle, flags } = loaded;
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
@@ -196,7 +202,9 @@ export async function submitStandSubmission(input: unknown): Promise<ActionResul
   if (!isExhibitor && !isOps) return fail("You cannot submit this design");
 
   const isResubmit = ["changes_requested", "rejected"].includes(bundle.sub.status);
-  const versionForDocs = isResubmit ? bundle.sub.submissionVersion + 1 : bundle.sub.submissionVersion;
+  const versionForDocs = isResubmit
+    ? bundle.sub.submissionVersion + 1
+    : bundle.sub.submissionVersion;
 
   // Every required doc type must be present for the current version — on
   // resubmit, documents uploaded since the request also count.
@@ -256,7 +264,12 @@ export async function submitStandSubmission(input: unknown): Promise<ActionResul
       await tx.update(standSubmissions).set(set).where(eq(standSubmissions.id, bundle.sub.id));
 
       if (isResubmit && bundle.sub.currentRunNumber > 0) {
-        const run = await loadRun(tx, "stand_submission", bundle.sub.id, bundle.sub.currentRunNumber);
+        const run = await loadRun(
+          tx,
+          "stand_submission",
+          bundle.sub.id,
+          bundle.sub.currentRunNumber,
+        );
         const res = resubmitAfterChanges(run, { entity: standEntityCtx(bundle), now: new Date() });
         if (res.mode === "restart_from_step") {
           await persistRun(tx, "stand_submission", bundle.sub.id, res.instances);
@@ -316,7 +329,9 @@ export async function tickRulesChecklist(input: unknown): Promise<ActionResult> 
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
   if (!can(session.actor, { type: "stand.review" })) return fail("Only ops review the checklist");
-  const bundle = await loadStandBundle(db, parsed.data.submissionId);
+  const bundle = await loadStandBundle(db, parsed.data.submissionId, {
+    organisationId: session.organisation.id,
+  });
   if (!bundle) return fail("Submission not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
 
@@ -366,8 +381,14 @@ export async function reviewStandDocument(input: unknown): Promise<ActionResult>
     const [doc] = await tx
       .update(documents)
       .set({ status: parsed.data.status, reviewNote: parsed.data.reviewNote ?? null })
-      .where(eq(documents.id, parsed.data.documentId))
+      .where(
+        and(
+          eq(documents.id, parsed.data.documentId),
+          eq(documents.organisationId, session.organisation.id),
+        ),
+      )
       .returning();
+    if (!doc) return;
     await writeAudit(tx, {
       organisationId: session.organisation.id,
       editionId: doc?.editionId,

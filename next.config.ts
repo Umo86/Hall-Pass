@@ -6,6 +6,8 @@ const securityHeaders = [
   { key: "X-Frame-Options", value: "SAMEORIGIN" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" },
+  // The app never needs these device features.
+  { key: "Permissions-Policy", value: "camera=(self), microphone=(), geolocation=(), payment=()" },
   {
     key: "Content-Security-Policy",
     value: [
@@ -19,6 +21,9 @@ const securityHeaders = [
       // Artwork proofs are previewed in a frame from storage or /api/files.
       "frame-src 'self' https://*.supabase.co https://*.blob.vercel-storage.com",
       "frame-ancestors 'self'",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
     ].join("; "),
   },
 ];

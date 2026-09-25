@@ -14,11 +14,15 @@ export const dynamic = "force-dynamic";
 export default async function HallsPage({ params }: { params: Promise<{ editionCode: string }> }) {
   const session = await requireStaffSession();
   const { editionCode } = await params;
-  const ed = await getEditionByCode(editionCode.toUpperCase());
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
 
   const [hallRows, locationRows, byHall, byLocation] = await Promise.all([
-    db.select().from(halls).where(eq(halls.editionId, ed.edition.id)).orderBy(halls.sortOrder, halls.name),
+    db
+      .select()
+      .from(halls)
+      .where(eq(halls.editionId, ed.edition.id))
+      .orderBy(halls.sortOrder, halls.name),
     db
       .select({ loc: locations })
       .from(locations)
@@ -46,8 +50,8 @@ export default async function HallsPage({ params }: { params: Promise<{ editionC
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Halls &amp; locations</h1>
         <p className="text-muted-foreground text-sm">
-          Where signs go at {ed.edition.name}. Every sign needs a hall and a location before it
-          can be sent for sign-off.
+          Where signs go at {ed.edition.name}. Every sign needs a hall and a location before it can
+          be sent for sign-off.
         </p>
       </div>
       <HallsEditor

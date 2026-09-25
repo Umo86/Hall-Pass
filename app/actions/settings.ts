@@ -19,11 +19,21 @@ import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { generateInviteToken, hashInviteToken } from "@/lib/auth/invite-token";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
+import { deliverInvite } from "@/lib/auth/staff-invite";
+import { roleLabel } from "@/lib/format";
 
 const inviteSchema = z.object({
   email: z.string().email(),
   editionId: z.string().uuid(),
-  role: z.enum(["venue", "structural_engineer", "hs", "supplier", "exhibitor", "contractor", "sponsor"]),
+  role: z.enum([
+    "venue",
+    "structural_engineer",
+    "hs",
+    "supplier",
+    "exhibitor",
+    "contractor",
+    "sponsor",
+  ]),
   scopeType: z.enum(["venue", "supplier", "exhibitor", "sponsor"]).optional().nullable(),
   scopeId: z.string().uuid().optional().nullable(),
   expiresAt: z.string().date().optional().nullable(),
@@ -70,7 +80,7 @@ export async function inviteExternal(input: unknown): Promise<ActionResult<{ inv
   }
   const token = generateInviteToken();
   try {
-    await db.transaction(async (tx) => {
+    const grantId = await db.transaction(async (tx) => {
       const [grant] = await tx
         .insert(externalGrants)
         .values({
@@ -95,13 +105,23 @@ export async function inviteExternal(input: unknown): Promise<ActionResult<{ inv
         after: { email: data.email, role: data.role, scopeType: data.scopeType },
         summary: `Invited ${data.email} as ${data.role}`,
       });
+      return grant.id;
     });
-    const base = appUrl();
+    const inviteUrl = `${appUrl()}/invite/${token}`;
+    const delivery = await deliverInvite({
+      email: data.email,
+      inviterName: session.user.fullName || session.user.email,
+      reason: `You've been given access to ${session.organisation.brandName} as ${roleLabel(data.role)}.`,
+      inviteUrl,
+      inviteId: grantId,
+    });
     revalidatePath("/settings");
-    return success(
-      { inviteUrl: `${base}/invite/${token}` },
-      "Invitation created — share the link (also emailed once email is configured)",
-    );
+    return delivery.emailed
+      ? success({ inviteUrl: "" }, `Invitation emailed to ${data.email}`)
+      : success(
+          { inviteUrl: delivery.fallbackUrl! },
+          "Invitation created — email isn't set up here, so send them this link yourself",
+        );
   } catch (err) {
     return fail(err instanceof Error ? err.message : "Something went wrong");
   }
@@ -118,8 +138,14 @@ export async function revokeGrant(input: unknown): Promise<ActionResult> {
     const [grant] = await tx
       .update(externalGrants)
       .set({ revokedAt: new Date() })
-      .where(eq(externalGrants.id, parsed.data.grantId))
+      .where(
+        and(
+          eq(externalGrants.id, parsed.data.grantId),
+          eq(externalGrants.organisationId, session.organisation.id),
+        ),
+      )
       .returning();
+    if (!grant) return;
     await writeAudit(tx, {
       organisationId: session.organisation.id,
       editionId: grant?.editionId,

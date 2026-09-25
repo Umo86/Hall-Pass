@@ -16,7 +16,7 @@ export default async function NewSponsorshipItemPage({
   const session = await requireStaffSession();
   if (!can(session.actor, { type: "sponsorship.create" })) redirect("../sponsorship");
   const { editionCode } = await params;
-  const ed = await getEditionByCode(editionCode.toUpperCase());
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
 
   const options = await itemFormOptions({

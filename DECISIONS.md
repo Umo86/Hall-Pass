@@ -216,3 +216,42 @@ useful fields for every item.
   database or exports. The schedule hides Format by default and calls the
   estimate "Cost price". The sponsor report adds Order by, Cost, Sale, Profit
   and a "Still to sell" sheet.
+
+## Invite-only access, task board, calendar, security review (2026-09-25)
+
+- **No sign-up.** Only people with a team membership, an open staff
+  invitation or a live partner invitation can get in. Invitations go out
+  through Supabase (`auth.admin.inviteUserByEmail`, redirect `/auth/accept`):
+  the link works only from the invitee's inbox; there they choose their name
+  and password (`completeAccount`) and the invitation is applied. Existing
+  accounts get a sign-in link instead. If Supabase can't send, our own email
+  with the invitation link; failing that the admin sees the link to pass on.
+  "Email me a link" and "Forgot password" only email invited people and give
+  the same reply either way. Password sign-in also checks the person still
+  has access. Supabase's own sign-up is never called (`shouldCreateUser`
+  only when no service key exists, and only for invited emails).
+- **Demo sign-in is off on any Vercel deployment with Supabase configured**,
+  whatever `DEV_AUTH` says; it remains for local development and tests.
+- **Tenancy.** A security review found that records were looked up by id,
+  ref or show code without checking the organisation, and `can()` never
+  compared organisations. Now: records carry their organisation (from the
+  show's event); `can()` refuses any record from another organisation
+  (admins included); `getEditionByCode`, `loadItemBundle` and
+  `loadStandBundle` take the caller's organisation; item pages also check
+  the show in the address; every id linked to an item (type, hall, location,
+  sponsor, entitlement, supplier, contractor, workflow) is checked against
+  the organisation/show (`assertItemLinks`); import and clone check the show;
+  replies must belong to the same record; revoked or expired partner
+  invitations show nothing. No raw SQL, `dangerouslySetInnerHTML` or `eval`
+  anywhere; local file paths can't escape the store; CSP adds
+  `object-src 'none'`, `base-uri` and `form-action`, plus a Permissions-Policy.
+- **Task board.** `task_status` gains `in_progress`; subtasks are tasks with
+  `parent_task_id`; `task_attachments` (documents bucket, 20 MB, documents,
+  images, Office, ZIP — nothing that runs in a browser) served through
+  `/api/task-files/[id]` only to people working on the task. Anyone working
+  on a task can manage its subtasks; only the creator or an admin deletes a
+  whole task. Completed tasks leave the board after 30 days.
+- **Calendar.** Deadlines of every kind are red (dark red with ⚠ once
+  passed); show dates violet, deliveries blue, installs green.
+- **Suppliers.** New "what they do" entries typed in the supplier popup join
+  the shared list (or tick an existing match).

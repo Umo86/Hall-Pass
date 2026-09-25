@@ -73,8 +73,9 @@ export default async function ItemDetailPage({
 
   const item = await getItemByRef(decodeURIComponent(ref));
   if (!item || item.deletedAt) notFound();
-  const bundle = await loadItemBundle(db, item.id);
-  if (!bundle) notFound();
+  const bundle = await loadItemBundle(db, item.id, { organisationId: session.organisation.id });
+  // Only this organisation's items, and only under their own show's address.
+  if (!bundle || bundle.edition.code !== editionCode.toUpperCase()) notFound();
   const isSponsorship = item.kind === "sponsorship_item";
   const listSegment = isSponsorship ? "sponsorship" : "signage";
 

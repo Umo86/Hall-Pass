@@ -1,6 +1,6 @@
 import { appUrl } from "@/lib/app-url";
 import "server-only";
-import { and, count, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -275,7 +275,11 @@ export async function missingArtwork(today: string): Promise<JobResult> {
     }
     const hasArtwork = Boolean(item.currentArtworkVersionId);
     const when =
-      diff < 0 ? `overdue (was due ${formatDate(due)})` : diff === 0 ? "due today" : `due in ${diff} days`;
+      diff < 0
+        ? `overdue (was due ${formatDate(due)})`
+        : diff === 0
+          ? "due today"
+          : `due in ${diff} days`;
     await db.transaction(async (tx) => {
       await notify(tx, {
         userIds: [item.ownerUserId!],
@@ -475,7 +479,7 @@ export async function taskReminders(today: string): Promise<JobResult> {
   const due = await db
     .select({ userId: tasks.assignedToUserId, n: count() })
     .from(tasks)
-    .where(and(eq(tasks.status, "open"), lte(tasks.dueDate, today)))
+    .where(and(ne(tasks.status, "done"), lte(tasks.dueDate, today)))
     .groupBy(tasks.assignedToUserId);
   let sent = 0;
   let skipped = 0;

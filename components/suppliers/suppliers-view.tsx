@@ -43,7 +43,29 @@ export function SuppliersView({
 }) {
   const [q, setQ] = useState("");
   const [service, setService] = useState("");
-  const [editing, setEditing] = useState<SupplierCard | "new" | null>(null);
+  const [editing, setEditingRaw] = useState<SupplierCard | "new" | null>(null);
+  const [extraServices, setExtraServices] = useState<string[]>([]);
+  const [newService, setNewService] = useState("");
+  const setEditing = (v: SupplierCard | "new" | null) => {
+    setEditingRaw(v);
+    setExtraServices([]);
+    setNewService("");
+  };
+  function addService() {
+    const name = newService.trim().replace(/\s+/g, " ");
+    if (!name) return;
+    const known = services.find((sv) => sv.name.toLowerCase() === name.toLowerCase());
+    if (known) {
+      // Already on the list: just tick it.
+      const box = document.querySelector<HTMLInputElement>(
+        `#supplier-form input[name="serviceIds"][value="${known.id}"]`,
+      );
+      if (box) box.checked = true;
+    } else if (!extraServices.some((n) => n.toLowerCase() === name.toLowerCase())) {
+      setExtraServices((x) => [...x, name]);
+    }
+    setNewService("");
+  }
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
@@ -184,6 +206,7 @@ export function SuppliersView({
                   id: current?.id,
                   name: fd.get("name"),
                   serviceIds: fd.getAll("serviceIds"),
+                  newServices: extraServices,
                   contactName: fd.get("contactName"),
                   email: fd.get("email"),
                   phone: fd.get("phone"),
@@ -216,6 +239,37 @@ export function SuppliersView({
                     {s.name}
                   </label>
                 ))}
+                {extraServices.map((name) => (
+                  <label key={name} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="size-4"
+                      checked
+                      onChange={() => setExtraServices((x) => x.filter((n) => n !== name))}
+                      aria-label={`${name} (new)`}
+                    />
+                    {name} <span className="text-muted-foreground text-xs">new</span>
+                  </label>
+                ))}
+              </div>
+              <div className="flex gap-2 pt-1">
+                <Input
+                  value={newService}
+                  onChange={(e) => setNewService(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addService();
+                    }
+                  }}
+                  placeholder="Something else they do…"
+                  aria-label="Add something they do"
+                  maxLength={100}
+                  className="h-8"
+                />
+                <Button type="button" size="sm" variant="outline" onClick={addService}>
+                  Add
+                </Button>
               </div>
             </fieldset>
             <div className="grid gap-3 sm:grid-cols-2">

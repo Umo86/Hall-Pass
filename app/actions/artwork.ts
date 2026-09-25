@@ -16,7 +16,11 @@ import { z } from "zod";
 import { buildStoragePath, getObject, putObject, sha256Hex } from "@/lib/storage";
 import { notify } from "@/lib/notify";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
-import { ARTWORK_TYPE_MESSAGE, artworkBlockedReason, artworkTypeAllowed } from "@/lib/artwork-rules";
+import {
+  ARTWORK_TYPE_MESSAGE,
+  artworkBlockedReason,
+  artworkTypeAllowed,
+} from "@/lib/artwork-rules";
 import {
   itemAuthzCtx,
   itemEntityCtx,
@@ -44,7 +48,6 @@ async function generatePreview(bytes: Buffer, mimeType: string): Promise<Buffer 
   }
 }
 
-
 /** Direct upload through the server (dev/local backend and small files). */
 export async function uploadArtwork(
   formData: FormData,
@@ -55,7 +58,7 @@ export async function uploadArtwork(
   if (typeof itemId !== "string" || !(file instanceof File)) return fail("Invalid upload");
 
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, itemId);
+  const bundle = await loadItemBundle(db, itemId, { organisationId: session.organisation.id });
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "artwork.upload", item: itemAuthzCtx(bundle) })) {
@@ -117,7 +120,9 @@ export async function recordUploadedArtwork(
   if (!parsed.success) return fail("Invalid upload details");
   const input = parsed.data;
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, input.itemId);
+  const bundle = await loadItemBundle(db, input.itemId, {
+    organisationId: session.organisation.id,
+  });
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "artwork.upload", item: itemAuthzCtx(bundle) })) {

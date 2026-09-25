@@ -71,8 +71,8 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
 
       const isSignage = row.entityType === "signage_item";
       const bundle = isSignage
-        ? await loadItemBundle(tx, row.entityId)
-        : await loadStandBundle(tx, row.entityId);
+        ? await loadItemBundle(tx, row.entityId, { organisationId: session.organisation.id })
+        : await loadStandBundle(tx, row.entityId, { organisationId: session.organisation.id });
       if (!bundle) throw new WorkflowError("Record not found");
       if (editionIsReadOnly(bundle.edition.status)) throw new WorkflowError(EDITION_LOCKED_MESSAGE);
       assertItemOpen(bundle);
@@ -336,8 +336,8 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
       if (!row) throw new WorkflowError("Approval step not found");
       const isSignage = row.entityType === "signage_item";
       const bundle = isSignage
-        ? await loadItemBundle(tx, row.entityId)
-        : await loadStandBundle(tx, row.entityId);
+        ? await loadItemBundle(tx, row.entityId, { organisationId: session.organisation.id })
+        : await loadStandBundle(tx, row.entityId, { organisationId: session.organisation.id });
       if (!bundle) throw new WorkflowError("Record not found");
       if (editionIsReadOnly(bundle.edition.status)) throw new WorkflowError(EDITION_LOCKED_MESSAGE);
       assertItemOpen(bundle);
@@ -406,7 +406,9 @@ export async function resubmitSignageItem(input: unknown): Promise<ActionResult>
   const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, parsed.data.id);
+  const bundle = await loadItemBundle(db, parsed.data.id, {
+    organisationId: session.organisation.id,
+  });
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.submit", item: itemAuthzCtx(bundle) })) {
@@ -517,8 +519,8 @@ export async function uploadInstallPhoto(
     }
     const isSignage = row.entityType === "signage_item";
     const bundle = isSignage
-      ? await loadItemBundle(db, row.entityId)
-      : await loadStandBundle(db, row.entityId);
+      ? await loadItemBundle(db, row.entityId, { organisationId: session.organisation.id })
+      : await loadStandBundle(db, row.entityId, { organisationId: session.organisation.id });
     if (!bundle) return fail("Record not found");
     if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
     const stepCtx: ApprovalStepCtx = {

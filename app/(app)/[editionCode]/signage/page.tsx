@@ -18,7 +18,7 @@ export default async function SignagePage({
 }) {
   const session = await requireStaffSession();
   const { editionCode } = await params;
-  const ed = await getEditionByCode(editionCode.toUpperCase());
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
   const canSeeCosts = can(session.actor, { type: "costs.view" });
   // Cost figures never leave the server for people who can't see costs.

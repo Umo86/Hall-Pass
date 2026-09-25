@@ -1,5 +1,5 @@
 import "server-only";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { editionDeadlines, editions, events, venues } from "@/lib/db/schema";
 import type { EditionForDeadlines } from "@/lib/deadlines";
@@ -19,13 +19,14 @@ export async function listEditions(organisationId: string) {
     .orderBy(editions.buildStart);
 }
 
-export async function getEditionByCode(code: string) {
+/** A show by its code — only if it belongs to the given organisation. */
+export async function getEditionByCode(code: string, organisationId: string) {
   const [row] = await db
     .select({ edition: editions, event: events, venue: venues })
     .from(editions)
     .innerJoin(events, eq(editions.eventId, events.id))
     .innerJoin(venues, eq(editions.venueId, venues.id))
-    .where(eq(editions.code, code))
+    .where(and(eq(editions.code, code), eq(events.organisationId, organisationId)))
     .limit(1);
   return row ?? null;
 }

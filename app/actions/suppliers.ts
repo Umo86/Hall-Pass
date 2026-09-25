@@ -29,6 +29,8 @@ const supplierSchema = z.object({
   id: z.string().uuid().optional(),
   name: z.string().trim().min(1, "Give the company a name").max(200),
   serviceIds: z.array(z.string().uuid()).max(50).default([]),
+  /** New things they do, added to the list as they're typed in. */
+  newServices: z.array(z.string().trim().min(1).max(100)).max(10).default([]),
   contactName: opt(),
   email: opt().refine(
     (v) => v === null || z.string().email().safeParse(v).success,
@@ -47,7 +49,7 @@ export async function saveSupplier(input: unknown): Promise<ActionResult<{ id: s
     return fail("Only admins and Operations can change suppliers");
   }
   const orgId = session.organisation.id;
-  const { id, serviceIds, ...values } = parsed.data;
+  const { id, serviceIds, newServices, ...values } = parsed.data;
   try {
     const supplierId = await db.transaction(async (tx) => {
       // Services must be this organisation's.
@@ -64,6 +66,44 @@ export async function saveSupplier(input: unknown): Promise<ActionResult<{ id: s
         : [];
       if (services.length !== new Set(serviceIds).size)
         throw new Error("Unknown service — reload the page");
+      // New "what they do" entries join the shared list (or reuse a match).
+      if (newServices.length) {
+        const existing = await tx
+          .select({
+            id: supplierServices.id,
+            name: supplierServices.name,
+            isArchived: supplierServices.isArchived,
+          })
+          .from(supplierServices)
+          .where(eq(supplierServices.organisationId, orgId));
+        let next = existing.length + 1;
+        for (const raw of new Set(newServices.map((n) => n.replace(/\s+/g, " ")))) {
+          const match = existing.find((e) => e.name.toLowerCase() === raw.toLowerCase());
+          let service = match ? { id: match.id, name: match.name } : null;
+          if (match?.isArchived) {
+            await tx
+              .update(supplierServices)
+              .set({ isArchived: false })
+              .where(eq(supplierServices.id, match.id));
+          }
+          if (!service) {
+            [service] = await tx
+              .insert(supplierServices)
+              .values({ organisationId: orgId, name: raw, sortOrder: next++ })
+              .returning({ id: supplierServices.id, name: supplierServices.name });
+            await writeAudit(tx, {
+              organisationId: orgId,
+              actorUserId: session.user.id,
+              entityType: "supplier_service",
+              entityId: service.id,
+              action: "create",
+              after: { name: raw },
+              summary: `Supplier service “${raw}” added`,
+            });
+          }
+          if (!services.some((sv) => sv.id === service!.id)) services.push(service);
+        }
+      }
 
       let row;
       let before: Record<string, unknown> | undefined;

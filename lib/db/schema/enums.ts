@@ -55,7 +55,8 @@ export const signageCategory = pgEnum("signage_category", ["organiser", "sponsor
 /** Whether a signage type is printed or shown on a screen. */
 export const itemFormat = pgEnum("item_format", ["print", "digital"]);
 
-export const taskStatus = pgEnum("task_status", ["open", "done"]);
+/** To do (open) → In progress → Complete (done). */
+export const taskStatus = pgEnum("task_status", ["open", "in_progress", "done"]);
 
 export const sided = pgEnum("sided", ["single", "double"]);
 

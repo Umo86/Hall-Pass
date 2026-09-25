@@ -213,7 +213,7 @@ function EmailSignIn({ next }: { next: string | null }) {
         )}
         <Button type="submit" className="w-full" disabled={pending}>
           {mode === "magic"
-            ? "Email me a sign-in link"
+            ? "Email me a link"
             : mode === "reset"
               ? "Email me a link to reset it"
               : "Sign in"}
@@ -232,7 +232,9 @@ function EmailSignIn({ next }: { next: string | null }) {
             setMessage(null);
           }}
         >
-          {mode === "password" ? "Email me a sign-in link instead" : "Sign in with my password"}
+          {mode === "password"
+            ? "First time here, or no password yet? Email me a link"
+            : "Sign in with my password"}
         </button>
         {message && <p className="text-sm text-emerald-700 dark:text-emerald-400">{message}</p>}
         {error && <p className="text-destructive text-sm">{error}</p>}

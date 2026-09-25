@@ -72,6 +72,8 @@ export type Actor = StaffActor | ExternalActor;
 
 /** A signage item, reduced to the fields authorisation depends on. */
 export type SignageItemCtx = {
+  /** The organisation that owns the item; nobody outside it may touch it. */
+  organisationId?: string;
   editionId: string;
   venueId: string;
   kind?: "signage" | "sponsorship_item";
@@ -89,6 +91,8 @@ export type TaskCtx = {
 };
 
 export type StandSubmissionCtx = {
+  /** The organisation that owns the stand; nobody outside it may touch it. */
+  organisationId?: string;
   editionId: string;
   venueId: string;
   exhibitorId: string;
@@ -289,7 +293,28 @@ function isSponsorItem(item: SignageItemCtx) {
   return item.sponsorId != null;
 }
 
+/** The organisation of the record an action is about, if it names one. */
+function recordOrganisation(action: Action): string | undefined {
+  const a = action as {
+    item?: { organisationId?: string };
+    sub?: { organisationId?: string };
+    step?: ApprovalStepCtx;
+    entity?: { organisationId?: string };
+  };
+  if (a.item) return a.item.organisationId;
+  if (a.sub) return a.sub.organisationId;
+  if (a.step) {
+    return a.step.entity.type === "signage_item"
+      ? a.step.entity.item.organisationId
+      : a.step.entity.sub.organisationId;
+  }
+  return a.entity?.organisationId;
+}
+
 export function can(actor: Actor, action: Action, now = new Date()): boolean {
+  // Tenancy first: nobody — admins included — acts on another organisation's records.
+  const recordOrg = recordOrganisation(action);
+  if (recordOrg !== undefined && recordOrg !== actor.organisationId) return false;
   if (actor.kind === "external") {
     switch (action.type) {
       case "signage.view":
