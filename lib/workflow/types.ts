@@ -28,6 +28,8 @@ export type StepDef = {
    * Empty (or absent) for steps that only follow their conditions.
    */
   defaultFor?: SignageCategory[];
+  /** The department this sign-off belongs to; its approvers may decide. */
+  departmentId?: string | null;
 };
 
 export type SignageCategory = "organiser" | "sponsor";
@@ -88,6 +90,8 @@ export type Instance = {
   status: InstanceStatus;
   assignedRole: string | null;
   assignedUserId: string | null;
+  /** Department sign-offs: anyone in the department, unless a person is named. */
+  assignedDepartmentId?: string | null;
   delegatedFromUserId: string | null;
   decidedBy: string | null;
   decidedAt: Date | null;

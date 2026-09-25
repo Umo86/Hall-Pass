@@ -22,9 +22,16 @@ function candidateFilter(session: Session, all: boolean): SQL | undefined {
     if (actor.role === "admin") {
       return all ? undefined : or(me, eq(approvalInstances.assignedRole, "admin"));
     }
+    const depts = actor.departmentIds ?? [];
     return or(
       me,
       and(isNull(approvalInstances.assignedUserId), eq(approvalInstances.assignedRole, actor.role)),
+      depts.length > 0
+        ? and(
+            isNull(approvalInstances.assignedUserId),
+            inArray(approvalInstances.assignedDepartmentId, depts),
+          )
+        : undefined,
     );
   }
   const roles = [...new Set(actor.grants.map((g) => g.role))];
@@ -79,6 +86,7 @@ export async function pendingInstancesForUser(
     }
     const stepCtx: ApprovalStepCtx = {
       assignedRole: row.assignedRole,
+      assignedDepartmentId: row.assignedDepartmentId,
       assignedUserId: row.assignedUserId,
       entity: isSignage
         ? { type: "signage_item", item: itemAuthzCtx(bundle as never) }

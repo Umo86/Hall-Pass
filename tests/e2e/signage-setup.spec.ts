@@ -161,7 +161,7 @@ test.describe("signage set-up and sign-off", () => {
     await expect(ops.getByLabel("Needs Senior management sign-off")).toBeChecked();
     await expect(ops.getByLabel("Needs Sales sign-off")).not.toBeChecked();
     // Name the marketing person.
-    await ops.getByLabel("Who signs Marketing sign-off").selectOption({ label: "Marcus Marketing" });
+    await ops.getByLabel("Who signs Marketing sign-off").selectOption({ label: "Marcus Marketing — Marketing Manager" });
     const ref = await createAndSubmit(ops, baseURL!);
 
     // The named person — and the department — are asked.

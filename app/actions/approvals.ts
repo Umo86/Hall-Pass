@@ -79,6 +79,7 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
 
       const stepCtx: ApprovalStepCtx = {
         assignedRole: row.assignedRole,
+        assignedDepartmentId: row.assignedDepartmentId,
         assignedUserId: row.assignedUserId,
         entity: isSignage
           ? { type: "signage_item", item: itemAuthzCtx(bundle as never) }
@@ -342,6 +343,7 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
       assertItemOpen(bundle);
       const stepCtx: ApprovalStepCtx = {
         assignedRole: row.assignedRole,
+        assignedDepartmentId: row.assignedDepartmentId,
         assignedUserId: row.assignedUserId,
         entity: isSignage
           ? { type: "signage_item", item: itemAuthzCtx(bundle as never) }
@@ -521,6 +523,7 @@ export async function uploadInstallPhoto(
     if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
     const stepCtx: ApprovalStepCtx = {
       assignedRole: row.assignedRole,
+      assignedDepartmentId: row.assignedDepartmentId,
       assignedUserId: row.assignedUserId,
       entity: isSignage
         ? { type: "signage_item", item: itemAuthzCtx(bundle as never) }

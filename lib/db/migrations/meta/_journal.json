@@ -36,6 +36,13 @@
       "when": 1790325422848,
       "tag": "0004_signage_rework",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790330588710,
+      "tag": "0005_departments_approvers",
+      "breakpoints": true
     }
   ]
 }

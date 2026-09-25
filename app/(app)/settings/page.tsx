@@ -15,21 +15,18 @@ import {
   suppliers,
   users,
   venues,
-  workflows,
-  workflowSteps,
 } from "@/lib/db/schema";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, type PermissionOverrides } from "@/lib/authz";
-import { formatDate, formatDateTime, roleLabel, statusLabel } from "@/lib/format";
+import { formatDate, formatDateTime, roleLabel } from "@/lib/format";
 import { InviteExternalForm, RevokeGrantButton } from "@/components/settings/invite-form";
 import { TeamTable } from "@/components/settings/team-table";
 import { DirectorySection } from "@/components/settings/directory-section";
 import { standsEnabled } from "@/lib/config";
-import { SignoffEditor } from "@/components/settings/signoff-editor";
 import { ItemTypesEditor } from "@/components/settings/item-types-editor";
 import { ServicesEditor } from "@/components/settings/services-editor";
-import { isDepartmentStep } from "@/lib/workflow/signoffs";
 import { RestoreItemButton } from "@/components/settings/restore-button";
 import { icalToken } from "@/lib/ical";
 import { appUrl } from "@/lib/app-url";
@@ -39,17 +36,7 @@ import { emailConfigured } from "@/lib/email/dispatch";
 export const metadata = { title: "Settings" };
 export const dynamic = "force-dynamic";
 
-const CONDITION_LABELS: Record<string, string> = {
-  if_sponsored: "for sponsored items",
-  if_requires_venue_approval: "when venue approval is needed",
-  if_requires_event_director: "when senior management sign-off is ticked",
-  if_cost_over_threshold: "over the cost threshold",
-  if_rigged: "for rigged items",
-  if_complex_structure: "for complex stands",
-  if_venue_requires_stand_approval: "when the venue approves stands",
-};
-
-type TabId = "general" | "team" | "signoff" | "types" | "services" | "venues" | "deleted";
+type TabId = "general" | "team" | "types" | "services" | "venues" | "deleted";
 
 export default async function SettingsPage({
   searchParams,
@@ -64,7 +51,6 @@ export default async function SettingsPage({
     { id: "team", label: "Team" },
     ...(canManage || canUsers
       ? ([
-          { id: "signoff", label: "Sign-off" },
           { id: "types", label: "Signage types" },
           { id: "services", label: "Supplier services" },
           { id: "venues", label: "Venues" },
@@ -73,6 +59,8 @@ export default async function SettingsPage({
       : []),
   ];
   const { tab: rawTab } = await searchParams;
+  // Sign-off moved to Approvals → Approvers.
+  if (rawTab === "signoff") redirect("/approvals?tab=approvers");
   const tab: TabId = tabs.some((t) => t.id === rawTab) ? (rawTab as TabId) : "general";
 
   const [me] = await db.select().from(users).where(eq(users.id, session.user.id));
@@ -80,8 +68,6 @@ export default async function SettingsPage({
     staff,
     grants,
     types,
-    wfs,
-    steps,
     deleted,
     editionRows,
     venueRows,
@@ -108,19 +94,6 @@ export default async function SettingsPage({
       .from(itemTypes)
       .where(eq(itemTypes.organisationId, session.organisation.id))
       .orderBy(itemTypes.sortOrder),
-    db.select().from(workflows).where(eq(workflows.organisationId, session.organisation.id)),
-    db
-      .select({ step: workflowSteps })
-      .from(workflowSteps)
-      .innerJoin(workflows, eq(workflowSteps.workflowId, workflows.id))
-      .where(
-        and(
-          eq(workflows.organisationId, session.organisation.id),
-          eq(workflowSteps.isArchived, false),
-        ),
-      )
-      .orderBy(workflowSteps.sortOrder)
-      .then((rows) => rows.map((r) => r.step)),
     db
       .select({ item: signageItems })
       .from(signageItems)
@@ -172,23 +145,6 @@ export default async function SettingsPage({
       .orderBy(asc(supplierServices.sortOrder), asc(supplierServices.name)),
   ]);
 
-  const signageWf =
-    wfs.find((w) => w.appliesTo === "signage" && w.isDefault && !w.isArchived) ??
-    wfs.find((w) => w.appliesTo === "signage");
-  const signageSteps = steps.filter((st) => st.workflowId === signageWf?.id);
-  const departmentSteps = signageSteps.filter((st) =>
-    isDepartmentStep({ kind: st.kind, defaultFor: st.defaultFor as ("organiser" | "sponsor")[] }),
-  );
-  const firstGroup = Math.min(
-    ...departmentSteps.map((st) => (st.parallelGroup == null ? Infinity : st.parallelGroup)),
-  );
-  const signoffPeople = staff
-    .filter(
-      ({ m }) =>
-        m.role !== "viewer" &&
-        (m.permissionOverrides as Record<string, unknown>)?.["approval.decide"] !== false,
-    )
-    .map(({ m, u }) => ({ id: u.id, name: u.fullName || u.email, role: m.role }));
 
   return (
     <div className="flex max-w-5xl flex-col gap-6 p-4 sm:p-6">
@@ -327,41 +283,6 @@ export default async function SettingsPage({
             </section>
           )}
         </>
-      )}
-
-      {tab === "signoff" && (
-        <section className="space-y-3">
-          <div>
-            <h2 className="text-sm font-semibold">Who signs off signage</h2>
-            <p className="text-muted-foreground text-sm">
-              The departments that approve artwork. Organiser signage and sponsor signage each get
-              their own defaults{canUsers ? "" : " — only admins can change these"}.
-            </p>
-          </div>
-          <SignoffEditor
-            steps={departmentSteps.map((st) => ({
-              id: st.id,
-              name: st.name,
-              department: st.approverRole,
-              defaultUserId: st.approverType === "user" ? st.approverUserId : null,
-              defaultFor: st.defaultFor,
-              slaDays: st.slaDays,
-              together: st.parallelGroup != null && st.parallelGroup === firstGroup,
-            }))}
-            alwaysSteps={signageSteps
-              .filter((st) => !departmentSteps.includes(st))
-              .map((st) =>
-                st.conditions.some((c) => c !== "always")
-                  ? `${st.name} (${st.conditions
-                      .filter((c) => c !== "always")
-                      .map((c) => CONDITION_LABELS[c] ?? statusLabel(c))
-                      .join(" or ")})`
-                  : st.name,
-              )}
-            people={signoffPeople}
-            canEdit={canUsers}
-          />
-        </section>
       )}
 
       {tab === "types" && (

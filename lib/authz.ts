@@ -63,6 +63,8 @@ export type StaffActor = {
   organisationId: string;
   role: StaffRole;
   overrides?: PermissionOverrides;
+  /** Sign-off departments this person approves for (Approvals → Approvers). */
+  departmentIds?: string[];
 };
 
 export type ExternalActor = {
@@ -110,6 +112,8 @@ export type ApprovalStepCtx = {
   assignedRole?: string | null;
   /** Specific user the step is assigned to, if user-assigned. */
   assignedUserId?: string | null;
+  /** Department sign-off: anyone in the department may decide. */
+  assignedDepartmentId?: string | null;
   entity: { type: "signage_item"; item: SignageItemCtx } | { type: "stand"; sub: StandSubmissionCtx };
 };
 
@@ -267,6 +271,9 @@ function externalCanDecide(actor: ExternalActor, step: ApprovalStepCtx, now = ne
 function staffCanDecide(actor: StaffActor, step: ApprovalStepCtx): boolean {
   if (actor.role === "admin") return true;
   if (step.assignedUserId) return step.assignedUserId === actor.userId;
+  if (step.assignedDepartmentId) {
+    return actor.departmentIds?.includes(step.assignedDepartmentId) ?? false;
+  }
   return step.assignedRole === actor.role;
 }
 

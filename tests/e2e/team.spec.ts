@@ -35,21 +35,6 @@ test.describe("team management", () => {
     await resetBtn.click();
     await expect(salesRow.getByText("Permissions (customised)")).toHaveCount(0);
 
-    // Sign-off: the Operations sign-off defaults to Olivia by name, then back.
-    await page.goto(`${baseURL}/settings?tab=signoff`);
-    const stepRow = page.locator("li", { hasText: "Operations sign-off" }).first();
-    await stepRow.getByRole("button", { name: "Edit" }).click();
-    let dialog = page.getByRole("dialog");
-    await dialog.getByLabel("Signed off by").selectOption({ label: "Olivia Ops" });
-    await dialog.getByRole("button", { name: "Save" }).click();
-    await expect(dialog).toHaveCount(0);
-    await expect(stepRow.getByText(/Olivia Ops \(Operations\)/)).toBeVisible();
-    await stepRow.getByRole("button", { name: "Edit" }).click();
-    dialog = page.getByRole("dialog");
-    await dialog.getByLabel("Signed off by").selectOption({ label: "Anyone in Operations" });
-    await dialog.getByRole("button", { name: "Save" }).click();
-    await expect(dialog).toHaveCount(0);
-    await expect(stepRow.getByText(/Anyone in Operations/)).toBeVisible();
     await ctx.close();
   });
 

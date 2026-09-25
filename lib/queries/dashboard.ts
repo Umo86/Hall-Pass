@@ -1,4 +1,5 @@
 import "server-only";
+import { departmentNames } from "@/lib/domain/departments";
 import { and, count, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
@@ -76,9 +77,22 @@ export async function dashboardData(editionId: string) {
       editionForDeadlines(editionId),
     ]);
 
+  const deptNames = await departmentNames(
+    db,
+    pendingRows.map((p) => p.assignedDepartmentId),
+  );
+  // Display only: department sign-offs are labelled with the department.
+  for (const p of pendingRows) {
+    if (p.assignedDepartmentId && !p.assignedUserId) {
+      p.assignedRole = deptNames.get(p.assignedDepartmentId) ?? p.assignedRole;
+    }
+  }
   const sittingWith = new Map<string, number>();
   for (const p of pendingRows) {
-    const key = p.assignedRole ?? "named user";
+    const key =
+      (p.assignedDepartmentId && deptNames.get(p.assignedDepartmentId)) ||
+      p.assignedRole ||
+      "named user";
     sittingWith.set(key, (sittingWith.get(key) ?? 0) + 1);
   }
 

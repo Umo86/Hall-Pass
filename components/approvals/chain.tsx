@@ -12,6 +12,8 @@ export type ChainInstance = {
   status: string;
   assignedRole: string | null;
   assignedUserId: string | null;
+  /** Department sign-offs: the department's name. */
+  assignedDepartmentName?: string | null;
   deciderName: string | null;
   decidedAt: Date | null;
   decisionComment: string | null;
@@ -73,7 +75,9 @@ export function ApprovalChain({
                     <span className="text-muted-foreground text-sm">
                       {inst.assignedUserId
                         ? (inst.assigneeName ?? "a named person")
-                        : inst.assignedRole
+                        : inst.assignedDepartmentName
+                          ? `Anyone in ${inst.assignedDepartmentName}`
+                          : inst.assignedRole
                           ? roleLabel(inst.assignedRole)
                           : ""}
                       {inst.noSupplierFallback ? " (no supplier set — assigned to ops)" : ""}

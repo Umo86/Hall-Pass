@@ -15,6 +15,7 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import { notify } from "@/lib/notify";
+import { departmentSignerIds } from "@/lib/domain/departments";
 import type { SignageItemCtx } from "@/lib/authz";
 import {
   createRun,
@@ -160,9 +161,16 @@ export async function resolveAssigneeUserIds(
   editionId: string,
   venueId: string,
   item: { supplierId: string | null; sponsorId: string | null } | null,
-  instance: { assignedRole: string | null; assignedUserId: string | null },
+  instance: {
+    assignedRole: string | null;
+    assignedUserId: string | null;
+    assignedDepartmentId?: string | null;
+  },
 ): Promise<string[]> {
   if (instance.assignedUserId) return [instance.assignedUserId];
+  if (instance.assignedDepartmentId) {
+    return departmentSignerIds(db, organisationId, instance.assignedDepartmentId);
+  }
   const role = instance.assignedRole;
   if (!role) return [];
   const staffRoles = ["admin", "ops", "marketing", "sales", "event_director", "viewer"];
@@ -284,6 +292,7 @@ export async function notifyPendingAssignees(
     stepKind?: string;
     assignedRole: string | null;
     assignedUserId: string | null;
+    assignedDepartmentId?: string | null;
   }>,
 ): Promise<void> {
   const item = bundle.item;
@@ -433,10 +442,15 @@ export async function normaliseSignoffs(
       const m = byUser.get(entry.userId);
       const step = byId.get(entry.stepId)!;
       if (!m) throw new Error("A chosen person is no longer on the team — pick someone else");
-      if ((m.overrides as Record<string, unknown>)?.["approval.decide"] === false || m.role === "viewer") {
+      if ((m.overrides as Record<string, unknown>)?.["approval.decide"] === false) {
         throw new Error("A chosen person can't sign off — pick someone else");
       }
-      if (m.role !== "admin" && step.approverRole && m.role !== step.approverRole) {
+      if (step.departmentId) {
+        const signers = await departmentSignerIds(db, opts.organisationId, step.departmentId);
+        if (!signers.includes(entry.userId)) {
+          throw new Error(`${step.name}: pick one of that department's approvers`);
+        }
+      } else if (m.role !== "admin" && step.approverRole && m.role !== step.approverRole) {
         throw new Error(`${step.name}: pick someone from that department`);
       }
     }

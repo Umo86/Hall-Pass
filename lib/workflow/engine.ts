@@ -127,10 +127,12 @@ function stepSetup(
   step: StepDef,
   entity: EntityCtx,
   settings: EngineSettings,
-): Pick<Instance, "status" | "assignedRole" | "assignedUserId"> {
+): Pick<Instance, "status" | "assignedRole" | "assignedUserId" | "assignedDepartmentId"> {
+  const department = step.departmentId ?? null;
   const configured = {
-    assignedRole: step.approverType === "role" ? step.approverRole : null,
+    assignedRole: step.approverType === "role" && !department ? step.approverRole : null,
     assignedUserId: step.approverType === "user" ? step.approverUserId : null,
+    assignedDepartmentId: department,
   };
   if (entity.kind === "signage" && isDepartmentStep(step)) {
     const choice = effectiveSignoffs([step], entity.category, entity.signoffs ?? null).find(
@@ -140,8 +142,18 @@ function stepSetup(
     if (entity.signoffs) {
       // An explicit choice: a named person, or anyone in the department.
       return choice.userId
-        ? { status: "waiting", assignedRole: null, assignedUserId: choice.userId }
-        : { status: "waiting", assignedRole: step.approverRole, assignedUserId: null };
+        ? {
+            status: "waiting",
+            assignedRole: null,
+            assignedUserId: choice.userId,
+            assignedDepartmentId: department,
+          }
+        : {
+            status: "waiting",
+            assignedRole: department ? null : step.approverRole,
+            assignedUserId: null,
+            assignedDepartmentId: department,
+          };
     }
     return { status: "waiting", ...configured };
   }

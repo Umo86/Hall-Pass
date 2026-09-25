@@ -13,7 +13,7 @@ describe("safeNext", () => {
     }
   });
   it("sends staff to My Work and partners to their sign-offs", () => {
-    expect(STAFF_HOME).toBe("/approvals");
+    expect(STAFF_HOME).toBe("/my-work");
     expect(PORTAL_HOME).toBe("/portal/approvals");
   });
 });

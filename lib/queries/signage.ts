@@ -1,4 +1,5 @@
 import "server-only";
+import { departmentNames } from "@/lib/domain/departments";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
@@ -90,6 +91,10 @@ export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]
           ),
         )
     : [];
+  const deptNames = await departmentNames(
+    db,
+    pending.map((p) => p.assignedDepartmentId),
+  );
   const pendingByItem = new Map<string, typeof pending>();
   for (const p of pending) {
     const list = pendingByItem.get(p.entityId) ?? [];
@@ -128,7 +133,9 @@ export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]
     previewPath: r.previewPath,
     pendingSteps: (pendingByItem.get(r.item.id) ?? []).map((p) => ({
       name: p.stepNameSnapshot,
-      role: p.assignedRole,
+      role: p.assignedDepartmentId
+        ? (deptNames.get(p.assignedDepartmentId) ?? null)
+        : p.assignedRole,
       dueAt: p.dueAt?.toISOString() ?? null,
       overdue: Boolean(p.dueAt && p.dueAt.getTime() < now),
     })),

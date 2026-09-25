@@ -9,14 +9,15 @@ import { Label } from "@/components/ui/label";
 import { SelectNative } from "@/components/ui/select-native";
 import { Textarea } from "@/components/ui/textarea";
 import { createSignageItem, updateSignageItem } from "@/app/actions/signage";
-import { roleLabel as roleName } from "@/lib/format";
-
 export type SignoffStepOption = {
   id: string;
   name: string;
-  department: string | null;
+  /** "Marketing" — for "Anyone in Marketing". */
+  departmentName: string;
   defaultUserId: string | null;
   defaultFor: string[];
+  /** The department's approvers who can sign off now. */
+  people: { id: string; name: string; jobTitle: string | null }[];
 };
 
 export type SignoffChoice = { stepId: string; userId: string | null };
@@ -32,7 +33,6 @@ export type ItemFormOptions = {
   workflows: { id: string; name: string }[];
   /** Department sign-offs the item can ask for, and who can sign each. */
   signoffSteps?: SignoffStepOption[];
-  signers?: { id: string; name: string; role: string }[];
 };
 
 /** The defaults admins set for organiser or sponsor signage. */
@@ -557,9 +557,7 @@ export function ItemForm({
             <ul className="divide-y rounded-lg border" aria-label="Sign-off">
               {steps.map((step) => {
                 const choice = plan.find((p) => p.stepId === step.id);
-                const people = (options.signers ?? []).filter(
-                  (p) => p.role === step.department || p.role === "admin",
-                );
+                const people = step.people;
                 return (
                   <li
                     key={step.id}
@@ -584,13 +582,21 @@ export function ItemForm({
                         onChange={(e) => setStep(step.id, true, e.target.value || null)}
                         className="h-8 w-full sm:w-60"
                       >
-                        <option value="">Anyone in {roleName(step.department)}</option>
+                        <option value="">Anyone in {step.departmentName}</option>
                         {people.map((p) => (
                           <option key={p.id} value={p.id}>
                             {p.name}
+                            {p.jobTitle ? ` — ${p.jobTitle}` : ""}
+                            {p.id === step.defaultUserId ? " (main approver)" : ""}
                           </option>
                         ))}
                       </SelectNative>
+                    )}
+                    {choice && people.length === 0 && (
+                      <p className="w-full text-xs text-amber-800 dark:text-amber-300">
+                        No approvers with an account in {step.departmentName} yet — add them under
+                        Approvals → Approvers.
+                      </p>
                     )}
                   </li>
                 );

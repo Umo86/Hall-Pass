@@ -15,6 +15,7 @@ import type { Actor, ExternalActor, PermissionOverrides, StaffActor } from "@/li
 import { createSupabaseServerClient, supabaseConfigured } from "./supabase-server";
 import { claimStaffInvite, openStaffInviteFor } from "./claim-staff-invite";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
+import { departmentIdsForUser } from "@/lib/domain/departments";
 
 export const DEV_COOKIE = "hp-dev-user";
 
@@ -84,6 +85,7 @@ async function loadSessionForUser(user: typeof users.$inferSelect): Promise<Sess
       organisationId: org.id,
       role: membership.role,
       overrides: membership.permissionOverrides as PermissionOverrides,
+      departmentIds: await departmentIdsForUser(db, org.id, user.id),
     };
     return {
       actor,

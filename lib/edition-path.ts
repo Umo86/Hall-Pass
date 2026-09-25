@@ -5,6 +5,8 @@
 export const RESERVED_SEGMENTS = [
   "editions",
   "approvals",
+  "my-work",
+  "reset-password",
   "settings",
   "suppliers",
   "portal",
@@ -23,7 +25,7 @@ export function editionCodeFromPath(pathname: string): string | null {
 }
 
 /** Where staff land after signing in: their own work. */
-export const STAFF_HOME = "/approvals";
+export const STAFF_HOME = "/my-work";
 /** Where external users land. */
 export const PORTAL_HOME = "/portal/approvals";
 

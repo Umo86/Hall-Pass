@@ -69,12 +69,12 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
           kind: "task_assigned",
           title: `Task assigned: ${task.title}`,
           body: parsed.data.dueDate ? `Due ${parsed.data.dueDate}` : undefined,
-          link: "/approvals",
+          link: "/my-work",
         });
       }
       return task.id;
     });
-    revalidatePath("/approvals");
+    revalidatePath("/my-work");
     return success({ id }, "Task added");
   } catch (err) {
     return fail(err instanceof Error ? err.message : "Could not add the task");
@@ -134,11 +134,11 @@ export async function completeTask(input: unknown): Promise<ActionResult> {
           kind: "task_assigned",
           title: `Done: ${task.title}`,
           body: `${session.user.fullName || session.user.email} completed this task.`,
-          link: "/approvals",
+          link: "/my-work",
         });
       }
     });
-    revalidatePath("/approvals");
+    revalidatePath("/my-work");
     return success(undefined, parsed.data.done ? "Task completed" : "Task reopened");
   } catch (err) {
     unstable_rethrow(err);
@@ -210,11 +210,11 @@ export async function updateTask(input: unknown): Promise<ActionResult> {
           userIds: [parsed.data.assignedToUserId!],
           kind: "task_assigned",
           title: `Task assigned: ${parsed.data.title ?? task.title}`,
-          link: "/approvals",
+          link: "/my-work",
         });
       }
     });
-    revalidatePath("/approvals");
+    revalidatePath("/my-work");
     return success(undefined, "Task saved");
   } catch (err) {
     unstable_rethrow(err);
@@ -250,7 +250,7 @@ export async function deleteTask(input: unknown): Promise<ActionResult> {
         summary: `Task deleted: ${task.title}`,
       });
     });
-    revalidatePath("/approvals");
+    revalidatePath("/my-work");
     return success(undefined, "Task deleted");
   } catch (err) {
     unstable_rethrow(err);

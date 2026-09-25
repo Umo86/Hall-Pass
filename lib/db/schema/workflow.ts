@@ -34,6 +34,59 @@ export const workflowConditionValues = [
 
 export type WorkflowCondition = (typeof workflowConditionValues)[number];
 
+/**
+ * Sign-off departments the admin defines (Operations, Marketing, Legal…).
+ * Each has one sign-off step in the signage workflow and a list of approvers.
+ */
+export const departments = pgTable(
+  "departments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organisationId: uuid("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    name: text("name").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    /** Signs off after the other departments have (e.g. Senior management). */
+    signsLast: boolean("signs_last").notNull().default(false),
+    /** Signage that gets this department's sign-off by default: organiser, sponsor. */
+    defaultFor: text("default_for").array().notNull().default([]),
+    isArchived: boolean("is_archived").notNull().default(false),
+    ...timestamps,
+  },
+  (t) => [unique("departments_org_name_unique").on(t.organisationId, t.name)],
+);
+
+/**
+ * People who sign off for a department. Everyone needs a Hall Pass account;
+ * `userId` stays empty until the invited person sets theirs up.
+ */
+export const approvers = pgTable(
+  "approvers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organisationId: uuid("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    departmentId: uuid("department_id")
+      .notNull()
+      .references(() => departments.id, { onDelete: "cascade" }),
+    fullName: text("full_name").notNull(),
+    jobTitle: text("job_title"),
+    email: text("email").notNull(),
+    userId: uuid("user_id").references(() => users.id),
+    /** The department's main approver gets items unless someone else is picked. */
+    isMain: boolean("is_main").notNull().default(false),
+    ...timestamps,
+  },
+  (t) => [
+    unique("approvers_department_email_unique").on(t.departmentId, t.email),
+    index("approvers_org_idx").on(t.organisationId),
+    index("approvers_user_idx").on(t.userId),
+    index("approvers_email_idx").on(t.email),
+  ],
+);
+
 export const workflows = pgTable(
   "workflows",
   {
@@ -76,12 +129,15 @@ export const workflowSteps = pgTable(
      * steps driven only by conditions (venue approval, confirmations).
      */
     defaultFor: text("default_for").array().notNull().default([]),
+    /** The department this sign-off step belongs to, if any. */
+    departmentId: uuid("department_id").references(() => departments.id),
     isArchived: boolean("is_archived").notNull().default(false),
     ...timestamps,
   },
   (t) => [
     index("workflow_steps_workflow_idx").on(t.workflowId),
     index("workflow_steps_approver_user_idx").on(t.approverUserId),
+    index("workflow_steps_department_idx").on(t.departmentId),
   ],
 );
 
@@ -102,6 +158,8 @@ export const approvalInstances = pgTable(
     status: instanceStatus("status").notNull().default("waiting"),
     assignedRole: text("assigned_role"),
     assignedUserId: uuid("assigned_user_id").references(() => users.id),
+    /** Department sign-offs: anyone in it may decide unless a person is named. */
+    assignedDepartmentId: uuid("assigned_department_id").references(() => departments.id),
     delegatedFromUserId: uuid("delegated_from_user_id").references(() => users.id),
     decidedBy: uuid("decided_by").references(() => users.id),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
@@ -133,6 +191,7 @@ export const approvalInstances = pgTable(
     index("approval_instances_status_idx").on(t.status),
     index("approval_instances_delegated_from_idx").on(t.delegatedFromUserId),
     index("approval_instances_decided_by_idx").on(t.decidedBy),
+    index("approval_instances_department_idx").on(t.assignedDepartmentId),
   ],
 );
 

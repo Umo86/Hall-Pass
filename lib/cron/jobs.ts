@@ -209,7 +209,13 @@ export async function escalation(today: string): Promise<JobResult> {
         userIds: recipients,
         kind: "escalation",
         title: `Escalated: ${instance.stepNameSnapshot} on ${row.ref} is ${overdueDays} days overdue`,
-        body: `Assigned to ${instance.assignedRole ?? "a named user"}; no decision since ${dueIso}.`,
+        body: `Assigned to ${
+          instance.assignedUserId
+            ? "a named person"
+            : instance.assignedDepartmentId
+              ? "their department"
+              : (instance.assignedRole ?? "a named person")
+        }; no decision since ${dueIso}.`,
         link: row.link,
       });
       await writeAudit(tx, {
@@ -496,7 +502,7 @@ export async function taskReminders(today: string): Promise<JobResult> {
         userIds: [userId],
         kind: "task_reminder",
         title: `You have ${count_} task${count_ === 1 ? "" : "s"} due or overdue`,
-        link: "/approvals",
+        link: "/my-work",
       });
     });
     sent++;

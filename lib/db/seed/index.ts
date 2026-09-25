@@ -22,6 +22,7 @@ import {
   type StepDef,
 } from "@/lib/workflow";
 import { persistRun } from "@/lib/workflow/persist";
+import { syncDepartmentSteps } from "@/lib/domain/departments";
 import { formatSignageRef, formatStandRef } from "@/lib/refs";
 
 const url = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL_UNPOOLED ?? process.env.POSTGRES_URL_NON_POOLING ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
@@ -450,6 +451,7 @@ async function main() {
       invalidateOnNewVersion: r.invalidateOnNewVersion,
       restartFromHereOnChanges: r.restartFromHereOnChanges,
       defaultFor: (r.defaultFor ?? []) as StepDef["defaultFor"],
+      departmentId: r.departmentId,
     }));
     return { workflow: wf, steps: defs };
   }
@@ -467,6 +469,53 @@ async function main() {
         eq(s.workflowSteps.approverType, "role"),
       ),
     );
+  // Sign-off departments and their approvers (Approvals → Approvers).
+  const deptDefs = [
+    { name: "Operations", role: "ops", jobTitle: "Operations Manager", signsLast: false },
+    { name: "Marketing", role: "marketing", jobTitle: "Marketing Manager", signsLast: false },
+    { name: "Sales", role: "sales", jobTitle: "Sponsorship Sales Manager", signsLast: false },
+    { name: "Senior management", role: "event_director", jobTitle: "Event Director", signsLast: true },
+  ] as const;
+  for (const [i, d] of deptDefs.entries()) {
+    const step = signageWfInitial.steps.find((st) => st.name === `${d.name} sign-off`);
+    await db
+      .insert(s.departments)
+      .values({
+        organisationId: org.id,
+        name: d.name,
+        sortOrder: i + 1,
+        signsLast: d.signsLast,
+        defaultFor: step?.defaultFor ?? ["organiser", "sponsor"],
+      })
+      .onConflictDoNothing();
+    const dept = await db.query.departments.findFirst({
+      where: and(eq(s.departments.organisationId, org.id), eq(s.departments.name, d.name)),
+    });
+    const person = staffUsers.find((u) => u.role === d.role)!;
+    await db
+      .insert(s.approvers)
+      .values({
+        organisationId: org.id,
+        departmentId: dept!.id,
+        fullName: person.fullName,
+        jobTitle: d.jobTitle,
+        email: person.email,
+        userId: person.id,
+        // Demo of a main approver: Senior management goes to Dana herself.
+        isMain: d.role === "event_director",
+      })
+      .onConflictDoNothing();
+    await db
+      .update(s.workflowSteps)
+      .set({ departmentId: dept!.id })
+      .where(
+        and(
+          eq(s.workflowSteps.workflowId, signageWfInitial.workflow.id),
+          eq(s.workflowSteps.name, `${d.name} sign-off`),
+        ),
+      );
+  }
+  await syncDepartmentSteps(db, org.id);
   const signageWf = await ensureWorkflow("Signage default", "signage", defaultSignageSteps);
   const standWf = await ensureWorkflow("Stand default", "stand", defaultStandSteps);
 

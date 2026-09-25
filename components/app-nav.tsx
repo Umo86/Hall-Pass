@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   CalendarDays,
   ClipboardCheck,
+  ListTodo,
   FileBarChart,
   Gift,
   HardHat,
@@ -62,7 +63,8 @@ export function AppNav({
       ]
     : [];
   const globalItems: NavItem[] = [
-    { label: "My Work", href: "/approvals", icon: ClipboardCheck },
+    { label: "My Work", href: "/my-work", icon: ListTodo },
+    { label: "Approvals", href: "/approvals", icon: ClipboardCheck },
     { label: "Shows", href: "/editions", icon: Layers },
     { label: "Suppliers", href: "/suppliers", icon: Truck },
     { label: "Settings", href: "/settings", icon: Settings },

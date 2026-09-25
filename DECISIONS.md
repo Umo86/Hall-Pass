@@ -146,3 +146,41 @@ pick-list.
   stays in the table but is no longer shown.
 - **Emails** need `RESEND_API_KEY` and `EMAIL_FROM` set on Vercel; without
   them notices appear in the app only.
+
+## Approvals and approvers (2026-09-25)
+
+Owner brief: an Approvals section showing every piece of signage with a
+graphic, approved by the relevant department and person; an Approvers area to
+add department names and people (name, job title, email). Everyone needs an
+account: invitations are emailed and the person sets up a profile with a
+password. Each department has a main approver.
+
+- **Departments are data, not roles.** `departments` (name, order, default
+  for organiser/sponsor, "signs last") and `approvers` (department, name, job
+  title, email, main, `user_id` once they have an account). Staff roles still
+  decide what someone can do in the app; departments only decide sign-off.
+  Migration 0005 turned the four department steps into departments and added
+  team members in the matching role as approvers (Dana stays Senior
+  management's main approver).
+- **One sign-off step per department**, kept in step by
+  `syncDepartmentSteps` after every change: named "<Department> sign-off",
+  going to the main approver when they have an account (otherwise anyone in
+  the department), archived with its department. Order: departments that
+  sign together, venue approval, departments that sign last, then the
+  confirmations. Sign-offs already under way keep what they started with.
+- **Routing by department.** Instances carry `assigned_department_id`;
+  anyone in the department may decide unless a person is named. A person's
+  departments load with their session. A removed department's waiting
+  sign-offs can still be decided.
+- **Approvers without an account get a view-only invitation** (an admin can
+  give them more in Team). Adding someone already on the team links them at
+  once. When an invitation is accepted, matching approver entries link to
+  the new account.
+- **Accounts use passwords.** Accepting an invitation creates the Supabase
+  login with the chosen password (service key, email confirmed by the
+  invitation link) and signs the person in. If they already have a login
+  they sign in first. Without a service key the old emailed sign-in link is
+  used. Sign-in defaults to email and password with "Forgot password"
+  (Supabase reset email → `/reset-password`).
+- **My Work** keeps tasks and links to Approvals; staff land on My Work.
+  Settings → Sign-off moved to Approvals → Approvers.

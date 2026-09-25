@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, count, eq, ne } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { desc as descOrder } from "drizzle-orm";
 import { db } from "@/lib/db/client";
@@ -8,6 +8,7 @@ import { changeRequests, comments as commentsTable, memberships, users } from "@
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, type ApprovalStepCtx } from "@/lib/authz";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
+import { departmentNames } from "@/lib/domain/departments";
 import {
   getEntityAudit,
   getEntityComments,
@@ -334,17 +335,13 @@ async function ArtworkAndSignOff({
     getItemVersions(item.id),
     getItemInstances(item.id),
     artworkInvalidationPreview(item.id),
-    // Sign-offs can be handed to anyone on the team except viewers.
+    // Everyone on the team (names on the sign-off list); sign-offs can be
+    // handed to anyone except viewers.
     db
-      .select({ id: users.id, fullName: users.fullName, email: users.email })
+      .select({ id: users.id, fullName: users.fullName, email: users.email, role: memberships.role })
       .from(memberships)
       .innerJoin(users, eq(memberships.userId, users.id))
-      .where(
-        and(
-          eq(memberships.organisationId, session.organisation.id),
-          ne(memberships.role, "viewer"),
-        ),
-      ),
+      .where(eq(memberships.organisationId, session.organisation.id)),
     db
       .select({ n: count() })
       .from(commentsTable)
@@ -360,6 +357,7 @@ async function ArtworkAndSignOff({
     if (instance.status !== "pending" || instance.runNumber !== item.currentRunNumber) continue;
     const step: ApprovalStepCtx = {
       assignedRole: instance.assignedRole,
+      assignedDepartmentId: instance.assignedDepartmentId,
       assignedUserId: instance.assignedUserId,
       entity: { type: "signage_item", item: itemCtx },
     };
@@ -369,6 +367,10 @@ async function ArtworkAndSignOff({
 
   const versionById = new Map(versions.map((v) => [v.version.id, v.version.versionNumber]));
   const nameById = new Map(staffRows.map((u) => [u.id, u.fullName || u.email]));
+  const deptNames = await departmentNames(
+    db,
+    instanceRows.map((r) => r.instance.assignedDepartmentId),
+  );
   const chain: ChainInstance[] = instanceRows.map(({ instance, decider }) => ({
     id: instance.id,
     runNumber: instance.runNumber,
@@ -377,6 +379,9 @@ async function ArtworkAndSignOff({
     sortOrder: instance.sortOrderSnapshot,
     status: instance.status,
     assignedRole: instance.assignedRole,
+    assignedDepartmentName: instance.assignedDepartmentId
+      ? (deptNames.get(instance.assignedDepartmentId) ?? null)
+      : null,
     assignedUserId: instance.assignedUserId,
     deciderName: decider?.fullName || decider?.email || null,
     decidedAt: instance.decidedAt,
@@ -453,7 +458,9 @@ async function ArtworkAndSignOff({
             canDelegateIds={canDelegateIds}
             currentVersionId={item.currentArtworkVersionId}
             requiresInstallPhoto={requiresInstallPhoto}
-            delegatableUsers={staffRows.map((u) => ({ id: u.id, name: u.fullName || u.email }))}
+            delegatableUsers={staffRows
+              .filter((u) => u.role !== "viewer")
+              .map((u) => ({ id: u.id, name: u.fullName || u.email }))}
           />
         )}
       </section>

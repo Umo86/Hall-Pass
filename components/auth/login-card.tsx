@@ -6,7 +6,13 @@ import { ArrowLeft, Building2, Check, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AccentRule, Wordmark } from "@/components/wordmark";
 import { Input } from "@/components/ui/input";
-import { devSignIn, signInWithMagicLink, signInWithPassword, signOut } from "@/app/actions/auth";
+import {
+  devSignIn,
+  sendPasswordReset,
+  signInWithMagicLink,
+  signInWithPassword,
+  signOut,
+} from "@/app/actions/auth";
 import { Scene } from "@/components/scene";
 
 export type DevUser = {
@@ -134,7 +140,7 @@ export function LoginCard({
 function EmailSignIn({ next }: { next: string | null }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [mode, setMode] = useState<"magic" | "password">("magic");
+  const [mode, setMode] = useState<"password" | "magic" | "reset">("password");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -155,7 +161,9 @@ function EmailSignIn({ next }: { next: string | null }) {
             const res =
               mode === "magic"
                 ? await signInWithMagicLink({ email, next: next ?? undefined })
-                : await signInWithPassword({ email, password, next: next ?? undefined });
+                : mode === "reset"
+                  ? await sendPasswordReset({ email })
+                  : await signInWithPassword({ email, password, next: next ?? undefined });
             if (res && !res.ok) setError(res.error);
             if (res && res.ok && res.message) setMessage(res.message);
           });
@@ -177,9 +185,22 @@ function EmailSignIn({ next }: { next: string | null }) {
         </div>
         {mode === "password" && (
           <div className="space-y-1.5">
-            <label htmlFor="password" className="text-sm font-medium">
-              Password
-            </label>
+            <div className="flex items-baseline justify-between">
+              <label htmlFor="password" className="text-sm font-medium">
+                Password
+              </label>
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground text-xs underline-offset-2 hover:underline"
+                onClick={() => {
+                  setMode("reset");
+                  setError(null);
+                  setMessage(null);
+                }}
+              >
+                Forgot password?
+              </button>
+            </div>
             <Input
               id="password"
               type="password"
@@ -191,21 +212,34 @@ function EmailSignIn({ next }: { next: string | null }) {
           </div>
         )}
         <Button type="submit" className="w-full" disabled={pending}>
-          {mode === "magic" ? "Email me a sign-in link" : "Sign in"}
+          {mode === "magic"
+            ? "Email me a sign-in link"
+            : mode === "reset"
+              ? "Email me a link to reset it"
+              : "Sign in"}
         </Button>
+        {mode === "reset" && (
+          <p className="text-muted-foreground text-xs">
+            We&apos;ll email you a link to choose a new password.
+          </p>
+        )}
         <button
           type="button"
           className="text-muted-foreground hover:text-foreground w-full text-center text-xs underline-offset-2 hover:underline"
-          onClick={() => setMode(mode === "magic" ? "password" : "magic")}
+          onClick={() => {
+            setMode(mode === "password" ? "magic" : "password");
+            setError(null);
+            setMessage(null);
+          }}
         >
-          {mode === "magic" ? "Use a password instead" : "Use a sign-in link instead"}
+          {mode === "password" ? "Email me a sign-in link instead" : "Sign in with my password"}
         </button>
         {message && <p className="text-sm text-emerald-700 dark:text-emerald-400">{message}</p>}
         {error && <p className="text-destructive text-sm">{error}</p>}
       </form>
       <p className="text-muted-foreground mt-6 text-xs leading-relaxed">
-        No account? Venues, suppliers, sponsors and exhibitors receive an invitation link by email —
-        it signs you straight in.
+        No account yet? Ask your admin to invite you — the invitation email has a link to set up
+        your profile and password.
       </p>
     </div>
   );

@@ -12,7 +12,7 @@ test.describe("My Work tasks", () => {
     const opsCtx = await browser.newContext();
     await signInAs(opsCtx, "ops@media10.test", baseURL!);
     const ops = await opsCtx.newPage();
-    await ops.goto(`${baseURL}/approvals`);
+    await ops.goto(`${baseURL}/my-work`);
     await expect(ops.getByRole("heading", { name: "My Work" })).toBeVisible();
     await ops.getByLabel("Task title").fill(title);
     await ops.getByLabel("Assign to").selectOption({ label: "Marcus Marketing" });
@@ -25,7 +25,7 @@ test.describe("My Work tasks", () => {
     const mktCtx = await browser.newContext();
     await signInAs(mktCtx, "marketing@media10.test", baseURL!);
     const mkt = await mktCtx.newPage();
-    await mkt.goto(`${baseURL}/approvals`);
+    await mkt.goto(`${baseURL}/my-work`);
     const taskRow = mkt.locator("li", { hasText: title });
     await expect(taskRow).toBeVisible();
     await expect(taskRow.getByText("from Olivia Ops")).toBeVisible();
@@ -43,7 +43,7 @@ test.describe("My Work tasks", () => {
     const ctx = await browser.newContext();
     await signInAs(ctx, "sales@media10.test", baseURL!);
     const page = await ctx.newPage();
-    await page.goto(`${baseURL}/approvals`);
+    await page.goto(`${baseURL}/my-work`);
     await page.getByLabel("Task title").fill(title);
     await page.getByRole("button", { name: "Add" }).click();
     await expect(page.getByText(title)).toBeVisible();

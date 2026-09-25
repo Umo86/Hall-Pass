@@ -24,6 +24,7 @@ export function stepRowToDef(row: typeof workflowSteps.$inferSelect): StepDef {
     invalidateOnNewVersion: row.invalidateOnNewVersion,
     restartFromHereOnChanges: row.restartFromHereOnChanges,
     defaultFor: (row.defaultFor ?? []) as StepDef["defaultFor"],
+    departmentId: row.departmentId,
   };
 }
 
@@ -48,6 +49,7 @@ export function rowToInstance(row: typeof approvalInstances.$inferSelect): Insta
     status: row.status,
     assignedRole: row.assignedRole,
     assignedUserId: row.assignedUserId,
+    assignedDepartmentId: row.assignedDepartmentId,
     delegatedFromUserId: row.delegatedFromUserId,
     decidedBy: row.decidedBy,
     decidedAt: row.decidedAt,
@@ -100,6 +102,7 @@ function instanceToRow(entityType: ApprovalEntityType, entityId: string, i: Inst
     status: i.status,
     assignedRole: i.assignedRole,
     assignedUserId: i.assignedUserId,
+    assignedDepartmentId: i.assignedDepartmentId ?? null,
     delegatedFromUserId: i.delegatedFromUserId,
     decidedBy: i.decidedBy,
     decidedAt: i.decidedAt,

@@ -1,4 +1,5 @@
 import "server-only";
+import { listDepartments } from "@/lib/domain/departments";
 import { and, asc, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
@@ -6,13 +7,11 @@ import {
   halls,
   itemTypes,
   locations,
-  memberships,
   sponsorEntitlements,
   sponsors,
   supplierServiceLinks,
   supplierServices,
   suppliers,
-  users,
   workflows,
 } from "@/lib/db/schema";
 import { defaultSignageWorkflowId } from "@/lib/domain/signage";
@@ -121,26 +120,11 @@ export async function itemFormOptions(opts: {
   // Department sign-offs and the people who can sign each one.
   const workflowId =
     opts.workflowId ?? (await defaultSignageWorkflowId(db, opts.organisationId, null));
-  const [steps, people] = await Promise.all([
+  const [steps, depts] = await Promise.all([
     workflowId ? loadStepDefs(db, workflowId) : [],
-    db
-      .select({
-        id: users.id,
-        name: users.fullName,
-        email: users.email,
-        role: memberships.role,
-        overrides: memberships.permissionOverrides,
-      })
-      .from(memberships)
-      .innerJoin(users, eq(memberships.userId, users.id))
-      .where(eq(memberships.organisationId, opts.organisationId))
-      .orderBy(asc(users.fullName)),
+    listDepartments(db, opts.organisationId),
   ]);
-  const signers = people.filter(
-    (p) =>
-      p.role !== "viewer" &&
-      (p.overrides as Record<string, unknown> | null)?.["approval.decide"] !== false,
-  );
+  const deptById = new Map(depts.map((d) => [d.id, d]));
 
   return {
     itemTypes: typeRows
@@ -153,13 +137,18 @@ export async function itemFormOptions(opts: {
     suppliers: [...supplierMap.values()],
     contractors: contractorRows,
     workflows: wfRows,
-    signoffSteps: steps.filter(isDepartmentStep).map((s) => ({
-      id: s.id,
-      name: s.name,
-      department: s.approverRole,
-      defaultUserId: s.approverType === "user" ? s.approverUserId : null,
-      defaultFor: s.defaultFor ?? [],
-    })),
-    signers: signers.map((p) => ({ id: p.id, name: p.name || p.email, role: p.role })),
+    signoffSteps: steps.filter(isDepartmentStep).map((s) => {
+      const dept = s.departmentId ? deptById.get(s.departmentId) : undefined;
+      return {
+        id: s.id,
+        name: s.name,
+        departmentName: dept?.name ?? s.name.replace(/ sign-off$/, ""),
+        defaultUserId: s.approverType === "user" ? s.approverUserId : null,
+        defaultFor: s.defaultFor ?? [],
+        people: (dept?.approvers ?? [])
+          .filter((a) => a.active && a.userId)
+          .map((a) => ({ id: a.userId!, name: a.fullName, jobTitle: a.jobTitle })),
+      };
+    }),
   };
 }

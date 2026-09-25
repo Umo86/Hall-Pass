@@ -53,6 +53,7 @@ export default async function StandDetailPage({
     if (instance.status !== "pending" || instance.runNumber !== sub.currentRunNumber) continue;
     const step: ApprovalStepCtx = {
       assignedRole: instance.assignedRole,
+      assignedDepartmentId: instance.assignedDepartmentId,
       assignedUserId: instance.assignedUserId,
       entity: { type: "stand", sub: ctx },
     };
@@ -68,6 +69,7 @@ export default async function StandDetailPage({
     sortOrder: instance.sortOrderSnapshot,
     status: instance.status,
     assignedRole: instance.assignedRole,
+    assignedDepartmentId: instance.assignedDepartmentId,
     assignedUserId: instance.assignedUserId,
     deciderName: decider?.fullName ?? decider?.email ?? null,
     decidedAt: instance.decidedAt,

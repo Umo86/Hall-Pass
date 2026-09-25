@@ -7,7 +7,7 @@ test.describe("staff flow", () => {
     await expect(page.getByRole("heading", { name: "Choose who to sign in as" })).toBeVisible();
     await page.getByRole("button", { name: /Olivia Ops/ }).click();
     // Staff land on their own work.
-    await page.waitForURL("**/approvals");
+    await page.waitForURL("**/my-work");
     await expect(page.getByRole("heading", { name: "My Work" })).toBeVisible();
   });
 

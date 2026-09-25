@@ -14,13 +14,68 @@ import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supab
 import { hashInviteToken } from "@/lib/auth/invite-token";
 import { claimStaffInvite } from "@/lib/auth/claim-staff-invite";
 import { STAFF_HOME } from "@/lib/edition-path";
+import { supabaseAdmin } from "@/lib/auth/supabase-admin";
 
 export type InviteResult = { ok: true; message?: string } | { ok: false; error: string };
 
-const acceptSchema = z.object({
-  token: z.string().min(10),
-  fullName: z.string().trim().min(1, "Enter your name").max(200),
-});
+const acceptSchema = z
+  .object({
+    token: z.string().min(10),
+    fullName: z.string().trim().min(1, "Enter your name").max(200),
+    // Needed unless already signed in as the invited email.
+    password: z.string().max(200).optional(),
+    confirm: z.string().max(200).optional(),
+  })
+  .refine((d) => !d.password || d.password === d.confirm, {
+    message: "The two passwords don't match",
+  });
+
+type NewAccount = { password?: string };
+
+/**
+ * Create the invited person's login with the password they chose and sign
+ * them in. The invitation link (sent to that address) proves the email is
+ * theirs. Null when accounts can't be created here (no service key): the
+ * caller falls back to an emailed sign-in link.
+ */
+async function createAccount(
+  email: string,
+  fullName: string,
+  isExternal: boolean,
+  account: NewAccount,
+): Promise<{ userId: string; error?: never } | { error: string; userId?: never } | null> {
+  const admin = supabaseAdmin();
+  const supabase = await createSupabaseServerClient();
+  if (!admin || !supabase) return null;
+  if (!account.password || account.password.length < 8) {
+    return { error: "Choose a password of at least 8 characters" };
+  }
+  const { data, error } = await admin.auth.admin.createUser({
+    email,
+    password: account.password,
+    email_confirm: true,
+    user_metadata: { full_name: fullName },
+  });
+  if (error || !data.user) {
+    if (error && (error.status === 422 || /already|exists|registered/i.test(error.message))) {
+      return {
+        error:
+          "You already have an account with this email — sign in with it first, then open this invitation link again.",
+      };
+    }
+    return { error: "Could not create your account — try again shortly." };
+  }
+  const { error: signInError } = await supabase.auth.signInWithPassword({
+    email,
+    password: account.password,
+  });
+  if (signInError) return { error: "Your account was created — sign in with your new password." };
+  await db
+    .insert(users)
+    .values({ id: data.user.id, email: email.toLowerCase(), fullName, isExternal })
+    .onConflictDoNothing();
+  return { userId: data.user.id };
+}
 
 type Grant = typeof externalGrants.$inferSelect;
 
@@ -79,11 +134,12 @@ export async function acceptInvite(input: unknown): Promise<InviteResult> {
   const parsed = acceptSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
   const { token, fullName } = parsed.data;
+  const account: NewAccount = { password: parsed.data.password };
   const res = await findValidGrant(token);
   if (res.error !== undefined) {
     const staffRes = await findValidStaffInvite(token);
     if (staffRes.error !== undefined) return { ok: false, error: res.error };
-    return acceptStaffInvite(staffRes.invite, token, fullName);
+    return acceptStaffInvite(staffRes.invite, token, fullName, account);
   }
   const grant = res.grant;
 
@@ -113,7 +169,15 @@ export async function acceptInvite(input: unknown): Promise<InviteResult> {
     redirect("/portal/approvals");
   }
 
-  // Production: send a magic link to the invited address; the grant is
+  // Production: create their account with the password they chose.
+  const created = await createAccount(grant.invitedEmail, fullName, true, account);
+  if (created) {
+    if (created.error !== undefined) return { ok: false, error: created.error };
+    await claimGrant(grant.id, created.userId, fullName);
+    redirect("/portal/approvals");
+  }
+
+  // No service key: send a magic link to the invited address; the grant is
   // claimed by email match on first sign-in (lib/auth/actor.ts).
   const supabase = await createSupabaseServerClient();
   if (!supabase) return { ok: false, error: "Authentication is not configured" };
@@ -131,6 +195,7 @@ async function acceptStaffInvite(
   invite: typeof staffInvites.$inferSelect,
   token: string,
   fullName: string,
+  account: NewAccount,
 ): Promise<InviteResult> {
   const session = await getSession();
 
@@ -157,7 +222,15 @@ async function acceptStaffInvite(
     redirect(STAFF_HOME);
   }
 
-  // Production: magic link; the membership is created by email match at
+  // Production: create their account with the password they chose.
+  const created = await createAccount(invite.invitedEmail, fullName, false, account);
+  if (created) {
+    if (created.error !== undefined) return { ok: false, error: created.error };
+    await claimStaffInvite(invite, created.userId, fullName);
+    redirect(STAFF_HOME);
+  }
+
+  // No service key: magic link; the membership is created by email match at
   // first sign-in (lib/auth/actor.ts).
   const supabase = await createSupabaseServerClient();
   if (!supabase) return { ok: false, error: "Authentication is not configured" };

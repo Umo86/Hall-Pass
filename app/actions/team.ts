@@ -2,7 +2,6 @@
 
 import { unstable_rethrow } from "next/navigation";
 
-import { appUrl } from "@/lib/app-url";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { and, count, eq, isNull } from "drizzle-orm";
@@ -19,7 +18,7 @@ import {
 import { can, OVERRIDE_KEYS, type OverrideKey, type PermissionOverrides } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
-import { generateInviteToken, hashInviteToken } from "@/lib/auth/invite-token";
+import { createStaffInvite, sendInviteEmail } from "@/lib/auth/staff-invite";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 
 const roleSchema = z.enum(["admin", "ops", "marketing", "sales", "event_director", "viewer"]);
@@ -159,49 +158,35 @@ export async function inviteStaff(input: unknown): Promise<ActionResult<{ invite
     if (membership) return fail("That person is already on the team");
   }
 
-  const token = generateInviteToken();
   try {
-    await db.transaction(async (tx) => {
-      // A fresh invitation replaces any older one still open for this email.
-      await tx
-        .update(staffInvites)
-        .set({ revokedAt: new Date() })
-        .where(
-          and(
-            eq(staffInvites.organisationId, session.organisation.id),
-            eq(staffInvites.invitedEmail, email),
-            isNull(staffInvites.acceptedAt),
-            isNull(staffInvites.revokedAt),
-          ),
-        );
-      const [invite] = await tx
-        .insert(staffInvites)
-        .values({
-          organisationId: session.organisation.id,
-          invitedEmail: email,
-          role: parsed.data.role,
-          permissionOverrides: (parsed.data.overrides ?? {}) as PermissionOverrides,
-          invitedBy: session.user.id,
-          inviteTokenHash: hashInviteToken(token),
-        })
-        .returning();
-      await writeAudit(tx, {
+    const invite = await db.transaction((tx) =>
+      createStaffInvite(tx, {
         organisationId: session.organisation.id,
-        actorUserId: session.user.id,
-        entityType: "staff_invite",
-        entityId: invite.id,
-        action: "invite",
-        after: { email, role: parsed.data.role },
+        email,
+        role: parsed.data.role,
+        overrides: (parsed.data.overrides ?? {}) as PermissionOverrides,
+        invitedBy: session.user.id,
         summary: `Invited ${email} to staff as ${parsed.data.role}`,
-      });
+      }),
+    );
+    const emailed = await sendInviteEmail({
+      to: email,
+      inviterName: session.user.fullName || session.user.email,
+      reason: `You've been added to the ${session.organisation.brandName} team.`,
+      inviteUrl: invite.inviteUrl,
+      inviteId: invite.inviteId,
     });
     revalidatePath("/settings");
     return success(
-      { inviteUrl: `${appUrl()}/invite/${token}` },
-      "Invitation created — share the link",
+      { inviteUrl: invite.inviteUrl },
+      emailed
+        ? `Invitation emailed to ${email}`
+        : "Invitation created — email isn't set up, so share the link",
     );
   } catch (err) {
-    return fail(err instanceof Error ? err.message : "Something went wrong");
+    unstable_rethrow(err);
+    console.error("inviteStaff", err);
+    return fail("Could not save — please try again");
   }
 }
 

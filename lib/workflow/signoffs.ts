@@ -1,18 +1,23 @@
 import type { SignageCategory, SignoffPlan, StepDef } from "./types";
 
 /** A department step: one people choose per item (Operations, Marketing…). */
-export function isDepartmentStep(step: Pick<StepDef, "defaultFor" | "kind">): boolean {
-  return step.kind === "approval" && (step.defaultFor?.length ?? 0) > 0;
+export function isDepartmentStep(
+  step: Pick<StepDef, "defaultFor" | "kind"> & { departmentId?: string | null },
+): boolean {
+  return step.kind === "approval" && (Boolean(step.departmentId) || (step.defaultFor?.length ?? 0) > 0);
 }
 
 /** The sign-offs an item of this category gets when nobody has changed them. */
 export function defaultSignoffs(
-  steps: Pick<StepDef, "id" | "kind" | "defaultFor" | "approverType" | "approverUserId">[],
+  steps: Pick<
+    StepDef,
+    "id" | "kind" | "defaultFor" | "approverType" | "approverUserId" | "departmentId"
+  >[],
   category: SignageCategory | null | undefined,
 ): SignoffPlan {
   const cat = category ?? "organiser";
   return steps
-    .filter((s) => isDepartmentStep(s) && s.defaultFor!.includes(cat))
+    .filter((s) => isDepartmentStep(s) && (s.defaultFor ?? []).includes(cat))
     .map((s) => ({ stepId: s.id, userId: s.approverType === "user" ? s.approverUserId : null }));
 }
 

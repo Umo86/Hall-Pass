@@ -3,6 +3,7 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { memberships, staffInvites, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
+import { linkApproversToUser, syncDepartmentSteps } from "@/lib/domain/departments";
 
 export type StaffInvite = typeof staffInvites.$inferSelect;
 
@@ -47,6 +48,10 @@ export async function claimStaffInvite(invite: StaffInvite, userId: string, full
         permissionOverrides: invite.permissionOverrides,
       })
       .onConflictDoNothing();
+    // Approver entries waiting for this person now point at their account.
+    for (const orgId of await linkApproversToUser(tx, { id: userId, email: invite.invitedEmail })) {
+      await syncDepartmentSteps(tx, orgId);
+    }
     await tx
       .update(users)
       .set(fullName?.trim() ? { fullName: fullName.trim(), isExternal: false } : { isExternal: false })
