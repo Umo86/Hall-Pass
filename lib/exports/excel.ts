@@ -1,6 +1,6 @@
 import "server-only";
 import ExcelJS from "exceljs";
-import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -48,7 +48,10 @@ type ItemRef = { id: string; currentRunNumber: number };
  * Only these items' instances are read, and superseded runs are ignored.
  */
 async function currentApprovals(items: ItemRef[]) {
-  const byItem = new Map<string, { step: string; text: string; order: number; role: string | null }[]>();
+  const byItem = new Map<
+    string,
+    { step: string; text: string; order: number; role: string | null }[]
+  >();
   const stepOrder = new Map<string, number>();
   if (items.length === 0) return { byItem, orderedSteps: [] as string[] };
   const runOf = new Map(items.map((i) => [i.id, i.currentRunNumber]));
@@ -86,7 +89,8 @@ async function currentApprovals(items: ItemRef[]) {
 
 function fillStatus(row: ExcelJS.Row, status: string) {
   const fill = STATUS_FILLS[status];
-  if (fill) row.getCell("status").fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
+  if (fill)
+    row.getCell("status").fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
 }
 
 /** Signage schedule: one sheet per hall plus a summary, approval columns. */
@@ -248,11 +252,12 @@ export async function buildSponsorWorkbook(editionId: string, includeCosts: bool
     { header: "Qty", key: "qty", width: 6 },
     { header: "Size (mm)", key: "size", width: 14 },
     { header: "Supplier", key: "supplier", width: 18 },
-    { header: "Delivery", key: "delivery", width: 14 },
+    { header: "Order by", key: "orderBy", width: 14 },
     ...(includeCosts
       ? [
-          { header: "Estimate £", key: "estimate", width: 12 },
-          { header: "Actual £", key: "actual", width: 12 },
+          { header: "Cost £", key: "cost", width: 12 },
+          { header: "Sale £", key: "sale", width: 12 },
+          { header: "Profit £", key: "profit", width: 12 },
         ]
       : []),
     { header: "Sign-off", key: "signoff", width: 60 },
@@ -274,11 +279,15 @@ export async function buildSponsorWorkbook(editionId: string, includeCosts: bool
         qty: r.item.quantity,
         size: r.item.widthMm && r.item.heightMm ? `${r.item.widthMm} × ${r.item.heightMm}` : "",
         supplier: r.supplierName ?? "",
-        delivery: r.item.deliveryDate ? formatDate(r.item.deliveryDate) : "",
+        orderBy: r.item.orderByDate ? formatDate(r.item.orderByDate) : "",
         ...(includeCosts
           ? {
-              estimate: r.item.costEstimate ? Number(r.item.costEstimate) : "",
-              actual: r.item.costActual ? Number(r.item.costActual) : "",
+              cost: r.item.costEstimate ? Number(r.item.costEstimate) : "",
+              sale: r.item.salePrice ? Number(r.item.salePrice) : "",
+              profit:
+                r.item.salePrice && r.item.costEstimate
+                  ? Number(r.item.salePrice) - Number(r.item.costEstimate)
+                  : "",
             }
           : {}),
         signoff: steps.map((s) => `${s.step}: ${s.text}`).join("; "),
@@ -289,6 +298,31 @@ export async function buildSponsorWorkbook(editionId: string, includeCosts: bool
 
   const used = new Set<string>();
   fill(wb.addWorksheet(safeSheetName("All sponsors", used)), rows);
+  // What sales still has to sell, soonest order date first.
+  const unsold = await db
+    .select({
+      item: signageItems,
+      typeName: itemTypes.name,
+      supplierName: suppliers.name,
+    })
+    .from(signageItems)
+    .leftJoin(itemTypes, eq(signageItems.itemTypeId, itemTypes.id))
+    .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
+    .where(
+      and(
+        eq(signageItems.editionId, editionId),
+        eq(signageItems.kind, "sponsorship_item"),
+        isNull(signageItems.sponsorId),
+        isNull(signageItems.deletedAt),
+      ),
+    )
+    .orderBy(sql`${signageItems.orderByDate} ASC NULLS LAST`, asc(signageItems.seq));
+  if (unsold.length > 0) {
+    fill(
+      wb.addWorksheet(safeSheetName("Still to sell", used)),
+      unsold.map((u) => ({ ...u, sponsorName: "— not sold —" })),
+    );
+  }
   for (const name of [...new Set(rows.map((r) => r.sponsorName))]) {
     fill(
       wb.addWorksheet(safeSheetName(name, used)),

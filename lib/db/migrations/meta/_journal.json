@@ -43,6 +43,13 @@
       "when": 1790330588710,
       "tag": "0005_departments_approvers",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790337619744,
+      "tag": "0006_sponsorship_sales",
+      "breakpoints": true
     }
   ]
 }

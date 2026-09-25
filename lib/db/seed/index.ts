@@ -25,7 +25,12 @@ import { persistRun } from "@/lib/workflow/persist";
 import { syncDepartmentSteps } from "@/lib/domain/departments";
 import { formatSignageRef, formatStandRef } from "@/lib/refs";
 
-const url = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL_UNPOOLED ?? process.env.POSTGRES_URL_NON_POOLING ?? process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
+const url =
+  process.env.DIRECT_DATABASE_URL ??
+  process.env.DATABASE_URL_UNPOOLED ??
+  process.env.POSTGRES_URL_NON_POOLING ??
+  process.env.DATABASE_URL ??
+  process.env.POSTGRES_URL;
 if (!url) throw new Error("DATABASE_URL is not set");
 const client = postgres(url, { max: 1, prepare: false, onnotice: () => {} });
 const db = drizzle(client, { schema: s });
@@ -461,7 +466,11 @@ async function main() {
   // herself rather than everyone in senior management (only flipped once).
   await db
     .update(s.workflowSteps)
-    .set({ approverType: "user", approverUserId: byRole.event_director, approverRole: "event_director" })
+    .set({
+      approverType: "user",
+      approverUserId: byRole.event_director,
+      approverRole: "event_director",
+    })
     .where(
       and(
         eq(s.workflowSteps.workflowId, signageWfInitial.workflow.id),
@@ -474,7 +483,12 @@ async function main() {
     { name: "Operations", role: "ops", jobTitle: "Operations Manager", signsLast: false },
     { name: "Marketing", role: "marketing", jobTitle: "Marketing Manager", signsLast: false },
     { name: "Sales", role: "sales", jobTitle: "Sponsorship Sales Manager", signsLast: false },
-    { name: "Senior management", role: "event_director", jobTitle: "Event Director", signsLast: true },
+    {
+      name: "Senior management",
+      role: "event_director",
+      jobTitle: "Event Director",
+      signsLast: true,
+    },
   ] as const;
   for (const [i, d] of deptDefs.entries()) {
     const step = signageWfInitial.steps.find((st) => st.name === `${d.name} sign-off`);
@@ -631,7 +645,11 @@ async function main() {
     },
   ];
   const formatFor = (it: { code: string; kind?: string }) =>
-    (it.kind ?? "signage") !== "signage" ? null : it.code === "digital_screen" ? ("digital" as const) : ("print" as const);
+    (it.kind ?? "signage") !== "signage"
+      ? null
+      : it.code === "digital_screen"
+        ? ("digital" as const)
+        : ("print" as const);
   const itemTypeRows: Record<string, typeof s.itemTypes.$inferSelect> = {};
   for (const [i, it] of itemTypeDefs.entries()) {
     const [row] = await db
@@ -881,6 +899,11 @@ async function main() {
     entitlement?: string;
     supplier?: string;
     cost?: number;
+    /** Sponsorship: what the sponsor paid. */
+    sale?: number;
+    /** Sponsorship: days from today to the order-by date. */
+    orderInDays?: number;
+    quantity?: number;
     requiresDirector?: boolean;
     /** How far to advance the run: list of [stepName, decision] */
     advance?: Array<
@@ -1355,7 +1378,11 @@ async function main() {
       status: "in_review",
       owner: "marketing",
       sponsor: "BuildCo",
+      supplier: "Big Print Co",
       cost: 4500,
+      sale: 9000,
+      orderInDays: 75,
+      quantity: 3000,
       versions: 1,
       advance: [],
     }),
@@ -1367,7 +1394,34 @@ async function main() {
       status: "draft",
       owner: "marketing",
       sponsor: "BuildCo",
+      supplier: "Big Print Co",
       cost: 6200,
+      sale: 12500,
+      orderInDays: 20,
+      quantity: 2500,
+    }),
+    // Still for sale: one comfortably ahead, one needing a buyer this month.
+    P({
+      seq: 33,
+      name: "Registration desk wrap",
+      type: "reg_branding",
+      kind: "sponsorship_item",
+      status: "draft",
+      owner: "marketing",
+      supplier: "Big Print Co",
+      cost: 1800,
+      orderInDays: 120,
+    }),
+    P({
+      seq: 34,
+      name: "Water bottles",
+      type: "other_sponsorship",
+      kind: "sponsorship_item",
+      status: "draft",
+      owner: "marketing",
+      cost: 2400,
+      orderInDays: 18,
+      quantity: 2000,
     }),
   ];
 
@@ -1421,9 +1475,15 @@ async function main() {
         sponsorId,
         sponsorEntitlementId: plan.entitlement ? entitlementRows[plan.entitlement].id : null,
         isSponsorDeliverable: Boolean(plan.sponsor),
-        widthMm: 3000,
-        heightMm: 1000,
-        quantity: 1,
+        widthMm: plan.kind === "sponsorship_item" ? null : 3000,
+        heightMm: plan.kind === "sponsorship_item" ? null : 1000,
+        quantity: plan.quantity ?? 1,
+        orderByDate:
+          plan.orderInDays != null
+            ? new Date(NOW.getTime() + plan.orderInDays * 86_400_000).toISOString().slice(0, 10)
+            : null,
+        salePrice: plan.sale != null ? String(plan.sale) : null,
+        soldAt: sponsorId ? daysAgo(10) : null,
         sided: "single",
         material: "Tension fabric",
         finish: "Matt",

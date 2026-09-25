@@ -45,7 +45,11 @@ async function createAndSubmit(page: Page, baseURL: string): Promise<string> {
   await page.waitForURL("**/signage/SIG-BIRM27-*");
   const ref = new URL(page.url()).pathname.split("/").pop()!;
   await page.goto(`${baseURL}/BIRM27/signage/${ref}?tab=artwork`);
-  await page.setInputFiles('input[type="file"]', { name: "art.pdf", mimeType: "application/pdf", buffer: PDF });
+  await page.setInputFiles('input[type="file"]', {
+    name: "art.pdf",
+    mimeType: "application/pdf",
+    buffer: PDF,
+  });
   await page.getByRole("button", { name: "Upload" }).click();
   await expect(page.getByText("v1 — art.pdf")).toBeVisible();
   await page.goto(`${baseURL}/BIRM27/signage/${ref}`);
@@ -70,7 +74,9 @@ test.describe("signage set-up and sign-off", () => {
 
     // It is offered under Digital on the new-item form.
     await page.goto(`${baseURL}/BIRM27/signage/new`);
-    await expect(page.locator('optgroup[label="Digital"] option', { hasText: typeName })).toHaveCount(1);
+    await expect(
+      page.locator('optgroup[label="Digital"] option', { hasText: typeName }),
+    ).toHaveCount(1);
 
     // Hide it again so the list stays tidy.
     await page.goto(`${baseURL}/settings?tab=types`);
@@ -85,7 +91,9 @@ test.describe("signage set-up and sign-off", () => {
     await page.locator("li", { hasText: service }).getByRole("button", { name: "Remove" }).click();
     await expect(page.getByText(/Removed services/)).toBeVisible();
     await expect(page.getByRole("button", { name: "Rename" }).first()).toBeVisible();
-    await expect(page.locator("li", { hasText: service }).getByRole("button", { name: "Rename" })).toHaveCount(0);
+    await expect(
+      page.locator("li", { hasText: service }).getByRole("button", { name: "Rename" }),
+    ).toHaveCount(0);
     await page.context().close();
   });
 
@@ -106,13 +114,18 @@ test.describe("signage set-up and sign-off", () => {
     await expect(card.getByText("Signage print")).toBeVisible();
 
     // Filter by service.
-    await page.getByRole("group", { name: "Filter by service" }).getByRole("button", { name: "Staffing" }).click();
+    await page
+      .getByRole("group", { name: "Filter by service" })
+      .getByRole("button", { name: "Staffing" })
+      .click();
     await expect(card).toBeVisible();
     await expect(page.locator("li", { hasText: "Big Print Co" })).toHaveCount(0);
 
     // Offered on the item form with its services.
     await page.goto(`${baseURL}/BIRM27/signage/new`);
-    await expect(page.locator("option", { hasText: `${name} — Signage print, Staffing` })).toHaveCount(1);
+    await expect(
+      page.locator("option", { hasText: `${name} — Signage print, Staffing` }),
+    ).toHaveCount(1);
 
     // Clean up.
     await page.goto(`${baseURL}/suppliers`);
@@ -136,7 +149,9 @@ test.describe("signage set-up and sign-off", () => {
     await dialog.getByLabel("Venue", { exact: true }).selectOption("new");
     await dialog.getByLabel("New venue name").fill(`E2E Hall ${n}`);
     await dialog.getByLabel("Venue address").fill("1 Test Street, Testville TE5 7ST");
-    await dialog.getByLabel("Logo (optional)").setInputFiles({ name: "logo.png", mimeType: "image/png", buffer: PNG });
+    await dialog
+      .getByLabel("Logo (optional)")
+      .setInputFiles({ name: "logo.png", mimeType: "image/png", buffer: PNG });
     await dialog.getByLabel("Build starts").fill("2028-03-01");
     await dialog.getByLabel("Build ends").fill("2028-03-02");
     await dialog.getByLabel("Show opens").fill("2028-03-03");
@@ -146,7 +161,9 @@ test.describe("signage set-up and sign-off", () => {
     await page.waitForURL(`**/${code}/dashboard`);
     await expect(page.getByRole("heading", { name: `E2E Expo ${n}` })).toBeVisible();
     await expect(page.getByAltText(`E2E Expo ${n} logo`)).toBeVisible();
-    await expect(page.getByText("1 Test Street, Testville TE5 7ST", { exact: false })).toBeVisible();
+    await expect(
+      page.getByText("1 Test Street, Testville TE5 7ST", { exact: false }),
+    ).toBeVisible();
     await page.context().close();
   });
 
@@ -161,7 +178,9 @@ test.describe("signage set-up and sign-off", () => {
     await expect(ops.getByLabel("Needs Senior management sign-off")).toBeChecked();
     await expect(ops.getByLabel("Needs Sales sign-off")).not.toBeChecked();
     // Name the marketing person.
-    await ops.getByLabel("Who signs Marketing sign-off").selectOption({ label: "Marcus Marketing — Marketing Manager" });
+    await ops
+      .getByLabel("Who signs Marketing sign-off")
+      .selectOption({ label: "Marcus Marketing — Marketing Manager" });
     const ref = await createAndSubmit(ops, baseURL!);
 
     // The named person — and the department — are asked.
@@ -178,10 +197,14 @@ test.describe("signage set-up and sign-off", () => {
 
     // Every decision is in History, with the comments.
     await director.goto(`${baseURL}/BIRM27/signage/${ref}?tab=history`);
-    await expect(director.getByText("Marketing sign-off: approved — “Brand looks right”")).toBeVisible();
+    await expect(
+      director.getByText("Marketing sign-off: approved — “Brand looks right”"),
+    ).toBeVisible();
     await expect(director.getByText("Operations sign-off: approved")).toBeVisible();
     await expect(
-      director.getByText("Senior management sign-off: rejected — “Wrong show dates on the artwork”"),
+      director.getByText(
+        "Senior management sign-off: rejected — “Wrong show dates on the artwork”",
+      ),
     ).toBeVisible();
 
     // A comment can be left under the sign-off chain without deciding.
@@ -219,7 +242,9 @@ test.describe("signage set-up and sign-off", () => {
     const ref = new URL(ops.url()).pathname.split("/").pop()!;
     // Listed under Sponsorship with the sponsor, and in the schedule.
     await ops.goto(`${baseURL}/BIRM27/sponsorship`);
-    await expect(ops.locator("tr", { hasText: ref }).getByText("BuildCo")).toBeVisible();
+    const card = ops.getByRole("listitem", { name });
+    await expect(card.getByText("BuildCo")).toBeVisible();
+    await expect(card.getByText("Sold", { exact: true })).toBeVisible();
     await ops.goto(`${baseURL}/BIRM27/signage?q=${ref}`);
     await expect(ops.locator("tr", { hasText: ref }).getByText("BuildCo")).toBeVisible();
     await ops.context().close();

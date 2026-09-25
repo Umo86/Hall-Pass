@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { saveSponsor } from "@/app/actions/sponsors";
+import { formatMoney } from "@/lib/format";
 
 export type SponsorRow = {
   id: string;
@@ -25,6 +26,8 @@ export type SponsorRow = {
   packageName: string | null;
   entitlements: { description: string; quantity: number }[];
   itemCount: number;
+  /** What they've bought, from sale prices. */
+  spend: number;
 };
 
 export function SponsorsPanel({
@@ -54,7 +57,8 @@ export function SponsorsPanel({
       </div>
       {sponsors.length === 0 ? (
         <p className="text-muted-foreground text-sm">
-          No sponsors for this show yet{canEdit ? " — add one to link items to what they bought." : "."}
+          No sponsors for this show yet
+          {canEdit ? " — add one to link items to what they bought." : "."}
         </p>
       ) : (
         <ul className="grid gap-2 sm:grid-cols-2">
@@ -64,8 +68,9 @@ export function SponsorsPanel({
                 <div className="min-w-0">
                   <p className="font-medium">{sp.companyName}</p>
                   <p className="text-muted-foreground text-xs">
-                    {[sp.packageName, sp.contactName, sp.contactEmail].filter(Boolean).join(" · ") ||
-                      "No contact yet"}
+                    {[sp.packageName, sp.contactName, sp.contactEmail]
+                      .filter(Boolean)
+                      .join(" · ") || "No contact yet"}
                   </p>
                 </div>
                 {canEdit && (
@@ -85,7 +90,8 @@ export function SponsorsPanel({
                 </ul>
               )}
               <p className="text-muted-foreground mt-2 text-xs">
-                {sp.itemCount} linked item{sp.itemCount === 1 ? "" : "s"}
+                {sp.itemCount} item{sp.itemCount === 1 ? "" : "s"} bought
+                {sp.spend > 0 ? ` · ${formatMoney(sp.spend)}` : ""}
               </p>
             </li>
           ))}
@@ -129,11 +135,19 @@ export function SponsorsPanel({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="sp-package">Package (optional)</Label>
-                <Input id="sp-package" name="packageName" defaultValue={current?.packageName ?? ""} />
+                <Input
+                  id="sp-package"
+                  name="packageName"
+                  defaultValue={current?.packageName ?? ""}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="sp-contact">Contact name (optional)</Label>
-                <Input id="sp-contact" name="contactName" defaultValue={current?.contactName ?? ""} />
+                <Input
+                  id="sp-contact"
+                  name="contactName"
+                  defaultValue={current?.contactName ?? ""}
+                />
               </div>
             </div>
             <div className="space-y-1.5">
@@ -149,7 +163,11 @@ export function SponsorsPanel({
               <Label htmlFor="sp-ent">
                 {current ? "Add entitlements (existing ones are kept)" : "Entitlements (optional)"}
               </Label>
-              <Textarea id="sp-ent" name="entitlements" placeholder={"500 x Branded lanyards\nLogo on main entrance"} />
+              <Textarea
+                id="sp-ent"
+                name="entitlements"
+                placeholder={"500 x Branded lanyards\nLogo on main entrance"}
+              />
             </div>
             {error && <p className="text-destructive text-sm">{error}</p>}
             <DialogFooter>

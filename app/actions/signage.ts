@@ -76,6 +76,8 @@ const itemFields = z.object({
   supplierId: z.string().uuid().optional().nullable(),
   artworkDueOverride: z.string().date().optional().nullable(),
   printDeadline: z.string().date().optional().nullable(),
+  orderByDate: z.string().date().optional().nullable(),
+  salePrice: z.coerce.number().nonnegative().optional().nullable(),
   deliveryDate: z.string().date().optional().nullable(),
   installDate: z.string().date().optional().nullable(),
   installSlot: z.enum(["am", "pm", "overnight"]).optional().nullable(),
@@ -89,7 +91,8 @@ const createSchema = itemFields
     workflowId: z.string().uuid().optional().nullable(),
   })
   .superRefine((data, ctx) => {
-    if ((data.kind === "sponsorship_item" || data.category === "sponsor") && !data.sponsorId) {
+    // Sponsor signage is sold already; sponsorship items can wait for a buyer.
+    if (data.kind === "signage" && data.category === "sponsor" && !data.sponsorId) {
       ctx.addIssue({
         code: "custom",
         path: ["sponsorId"],
@@ -163,6 +166,9 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
           sponsorId: data.sponsorId ?? null,
           sponsorEntitlementId: data.sponsorEntitlementId ?? null,
           isSponsorDeliverable: Boolean(data.sponsorId),
+          soldAt: data.sponsorId ? new Date() : null,
+          salePrice: data.sponsorId ? num(data.salePrice) : null,
+          orderByDate: data.orderByDate ?? null,
           widthMm: data.widthMm ?? null,
           heightMm: data.heightMm ?? null,
           depthMm: data.depthMm ?? null,
@@ -271,8 +277,11 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
       assign("artworkDueOverride", "artworkDueOverride");
       assign("printDeadline", "printDeadline");
       assign("deliveryDate", "deliveryDate");
+      assign("orderByDate", "orderByDate");
       if (patch.weightKg !== undefined) set.weightKg = num(patch.weightKg);
-      if (canEditCosts) {
+      if (patch.salePrice !== undefined) set.salePrice = num(patch.salePrice);
+      // Whoever runs a sponsorship item also buys it: supplier and cost.
+      if (canEditCosts || bundle.item.kind === "sponsorship_item") {
         assign("budgetLine", "budgetLine");
         assign("poNumber", "poNumber");
         assign("supplierId", "supplierId");
@@ -288,9 +297,16 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
       }
 
       const item = bundle.item;
-      const nextCategory = (set.category ?? item.category ?? "organiser") as "organiser" | "sponsor";
+      const nextCategory = (set.category ?? item.category ?? "organiser") as
+        "organiser" | "sponsor";
       const nextSponsor = set.sponsorId !== undefined ? set.sponsorId : item.sponsorId;
-      if (nextCategory === "sponsor" && !nextSponsor) {
+      // Sold or unsold: the sale date follows the sponsor; no sponsor, no price.
+      if (set.sponsorId !== undefined) set.soldAt = nextSponsor ? new Date() : null;
+      if (!nextSponsor) {
+        if (item.salePrice !== null) set.salePrice = null;
+        else delete set.salePrice;
+      }
+      if (item.kind === "signage" && nextCategory === "sponsor" && !nextSponsor) {
         throw new Error("Sponsor signage needs a sponsor — choose who bought it");
       }
 

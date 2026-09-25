@@ -57,6 +57,7 @@ type Props = {
 
 // Shown by default; the rest stay one click away in the Columns menu.
 const DEFAULT_HIDDEN: VisibilityState = {
+  format: false,
   hallName: false,
   size: false,
   quantity: false,
@@ -234,12 +235,12 @@ export function ScheduleView({
       cols.push(
         {
           accessorKey: "costEstimate",
-          header: "Estimate",
+          header: "Cost price",
           cell: ({ getValue }) => formatMoney(getValue<string | null>()),
         },
         {
           accessorKey: "costActual",
-          header: "Actual",
+          header: "Actual cost",
           cell: ({ getValue }) => formatMoney(getValue<string | null>()),
         },
         { accessorKey: "poNumber", header: "PO", cell: ({ getValue }) => getValue() ?? "—" },

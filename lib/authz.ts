@@ -8,13 +8,7 @@
 export type StaffRole = "admin" | "ops" | "marketing" | "sales" | "event_director" | "viewer";
 
 export type ExternalRole =
-  | "venue"
-  | "structural_engineer"
-  | "hs"
-  | "supplier"
-  | "exhibitor"
-  | "contractor"
-  | "sponsor";
+  "venue" | "structural_engineer" | "hs" | "supplier" | "exhibitor" | "contractor" | "sponsor";
 
 export type ScopeType = "venue" | "supplier" | "exhibitor" | "sponsor";
 
@@ -114,7 +108,8 @@ export type ApprovalStepCtx = {
   assignedUserId?: string | null;
   /** Department sign-off: anyone in the department may decide. */
   assignedDepartmentId?: string | null;
-  entity: { type: "signage_item"; item: SignageItemCtx } | { type: "stand"; sub: StandSubmissionCtx };
+  entity:
+    { type: "signage_item"; item: SignageItemCtx } | { type: "stand"; sub: StandSubmissionCtx };
 };
 
 export type Action =
@@ -206,7 +201,9 @@ function externalCanViewStand(actor: ExternalActor, sub: StandSubmissionCtx, now
       if (g.editionId !== sub.editionId) return false;
       switch (g.role) {
         case "venue":
-          return g.scopeType === "venue" && g.scopeId === sub.venueId && sub.venueStepActive === true;
+          return (
+            g.scopeType === "venue" && g.scopeId === sub.venueId && sub.venueStepActive === true
+          );
         case "structural_engineer":
           return sub.engineerStepActive === true;
         case "hs":
@@ -421,8 +418,8 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return false; // staff never submit on behalf of exhibitors
 
     case "costs.view":
-      if (actor.overrides?.["costs.edit"] === true) return true;
-      return role === "admin" || role === "ops" || role === "marketing" || role === "event_director";
+      // Cost and sale prices are open to the whole team.
+      return true;
     case "costs.edit":
       return OVERRIDE_ROLE_DEFAULTS["costs.edit"].includes(role);
 
@@ -449,4 +446,3 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return role === "admin";
   }
 }
-

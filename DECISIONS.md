@@ -184,3 +184,35 @@ password. Each department has a main approver.
   (Supabase reset email → `/reset-password`).
 - **My Work** keeps tasks and links to Approvals; staff land on My Work.
   Settings → Sign-off moved to Approvals → Approvers.
+
+## Sponsorship cards and field review (2026-09-25)
+
+Owner brief: sponsorship items as cards with photo, cost price, order-by
+deadline and supplier; a day-and-month countdown with a warning under a month
+to sell; sale price once sold; sponsors managed in a sub-section; fewer, more
+useful fields for every item.
+
+- **One date: order by** (`signage_items.order_by_date`) — the last day to
+  order from the supplier, and so to sell it. `lib/countdown.ts` gives
+  "2 months 5 days left"; unsold items under a calendar month away (or past)
+  get "Less than 1 month to sell" / "Order date has passed". Sold items near
+  the date turn amber (ops still need to order).
+- **Sold = has a sponsor.** Sponsorship items can exist unsold. "Mark as
+  sold" sets the sponsor (optionally creating one), `sale_price` and
+  `sold_at`; "Undo sale" clears them. Sponsor signage is always sold. A first
+  sale after sign-off doesn't restart sign-off; changing sponsor does.
+  Migration 0006 marked everything that already had a sponsor as sold.
+- **Product photo** (`photo_path`, photos bucket, 1000px WebP) on the card and
+  item page; cards fall back to the artwork preview.
+- **Prices are visible to everyone on the team** (owner's choice). Editing
+  cost stays with admins/Operations for signage; whoever runs a sponsorship
+  item can set its supplier and cost; Sales, Operations and admins record
+  sales.
+- **Fields:** forms show the essentials per kind; the rest (notes, depth,
+  sided, weight, material, finish, entitlement, actual cost, PO, budget line,
+  artwork-due override, print deadline, delivery, install slot/contractor,
+  owner, workflow) moved into a closed "More details" section that opens
+  itself when one of its fields has an error. Nothing was removed from the
+  database or exports. The schedule hides Format by default and calls the
+  estimate "Cost price". The sponsor report adds Order by, Cost, Sale, Profit
+  and a "Still to sell" sheet.

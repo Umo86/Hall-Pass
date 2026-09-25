@@ -72,6 +72,8 @@ export type ItemFormValues = {
   supplierId?: string | null;
   artworkDueOverride?: string | null;
   printDeadline?: string | null;
+  orderByDate?: string | null;
+  salePrice?: string | null;
   deliveryDate?: string | null;
   installDate?: string | null;
   installSlot?: string | null;
@@ -79,6 +81,27 @@ export type ItemFormValues = {
   workflowId?: string | null;
   signoffs?: SignoffChoice[] | null;
 };
+
+/** Fields kept under "More details" (sponsorship items add width and height). */
+const MORE_FIELDS = [
+  "description",
+  "ownerRole",
+  "depthMm",
+  "sided",
+  "weightKg",
+  "material",
+  "finish",
+  "sponsorEntitlementId",
+  "costActual",
+  "poNumber",
+  "budgetLine",
+  "artworkDueOverride",
+  "printDeadline",
+  "deliveryDate",
+  "installSlot",
+  "installContractorId",
+  "workflowId",
+];
 
 const FIXINGS = [
   "rigged",
@@ -156,6 +179,14 @@ export function ItemForm({
   const [pending, start] = useTransition();
   const router = useRouter();
 
+  const [moreOpen, setMoreOpen] = useState(false);
+  // Errors on fields inside "More details" open it so they can be seen.
+  function showErrors(errors: Record<string, string> | undefined) {
+    setFieldErrors(errors ?? {});
+    const more = new Set([...MORE_FIELDS, ...(isSponsorship ? ["widthMm", "heightMm"] : [])]);
+    if (Object.keys(errors ?? {}).some((k) => more.has(k))) setMoreOpen(true);
+  }
+
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
@@ -178,7 +209,7 @@ export function ItemForm({
         const res = await createSignageItem({ ...clean, editionId: values.editionId, kind });
         if (!res.ok) {
           setError(res.error);
-          setFieldErrors(res.fieldErrors ?? {});
+          showErrors(res.fieldErrors);
         } else
           router.push(
             `/${editionCode}/${isSponsorship ? "sponsorship" : "signage"}/${res.data?.ref}`,
@@ -187,7 +218,7 @@ export function ItemForm({
         const res = await updateSignageItem({ ...clean, id: values.id });
         if (!res.ok) {
           setError(res.error);
-          setFieldErrors(res.fieldErrors ?? {});
+          showErrors(res.fieldErrors);
         } else {
           setMessage(res.message ?? "Saved");
           router.refresh();
@@ -206,131 +237,258 @@ export function ItemForm({
   const locationChoices = options.locations.filter((l) => !hallId || l.hallId === hallId);
   const entitlementChoices = options.entitlements.filter((e) => e.sponsorId === sponsorId);
 
-  const costsOpen = Boolean(
-    values.budgetLine ??
-    values.costEstimate ??
-    values.costActual ??
-    values.poNumber ??
-    values.supplierId,
+  // Supplier and cost: whoever runs a sponsorship item also buys it.
+  const costEditable = canEditCosts || isSponsorship;
+  const moreFilled = [
+    values.description,
+    isSponsorship ? values.widthMm : values.depthMm,
+    isSponsorship ? values.heightMm : values.weightKg,
+    values.material,
+    values.finish,
+    values.sponsorEntitlementId,
+    values.budgetLine,
+    values.costActual,
+    values.poNumber,
+    values.artworkDueOverride,
+    isSponsorship ? null : values.printDeadline,
+    values.deliveryDate,
+    isSponsorship ? null : values.installSlot,
+    isSponsorship ? null : values.installContractorId,
+  ].filter((v) => v !== null && v !== undefined && v !== "").length;
+
+  const field = (
+    id: string,
+    label: string,
+    control: React.ReactNode,
+    opts: { span?: string; hint?: string } = {},
+  ) => (
+    <div className={`space-y-1.5 ${opts.span ?? ""}`}>
+      <Label htmlFor={id}>{label}</Label>
+      {control}
+      {opts.hint && <p className="text-muted-foreground text-xs">{opts.hint}</p>}
+      {err(id)}
+    </div>
   );
-  const datesOpen = Boolean(
-    values.artworkDueOverride ??
-    values.printDeadline ??
-    values.deliveryDate ??
-    values.installDate ??
-    values.installSlot ??
-    values.installContractorId,
+  const dateInput = (id: keyof ItemFormValues) => (
+    <Input id={id} name={id} type="date" defaultValue={(values[id] as string | null) ?? ""} />
+  );
+  const numberInput = (
+    id: keyof ItemFormValues,
+    opts: { step?: string; disabled?: boolean } = {},
+  ) => (
+    <Input
+      id={id}
+      name={id}
+      type="number"
+      min={opts.step ? "0" : "1"}
+      step={opts.step}
+      disabled={opts.disabled}
+      defaultValue={
+        (values[id] as string | number | null | undefined) ?? (id === "quantity" ? 1 : "")
+      }
+    />
+  );
+  const typeSelect = (
+    <SelectNative id="itemTypeId" name="itemTypeId" defaultValue={values.itemTypeId ?? ""}>
+      <option value="">— Select —</option>
+      {isSponsorship
+        ? options.itemTypes.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))
+        : (
+            [
+              ["print", "Print"],
+              ["digital", "Digital"],
+            ] as const
+          ).map(([format, label]) => {
+            const group = options.itemTypes.filter((t) => (t.format ?? "print") === format);
+            return group.length === 0 ? null : (
+              <optgroup key={format} label={label}>
+                {group.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </optgroup>
+            );
+          })}
+    </SelectNative>
+  );
+  const sponsorSelect = (
+    <SelectNative
+      id="sponsorId"
+      name="sponsorId"
+      value={sponsorId}
+      onChange={(e) => setSponsorId(e.target.value)}
+      required={!isSponsorship}
+    >
+      <option value="">{isSponsorship ? "— Not sold yet —" : "— Select sponsor —"}</option>
+      {options.sponsors.map((sp) => (
+        <option key={sp.id} value={sp.id}>
+          {sp.name}
+        </option>
+      ))}
+    </SelectNative>
+  );
+  const supplierSelect = (
+    <SelectNative
+      id="supplierId"
+      name="supplierId"
+      defaultValue={values.supplierId ?? ""}
+      disabled={!costEditable}
+    >
+      <option value="">— None yet —</option>
+      {options.suppliers.map((sp) => (
+        <option key={sp.id} value={sp.id}>
+          {sp.name}
+          {sp.services?.length ? ` — ${sp.services.join(", ")}` : ""}
+        </option>
+      ))}
+    </SelectNative>
+  );
+  const sectionTitle = (text: string, span: string) => (
+    <h3 className={`text-sm font-semibold ${span}`}>{text}</h3>
   );
 
   return (
     <form onSubmit={onSubmit} className="max-w-4xl">
       <fieldset disabled={readOnly} className="grid gap-5">
-        <section className="grid gap-3 sm:grid-cols-2">
-          <h3 className="text-sm font-semibold sm:col-span-2">Basics</h3>
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label htmlFor="name">Name</Label>
-            <Input id="name" name="name" defaultValue={values.name ?? ""} required />
-            {err("name")}
-          </div>
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label htmlFor="description">Description</Label>
-            <Textarea id="description" name="description" defaultValue={values.description ?? ""} />
-          </div>
-          {!isSponsorship && (
-            <fieldset className="space-y-1.5 sm:col-span-2">
-              <legend className="text-sm font-medium">Whose signage is it?</legend>
-              <div className="flex flex-wrap gap-2">
-                {(
-                  [
+        {isSponsorship ? (
+          <>
+            <section className="grid gap-3 sm:grid-cols-2">
+              {sectionTitle("The item", "sm:col-span-2")}
+              {field(
+                "name",
+                "Name",
+                <Input id="name" name="name" defaultValue={values.name ?? ""} required />,
+                {
+                  span: "sm:col-span-2",
+                },
+              )}
+              {field("itemTypeId", "Item type", typeSelect)}
+              {field("quantity", "Quantity", numberInput("quantity"))}
+            </section>
+            <section className="grid gap-3 sm:grid-cols-3">
+              {sectionTitle("Buying", "sm:col-span-3")}
+              {field("supplierId", "Supplier", supplierSelect)}
+              {canSeeCosts &&
+                field(
+                  "costEstimate",
+                  "Cost price (£)",
+                  numberInput("costEstimate", { step: "0.01", disabled: !costEditable }),
+                )}
+              {field("orderByDate", "Order by", dateInput("orderByDate"), {
+                hint: "Last day to order from the supplier — and so to sell it.",
+              })}
+            </section>
+            <section className="grid gap-3 sm:grid-cols-2">
+              {sectionTitle("Sale", "sm:col-span-2")}
+              {field("sponsorId", "Sponsor", sponsorSelect, {
+                hint:
+                  options.sponsors.length === 0
+                    ? "No sponsors yet — add them on the Sponsorship page, or use Mark as sold there."
+                    : "Leave as not sold until a sponsor buys it.",
+              })}
+              {canSeeCosts &&
+                field(
+                  "salePrice",
+                  "Sale price (£)",
+                  <Input
+                    id="salePrice"
+                    name="salePrice"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    disabled={!sponsorId}
+                    defaultValue={values.salePrice ?? ""}
+                  />,
+                )}
+            </section>
+          </>
+        ) : (
+          <>
+            <section className="grid gap-3 sm:grid-cols-2">
+              {sectionTitle("What and where", "sm:col-span-2")}
+              {field(
+                "name",
+                "Name",
+                <Input id="name" name="name" defaultValue={values.name ?? ""} required />,
+                {
+                  span: "sm:col-span-2",
+                },
+              )}
+              <fieldset className="space-y-1.5 sm:col-span-2">
+                <legend className="text-sm font-medium">Whose signage is it?</legend>
+                <div className="flex flex-wrap gap-2">
+                  {(
                     [
-                      "organiser",
-                      "Organiser signage",
-                      "Our own — directions, venue dressing, features",
-                    ],
-                    ["sponsor", "Sponsor signage", "Sold to a sponsor — shows their name"],
-                  ] as const
-                ).map(([value, label, hint]) => (
-                  <label
-                    key={value}
-                    className={`flex min-w-52 flex-1 cursor-pointer items-start gap-2 rounded-md border p-2.5 text-sm ${
-                      category === value ? "border-primary bg-primary/5" : ""
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="category"
-                      value={value}
-                      checked={category === value}
-                      onChange={() => chooseCategory(value)}
-                      className="mt-0.5 size-4"
-                    />
-                    <span>
-                      <span className="font-medium">{label}</span>
-                      <span className="text-muted-foreground block text-xs">{hint}</span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-              {err("category")}
-            </fieldset>
-          )}
-          <div className="space-y-1.5">
-            <Label htmlFor="itemTypeId">Item type</Label>
-            <SelectNative id="itemTypeId" name="itemTypeId" defaultValue={values.itemTypeId ?? ""}>
-              <option value="">— Select —</option>
-              {isSponsorship
-                ? options.itemTypes.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))
-                : (
-                    [
-                      ["print", "Print"],
-                      ["digital", "Digital"],
+                      [
+                        "organiser",
+                        "Organiser signage",
+                        "Our own — directions, venue dressing, features",
+                      ],
+                      ["sponsor", "Sponsor signage", "Sold to a sponsor — shows their name"],
                     ] as const
-                  ).map(([format, label]) => {
-                    const group = options.itemTypes.filter((t) => (t.format ?? "print") === format);
-                    return group.length === 0 ? null : (
-                      <optgroup key={format} label={label}>
-                        {group.map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.name}
-                          </option>
-                        ))}
-                      </optgroup>
-                    );
-                  })}
-            </SelectNative>
-          </div>
-          {isSponsorship ? (
-            <input type="hidden" name="ownerRole" value={values.ownerRole ?? "ops"} />
-          ) : (
-            <div className="space-y-1.5">
-              <Label htmlFor="ownerRole">Owner</Label>
-              <SelectNative
-                id="ownerRole"
-                name="ownerRole"
-                defaultValue={values.ownerRole ?? "ops"}
-              >
-                <option value="ops">Operations</option>
-                <option value="marketing">Marketing</option>
-              </SelectNative>
-            </div>
-          )}
-          {!isSponsorship && options.halls.length === 0 && (
-            <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 sm:col-span-2 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-              This show has no halls yet — add them in{" "}
-              <Link href={`/${editionCode}/halls`} className="underline">
-                Halls &amp; locations
-              </Link>{" "}
-              so signs can be placed.
-            </p>
-          )}
-          {!isSponsorship && (
-            <>
-              <div className="space-y-1.5">
-                <Label htmlFor="hallId">Hall</Label>
+                  ).map(([value, label, hint]) => (
+                    <label
+                      key={value}
+                      className={`flex min-w-52 flex-1 cursor-pointer items-start gap-2 rounded-md border p-2.5 text-sm ${
+                        category === value ? "border-primary bg-primary/5" : ""
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="category"
+                        value={value}
+                        checked={category === value}
+                        onChange={() => chooseCategory(value)}
+                        className="mt-0.5 size-4"
+                      />
+                      <span>
+                        <span className="font-medium">{label}</span>
+                        <span className="text-muted-foreground block text-xs">{hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                {err("category")}
+              </fieldset>
+              {category === "sponsor" &&
+                field("sponsorId", "Sponsor", sponsorSelect, {
+                  hint:
+                    options.sponsors.length === 0
+                      ? "No sponsors yet — add them on the Sponsorship page first."
+                      : undefined,
+                })}
+              {category === "sponsor" &&
+                canSeeCosts &&
+                field(
+                  "salePrice",
+                  "Sale price (£)",
+                  <Input
+                    id="salePrice"
+                    name="salePrice"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    defaultValue={values.salePrice ?? ""}
+                  />,
+                )}
+              {field("itemTypeId", "Item type", typeSelect)}
+              {options.halls.length === 0 && (
+                <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 sm:col-span-2 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                  This show has no halls yet — add them in{" "}
+                  <Link href={`/${editionCode}/halls`} className="underline">
+                    Halls &amp; locations
+                  </Link>{" "}
+                  so signs can be placed.
+                </p>
+              )}
+              {field(
+                "hallId",
+                "Hall",
                 <SelectNative
                   id="hallId"
                   name="hallId"
@@ -343,10 +501,11 @@ export function ItemForm({
                       {h.name}
                     </option>
                   ))}
-                </SelectNative>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="locationId">Location</Label>
+                </SelectNative>,
+              )}
+              {field(
+                "locationId",
+                "Location",
                 <SelectNative
                   id="locationId"
                   name="locationId"
@@ -358,73 +517,17 @@ export function ItemForm({
                       {l.name}
                     </option>
                   ))}
-                </SelectNative>
-              </div>
-            </>
-          )}
-        </section>
-
-        <section className="grid gap-3 sm:grid-cols-3">
-          <h3 className="text-sm font-semibold sm:col-span-3">
-            {isSponsorship ? "Spec" : "Physical spec"}
-          </h3>
-          <div className="space-y-1.5">
-            <Label htmlFor="widthMm">Width (mm)</Label>
-            <Input
-              id="widthMm"
-              name="widthMm"
-              type="number"
-              min="1"
-              defaultValue={values.widthMm ?? ""}
-            />
-            {err("widthMm")}
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="heightMm">Height (mm)</Label>
-            <Input
-              id="heightMm"
-              name="heightMm"
-              type="number"
-              min="1"
-              defaultValue={values.heightMm ?? ""}
-            />
-            {err("heightMm")}
-          </div>
-          {!isSponsorship && (
-            <div className="space-y-1.5">
-              <Label htmlFor="depthMm">Depth (mm)</Label>
-              <Input
-                id="depthMm"
-                name="depthMm"
-                type="number"
-                min="1"
-                defaultValue={values.depthMm ?? ""}
-              />
-              {err("depthMm")}
-            </div>
-          )}
-          <div className="space-y-1.5">
-            <Label htmlFor="quantity">Quantity</Label>
-            <Input
-              id="quantity"
-              name="quantity"
-              type="number"
-              min="1"
-              defaultValue={values.quantity ?? 1}
-            />
-            {err("quantity")}
-          </div>
-          {!isSponsorship && (
-            <>
-              <div className="space-y-1.5">
-                <Label htmlFor="sided">Sided</Label>
-                <SelectNative id="sided" name="sided" defaultValue={values.sided ?? "single"}>
-                  <option value="single">Single</option>
-                  <option value="double">Double</option>
-                </SelectNative>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="fixingMethod">Fixing method</Label>
+                </SelectNative>,
+              )}
+            </section>
+            <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {sectionTitle("Size and fixing", "col-span-2 sm:col-span-4")}
+              {field("widthMm", "Width (mm)", numberInput("widthMm"))}
+              {field("heightMm", "Height (mm)", numberInput("heightMm"))}
+              {field("quantity", "Quantity", numberInput("quantity"))}
+              {field(
+                "fixingMethod",
+                "Fixing method",
                 <SelectNative
                   id="fixingMethod"
                   name="fixingMethod"
@@ -433,115 +536,34 @@ export function ItemForm({
                   <option value="">— Select —</option>
                   {FIXINGS.map((f) => (
                     <option key={f} value={f}>
-                      {f.replace(/_/g, " ")}
+                      {f.charAt(0).toUpperCase() + f.slice(1).replace(/_/g, " ")}
                     </option>
                   ))}
-                </SelectNative>
-              </div>
-            </>
-          )}
-          <div className="space-y-1.5">
-            <Label htmlFor="material">Material</Label>
-            <Input id="material" name="material" defaultValue={values.material ?? ""} />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="finish">Finish</Label>
-            <Input id="finish" name="finish" defaultValue={values.finish ?? ""} />
-          </div>
-          {!isSponsorship && (
-            <div className="space-y-1.5">
-              <Label htmlFor="weightKg">Weight (kg)</Label>
-              <Input
-                id="weightKg"
-                name="weightKg"
-                type="number"
-                step="0.1"
-                min="0"
-                defaultValue={values.weightKg ?? ""}
-              />
-              {err("weightKg")}
-            </div>
-          )}
-        </section>
-
-        <section className="grid gap-3 sm:grid-cols-2">
-          <h3 className="text-sm font-semibold sm:col-span-2">
-            {category === "sponsor" ? "Sponsor" : "Approvals"}
-          </h3>
-          {category === "sponsor" && (
-            <>
-              <div className="space-y-1.5">
-                <Label htmlFor="sponsorId">Sponsor</Label>
-                <SelectNative
-                  id="sponsorId"
-                  name="sponsorId"
-                  value={sponsorId}
-                  onChange={(e) => setSponsorId(e.target.value)}
-                  required
-                >
-                  <option value="">— Select sponsor —</option>
-                  {options.sponsors.map((sp) => (
-                    <option key={sp.id} value={sp.id}>
-                      {sp.name}
-                    </option>
-                  ))}
-                </SelectNative>
-                {err("sponsorId")}
-                {options.sponsors.length === 0 && (
-                  <p className="text-xs text-amber-800 dark:text-amber-300">
-                    No sponsors yet — add them under Sponsors on the Sponsorship page first.
-                  </p>
+                </SelectNative>,
+              )}
+              <label className="col-span-2 flex items-center gap-2 text-sm sm:col-span-4">
+                <input
+                  type="checkbox"
+                  name="requiresVenueApproval"
+                  className="size-4"
+                  defaultChecked={values.requiresVenueApproval}
+                />
+                Needs venue approval (always for rigged items)
+              </label>
+            </section>
+            <section className="grid gap-3 sm:grid-cols-3">
+              {sectionTitle("Supplier, cost and install", "sm:col-span-3")}
+              {field("supplierId", "Supplier", supplierSelect)}
+              {canSeeCosts &&
+                field(
+                  "costEstimate",
+                  "Cost price (£)",
+                  numberInput("costEstimate", { step: "0.01", disabled: !costEditable }),
                 )}
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="sponsorEntitlementId">Entitlement</Label>
-                <SelectNative
-                  id="sponsorEntitlementId"
-                  name="sponsorEntitlementId"
-                  defaultValue={values.sponsorEntitlementId ?? ""}
-                  disabled={!sponsorId}
-                >
-                  <option value="">— None —</option>
-                  {entitlementChoices.map((en) => (
-                    <option key={en.id} value={en.id}>
-                      {en.description}
-                    </option>
-                  ))}
-                </SelectNative>
-              </div>
-            </>
-          )}
-          {mode === "create" &&
-            (options.workflows.length > 1 ? (
-              <div className="space-y-1.5">
-                <Label htmlFor="workflowId">Sign-off workflow</Label>
-                <SelectNative
-                  id="workflowId"
-                  name="workflowId"
-                  defaultValue={options.workflows[0].id}
-                >
-                  {options.workflows.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name}
-                    </option>
-                  ))}
-                </SelectNative>
-              </div>
-            ) : options.workflows[0] ? (
-              <input type="hidden" name="workflowId" value={options.workflows[0].id} />
-            ) : null)}
-          {!isSponsorship && (
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                name="requiresVenueApproval"
-                className="size-4"
-                defaultChecked={values.requiresVenueApproval}
-              />
-              Requires venue approval (always on for rigged items)
-            </label>
-          )}
-        </section>
+              {field("installDate", "Install date", dateInput("installDate"))}
+            </section>
+          </>
+        )}
 
         {steps.length > 0 && (
           <section className="grid gap-2">
@@ -613,120 +635,129 @@ export function ItemForm({
           </section>
         )}
 
-        {canSeeCosts && (
-          <details open={costsOpen} className="rounded-lg border">
-            <summary className="cursor-pointer px-4 py-3 text-sm font-semibold select-none">
-              Costs &amp; purchasing
-            </summary>
-            <section className="grid gap-3 px-4 pb-4 sm:grid-cols-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="budgetLine">Budget line</Label>
-                <Input
-                  id="budgetLine"
-                  name="budgetLine"
-                  defaultValue={values.budgetLine ?? ""}
-                  disabled={!canEditCosts}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="costEstimate">Cost estimate (£)</Label>
-                <Input
-                  id="costEstimate"
-                  name="costEstimate"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  defaultValue={values.costEstimate ?? ""}
-                  disabled={!canEditCosts}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="costActual">Cost actual (£)</Label>
-                <Input
-                  id="costActual"
-                  name="costActual"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  defaultValue={values.costActual ?? ""}
-                  disabled={!canEditCosts}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="poNumber">PO number</Label>
-                <Input
-                  id="poNumber"
-                  name="poNumber"
-                  defaultValue={values.poNumber ?? ""}
-                  disabled={!canEditCosts}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="supplierId">Supplier</Label>
-                <SelectNative
-                  id="supplierId"
-                  name="supplierId"
-                  defaultValue={values.supplierId ?? ""}
-                  disabled={!canEditCosts}
-                >
-                  <option value="">— None —</option>
-                  {options.suppliers.map((sp) => (
-                    <option key={sp.id} value={sp.id}>
-                      {sp.name}
-                      {sp.services?.length ? ` — ${sp.services.join(", ")}` : ""}
-                    </option>
-                  ))}
-                </SelectNative>
-              </div>
-            </section>
-          </details>
-        )}
-
-        <details open={datesOpen} className="rounded-lg border">
+        <details
+          className="rounded-lg border"
+          open={moreOpen}
+          onToggle={(e) => setMoreOpen(e.currentTarget.open)}
+        >
           <summary className="cursor-pointer px-4 py-3 text-sm font-semibold select-none">
-            Dates &amp; install
+            More details
+            <span className="text-muted-foreground ml-2 text-xs font-normal">
+              {moreFilled > 0 ? `${moreFilled} filled in` : "notes, extra spec, purchasing, dates"}
+            </span>
           </summary>
           <section className="grid gap-3 px-4 pb-4 sm:grid-cols-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="artworkDueOverride">Artwork due (override)</Label>
-              <Input
-                id="artworkDueOverride"
-                name="artworkDueOverride"
-                type="date"
-                defaultValue={values.artworkDueOverride ?? ""}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="printDeadline">Print deadline</Label>
-              <Input
-                id="printDeadline"
-                name="printDeadline"
-                type="date"
-                defaultValue={values.printDeadline ?? ""}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="deliveryDate">Delivery date</Label>
-              <Input
-                id="deliveryDate"
-                name="deliveryDate"
-                type="date"
-                defaultValue={values.deliveryDate ?? ""}
-              />
-            </div>
+            {field(
+              "description",
+              "Notes",
+              <Textarea
+                id="description"
+                name="description"
+                defaultValue={values.description ?? ""}
+              />,
+              { span: "sm:col-span-3" },
+            )}
+            {isSponsorship ? (
+              <>
+                {field("widthMm", "Width (mm)", numberInput("widthMm"))}
+                {field("heightMm", "Height (mm)", numberInput("heightMm"))}
+                <input type="hidden" name="ownerRole" value={values.ownerRole ?? "ops"} />
+              </>
+            ) : (
+              <>
+                {field(
+                  "ownerRole",
+                  "Owner",
+                  <SelectNative
+                    id="ownerRole"
+                    name="ownerRole"
+                    defaultValue={values.ownerRole ?? "ops"}
+                  >
+                    <option value="ops">Operations</option>
+                    <option value="marketing">Marketing</option>
+                  </SelectNative>,
+                )}
+                {field("depthMm", "Depth (mm)", numberInput("depthMm"))}
+                {field(
+                  "sided",
+                  "Sided",
+                  <SelectNative id="sided" name="sided" defaultValue={values.sided ?? "single"}>
+                    <option value="single">Single</option>
+                    <option value="double">Double</option>
+                  </SelectNative>,
+                )}
+                {field("weightKg", "Weight (kg)", numberInput("weightKg", { step: "0.1" }))}
+              </>
+            )}
+            {field(
+              "material",
+              "Material",
+              <Input id="material" name="material" defaultValue={values.material ?? ""} />,
+            )}
+            {field(
+              "finish",
+              "Finish",
+              <Input id="finish" name="finish" defaultValue={values.finish ?? ""} />,
+            )}
+            {(isSponsorship || category === "sponsor") &&
+              field(
+                "sponsorEntitlementId",
+                "Sponsor entitlement",
+                <SelectNative
+                  id="sponsorEntitlementId"
+                  name="sponsorEntitlementId"
+                  defaultValue={values.sponsorEntitlementId ?? ""}
+                  disabled={!sponsorId}
+                >
+                  <option value="">— None —</option>
+                  {entitlementChoices.map((en) => (
+                    <option key={en.id} value={en.id}>
+                      {en.description}
+                    </option>
+                  ))}
+                </SelectNative>,
+              )}
+            {canSeeCosts && (
+              <>
+                {field(
+                  "costActual",
+                  "Actual cost (£)",
+                  numberInput("costActual", { step: "0.01", disabled: !costEditable }),
+                )}
+                {field(
+                  "poNumber",
+                  "PO number",
+                  <Input
+                    id="poNumber"
+                    name="poNumber"
+                    defaultValue={values.poNumber ?? ""}
+                    disabled={!costEditable}
+                  />,
+                )}
+                {field(
+                  "budgetLine",
+                  "Budget line",
+                  <Input
+                    id="budgetLine"
+                    name="budgetLine"
+                    defaultValue={values.budgetLine ?? ""}
+                    disabled={!costEditable}
+                  />,
+                )}
+              </>
+            )}
+            {field(
+              "artworkDueOverride",
+              "Artwork due (if different)",
+              dateInput("artworkDueOverride"),
+            )}
+            {!isSponsorship && field("printDeadline", "Print deadline", dateInput("printDeadline"))}
+            {field("deliveryDate", "Delivery date", dateInput("deliveryDate"))}
             {!isSponsorship && (
               <>
-                <div className="space-y-1.5">
-                  <Label htmlFor="installDate">Install date</Label>
-                  <Input
-                    id="installDate"
-                    name="installDate"
-                    type="date"
-                    defaultValue={values.installDate ?? ""}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="installSlot">Install slot</Label>
+                {field(
+                  "installSlot",
+                  "Install slot",
                   <SelectNative
                     id="installSlot"
                     name="installSlot"
@@ -736,10 +767,11 @@ export function ItemForm({
                     <option value="am">AM</option>
                     <option value="pm">PM</option>
                     <option value="overnight">Overnight</option>
-                  </SelectNative>
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="installContractorId">Install contractor</Label>
+                  </SelectNative>,
+                )}
+                {field(
+                  "installContractorId",
+                  "Install contractor",
                   <SelectNative
                     id="installContractorId"
                     name="installContractorId"
@@ -751,20 +783,40 @@ export function ItemForm({
                         {c.name}
                       </option>
                     ))}
-                  </SelectNative>
-                </div>
+                  </SelectNative>,
+                )}
               </>
             )}
+            {mode === "create" &&
+              options.workflows.length > 1 &&
+              field(
+                "workflowId",
+                "Sign-off workflow",
+                <SelectNative
+                  id="workflowId"
+                  name="workflowId"
+                  defaultValue={options.workflows[0].id}
+                >
+                  {options.workflows.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
+                  ))}
+                </SelectNative>,
+              )}
           </section>
         </details>
+        {mode === "create" && options.workflows.length === 1 && (
+          <input type="hidden" name="workflowId" value={options.workflows[0].id} />
+        )}
       </fieldset>
       {!readOnly &&
         mode === "edit" &&
         status &&
         ["approved", "approved_with_conditions", "in_production", "delivered"].includes(status) && (
           <p className="text-sm text-amber-800 dark:text-amber-300">
-            This item is signed off. Changing its size, material, fixing, type, sponsor or who
-            signs it off sends it back for sign-off; dates, supplier and costs can change freely.
+            This item is signed off. Changing its size, material, fixing, type, sponsor or who signs
+            it off sends it back for sign-off; dates, supplier and costs can change freely.
           </p>
         )}
       {!readOnly && (

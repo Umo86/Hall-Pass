@@ -20,7 +20,7 @@ import {
 } from "@/lib/queries/signage";
 import { itemFormOptions } from "@/lib/queries/item-form-options";
 import { blobEnabled, getDownloadUrl, getInlineUrl } from "@/lib/storage";
-import { formatDateTime, statusLabel } from "@/lib/format";
+import { formatDate, formatDateTime, formatMoney, statusLabel } from "@/lib/format";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { APPROVED_OR_LATER } from "@/lib/status/signage";
 import { StatusBadge } from "@/components/status-badge";
@@ -28,6 +28,9 @@ import { ApprovalChain, type ChainInstance } from "@/components/approvals/chain"
 import { ArtworkTab, type VersionRow } from "@/components/signage/artwork-tab";
 import { CommentThread } from "@/components/comments/thread";
 import { ItemForm } from "@/components/signage/item-form";
+import { PhotoUploader } from "@/components/sponsorship/photo-uploader";
+import { orderCountdown } from "@/lib/countdown";
+import { todayInLondon } from "@/lib/today";
 import { LifecycleButtons } from "@/components/signage/lifecycle-buttons";
 import { ChangesTab, type ChangeRequestRow } from "@/components/signage/changes-tab";
 import { QuickComment } from "@/components/signage/quick-comment";
@@ -190,7 +193,7 @@ async function DetailsTab({
   canCertificate: boolean;
 }) {
   const isSponsorship = item.kind === "sponsorship_item";
-  const [options, snags, photoUrl] = await Promise.all([
+  const [options, snags, photoUrl, productPhotoUrl] = await Promise.all([
     itemFormOptions({
       organisationId: bundle.organisation.id,
       editionId: bundle.edition.id,
@@ -202,65 +205,164 @@ async function DetailsTab({
     !isSponsorship && item.installPhotoPath?.includes("/")
       ? getInlineUrl("photos", item.installPhotoPath).catch(() => null)
       : null,
+    item.photoPath ? getInlineUrl("photos", item.photoPath).catch(() => null) : null,
   ]);
+  const nameOf = (list: { id: string; name: string }[], id: string | null) =>
+    (id && list.find((x) => x.id === id)?.name) || null;
+  const sold = Boolean(item.sponsorId);
+  const countdown = item.orderByDate
+    ? orderCountdown(item.orderByDate, todayInLondon(), sold)
+    : null;
+  const profit =
+    sold && item.salePrice != null && item.costEstimate != null
+      ? Number(item.salePrice) - Number(item.costEstimate)
+      : null;
+  // The few facts each team needs at a glance; everything else is in the form.
+  const facts: [string, React.ReactNode][] = isSponsorship
+    ? [
+        ["Status", sold ? "Sold" : "Available"],
+        ["Sponsor", nameOf(options.sponsors, item.sponsorId) ?? "—"],
+        ["Type", nameOf(options.itemTypes, item.itemTypeId) ?? "—"],
+        ["Quantity", item.quantity.toLocaleString("en-GB")],
+        ["Supplier", nameOf(options.suppliers, item.supplierId) ?? "—"],
+        ["Cost price", formatMoney(item.costEstimate)],
+        ...(sold
+          ? ([
+              ["Sale price", formatMoney(item.salePrice)],
+              ["Profit", profit != null ? formatMoney(profit) : "—"],
+            ] as [string, React.ReactNode][])
+          : []),
+        [
+          "Order by",
+          item.orderByDate ? (
+            <span>
+              {formatDate(item.orderByDate)}
+              {countdown && (
+                <span
+                  className={
+                    countdown.warning || countdown.tone === "overdue"
+                      ? "text-destructive font-medium"
+                      : "text-muted-foreground"
+                  }
+                >
+                  {" "}
+                  — {countdown.warning ?? countdown.label}
+                </span>
+              )}
+            </span>
+          ) : (
+            "—"
+          ),
+        ],
+      ]
+    : [
+        [
+          "Where",
+          [nameOf(options.halls, item.hallId), nameOf(options.locations, item.locationId)]
+            .filter(Boolean)
+            .join(" · ") || "—",
+        ],
+        [
+          "Size",
+          item.widthMm && item.heightMm
+            ? `${item.widthMm} × ${item.heightMm} mm${item.quantity > 1 ? ` · ${item.quantity} off` : ""}`
+            : "—",
+        ],
+        ["Fixing", item.fixingMethod ? statusLabel(item.fixingMethod) : "—"],
+        ["Type", nameOf(options.itemTypes, item.itemTypeId) ?? "—"],
+        ...(item.category === "sponsor"
+          ? ([["Sponsor", nameOf(options.sponsors, item.sponsorId) ?? "—"]] as [
+              string,
+              React.ReactNode,
+            ][])
+          : []),
+        ["Supplier", nameOf(options.suppliers, item.supplierId) ?? "—"],
+        ["Cost price", formatMoney(item.costEstimate)],
+        ["Install", item.installDate ? formatDate(item.installDate) : "—"],
+      ];
 
   return (
     <div className="grid gap-6">
-      <section className="bg-muted/30 flex max-w-4xl flex-col gap-2 rounded-lg border p-4 text-sm">
-        <h2 className="font-semibold">Labels &amp; paperwork</h2>
-        <div className="flex flex-wrap gap-x-4 gap-y-1">
-          <a className="text-primary hover:underline" href={`/api/exports/spec-label/${item.ref}`}>
-            Spec label (PDF)
-          </a>
-          {canCertificate &&
-            (APPROVED_OR_LATER.includes(item.status) ? (
-              <a
-                className="text-primary hover:underline"
-                href={`/api/exports/certificate/${item.ref}`}
-              >
-                Approval certificate (PDF)
-              </a>
-            ) : (
-              <span className="text-muted-foreground">Approval certificate: once signed off</span>
+      <section
+        className={`grid max-w-4xl gap-4 rounded-lg border p-4 text-sm ${
+          isSponsorship ? "sm:grid-cols-[14rem_1fr]" : ""
+        }`}
+        aria-label="At a glance"
+      >
+        {isSponsorship && (
+          <PhotoUploader
+            itemId={item.id}
+            photoUrl={productPhotoUrl}
+            alt={item.name}
+            canEdit={canEdit}
+          />
+        )}
+        <div className="flex flex-col gap-3">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 sm:grid-cols-[auto_1fr_auto_1fr]">
+            {facts.map(([label, value]) => (
+              <div key={label} className="contents">
+                <dt className="text-muted-foreground">{label}</dt>
+                <dd className="font-medium">{value}</dd>
+              </div>
             ))}
-        </div>
-        {!isSponsorship && (
-          <p>
-            <span className="text-muted-foreground">Installed: </span>
-            {item.installedAt ? formatDateTime(item.installedAt) : "Not yet"}
-            {photoUrl ? (
-              <>
-                {" · "}
+          </dl>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 border-t pt-2">
+            <a
+              className="text-primary hover:underline"
+              href={`/api/exports/spec-label/${item.ref}`}
+            >
+              Spec label (PDF)
+            </a>
+            {canCertificate &&
+              (APPROVED_OR_LATER.includes(item.status) ? (
                 <a
                   className="text-primary hover:underline"
-                  href={photoUrl}
-                  target="_blank"
-                  rel="noreferrer"
+                  href={`/api/exports/certificate/${item.ref}`}
                 >
-                  View photo
+                  Approval certificate (PDF)
                 </a>
-              </>
-            ) : item.installPhotoPath ? (
-              " · photo on file"
-            ) : null}
-          </p>
-        )}
-        {snags.length > 0 && (
-          <div>
-            <p className="text-muted-foreground">Snags</p>
-            <ul className="mt-1 space-y-1">
-              {snags.map((snag) => (
-                <li key={snag.id} className="flex flex-wrap items-center gap-2">
-                  <StatusBadge status={snag.status} />
-                  <span>{snag.description}</span>
-                  <span className="text-muted-foreground text-xs">
-                    {statusLabel(snag.severity)}
-                  </span>
-                </li>
+              ) : (
+                <span className="text-muted-foreground">Approval certificate: once signed off</span>
               ))}
-            </ul>
           </div>
-        )}
+          {!isSponsorship && (
+            <p>
+              <span className="text-muted-foreground">Installed: </span>
+              {item.installedAt ? formatDateTime(item.installedAt) : "Not yet"}
+              {photoUrl ? (
+                <>
+                  {" · "}
+                  <a
+                    className="text-primary hover:underline"
+                    href={photoUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    View photo
+                  </a>
+                </>
+              ) : item.installPhotoPath ? (
+                " · photo on file"
+              ) : null}
+            </p>
+          )}
+          {snags.length > 0 && (
+            <div>
+              <p className="text-muted-foreground">Snags</p>
+              <ul className="mt-1 space-y-1">
+                {snags.map((snag) => (
+                  <li key={snag.id} className="flex flex-wrap items-center gap-2">
+                    <StatusBadge status={snag.status} />
+                    <span>{snag.description}</span>
+                    <span className="text-muted-foreground text-xs">
+                      {statusLabel(snag.severity)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
       </section>
 
       {!canEdit && (
@@ -305,6 +407,8 @@ async function DetailsTab({
           supplierId: item.supplierId,
           artworkDueOverride: item.artworkDueOverride,
           printDeadline: item.printDeadline,
+          orderByDate: item.orderByDate,
+          salePrice: item.salePrice,
           deliveryDate: item.deliveryDate,
           installDate: item.installDate,
           installSlot: item.installSlot,
@@ -338,7 +442,12 @@ async function ArtworkAndSignOff({
     // Everyone on the team (names on the sign-off list); sign-offs can be
     // handed to anyone except viewers.
     db
-      .select({ id: users.id, fullName: users.fullName, email: users.email, role: memberships.role })
+      .select({
+        id: users.id,
+        fullName: users.fullName,
+        email: users.email,
+        role: memberships.role,
+      })
       .from(memberships)
       .innerJoin(users, eq(memberships.userId, users.id))
       .where(eq(memberships.organisationId, session.organisation.id)),

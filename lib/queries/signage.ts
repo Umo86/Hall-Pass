@@ -1,6 +1,6 @@
 import "server-only";
 import { departmentNames } from "@/lib/domain/departments";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -151,26 +151,37 @@ export type SponsorshipRow = {
   kind: "signage" | "sponsorship_item";
   sponsorId: string | null;
   sponsorName: string | null;
+  supplierName: string | null;
   quantity: number;
   costEstimate: string | null;
-  artworkDueOverride: string | null;
+  salePrice: string | null;
+  soldAt: Date | null;
+  orderByDate: string | null;
+  photoPath: string | null;
+  /** Artwork preview, used when there is no product photo. */
+  previewPath: string | null;
   currentVersion: number | null;
 };
 
-/** The sponsorship register: everything sold to sponsors, by sponsor. */
+/**
+ * The sponsorship register: everything for sale to sponsors (sponsorship
+ * items, sold or not) and sponsor signage. Soonest order-by date first.
+ */
 export async function listSponsorshipRows(editionId: string): Promise<SponsorshipRow[]> {
   const rows = await db
     .select({
       item: signageItems,
       typeName: itemTypes.name,
       sponsorName: sponsors.companyName,
+      supplierName: suppliers.name,
       currentVersion: artworkVersions.versionNumber,
+      previewPath: artworkVersions.previewPath,
     })
     .from(signageItems)
     .leftJoin(itemTypes, eq(signageItems.itemTypeId, itemTypes.id))
     .leftJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
+    .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
     .leftJoin(artworkVersions, eq(signageItems.currentArtworkVersionId, artworkVersions.id))
-    // Everything sold to sponsors: sponsorship items and sponsor signage.
     .where(
       and(
         eq(signageItems.editionId, editionId),
@@ -178,7 +189,7 @@ export async function listSponsorshipRows(editionId: string): Promise<Sponsorshi
         isNull(signageItems.deletedAt),
       ),
     )
-    .orderBy(asc(sponsors.companyName), asc(signageItems.seq));
+    .orderBy(sql`${signageItems.orderByDate} ASC NULLS LAST`, asc(signageItems.seq));
   return rows.map((r) => ({
     id: r.item.id,
     ref: r.item.ref,
@@ -188,9 +199,14 @@ export async function listSponsorshipRows(editionId: string): Promise<Sponsorshi
     kind: r.item.kind,
     sponsorId: r.item.sponsorId,
     sponsorName: r.sponsorName,
+    supplierName: r.supplierName,
     quantity: r.item.quantity,
     costEstimate: r.item.costEstimate,
-    artworkDueOverride: r.item.artworkDueOverride,
+    salePrice: r.item.salePrice,
+    soldAt: r.item.soldAt,
+    orderByDate: r.item.orderByDate,
+    photoPath: r.item.photoPath,
+    previewPath: r.previewPath,
     currentVersion: r.currentVersion,
   }));
 }
@@ -263,10 +279,7 @@ export async function getItemInstances(itemId: string) {
     .from(approvalInstances)
     .leftJoin(users, eq(approvalInstances.decidedBy, users.id))
     .where(
-      and(
-        eq(approvalInstances.entityType, "signage_item"),
-        eq(approvalInstances.entityId, itemId),
-      ),
+      and(eq(approvalInstances.entityType, "signage_item"), eq(approvalInstances.entityId, itemId)),
     )
     .orderBy(
       desc(approvalInstances.runNumber),
@@ -307,7 +320,11 @@ export async function getEntityAudit(entityType: string, entityId: string) {
 }
 
 export async function getItemSnags(itemId: string) {
-  return db.select().from(snags).where(eq(snags.signageItemId, itemId)).orderBy(desc(snags.createdAt));
+  return db
+    .select()
+    .from(snags)
+    .where(eq(snags.signageItemId, itemId))
+    .orderBy(desc(snags.createdAt));
 }
 
 /**

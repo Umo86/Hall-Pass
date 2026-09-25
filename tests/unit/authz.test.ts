@@ -97,7 +97,9 @@ describe("staff permission matrix (brief 3.3)", () => {
       };
       for (const actorRole of allStaff) {
         const expected = actorRole === "admin" || actorRole === stepRole;
-        expect(can(staff(actorRole), action), `${actorRole} decides ${stepRole} step`).toBe(expected);
+        expect(can(staff(actorRole), action), `${actorRole} decides ${stepRole} step`).toBe(
+          expected,
+        );
       }
     }
   });
@@ -143,7 +145,14 @@ describe("staff permission matrix (brief 3.3)", () => {
   });
 
   it("costs: view and edit", () => {
-    expectRoles({ type: "costs.view" }, ["admin", "ops", "marketing", "event_director"]);
+    expectRoles({ type: "costs.view" }, [
+      "admin",
+      "ops",
+      "marketing",
+      "sales",
+      "event_director",
+      "viewer",
+    ]);
     expectRoles({ type: "costs.edit" }, ["admin", "ops"]);
   });
 

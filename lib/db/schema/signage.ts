@@ -98,6 +98,14 @@ export const signageItems = pgTable(
     supplierId: uuid("supplier_id").references(() => suppliers.id),
     artworkDueOverride: date("artwork_due_override"),
     printDeadline: date("print_deadline"),
+    /** Sponsorship: last day to order from the supplier — and so to sell it. */
+    orderByDate: date("order_by_date"),
+    /** Product photo shown on the sponsorship card (photos bucket). */
+    photoPath: text("photo_path"),
+    /** What the sponsor paid; set when the item is sold. */
+    salePrice: numeric("sale_price", { precision: 12, scale: 2 }),
+    /** When it was sold (a sponsor was set). */
+    soldAt: timestamp("sold_at", { withTimezone: true }),
     deliveryDate: date("delivery_date"),
     installDate: date("install_date"),
     installSlot: installSlot("install_slot"),

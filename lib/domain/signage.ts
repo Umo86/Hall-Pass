@@ -132,9 +132,9 @@ export function itemCreationRecipients(
 ): string[] {
   const roles = new Set<string>([item.ownerRole]);
   if (item.kind === "sponsorship_item" || item.category === "sponsor") roles.add("sales");
-  return [
-    ...new Set(members.filter((m) => roles.has(m.role)).map((m) => m.userId)),
-  ].filter((id) => id !== creatorUserId);
+  return [...new Set(members.filter((m) => roles.has(m.role)).map((m) => m.userId))].filter(
+    (id) => id !== creatorUserId,
+  );
 }
 
 export async function resolveItemCreationRecipients(
@@ -369,7 +369,11 @@ export function changedSpecKeys(
   patch: Record<string, unknown>,
 ): string[] {
   return SPEC_KEYS.filter(
-    (k) => patch[k] !== undefined && normalise(patch[k]) !== normalise(current[k]),
+    (k) =>
+      patch[k] !== undefined &&
+      normalise(patch[k]) !== normalise(current[k]) &&
+      // Selling an item for the first time isn't a change to what was approved.
+      !(k === "sponsorId" && normalise(current[k]) === ""),
   );
 }
 
@@ -435,7 +439,12 @@ export async function normaliseSignoffs(
         overrides: memberships.permissionOverrides,
       })
       .from(memberships)
-      .where(and(eq(memberships.organisationId, opts.organisationId), inArray(memberships.userId, userIds)));
+      .where(
+        and(
+          eq(memberships.organisationId, opts.organisationId),
+          inArray(memberships.userId, userIds),
+        ),
+      );
     const byUser = new Map(members.map((m) => [m.userId, m]));
     for (const entry of plan) {
       if (!entry.userId) continue;

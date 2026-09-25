@@ -16,7 +16,11 @@ const ORG = "org-1";
 const EDITION = "ed-1";
 const VENUE = "venue-1";
 
-function staff(role: StaffRole, overrides?: PermissionOverrides, userId = `${role}-user`): StaffActor {
+function staff(
+  role: StaffRole,
+  overrides?: PermissionOverrides,
+  userId = `${role}-user`,
+): StaffActor {
   return { kind: "staff", userId, organisationId: ORG, role, overrides };
 }
 
@@ -83,9 +87,9 @@ describe("permission overrides matrix", () => {
   it("approval.decide: true never bypasses step assignment", () => {
     const sales = staff("sales", { "approval.decide": true });
     expect(can(sales, { type: "approval.decide", step: step() })).toBe(false); // marketing step
-    expect(
-      can(sales, { type: "approval.decide", step: step({ assignedRole: "sales" }) }),
-    ).toBe(true); // their own step still works
+    expect(can(sales, { type: "approval.decide", step: step({ assignedRole: "sales" }) })).toBe(
+      true,
+    ); // their own step still works
     expect(
       can(sales, {
         type: "approval.decide",
@@ -138,7 +142,14 @@ describe("task actions", () => {
   const someoneElses: TaskCtx = { assignedToUserId: "x", createdByUserId: "y" };
 
   it("everyone may keep a personal list, viewers included", () => {
-    for (const role of ["admin", "ops", "marketing", "sales", "event_director", "viewer"] as const) {
+    for (const role of [
+      "admin",
+      "ops",
+      "marketing",
+      "sales",
+      "event_director",
+      "viewer",
+    ] as const) {
       expect(can(staff(role), { type: "task.create" })).toBe(true);
     }
   });
@@ -174,7 +185,10 @@ describe("sales and sponsorship items", () => {
 });
 
 describe("overrides carry granted users through to sign-off", () => {
-  const own = (userId: string, kind: "signage" | "sponsorship_item" = "signage"): SignageItemCtx => ({
+  const own = (
+    userId: string,
+    kind: "signage" | "sponsorship_item" = "signage",
+  ): SignageItemCtx => ({
     ...item,
     kind,
     ownerUserId: userId,
@@ -192,12 +206,15 @@ describe("overrides carry granted users through to sign-off", () => {
   it("event director granted 'add sponsorship items' can submit their own", () => {
     const director = staff("event_director", { "sponsorship.create": true });
     expect(
-      can(director, { type: "signage.submit", item: own("event_director-user", "sponsorship_item") }),
+      can(director, {
+        type: "signage.submit",
+        item: own("event_director-user", "sponsorship_item"),
+      }),
     ).toBe(true);
   });
 
-  it("'edit costs' also reveals costs", () => {
-    expect(can(staff("sales"), { type: "costs.view" })).toBe(false);
+  it("everyone on the team sees costs", () => {
+    expect(can(staff("sales"), { type: "costs.view" })).toBe(true);
     expect(can(staff("sales", { "costs.edit": true }), { type: "costs.view" })).toBe(true);
   });
 });
