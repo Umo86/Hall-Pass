@@ -22,8 +22,10 @@ test.describe("staff flow", () => {
     await expect(page.getByRole("link", { name: "SIG-BIRM27-001" })).toBeVisible();
 
     await page.goto("/BIRM27/signage/SIG-BIRM27-001?tab=approvals");
-    await expect(page.getByText("Marketing brand check")).toBeVisible();
-    await expect(page.getByText("Sponsor approval")).toBeVisible();
+    // Decided steps keep the name they were decided under; open ones use the
+    // department names.
+    await expect(page.getByText(/Marketing (brand check|sign-off)/).first()).toBeVisible();
+    await expect(page.getByText("Sales sign-off").first()).toBeVisible();
   });
 
   test("create → artwork → submit → marketing approves", async ({ browser, baseURL }) => {
@@ -34,7 +36,9 @@ test.describe("staff flow", () => {
     await page.goto(`${baseURL}/BIRM27/signage/new`);
     const name = `E2E test sign ${Date.now()}`;
     await page.getByLabel("Name", { exact: true }).fill(name);
-    await page.getByLabel("Category").selectOption("venue");
+    // Organiser signage is the default; this item needs Operations and
+    // Marketing only (the full three-department flow is in signage-setup.spec).
+    await page.getByLabel("Needs Senior management sign-off").uncheck();
     await page.getByLabel("Item type").selectOption({ label: "Foamex board" });
     await page.getByLabel("Hall", { exact: true }).selectOption({ label: "Hall 1" });
     await page.getByLabel("Location").selectOption({ label: "Registration" });
@@ -101,7 +105,7 @@ test.describe("staff flow", () => {
       await dialog.getByRole("button", { name: button, exact: true }).click();
       await expect(dialog).toHaveCount(0);
     };
-    await decide("Approve"); // Ops technical check → approved
+    await decide("Approve"); // Operations sign-off → approved
     await ops.goto(`${baseURL}/BIRM27/signage/${ref}`);
     await expect(ops.getByText("Approved", { exact: true }).first()).toBeVisible();
     await decide("Confirm"); // Sent to print → in production
@@ -128,7 +132,6 @@ test.describe("staff flow", () => {
     await page.goto(`${baseURL}/BIRM27/signage/new`);
     const name = `E2E delete me ${Date.now()}`;
     await page.getByLabel("Name", { exact: true }).fill(name);
-    await page.getByLabel("Category").selectOption("venue");
     await page.getByRole("button", { name: "Create item" }).click();
     await page.waitForURL("**/signage/SIG-BIRM27-*");
     page.once("dialog", (d) => d.accept());

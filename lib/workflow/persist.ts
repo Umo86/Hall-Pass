@@ -23,6 +23,7 @@ export function stepRowToDef(row: typeof workflowSteps.$inferSelect): StepDef {
     slaDays: row.slaDays,
     invalidateOnNewVersion: row.invalidateOnNewVersion,
     restartFromHereOnChanges: row.restartFromHereOnChanges,
+    defaultFor: (row.defaultFor ?? []) as StepDef["defaultFor"],
   };
 }
 
@@ -30,7 +31,7 @@ export async function loadStepDefs(db: Db | Tx, workflowId: string): Promise<Ste
   const rows = await db
     .select()
     .from(workflowSteps)
-    .where(eq(workflowSteps.workflowId, workflowId))
+    .where(and(eq(workflowSteps.workflowId, workflowId), eq(workflowSteps.isArchived, false)))
     .orderBy(workflowSteps.sortOrder);
   return rows.map(stepRowToDef);
 }

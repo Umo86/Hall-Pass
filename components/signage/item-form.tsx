@@ -9,17 +9,38 @@ import { Label } from "@/components/ui/label";
 import { SelectNative } from "@/components/ui/select-native";
 import { Textarea } from "@/components/ui/textarea";
 import { createSignageItem, updateSignageItem } from "@/app/actions/signage";
+import { roleLabel as roleName } from "@/lib/format";
+
+export type SignoffStepOption = {
+  id: string;
+  name: string;
+  department: string | null;
+  defaultUserId: string | null;
+  defaultFor: string[];
+};
+
+export type SignoffChoice = { stepId: string; userId: string | null };
 
 export type ItemFormOptions = {
-  itemTypes: { id: string; name: string }[];
+  itemTypes: { id: string; name: string; format?: string | null }[];
   halls: { id: string; name: string }[];
   locations: { id: string; name: string; hallId: string }[];
   sponsors: { id: string; name: string }[];
   entitlements: { id: string; sponsorId: string; description: string }[];
-  suppliers: { id: string; name: string }[];
+  suppliers: { id: string; name: string; services?: string[] }[];
   contractors: { id: string; name: string }[];
   workflows: { id: string; name: string }[];
+  /** Department sign-offs the item can ask for, and who can sign each. */
+  signoffSteps?: SignoffStepOption[];
+  signers?: { id: string; name: string; role: string }[];
 };
+
+/** The defaults admins set for organiser or sponsor signage. */
+function defaultPlan(steps: SignoffStepOption[], category: string): SignoffChoice[] {
+  return steps
+    .filter((s) => s.defaultFor.includes(category))
+    .map((s) => ({ stepId: s.id, userId: s.defaultUserId }));
+}
 
 export type ItemFormValues = {
   id?: string;
@@ -56,6 +77,7 @@ export type ItemFormValues = {
   installSlot?: string | null;
   installContractorId?: string | null;
   workflowId?: string | null;
+  signoffs?: SignoffChoice[] | null;
 };
 
 const FIXINGS = [
@@ -97,6 +119,39 @@ export function ItemForm({
   const [message, setMessage] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [sponsorId, setSponsorId] = useState(values.sponsorId ?? "");
+  const [category, setCategory] = useState(
+    isSponsorship ? "sponsor" : (values.category ?? "organiser"),
+  );
+  const steps = options.signoffSteps ?? [];
+  const [plan, setPlan] = useState<SignoffChoice[]>(
+    values.signoffs ??
+      defaultPlan(steps, isSponsorship ? "sponsor" : (values.category ?? "organiser")),
+  );
+  // Until someone changes the ticks, they follow the category's defaults.
+  const [planTouched, setPlanTouched] = useState(false);
+
+  function chooseCategory(next: string) {
+    setCategory(next);
+    if (!planTouched && !values.signoffs) setPlan(defaultPlan(steps, next));
+  }
+
+  function setStep(stepId: string, on: boolean, userId?: string | null) {
+    setPlanTouched(true);
+    setPlan((current) => {
+      const rest = current.filter((p) => p.stepId !== stepId);
+      if (!on) return rest;
+      const step = steps.find((s) => s.id === stepId);
+      const existing = current.find((p) => p.stepId === stepId);
+      const chosen =
+        userId !== undefined ? userId : (existing?.userId ?? step?.defaultUserId ?? null);
+      // Keep the admin's order.
+      return steps
+        .filter((s) => s.id === stepId || rest.some((p) => p.stepId === s.id))
+        .map((s) =>
+          s.id === stepId ? { stepId, userId: chosen } : rest.find((p) => p.stepId === s.id)!,
+        );
+    });
+  }
   const [hallId, setHallId] = useState(values.hallId ?? "");
   const [pending, start] = useTransition();
   const router = useRouter();
@@ -110,7 +165,11 @@ export function ItemForm({
       clean[k] = v === "" ? null : v;
     }
     clean.requiresVenueApproval = fd.get("requiresVenueApproval") === "on";
-    clean.requiresEventDirector = fd.get("requiresEventDirector") === "on";
+    if (category !== "sponsor" && !isSponsorship) clean.sponsorId = null;
+    if (steps.length > 0 && plan.length === 0) {
+      setError("Choose at least one department to sign this off");
+      return;
+    }
     setError(null);
     setMessage(null);
     setFieldErrors({});
@@ -178,31 +237,70 @@ export function ItemForm({
             <Textarea id="description" name="description" defaultValue={values.description ?? ""} />
           </div>
           {!isSponsorship && (
-            <div className="space-y-1.5">
-              <Label htmlFor="category">Category</Label>
-              <SelectNative
-                id="category"
-                name="category"
-                defaultValue={values.category ?? ""}
-                required
-              >
-                <option value="">— Select —</option>
-                <option value="directional">Directional (wayfinding)</option>
-                <option value="venue">Venue</option>
-                <option value="sponsorship">Sponsorship (sold)</option>
-              </SelectNative>
+            <fieldset className="space-y-1.5 sm:col-span-2">
+              <legend className="text-sm font-medium">Whose signage is it?</legend>
+              <div className="flex flex-wrap gap-2">
+                {(
+                  [
+                    [
+                      "organiser",
+                      "Organiser signage",
+                      "Our own — directions, venue dressing, features",
+                    ],
+                    ["sponsor", "Sponsor signage", "Sold to a sponsor — shows their name"],
+                  ] as const
+                ).map(([value, label, hint]) => (
+                  <label
+                    key={value}
+                    className={`flex min-w-52 flex-1 cursor-pointer items-start gap-2 rounded-md border p-2.5 text-sm ${
+                      category === value ? "border-primary bg-primary/5" : ""
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="category"
+                      value={value}
+                      checked={category === value}
+                      onChange={() => chooseCategory(value)}
+                      className="mt-0.5 size-4"
+                    />
+                    <span>
+                      <span className="font-medium">{label}</span>
+                      <span className="text-muted-foreground block text-xs">{hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
               {err("category")}
-            </div>
+            </fieldset>
           )}
           <div className="space-y-1.5">
             <Label htmlFor="itemTypeId">Item type</Label>
             <SelectNative id="itemTypeId" name="itemTypeId" defaultValue={values.itemTypeId ?? ""}>
               <option value="">— Select —</option>
-              {options.itemTypes.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
+              {isSponsorship
+                ? options.itemTypes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))
+                : (
+                    [
+                      ["print", "Print"],
+                      ["digital", "Digital"],
+                    ] as const
+                  ).map(([format, label]) => {
+                    const group = options.itemTypes.filter((t) => (t.format ?? "print") === format);
+                    return group.length === 0 ? null : (
+                      <optgroup key={format} label={label}>
+                        {group.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    );
+                  })}
             </SelectNative>
           </div>
           {isSponsorship ? (
@@ -367,46 +465,52 @@ export function ItemForm({
         </section>
 
         <section className="grid gap-3 sm:grid-cols-2">
-          <h3 className="text-sm font-semibold sm:col-span-2">Sponsorship &amp; sign-off</h3>
-          <div className="space-y-1.5">
-            <Label htmlFor="sponsorId">Sponsor</Label>
-            <SelectNative
-              id="sponsorId"
-              name="sponsorId"
-              value={sponsorId}
-              onChange={(e) => setSponsorId(e.target.value)}
-              required={isSponsorship}
-            >
-              <option value="">{isSponsorship ? "— Select sponsor —" : "Not sponsored"}</option>
-              {options.sponsors.map((sp) => (
-                <option key={sp.id} value={sp.id}>
-                  {sp.name}
-                </option>
-              ))}
-            </SelectNative>
-            {err("sponsorId")}
-            {isSponsorship && options.sponsors.length === 0 && (
-              <p className="text-xs text-amber-800 dark:text-amber-300">
-                No sponsors yet — add them under Sponsors on the Sponsorship page first.
-              </p>
-            )}
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="sponsorEntitlementId">Entitlement</Label>
-            <SelectNative
-              id="sponsorEntitlementId"
-              name="sponsorEntitlementId"
-              defaultValue={values.sponsorEntitlementId ?? ""}
-              disabled={!sponsorId}
-            >
-              <option value="">— None —</option>
-              {entitlementChoices.map((en) => (
-                <option key={en.id} value={en.id}>
-                  {en.description}
-                </option>
-              ))}
-            </SelectNative>
-          </div>
+          <h3 className="text-sm font-semibold sm:col-span-2">
+            {category === "sponsor" ? "Sponsor" : "Approvals"}
+          </h3>
+          {category === "sponsor" && (
+            <>
+              <div className="space-y-1.5">
+                <Label htmlFor="sponsorId">Sponsor</Label>
+                <SelectNative
+                  id="sponsorId"
+                  name="sponsorId"
+                  value={sponsorId}
+                  onChange={(e) => setSponsorId(e.target.value)}
+                  required
+                >
+                  <option value="">— Select sponsor —</option>
+                  {options.sponsors.map((sp) => (
+                    <option key={sp.id} value={sp.id}>
+                      {sp.name}
+                    </option>
+                  ))}
+                </SelectNative>
+                {err("sponsorId")}
+                {options.sponsors.length === 0 && (
+                  <p className="text-xs text-amber-800 dark:text-amber-300">
+                    No sponsors yet — add them under Sponsors on the Sponsorship page first.
+                  </p>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="sponsorEntitlementId">Entitlement</Label>
+                <SelectNative
+                  id="sponsorEntitlementId"
+                  name="sponsorEntitlementId"
+                  defaultValue={values.sponsorEntitlementId ?? ""}
+                  disabled={!sponsorId}
+                >
+                  <option value="">— None —</option>
+                  {entitlementChoices.map((en) => (
+                    <option key={en.id} value={en.id}>
+                      {en.description}
+                    </option>
+                  ))}
+                </SelectNative>
+              </div>
+            </>
+          )}
           {mode === "create" &&
             (options.workflows.length > 1 ? (
               <div className="space-y-1.5">
@@ -437,16 +541,71 @@ export function ItemForm({
               Requires venue approval (always on for rigged items)
             </label>
           )}
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              name="requiresEventDirector"
-              className="size-4"
-              defaultChecked={values.requiresEventDirector}
-            />
-            Requires Event Director sign-off
-          </label>
         </section>
+
+        {steps.length > 0 && (
+          <section className="grid gap-2">
+            <div>
+              <h3 className="text-sm font-semibold">Sign-off</h3>
+              <p className="text-muted-foreground text-xs">
+                Who approves the artwork. Pre-set for{" "}
+                {category === "sponsor" ? "sponsor" : "organiser"} signage — untick a department or
+                pick the person. They&apos;re emailed when it&apos;s their turn.
+              </p>
+            </div>
+            {planTouched && <input type="hidden" name="signoffs" value={JSON.stringify(plan)} />}
+            <ul className="divide-y rounded-lg border" aria-label="Sign-off">
+              {steps.map((step) => {
+                const choice = plan.find((p) => p.stepId === step.id);
+                const people = (options.signers ?? []).filter(
+                  (p) => p.role === step.department || p.role === "admin",
+                );
+                return (
+                  <li
+                    key={step.id}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2"
+                  >
+                    <label className="flex min-w-48 flex-1 items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="size-4"
+                        checked={Boolean(choice)}
+                        onChange={(e) => setStep(step.id, e.target.checked)}
+                        aria-label={`Needs ${step.name}`}
+                      />
+                      <span className={choice ? "font-medium" : "text-muted-foreground"}>
+                        {step.name}
+                      </span>
+                    </label>
+                    {choice && (
+                      <SelectNative
+                        aria-label={`Who signs ${step.name}`}
+                        value={choice.userId ?? ""}
+                        onChange={(e) => setStep(step.id, true, e.target.value || null)}
+                        className="h-8 w-full sm:w-60"
+                      >
+                        <option value="">Anyone in {roleName(step.department)}</option>
+                        {people.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </SelectNative>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+            {plan.length === 0 && (
+              <p className="text-destructive text-xs">Choose at least one department.</p>
+            )}
+            {mode === "edit" && status === "in_review" && planTouched && (
+              <p className="text-xs text-amber-800 dark:text-amber-300">
+                This item is in sign-off — saving a change here starts its sign-off again.
+              </p>
+            )}
+          </section>
+        )}
 
         {canSeeCosts && (
           <details open={costsOpen} className="rounded-lg border">
@@ -508,6 +667,7 @@ export function ItemForm({
                   {options.suppliers.map((sp) => (
                     <option key={sp.id} value={sp.id}>
                       {sp.name}
+                      {sp.services?.length ? ` — ${sp.services.join(", ")}` : ""}
                     </option>
                   ))}
                 </SelectNative>
@@ -597,8 +757,8 @@ export function ItemForm({
         status &&
         ["approved", "approved_with_conditions", "in_production", "delivered"].includes(status) && (
           <p className="text-sm text-amber-800 dark:text-amber-300">
-            This item is signed off. Changing its size, material, fixing, type or sponsor sends it
-            back for sign-off; dates, supplier and costs can change freely.
+            This item is signed off. Changing its size, material, fixing, type, sponsor or who
+            signs it off sends it back for sign-off; dates, supplier and costs can change freely.
           </p>
         )}
       {!readOnly && (

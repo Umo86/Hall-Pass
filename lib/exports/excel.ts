@@ -96,6 +96,7 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
     .select({
       item: signageItems,
       typeName: itemTypes.name,
+      format: itemTypes.format,
       hallName: halls.name,
       locationName: locations.name,
       sponsorName: sponsors.companyName,
@@ -107,13 +108,8 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
     .leftJoin(locations, eq(signageItems.locationId, locations.id))
     .leftJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
     .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
-    .where(
-      and(
-        eq(signageItems.editionId, editionId),
-        eq(signageItems.kind, "signage"),
-        isNull(signageItems.deletedAt),
-      ),
-    )
+    // The same items as the on-screen schedule, sponsorship items included.
+    .where(and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt)))
     .orderBy(asc(signageItems.seq));
 
   const { byItem, orderedSteps } = await currentApprovals(rows.map((r) => r.item));
@@ -125,8 +121,10 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
     { header: "Ref", key: "ref", width: 16 },
     { header: "Name", key: "name", width: 36 },
     { header: "Status", key: "status", width: 20 },
-    { header: "Category", key: "category", width: 14 },
+    { header: "Category", key: "category", width: 12 },
+    { header: "Sponsor", key: "sponsor", width: 18 },
     { header: "Type", key: "type", width: 18 },
+    { header: "Format", key: "format", width: 12 },
     { header: "Hall", key: "hall", width: 12 },
     { header: "Location", key: "location", width: 20 },
     { header: "W (mm)", key: "w", width: 9 },
@@ -135,7 +133,6 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
     { header: "Material", key: "material", width: 16 },
     { header: "Finish", key: "finish", width: 12 },
     { header: "Fixing", key: "fixing", width: 14 },
-    { header: "Sponsor", key: "sponsor", width: 16 },
     { header: "Supplier", key: "supplier", width: 16 },
     { header: "Install", key: "install", width: 14 },
     ...(includeCosts
@@ -160,7 +157,15 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
         ref: r.item.ref,
         name: r.item.name,
         status: statusLabel(r.item.status),
-        category: r.item.category ? statusLabel(r.item.category) : "",
+        category: r.item.category === "sponsor" ? "Sponsor" : "Organiser",
+        format:
+          r.item.kind === "sponsorship_item"
+            ? "Merchandise"
+            : r.format === "digital"
+              ? "Digital"
+              : r.format === "print"
+                ? "Print"
+                : "",
         type: r.typeName ?? "",
         hall: r.hallName ?? "",
         location: r.locationName ?? "",

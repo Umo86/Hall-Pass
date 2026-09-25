@@ -13,15 +13,15 @@ const members = [
 describe("itemCreationRecipients", () => {
   it("notifies the owning role's members", () => {
     expect(
-      itemCreationRecipients(members, { kind: "signage", category: "venue", ownerRole: "ops" }, "x"),
+      itemCreationRecipients(members, { kind: "signage", category: "organiser", ownerRole: "ops" }, "x"),
     ).toEqual(["u-ops", "u-ops2"]);
   });
 
-  it("adds sales for sponsorship-category signage", () => {
+  it("adds sales for sponsor signage", () => {
     expect(
       itemCreationRecipients(
         members,
-        { kind: "signage", category: "sponsorship", ownerRole: "marketing" },
+        { kind: "signage", category: "sponsor", ownerRole: "marketing" },
         "x",
       ),
     ).toEqual(["u-marketing", "u-sales"]);
@@ -39,19 +39,19 @@ describe("itemCreationRecipients", () => {
 
   it("never notifies the creator", () => {
     expect(
-      itemCreationRecipients(members, { kind: "signage", category: "venue", ownerRole: "ops" }, "u-ops"),
+      itemCreationRecipients(members, { kind: "signage", category: "organiser", ownerRole: "ops" }, "u-ops"),
     ).toEqual(["u-ops2"]);
   });
 
   it("deduplicates users holding the role twice", () => {
     const dupes = [...members, { userId: "u-ops", role: "ops" }];
     expect(
-      itemCreationRecipients(dupes, { kind: "signage", category: "venue", ownerRole: "ops" }, "x"),
+      itemCreationRecipients(dupes, { kind: "signage", category: "organiser", ownerRole: "ops" }, "x"),
     ).toEqual(["u-ops", "u-ops2"]);
   });
 
-  it("directional and venue signage never pull in sales", () => {
-    for (const category of ["directional", "venue"]) {
+  it("organiser signage never pulls in sales", () => {
+    for (const category of ["organiser"]) {
       const got = itemCreationRecipients(members, { kind: "signage", category, ownerRole: "ops" }, "x");
       expect(got).not.toContain("u-sales");
     }

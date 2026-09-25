@@ -105,3 +105,44 @@ stages A–G). Owner decisions and the choices made along the way:
   sponsorship item" types exist so nothing is forced into a wrong type.
 - **Vercel functions run in Frankfurt (fra1)**, next to the database.
 
+
+## Signage rework (2026-09-25)
+
+Owner brief: operations add print or digital signage and mark it organiser or
+sponsor signage; sponsorship items show in the signage schedule with the
+sponsor; sign-off by department and a named person, with email; shows with
+logo and address; suppliers with the services they offer; admins manage every
+pick-list.
+
+- **Two categories: Organiser or Sponsor.** Directional/Venue became
+  Organiser; Sponsorship became Sponsor (migration 0004). Sponsor signage
+  needs a sponsor. Sponsorship-section items are always Sponsor.
+- **One schedule.** The signage schedule, dashboard counts and Excel schedule
+  include everything, sponsorship items too (with Category, Sponsor, Type,
+  Format and Supplier columns). The Sponsorship page lists everything sold to
+  sponsors. Install sheets stay signage-only (bags aren't installed).
+- **Print or digital is a property of the signage type**, which admins and
+  Operations manage in Settings → Signage types (types are hidden, never
+  deleted, so old items keep theirs).
+- **Sign-off is by department.** Workflow steps with `default_for` are
+  "department" steps (Operations, Marketing, Sales, Senior management by
+  default). Operations, Marketing and Sales review together, then Senior
+  management. Admins set, per step, the department, a default person, and
+  whether it's on by default for organiser and/or sponsor signage, and can
+  add or remove departments (Settings → Sign-off). Each item stores its own
+  choices in `signage_items.signoffs` (null = the defaults), editable by
+  whoever can edit the item. Changing them on an item in or past review
+  restarts sign-off, like a spec change. The chosen person (or everyone in
+  the department) gets an in-app notice and email. Venue approval and the
+  production confirmations still follow their conditions.
+- **Decisions and comments are logged** in History in plain words
+  ("Marketing sign-off: changes requested — “…”"); a comment box sits under
+  the sign-off chain.
+- **Shows** replace "Editions" in the UI (routes unchanged). New show creates
+  the series and venue (with address) inline if needed; logos are resized to
+  512px WebP in the documents bucket.
+- **Suppliers** have their own page; what they do is a list of services
+  admins manage (`supplier_services`, many-to-many). The old `supplier_kind`
+  stays in the table but is no longer shown.
+- **Emails** need `RESEND_API_KEY` and `EMAIL_FROM` set on Vercel; without
+  them notices appear in the app only.

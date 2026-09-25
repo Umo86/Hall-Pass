@@ -44,7 +44,7 @@ export function EditionSwitcher({ editions }: { editions: EditionOption[] }) {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-72">
-        <DropdownMenuLabel>Editions</DropdownMenuLabel>
+        <DropdownMenuLabel>Shows</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {editions.map((edition) => (
           <DropdownMenuItem key={edition.code} onSelect={() => go(edition.code)}>

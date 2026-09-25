@@ -51,3 +51,10 @@ export async function editionForDeadlines(editionId: string): Promise<EditionFor
     })),
   };
 }
+
+/** A show logo's URL for an <img>, or null when there is none or it can't be read. */
+export async function showLogoUrl(logoPath: string | null | undefined): Promise<string | null> {
+  if (!logoPath) return null;
+  const { getInlineUrl } = await import("@/lib/storage");
+  return getInlineUrl("documents", logoPath).catch(() => null);
+}

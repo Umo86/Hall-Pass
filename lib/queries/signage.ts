@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -25,8 +25,11 @@ export type ScheduleRow = {
   ref: string;
   name: string;
   status: string;
+  kind: "signage" | "sponsorship_item";
   category: string | null;
   typeName: string | null;
+  /** Print or digital (from the signage type). */
+  format: string | null;
   hallName: string | null;
   locationName: string | null;
   sponsorName: string | null;
@@ -54,6 +57,7 @@ export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]
     .select({
       item: signageItems,
       typeName: itemTypes.name,
+      format: itemTypes.format,
       hallName: halls.name,
       locationName: locations.name,
       sponsorName: sponsors.companyName,
@@ -68,13 +72,9 @@ export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]
     .leftJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
     .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
     .leftJoin(artworkVersions, eq(signageItems.currentArtworkVersionId, artworkVersions.id))
-    .where(
-      and(
-        eq(signageItems.editionId, editionId),
-        eq(signageItems.kind, "signage"),
-        isNull(signageItems.deletedAt),
-      ),
-    )
+    // Everything for the show — organiser signage, sponsor signage and the
+    // items sold in the Sponsorship section — in one schedule.
+    .where(and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt)))
     .orderBy(asc(signageItems.seq));
 
   const ids = rows.map((r) => r.item.id);
@@ -103,8 +103,10 @@ export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]
     ref: r.item.ref,
     name: r.item.name,
     status: r.item.status,
+    kind: r.item.kind,
     category: r.item.category,
     typeName: r.typeName,
+    format: r.format,
     hallName: r.hallName,
     locationName: r.locationName,
     sponsorName: r.sponsorName,
@@ -139,6 +141,8 @@ export type SponsorshipRow = {
   name: string;
   status: string;
   typeName: string | null;
+  kind: "signage" | "sponsorship_item";
+  sponsorId: string | null;
   sponsorName: string | null;
   quantity: number;
   costEstimate: string | null;
@@ -146,7 +150,7 @@ export type SponsorshipRow = {
   currentVersion: number | null;
 };
 
-/** The sponsorship register: sold deliverables such as bags and lanyards. */
+/** The sponsorship register: everything sold to sponsors, by sponsor. */
 export async function listSponsorshipRows(editionId: string): Promise<SponsorshipRow[]> {
   const rows = await db
     .select({
@@ -159,20 +163,23 @@ export async function listSponsorshipRows(editionId: string): Promise<Sponsorshi
     .leftJoin(itemTypes, eq(signageItems.itemTypeId, itemTypes.id))
     .leftJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
     .leftJoin(artworkVersions, eq(signageItems.currentArtworkVersionId, artworkVersions.id))
+    // Everything sold to sponsors: sponsorship items and sponsor signage.
     .where(
       and(
         eq(signageItems.editionId, editionId),
-        eq(signageItems.kind, "sponsorship_item"),
+        or(eq(signageItems.kind, "sponsorship_item"), isNotNull(signageItems.sponsorId)),
         isNull(signageItems.deletedAt),
       ),
     )
-    .orderBy(asc(signageItems.seq));
+    .orderBy(asc(sponsors.companyName), asc(signageItems.seq));
   return rows.map((r) => ({
     id: r.item.id,
     ref: r.item.ref,
     name: r.item.name,
     status: r.item.status,
     typeName: r.typeName,
+    kind: r.item.kind,
+    sponsorId: r.item.sponsorId,
     sponsorName: r.sponsorName,
     quantity: r.item.quantity,
     costEstimate: r.item.costEstimate,

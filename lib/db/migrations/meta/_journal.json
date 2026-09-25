@@ -29,6 +29,13 @@
       "when": 1790114031781,
       "tag": "0003_flat_firebird",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790325422848,
+      "tag": "0004_signage_rework",
+      "breakpoints": true
     }
   ]
 }

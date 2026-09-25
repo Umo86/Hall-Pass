@@ -114,6 +114,8 @@ export const editions = pgTable(
       .$type<ComplexStructureTrigger[]>()
       .notNull()
       .default([]),
+    /** Show logo (image in the documents bucket). */
+    logoPath: text("logo_path"),
     ...timestamps,
   },
   (t) => [

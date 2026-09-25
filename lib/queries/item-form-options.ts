@@ -6,11 +6,18 @@ import {
   halls,
   itemTypes,
   locations,
+  memberships,
   sponsorEntitlements,
   sponsors,
+  supplierServiceLinks,
+  supplierServices,
   suppliers,
+  users,
   workflows,
 } from "@/lib/db/schema";
+import { defaultSignageWorkflowId } from "@/lib/domain/signage";
+import { loadStepDefs } from "@/lib/workflow/persist";
+import { isDepartmentStep } from "@/lib/workflow/signoffs";
 import type { ItemFormOptions } from "@/components/signage/item-form";
 
 /**
@@ -22,12 +29,21 @@ export async function itemFormOptions(opts: {
   editionId: string;
   kind: "signage" | "sponsorship_item";
   withWorkflows?: boolean;
+  /** The item's workflow (edit); new items use the organisation's default. */
+  workflowId?: string | null;
+  /** Keep a type that's been hidden since the item chose it. */
+  includeTypeId?: string | null;
 }): Promise<ItemFormOptions> {
   const isSignage = opts.kind === "signage";
   const [typeRows, hallRows, locationRows, sponsorRows, entRows, supplierRows, contractorRows, wfRows] =
     await Promise.all([
       db
-        .select({ id: itemTypes.id, name: itemTypes.name })
+        .select({
+          id: itemTypes.id,
+          name: itemTypes.name,
+          format: itemTypes.format,
+          isArchived: itemTypes.isArchived,
+        })
         .from(itemTypes)
         .where(and(eq(itemTypes.organisationId, opts.organisationId), eq(itemTypes.kind, opts.kind)))
         .orderBy(asc(itemTypes.sortOrder), asc(itemTypes.name)),
@@ -61,10 +77,18 @@ export async function itemFormOptions(opts: {
         .innerJoin(sponsors, eq(sponsorEntitlements.sponsorId, sponsors.id))
         .where(eq(sponsors.editionId, opts.editionId)),
       db
-        .select({ id: suppliers.id, name: suppliers.name })
+        .select({ id: suppliers.id, name: suppliers.name, service: supplierServices.name })
         .from(suppliers)
+        .leftJoin(supplierServiceLinks, eq(supplierServiceLinks.supplierId, suppliers.id))
+        .leftJoin(
+          supplierServices,
+          and(
+            eq(supplierServiceLinks.serviceId, supplierServices.id),
+            eq(supplierServices.isArchived, false),
+          ),
+        )
         .where(eq(suppliers.organisationId, opts.organisationId))
-        .orderBy(asc(suppliers.name)),
+        .orderBy(asc(suppliers.name), asc(supplierServices.sortOrder)),
       isSignage
         ? db
             .select({ id: contractors.id, name: contractors.name })
@@ -86,14 +110,56 @@ export async function itemFormOptions(opts: {
             .orderBy(desc(workflows.isDefault), asc(workflows.name))
         : [],
     ]);
+  // One entry per supplier, with what they do ("Big Print Co — Signage print, Installation").
+  const supplierMap = new Map<string, { id: string; name: string; services: string[] }>();
+  for (const r of supplierRows) {
+    const entry = supplierMap.get(r.id) ?? { id: r.id, name: r.name, services: [] };
+    if (r.service && !entry.services.includes(r.service)) entry.services.push(r.service);
+    supplierMap.set(r.id, entry);
+  }
+
+  // Department sign-offs and the people who can sign each one.
+  const workflowId =
+    opts.workflowId ?? (await defaultSignageWorkflowId(db, opts.organisationId, null));
+  const [steps, people] = await Promise.all([
+    workflowId ? loadStepDefs(db, workflowId) : [],
+    db
+      .select({
+        id: users.id,
+        name: users.fullName,
+        email: users.email,
+        role: memberships.role,
+        overrides: memberships.permissionOverrides,
+      })
+      .from(memberships)
+      .innerJoin(users, eq(memberships.userId, users.id))
+      .where(eq(memberships.organisationId, opts.organisationId))
+      .orderBy(asc(users.fullName)),
+  ]);
+  const signers = people.filter(
+    (p) =>
+      p.role !== "viewer" &&
+      (p.overrides as Record<string, unknown> | null)?.["approval.decide"] !== false,
+  );
+
   return {
-    itemTypes: typeRows,
+    itemTypes: typeRows
+      .filter((t) => !t.isArchived || t.id === opts.includeTypeId)
+      .map((t) => ({ id: t.id, name: t.name, format: t.format })),
     halls: hallRows,
     locations: locationRows,
     sponsors: sponsorRows,
     entitlements: entRows,
-    suppliers: supplierRows,
+    suppliers: [...supplierMap.values()],
     contractors: contractorRows,
     workflows: wfRows,
+    signoffSteps: steps.filter(isDepartmentStep).map((s) => ({
+      id: s.id,
+      name: s.name,
+      department: s.approverRole,
+      defaultUserId: s.approverType === "user" ? s.approverUserId : null,
+      defaultFor: s.defaultFor ?? [],
+    })),
+    signers: signers.map((p) => ({ id: p.id, name: p.name || p.email, role: p.role })),
   };
 }

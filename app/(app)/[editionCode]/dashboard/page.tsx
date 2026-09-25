@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
 import { standsEnabled } from "@/lib/config";
-import { getEditionByCode } from "@/lib/queries/editions";
+import { getEditionByCode, showLogoUrl } from "@/lib/queries/editions";
 import { dashboardData, refsForInstanceEntities } from "@/lib/queries/dashboard";
 import { formatDate, formatDateTime, formatMoney, roleLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
@@ -47,15 +47,21 @@ const DEADLINE_LABELS: Record<string, string> = {
 
 export default async function DashboardPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ editionCode: string }>;
+  searchParams: Promise<{ notice?: string }>;
 }) {
   const session = await requireStaffSession();
   const canSeeCosts = can(session.actor, { type: "costs.view" });
   const { editionCode } = await params;
   const ed = await getEditionByCode(editionCode.toUpperCase());
   if (!ed) notFound();
-  const data = await dashboardData(ed.edition.id);
+  const { notice } = await searchParams;
+  const [data, logoUrl] = await Promise.all([
+    dashboardData(ed.edition.id),
+    showLogoUrl(ed.edition.logoPath),
+  ]);
   const refMap = await refsForInstanceEntities(data.overdue);
   const mostOverdueRef = data.mostOverdue ? refsForLink(refMap, data.mostOverdue) : null;
 
@@ -74,11 +80,26 @@ export default async function DashboardPage({
 
   return (
     <div className="flex flex-col gap-6 p-4 sm:p-6">
+      {notice && (
+        <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          The show was created, but the logo wasn&apos;t saved: {notice}. Add it again from Shows
+          → Edit.
+        </p>
+      )}
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
+        {logoUrl && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={logoUrl}
+            alt={`${ed.edition.name} logo`}
+            className="h-14 w-auto max-w-40 rounded border object-contain p-1"
+          />
+        )}
+        <div className="mr-auto">
           <h1 className="text-xl font-semibold tracking-tight">{ed.edition.name}</h1>
           <p className="text-muted-foreground text-sm">
-            {ed.venue.name} · build {formatDate(ed.edition.buildStart)} –{" "}
+            {ed.venue.name}
+            {ed.venue.address ? `, ${ed.venue.address}` : ""} · build {formatDate(ed.edition.buildStart)} –{" "}
             {formatDate(ed.edition.buildEnd)} · open {formatDate(ed.edition.openStart)} –{" "}
             {formatDate(ed.edition.openEnd)}
           </p>
@@ -122,7 +143,7 @@ export default async function DashboardPage({
             href={`/${editionCode}/sponsorship`}
             className="text-muted-foreground mt-3 inline-block text-sm hover:underline"
           >
-            Sponsorship items: {data.sponsorshipCount} →
+            Sold to sponsors: {data.sponsorshipCount} →
           </Link>
         </div>
 

@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { signInAs } from "./helpers";
 
 test.describe("sponsorship items", () => {
-  test("sales adds a sponsorship item; it stays out of the signage schedule", async ({
+  test("sales adds a sponsorship item; it shows in the signage schedule with the sponsor", async ({
     browser,
     baseURL,
   }) => {
@@ -12,7 +12,7 @@ test.describe("sponsorship items", () => {
     const page = await ctx.newPage();
 
     await page.goto(`${baseURL}/BIRM27/sponsorship`);
-    await expect(page.getByRole("heading", { name: "Sponsorship items" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sponsorship", exact: true })).toBeVisible();
     await page.getByRole("link", { name: "Add sponsorship item" }).click();
     await page.waitForURL("**/sponsorship/new");
     await page.getByLabel("Name", { exact: true }).fill(name);
@@ -20,6 +20,7 @@ test.describe("sponsorship items", () => {
     await page.getByLabel("Sponsor", { exact: true }).selectOption({ label: "BuildCo" });
     await page.getByRole("button", { name: "Create item" }).click();
     await page.waitForURL("**/sponsorship/SIG-BIRM27-*");
+    const ref = new URL(page.url()).pathname.split("/").pop()!;
     await expect(page.getByRole("heading", { name })).toBeVisible();
 
     // A sponsorship item has no hall or location, and can still go for sign-off.
@@ -29,9 +30,12 @@ test.describe("sponsorship items", () => {
     // Listed in the sponsorship register…
     await page.goto(`${baseURL}/BIRM27/sponsorship`);
     await expect(page.getByText(name)).toBeVisible();
-    // …but not in the signage schedule.
-    await page.goto(`${baseURL}/BIRM27/signage`);
-    await expect(page.getByText(name)).toHaveCount(0);
+    // …and in the signage schedule, as sponsor signage with the sponsor's name.
+    await page.goto(`${baseURL}/BIRM27/signage?q=${encodeURIComponent(ref)}`);
+    const row = page.locator("tr", { hasText: ref });
+    await expect(row).toBeVisible();
+    await expect(row.getByText("Sponsor", { exact: true })).toBeVisible();
+    await expect(row.getByText("BuildCo")).toBeVisible();
     await ctx.close();
   });
 
@@ -40,7 +44,7 @@ test.describe("sponsorship items", () => {
     await signInAs(ctx, "viewer@media10.test", baseURL!);
     const page = await ctx.newPage();
     await page.goto(`${baseURL}/BIRM27/sponsorship`);
-    await expect(page.getByRole("heading", { name: "Sponsorship items" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sponsorship", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Add sponsorship item" })).toHaveCount(0);
     await page.goto(`${baseURL}/BIRM27/sponsorship/new`);
     await page.waitForURL("**/sponsorship");

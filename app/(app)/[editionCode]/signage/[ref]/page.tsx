@@ -4,7 +4,7 @@ import { and, count, eq, ne } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { desc as descOrder } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { changeRequests, memberships, users } from "@/lib/db/schema";
+import { changeRequests, comments as commentsTable, memberships, users } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, type ApprovalStepCtx } from "@/lib/authz";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
@@ -29,6 +29,7 @@ import { CommentThread } from "@/components/comments/thread";
 import { ItemForm } from "@/components/signage/item-form";
 import { LifecycleButtons } from "@/components/signage/lifecycle-buttons";
 import { ChangesTab, type ChangeRequestRow } from "@/components/signage/changes-tab";
+import { QuickComment } from "@/components/signage/quick-comment";
 
 export const dynamic = "force-dynamic";
 
@@ -193,6 +194,8 @@ async function DetailsTab({
       organisationId: bundle.organisation.id,
       editionId: bundle.edition.id,
       kind: item.kind,
+      workflowId: item.workflowId,
+      includeTypeId: item.itemTypeId,
     }),
     isSponsorship ? [] : getItemSnags(item.id),
     !isSponsorship && item.installPhotoPath?.includes("/")
@@ -292,7 +295,7 @@ async function DetailsTab({
           fixingMethod: item.fixingMethod,
           weightKg: item.weightKg,
           requiresVenueApproval: item.requiresVenueApproval,
-          requiresEventDirector: item.requiresEventDirector,
+          signoffs: item.signoffs ?? null,
           // Costs stay on the server for people who can't see them.
           budgetLine: canSeeCosts ? item.budgetLine : null,
           costEstimate: canSeeCosts ? item.costEstimate : null,
@@ -327,7 +330,7 @@ async function ArtworkAndSignOff({
   requiresInstallPhoto: boolean;
 }) {
   const itemCtx = itemAuthzCtx(bundle);
-  const [versions, instanceRows, invalidation, staffRows] = await Promise.all([
+  const [versions, instanceRows, invalidation, staffRows, [comments]] = await Promise.all([
     getItemVersions(item.id),
     getItemInstances(item.id),
     artworkInvalidationPreview(item.id),
@@ -342,7 +345,14 @@ async function ArtworkAndSignOff({
           ne(memberships.role, "viewer"),
         ),
       ),
+    db
+      .select({ n: count() })
+      .from(commentsTable)
+      .where(
+        and(eq(commentsTable.entityType, "signage_item"), eq(commentsTable.entityId, item.id)),
+      ),
   ]);
+  const commentCount = Number(comments?.n ?? 0);
 
   const canDecideIds = new Set<string>();
   const canDelegateIds = new Set<string>();
@@ -447,6 +457,11 @@ async function ArtworkAndSignOff({
           />
         )}
       </section>
+      {can(session.actor, { type: "comment.internal.write" }) && (
+        <section className="max-w-2xl">
+          <QuickComment itemId={item.id} count={commentCount} />
+        </section>
+      )}
     </div>
   );
 }

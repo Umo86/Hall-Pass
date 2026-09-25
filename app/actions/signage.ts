@@ -17,14 +17,15 @@ import {
   signageTransition,
   type SignageStatus,
 } from "@/lib/status/signage";
-import { applyHoldShift } from "@/lib/workflow";
-import { loadRun, persistRun } from "@/lib/workflow/persist";
+import { applyHoldShift, effectiveSignoffs, sameSignoffs } from "@/lib/workflow";
+import { loadRun, loadStepDefs, persistRun } from "@/lib/workflow/persist";
 import { nextSignageRef } from "@/lib/refs";
 import { notify } from "@/lib/notify";
 import {
   changedSpecKeys,
   defaultSignageWorkflowId,
   itemAuthzCtx,
+  normaliseSignoffs,
   loadItemBundle,
   missingSubmitFields,
   notifyPendingAssignees,
@@ -37,7 +38,17 @@ import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 const itemFields = z.object({
   name: z.string().trim().min(1, "Name is required").max(300),
   description: z.string().max(5000).optional().nullable(),
-  category: z.enum(["directional", "venue", "sponsorship"]).optional().nullable(),
+  category: z.enum(["organiser", "sponsor"]).optional().nullable(),
+  // Sign-off choices arrive as JSON from the form's hidden field.
+  signoffs: z
+    .preprocess(
+      (v) => (typeof v === "string" ? (v ? JSON.parse(v) : null) : v),
+      z
+        .array(z.object({ stepId: z.string().uuid(), userId: z.string().uuid().nullable() }))
+        .max(20)
+        .nullable(),
+    )
+    .optional(),
   itemTypeId: z.string().uuid().optional().nullable(),
   hallId: z.string().uuid().optional().nullable(),
   locationId: z.string().uuid().optional().nullable(),
@@ -78,14 +89,7 @@ const createSchema = itemFields
     workflowId: z.string().uuid().optional().nullable(),
   })
   .superRefine((data, ctx) => {
-    if (data.kind === "signage" && !data.category) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["category"],
-        message: "Choose a category — directional, venue or sponsorship",
-      });
-    }
-    if (data.kind === "sponsorship_item" && !data.sponsorId) {
+    if ((data.kind === "sponsorship_item" || data.category === "sponsor") && !data.sponsorId) {
       ctx.addIssue({
         code: "custom",
         path: ["sponsorId"],
@@ -117,10 +121,22 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
   if (!can(session.actor, createAction)) return fail("You cannot create items");
 
   const data = applyRiggedRule(parsed.data);
+  // Sponsorship items are always sponsor signage; anything else defaults to
+  // the organiser's own.
+  const category = data.kind === "sponsorship_item" ? "sponsor" : (data.category ?? "organiser");
   // The hall always follows the chosen location.
   if (data.locationId) data.hallId = (await hallOfLocation(data.locationId)) ?? data.hallId;
   try {
     const ref = await db.transaction(async (tx) => {
+      const workflowId =
+        data.workflowId ??
+        (await defaultSignageWorkflowId(tx, session.organisation.id, data.itemTypeId ?? null));
+      const signoffs = await normaliseSignoffs(tx, {
+        organisationId: session.organisation.id,
+        workflowId,
+        category,
+        plan: data.signoffs,
+      });
       // Locking not needed here; the counter row lock serialises the seq.
       const [edition] = await tx.execute<{ code: string; status: string }>(
         sql`SELECT code, status FROM editions WHERE id = ${data.editionId}`,
@@ -137,7 +153,8 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
           name: data.name,
           description: data.description ?? null,
           kind: data.kind,
-          category: data.kind === "signage" ? (data.category ?? null) : null,
+          category,
+          signoffs,
           itemTypeId: data.itemTypeId ?? null,
           hallId: data.hallId ?? null,
           locationId: data.locationId ?? null,
@@ -166,7 +183,7 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
           installDate: data.installDate ?? null,
           installSlot: data.installSlot ?? null,
           installContractorId: data.installContractorId ?? null,
-          workflowId: data.workflowId ?? null,
+          workflowId,
           createdBy: session.user.id,
         })
         .returning();
@@ -185,7 +202,7 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
       const recipients = await resolveItemCreationRecipients(
         tx,
         session.organisation.id,
-        { kind: data.kind, category: data.category ?? null, ownerRole: data.ownerRole },
+        { kind: data.kind, category, ownerRole: data.ownerRole },
         session.user.id,
       );
       await notify(tx, {
@@ -262,16 +279,59 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
         if (patch.costEstimate !== undefined) set.costEstimate = num(patch.costEstimate);
         if (patch.costActual !== undefined) set.costActual = num(patch.costActual);
       }
+      // Sponsorship items stay sponsor signage.
+      if (bundle.item.kind === "sponsorship_item") delete set.category;
       // The form posts every field; keep only real changes so History and
       // the sign-off rules see what actually moved.
       for (const key of Object.keys(set) as Array<keyof typeof set>) {
         if (sameValue((bundle.item as Record<string, unknown>)[key], set[key])) delete set[key];
       }
-      if (Object.keys(set).length === 0) return "unchanged" as const;
 
       const item = bundle.item;
+      const nextCategory = (set.category ?? item.category ?? "organiser") as "organiser" | "sponsor";
+      const nextSponsor = set.sponsorId !== undefined ? set.sponsorId : item.sponsorId;
+      if (nextCategory === "sponsor" && !nextSponsor) {
+        throw new Error("Sponsor signage needs a sponsor — choose who bought it");
+      }
+
+      // Who signs off: compare what would actually run before and after.
+      const workflowId =
+        item.workflowId ??
+        (await defaultSignageWorkflowId(tx, session.organisation.id, item.itemTypeId));
+      let signoffsChanged = false;
+      if (patch.signoffs !== undefined || set.category !== undefined) {
+        const nextPlan =
+          patch.signoffs !== undefined
+            ? await normaliseSignoffs(tx, {
+                organisationId: session.organisation.id,
+                workflowId,
+                category: nextCategory,
+                plan: patch.signoffs,
+              })
+            : (item.signoffs ?? null);
+        const steps = workflowId ? await loadStepDefs(tx, workflowId) : [];
+        const before = effectiveSignoffs(steps, item.category, item.signoffs ?? null);
+        const after = effectiveSignoffs(steps, nextCategory, nextPlan);
+        signoffsChanged = !sameSignoffs(before, after);
+        if (JSON.stringify(nextPlan) !== JSON.stringify(item.signoffs ?? null)) {
+          set.signoffs = nextPlan;
+        }
+      }
+      if (Object.keys(set).length === 0) return "unchanged" as const;
+
       const specChanged = changedSpecKeys(item as Record<string, unknown>, set);
       let restarted = false;
+      if (signoffsChanged && specChanged.length === 0) {
+        if (["installed", "snagged", "closed"].includes(item.status)) {
+          throw new Error("This item is already installed — who signs it off can no longer change");
+        }
+        if (INVALIDATABLE_STATUSES.includes(item.status)) {
+          set.status = signageTransition(item.status, "new_version_after_approval");
+          restarted = true;
+        } else if (item.status === "in_review" && item.currentRunNumber > 0) {
+          restarted = true;
+        }
+      }
       if (specChanged.length > 0) {
         if (["installed", "snagged", "closed"].includes(item.status)) {
           throw new Error(
@@ -308,7 +368,7 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
         before: pickKeys(item, Object.keys(set)),
         after: set,
         summary: `Updated ${item.ref} (${Object.keys(set).join(", ")})${
-          restarted ? " — spec changed, sign-off restarted" : ""
+          restarted ? " — sign-off restarted" : ""
         }`,
       });
       return restarted ? ("restarted" as const) : ("saved" as const);
@@ -318,7 +378,7 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
     return success(
       undefined,
       outcome === "restarted"
-        ? "Saved — the spec changed, so sign-off has restarted and approvers have been told"
+        ? "Saved — sign-off has restarted and the approvers have been told"
         : "Saved",
     );
   } catch (err) {

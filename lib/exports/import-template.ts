@@ -49,7 +49,7 @@ export async function buildImportTemplate(): Promise<Buffer> {
     "2027-10-02",
     "am",
     "Example row — delete before importing",
-    "directional",
+    "organiser",
   ]);
   ws.views = [{ state: "frozen", ySplit: 1 }];
   ws.columns.forEach((c) => {

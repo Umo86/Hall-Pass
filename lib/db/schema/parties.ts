@@ -4,6 +4,8 @@ import {
   integer,
   numeric,
   pgTable,
+  primaryKey,
+  boolean,
   text,
   unique,
   uuid,
@@ -21,7 +23,8 @@ export const suppliers = pgTable(
       .notNull()
       .references(() => organisations.id),
     name: text("name").notNull(),
-    kind: supplierKind("kind").notNull(),
+    // Superseded by services (below); kept for older rows and exports.
+    kind: supplierKind("kind").notNull().default("other"),
     contactName: text("contact_name"),
     email: text("email"),
     phone: text("phone"),
@@ -29,6 +32,38 @@ export const suppliers = pgTable(
     ...timestamps,
   },
   (t) => [index("suppliers_org_idx").on(t.organisationId)],
+);
+
+/** What suppliers can do (Signage print, Staffing, AV…) — a list admins manage. */
+export const supplierServices = pgTable(
+  "supplier_services",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organisationId: uuid("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    name: text("name").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isArchived: boolean("is_archived").notNull().default(false),
+    ...timestamps,
+  },
+  (t) => [unique("supplier_services_org_name_unique").on(t.organisationId, t.name)],
+);
+
+export const supplierServiceLinks = pgTable(
+  "supplier_service_links",
+  {
+    supplierId: uuid("supplier_id")
+      .notNull()
+      .references(() => suppliers.id, { onDelete: "cascade" }),
+    serviceId: uuid("service_id")
+      .notNull()
+      .references(() => supplierServices.id, { onDelete: "cascade" }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.supplierId, t.serviceId] }),
+    index("supplier_service_links_service_idx").on(t.serviceId),
+  ],
 );
 
 export const contractors = pgTable(

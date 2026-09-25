@@ -49,7 +49,11 @@ export const ownerRole = pgEnum("owner_role", ["ops", "marketing"]);
 export const itemKind = pgEnum("item_kind", ["signage", "sponsorship_item"]);
 
 /** Classification of signage; sponsorship items carry no category. */
-export const signageCategory = pgEnum("signage_category", ["directional", "venue", "sponsorship"]);
+/** Who the signage is for: the organiser's own, or sold to a sponsor. */
+export const signageCategory = pgEnum("signage_category", ["organiser", "sponsor"]);
+
+/** Whether a signage type is printed or shown on a screen. */
+export const itemFormat = pgEnum("item_format", ["print", "digital"]);
 
 export const taskStatus = pgEnum("task_status", ["open", "done"]);
 

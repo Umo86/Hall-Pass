@@ -10,7 +10,7 @@ test.describe("team management", () => {
     await signInAs(ctx, "admin@media10.test", baseURL!);
     const page = await ctx.newPage();
     page.on("dialog", (d) => d.accept()); // role changes ask for confirmation
-    await page.goto(`${baseURL}/settings`);
+    await page.goto(`${baseURL}/settings?tab=team`);
 
     // Role change: Vic Viewer → Sales, then back.
     const vicRole = page.getByLabel("Role for viewer@media10.test");
@@ -35,14 +35,21 @@ test.describe("team management", () => {
     await resetBtn.click();
     await expect(salesRow.getByText("Permissions (customised)")).toHaveCount(0);
 
-    // Sign-off assignment: point "Ops technical check" at Olivia by name.
-    const stepRow = page.locator("li", { hasText: "Ops technical check" }).first();
-    const approver = stepRow.getByLabel("Approver");
-    await approver.selectOption({ label: "Person: Olivia Ops" });
-    await expect(approver).toHaveValue(/^user:/);
-    // …and back to the ops role so reruns stay stable.
-    await approver.selectOption({ label: "Role: Ops" });
-    await expect(approver).toHaveValue("role:ops");
+    // Sign-off: the Operations sign-off defaults to Olivia by name, then back.
+    await page.goto(`${baseURL}/settings?tab=signoff`);
+    const stepRow = page.locator("li", { hasText: "Operations sign-off" }).first();
+    await stepRow.getByRole("button", { name: "Edit" }).click();
+    let dialog = page.getByRole("dialog");
+    await dialog.getByLabel("Signed off by").selectOption({ label: "Olivia Ops" });
+    await dialog.getByRole("button", { name: "Save" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(stepRow.getByText(/Olivia Ops \(Operations\)/)).toBeVisible();
+    await stepRow.getByRole("button", { name: "Edit" }).click();
+    dialog = page.getByRole("dialog");
+    await dialog.getByLabel("Signed off by").selectOption({ label: "Anyone in Operations" });
+    await dialog.getByRole("button", { name: "Save" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(stepRow.getByText(/Anyone in Operations/)).toBeVisible();
     await ctx.close();
   });
 
@@ -50,7 +57,7 @@ test.describe("team management", () => {
     const ctx = await browser.newContext();
     await signInAs(ctx, "marketing@media10.test", baseURL!);
     const page = await ctx.newPage();
-    await page.goto(`${baseURL}/settings`);
+    await page.goto(`${baseURL}/settings?tab=team`);
     await expect(page.getByRole("heading", { name: "Team" })).toBeVisible();
     await expect(page.getByLabel("Role for viewer@media10.test")).toHaveCount(0);
     await ctx.close();

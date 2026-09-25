@@ -68,8 +68,15 @@ const rowSchema = z.object({
     .string()
     .trim()
     .toLowerCase()
-    .transform((v) => (v === "wayfinding" ? "directional" : v))
-    .pipe(z.enum(["directional", "venue", "sponsorship", ""]))
+    // Organiser or Sponsor; older sheets said directional/venue/sponsorship.
+    .transform((v) =>
+      ["directional", "venue", "wayfinding", "organizer"].includes(v)
+        ? "organiser"
+        : v === "sponsorship" || v === "sponsored"
+          ? "sponsor"
+          : v,
+    )
+    .pipe(z.enum(["organiser", "sponsor", ""], { message: "Category must be Organiser or Sponsor" }))
     .optional(),
 });
 
@@ -304,8 +311,8 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
             ref,
             seq,
             kind: "signage",
-            // Blank category: sponsored rows are sponsorship signage, the rest venue.
-            category: data.category || (values.sponsorId ? "sponsorship" : "venue"),
+            // Blank category: sponsored rows are sponsor signage, the rest organiser.
+            category: data.category || (values.sponsorId ? "sponsor" : "organiser"),
             ownerRole: "ops",
             ownerUserId: session.user.id,
             workflowId: await defaultSignageWorkflowId(

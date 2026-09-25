@@ -296,6 +296,42 @@ async function main() {
     supplierRows[sup.name] = row;
   }
 
+  // What each supplier does (admins can add more under Settings).
+  const serviceNames = [
+    "Signage print",
+    "Digital screens & AV",
+    "Rigging",
+    "Installation",
+    "Staffing",
+    "Furniture",
+    "Structural engineering",
+  ];
+  const serviceRows: Record<string, typeof s.supplierServices.$inferSelect> = {};
+  for (const [i, name] of serviceNames.entries()) {
+    const [row] = await db
+      .insert(s.supplierServices)
+      .values({ organisationId: org.id, name, sortOrder: i + 1 })
+      .onConflictDoUpdate({
+        target: [s.supplierServices.organisationId, s.supplierServices.name],
+        set: { sortOrder: i + 1 },
+      })
+      .returning();
+    serviceRows[name] = row;
+  }
+  const supplierServiceDefs: Record<string, string[]> = {
+    "Big Print Co": ["Signage print", "Installation"],
+    "Rig Right": ["Rigging", "Installation", "Staffing"],
+    "Screen Hire Ltd": ["Digital screens & AV", "Staffing"],
+  };
+  for (const [supplier, services] of Object.entries(supplierServiceDefs)) {
+    for (const service of services) {
+      await db
+        .insert(s.supplierServiceLinks)
+        .values({ supplierId: supplierRows[supplier].id, serviceId: serviceRows[service].id })
+        .onConflictDoNothing();
+    }
+  }
+
   const contractorDefs = [
     { name: "Stand Builders Ltd", email: "team@standbuilders.test", insuranceExpiry: "2028-06-30" },
     // Insurance expiring before the build so the expiry flag shows.
@@ -391,6 +427,7 @@ async function main() {
           slaDays: step.slaDays,
           invalidateOnNewVersion: step.invalidateOnNewVersion,
           restartFromHereOnChanges: step.restartFromHereOnChanges,
+          defaultFor: step.defaultFor ?? [],
         });
       }
     }
@@ -412,20 +449,21 @@ async function main() {
       slaDays: r.slaDays,
       invalidateOnNewVersion: r.invalidateOnNewVersion,
       restartFromHereOnChanges: r.restartFromHereOnChanges,
+      defaultFor: (r.defaultFor ?? []) as StepDef["defaultFor"],
     }));
     return { workflow: wf, steps: defs };
   }
 
   const signageWfInitial = await ensureWorkflow("Signage default", "signage", defaultSignageSteps);
-  // Demo of a named-user sign-off: the Event Director step is assigned to Dana
-  // herself rather than the whole event_director role (only flipped once).
+  // Demo of a default named person: Senior management sign-off goes to Dana
+  // herself rather than everyone in senior management (only flipped once).
   await db
     .update(s.workflowSteps)
-    .set({ approverType: "user", approverUserId: byRole.event_director, approverRole: null })
+    .set({ approverType: "user", approverUserId: byRole.event_director, approverRole: "event_director" })
     .where(
       and(
         eq(s.workflowSteps.workflowId, signageWfInitial.workflow.id),
-        eq(s.workflowSteps.name, "Event Director sign-off"),
+        eq(s.workflowSteps.name, "Senior management sign-off"),
         eq(s.workflowSteps.approverType, "role"),
       ),
     );
@@ -543,6 +581,8 @@ async function main() {
       kind: "sponsorship_item",
     },
   ];
+  const formatFor = (it: { code: string; kind?: string }) =>
+    (it.kind ?? "signage") !== "signage" ? null : it.code === "digital_screen" ? ("digital" as const) : ("print" as const);
   const itemTypeRows: Record<string, typeof s.itemTypes.$inferSelect> = {};
   for (const [i, it] of itemTypeDefs.entries()) {
     const [row] = await db
@@ -551,11 +591,12 @@ async function main() {
         organisationId: org.id,
         sortOrder: i,
         defaultWorkflowId: signageWf.workflow.id,
+        format: formatFor(it),
         ...it,
       })
       .onConflictDoUpdate({
         target: [s.itemTypes.organisationId, s.itemTypes.code],
-        set: { name: it.name, kind: it.kind ?? "signage" },
+        set: { name: it.name, kind: it.kind ?? "signage", format: formatFor(it) },
       })
       .returning();
     itemTypeRows[it.code] = row;
@@ -830,7 +871,7 @@ async function main() {
       supplier: "Big Print Co",
       cost: 1800,
       versions: 1,
-      advance: [["Marketing brand check", "approve"]],
+      advance: [["Marketing sign-off", "approve"]],
     }),
     P({
       seq: 3,
@@ -846,8 +887,8 @@ async function main() {
       cost: 2400,
       versions: 2,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Sponsor approval", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Sales sign-off", "approve"],
       ],
       overdue: true,
     }),
@@ -876,7 +917,7 @@ async function main() {
       supplier: "Big Print Co",
       cost: 900,
       versions: 1,
-      advance: [["Marketing brand check", "request_changes"]],
+      advance: [["Marketing sign-off", "request_changes"]],
     }),
     P({
       seq: 6,
@@ -891,8 +932,8 @@ async function main() {
       requiresDirector: true,
       versions: 1,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Ops technical check", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Operations sign-off", "approve"],
       ],
       overdue: true,
     }),
@@ -908,8 +949,8 @@ async function main() {
       cost: 2100,
       versions: 1,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Ops technical check", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Operations sign-off", "approve"],
       ],
     }),
     P({
@@ -924,8 +965,8 @@ async function main() {
       cost: 1500,
       versions: 1,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Ops technical check", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Operations sign-off", "approve"],
         ["Venue approval", "approve"],
       ],
     }),
@@ -942,9 +983,9 @@ async function main() {
       cost: 2800,
       versions: 1,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Sponsor approval", "approve_with_conditions"],
-        ["Ops technical check", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Sales sign-off", "approve_with_conditions"],
+        ["Operations sign-off", "approve"],
       ],
     }),
     P({
@@ -959,8 +1000,8 @@ async function main() {
       cost: 3600,
       versions: 1,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Ops technical check", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Operations sign-off", "approve"],
         ["Sent to print", "confirm"],
       ],
     }),
@@ -976,8 +1017,8 @@ async function main() {
       cost: 4200,
       versions: 1,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Ops technical check", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Operations sign-off", "approve"],
         ["Venue approval", "approve"],
         ["Sent to print", "confirm"],
       ],
@@ -994,8 +1035,8 @@ async function main() {
       cost: 700,
       versions: 1,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Ops technical check", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Operations sign-off", "approve"],
         ["Sent to print", "confirm"],
         ["Delivered", "confirm"],
       ],
@@ -1013,9 +1054,9 @@ async function main() {
       requiresDirector: true,
       versions: 1,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Ops technical check", "approve"],
-        ["Event Director sign-off", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Operations sign-off", "approve"],
+        ["Senior management sign-off", "approve"],
         ["Sent to print", "confirm"],
         ["Delivered", "confirm"],
       ],
@@ -1032,8 +1073,8 @@ async function main() {
       cost: 3900,
       versions: 1,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Ops technical check", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Operations sign-off", "approve"],
         ["Venue approval", "approve"],
         ["Sent to print", "confirm"],
         ["Delivered", "confirm"],
@@ -1052,8 +1093,8 @@ async function main() {
       cost: 1100,
       versions: 1,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Ops technical check", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Operations sign-off", "approve"],
         ["Sent to print", "confirm"],
         ["Delivered", "confirm"],
         ["Installed", "confirm"],
@@ -1072,9 +1113,9 @@ async function main() {
       cost: 2600,
       versions: 1,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Sponsor approval", "approve"],
-        ["Ops technical check", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Sales sign-off", "approve"],
+        ["Operations sign-off", "approve"],
         ["Sent to print", "confirm"],
         ["Delivered", "confirm"],
         ["Installed", "confirm"],
@@ -1091,7 +1132,7 @@ async function main() {
       supplier: "Big Print Co",
       cost: 2000,
       versions: 1,
-      advance: [["Marketing brand check", "reject"]],
+      advance: [["Marketing sign-off", "reject"]],
     }),
     P({
       seq: 18,
@@ -1104,7 +1145,7 @@ async function main() {
       supplier: "Big Print Co",
       cost: 1400,
       versions: 1,
-      advance: [["Marketing brand check", "approve"]],
+      advance: [["Marketing sign-off", "approve"]],
       onHoldFrom: "in_review",
     }),
     P({
@@ -1121,9 +1162,9 @@ async function main() {
       cost: 2400,
       versions: 3,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Sponsor approval", "approve"],
-        ["Ops technical check", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Sales sign-off", "approve"],
+        ["Operations sign-off", "approve"],
       ],
       superseded: true,
     }),
@@ -1224,7 +1265,7 @@ async function main() {
       supplier: "Big Print Co",
       cost: 320,
       versions: 1,
-      advance: [["Marketing brand check", "request_changes"]],
+      advance: [["Marketing sign-off", "request_changes"]],
     }),
     P({
       seq: 29,
@@ -1240,9 +1281,9 @@ async function main() {
       cost: 15000,
       versions: 1,
       advance: [
-        ["Marketing brand check", "approve"],
-        ["Sponsor approval", "approve"],
-        ["Ops technical check", "approve"],
+        ["Marketing sign-off", "approve"],
+        ["Sales sign-off", "approve"],
+        ["Operations sign-off", "approve"],
         ["Venue approval", "approve"],
       ],
     }),
@@ -1283,17 +1324,24 @@ async function main() {
 
   const signageStepDefs = signageWf.steps;
 
-  // Wayfinding types read as directional; sponsored signage is sponsorship;
-  // everything else is venue dressing. Sponsorship items carry no category.
-  const DIRECTIONAL_TYPES = new Set(["aisle_sign", "floor_vinyl"]);
-  const categoryFor = (plan: ItemPlan): "directional" | "venue" | "sponsorship" | null =>
-    plan.kind === "sponsorship_item"
-      ? null
-      : plan.sponsor
-        ? "sponsorship"
-        : DIRECTIONAL_TYPES.has(String(plan.type))
-          ? "directional"
-          : "venue";
+  // Demo items sign off with Operations and Marketing, plus Sales when
+  // sponsored and Senior management (Dana) where the plan asks for it.
+  const stepIdByName = new Map(signageStepDefs.map((st) => [st.name, st.id]));
+  const seedSignoffs = (plan: ItemPlan, sponsorId: string | null) => {
+    const wanted: Array<[string, string | null]> = [
+      ["Operations sign-off", null],
+      ["Marketing sign-off", null],
+    ];
+    if (sponsorId) wanted.push(["Sales sign-off", null]);
+    if (plan.requiresDirector) wanted.push(["Senior management sign-off", byRole.event_director]);
+    return wanted
+      .filter(([name]) => stepIdByName.has(name))
+      .map(([name, userId]) => ({ stepId: stepIdByName.get(name)!, userId }));
+  };
+
+  // Anything with a sponsor is sponsor signage; the rest is the organiser's.
+  const categoryFor = (plan: ItemPlan): "organiser" | "sponsor" =>
+    plan.kind === "sponsorship_item" || plan.sponsor ? "sponsor" : "organiser";
 
   for (const plan of plans) {
     const ref = formatSignageRef("BIRM27", plan.seq);
@@ -1333,6 +1381,7 @@ async function main() {
         fixingMethod: fixing,
         requiresVenueApproval: requiresVenue,
         requiresEventDirector: plan.requiresDirector ?? false,
+        signoffs: seedSignoffs(plan, sponsorId),
         costEstimate: plan.cost != null ? String(plan.cost) : null,
         supplierId: plan.supplier ? supplierRows[plan.supplier].id : null,
         installDate: "2027-10-02",
@@ -1385,6 +1434,8 @@ async function main() {
         costEstimate: plan.cost ?? null,
         fixingMethod: fixing,
         supplierId: plan.supplier ? supplierRows[plan.supplier].id : null,
+        category: categoryFor(plan),
+        signoffs: seedSignoffs(plan, sponsorId),
       };
       let run = createRun({
         steps: signageStepDefs,
@@ -1394,11 +1445,11 @@ async function main() {
         now: daysAgo(plan.overdue ? 12 : 5),
       });
       const decider: Record<string, string> = {
-        "Marketing brand check": byRole.marketing,
-        "Sponsor approval": byRole.sales,
-        "Ops technical check": byRole.ops,
+        "Marketing sign-off": byRole.marketing,
+        "Sales sign-off": byRole.sales,
+        "Operations sign-off": byRole.ops,
         "Venue approval": uid(11),
-        "Event Director sign-off": byRole.event_director,
+        "Senior management sign-off": byRole.event_director,
         "Sent to print": uid(14),
         Delivered: uid(14),
         Installed: byRole.ops,
@@ -1637,12 +1688,10 @@ async function main() {
   // Categorise any items seeded before the category column existed.
   await client`
     UPDATE signage_items SET category = CASE
-      WHEN sponsor_id IS NOT NULL THEN 'sponsorship'::signage_category
-      WHEN item_type_id IN (SELECT id FROM item_types WHERE code IN ('aisle_sign','floor_vinyl'))
-        THEN 'directional'::signage_category
-      ELSE 'venue'::signage_category
+      WHEN sponsor_id IS NOT NULL OR kind = 'sponsorship_item' THEN 'sponsor'::signage_category
+      ELSE 'organiser'::signage_category
     END
-    WHERE kind = 'signage' AND category IS NULL`;
+    WHERE category IS NULL`;
 
   // Example per-user override: Marcus (marketing) may also edit costs.
   await db

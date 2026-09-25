@@ -1,7 +1,6 @@
-import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
-  contractors,
   editions,
   events,
   exhibitors,
@@ -11,12 +10,15 @@ import {
   signageItems,
   sponsors,
   staffInvites,
+  supplierServiceLinks,
+  supplierServices,
   suppliers,
   users,
   venues,
   workflows,
   workflowSteps,
 } from "@/lib/db/schema";
+import Link from "next/link";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, type PermissionOverrides } from "@/lib/authz";
 import { formatDate, formatDateTime, roleLabel, statusLabel } from "@/lib/format";
@@ -24,7 +26,10 @@ import { InviteExternalForm, RevokeGrantButton } from "@/components/settings/inv
 import { TeamTable } from "@/components/settings/team-table";
 import { DirectorySection } from "@/components/settings/directory-section";
 import { standsEnabled } from "@/lib/config";
-import { WorkflowApproverForm } from "@/components/settings/workflow-approver-form";
+import { SignoffEditor } from "@/components/settings/signoff-editor";
+import { ItemTypesEditor } from "@/components/settings/item-types-editor";
+import { ServicesEditor } from "@/components/settings/services-editor";
+import { isDepartmentStep } from "@/lib/workflow/signoffs";
 import { RestoreItemButton } from "@/components/settings/restore-button";
 import { icalToken } from "@/lib/ical";
 import { appUrl } from "@/lib/app-url";
@@ -44,10 +49,31 @@ const CONDITION_LABELS: Record<string, string> = {
   if_venue_requires_stand_approval: "when the venue approves stands",
 };
 
-export default async function SettingsPage() {
+type TabId = "general" | "team" | "signoff" | "types" | "services" | "venues" | "deleted";
+
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string }>;
+}) {
   const session = await requireStaffSession();
   const canManage = can(session.actor, { type: "settings.manage" });
   const canUsers = can(session.actor, { type: "users.manage" });
+  const tabs: { id: TabId; label: string }[] = [
+    { id: "general", label: "My settings" },
+    { id: "team", label: "Team" },
+    ...(canManage || canUsers
+      ? ([
+          { id: "signoff", label: "Sign-off" },
+          { id: "types", label: "Signage types" },
+          { id: "services", label: "Supplier services" },
+          { id: "venues", label: "Venues" },
+          { id: "deleted", label: "Deleted items" },
+        ] as { id: TabId; label: string }[])
+      : []),
+  ];
+  const { tab: rawTab } = await searchParams;
+  const tab: TabId = tabs.some((t) => t.id === rawTab) ? (rawTab as TabId) : "general";
 
   const [me] = await db.select().from(users).where(eq(users.id, session.user.id));
   const [
@@ -64,7 +90,7 @@ export default async function SettingsPage() {
     sponsorRows,
     pendingInvites,
     eventRows,
-    contractorRows,
+    serviceRows,
   ] = await Promise.all([
     db
       .select({ m: memberships, u: users })
@@ -83,14 +109,35 @@ export default async function SettingsPage() {
       .where(eq(itemTypes.organisationId, session.organisation.id))
       .orderBy(itemTypes.sortOrder),
     db.select().from(workflows).where(eq(workflows.organisationId, session.organisation.id)),
-    db.select().from(workflowSteps).orderBy(workflowSteps.sortOrder),
     db
-      .select()
+      .select({ step: workflowSteps })
+      .from(workflowSteps)
+      .innerJoin(workflows, eq(workflowSteps.workflowId, workflows.id))
+      .where(
+        and(
+          eq(workflows.organisationId, session.organisation.id),
+          eq(workflowSteps.isArchived, false),
+        ),
+      )
+      .orderBy(workflowSteps.sortOrder)
+      .then((rows) => rows.map((r) => r.step)),
+    db
+      .select({ item: signageItems })
       .from(signageItems)
-      .where(isNotNull(signageItems.deletedAt))
+      .innerJoin(editions, eq(signageItems.editionId, editions.id))
+      .innerJoin(events, eq(editions.eventId, events.id))
+      .where(
+        and(isNotNull(signageItems.deletedAt), eq(events.organisationId, session.organisation.id)),
+      )
       .orderBy(desc(signageItems.deletedAt))
-      .limit(50),
-    db.select().from(editions),
+      .limit(50)
+      .then((rows) => rows.map((r) => r.item)),
+    db
+      .select({ edition: editions })
+      .from(editions)
+      .innerJoin(events, eq(editions.eventId, events.id))
+      .where(eq(events.organisationId, session.organisation.id))
+      .then((rows) => rows.map((r) => r.edition)),
     db.select().from(venues).where(eq(venues.organisationId, session.organisation.id)),
     db.select().from(suppliers).where(eq(suppliers.organisationId, session.organisation.id)),
     db.select().from(exhibitors),
@@ -112,141 +159,266 @@ export default async function SettingsPage() {
       .where(eq(events.organisationId, session.organisation.id))
       .orderBy(events.name),
     db
-      .select()
-      .from(contractors)
-      .where(eq(contractors.organisationId, session.organisation.id))
-      .orderBy(contractors.name),
+      .select({
+        id: supplierServices.id,
+        name: supplierServices.name,
+        isArchived: supplierServices.isArchived,
+        supplierCount: count(supplierServiceLinks.supplierId),
+      })
+      .from(supplierServices)
+      .leftJoin(supplierServiceLinks, eq(supplierServiceLinks.serviceId, supplierServices.id))
+      .where(eq(supplierServices.organisationId, session.organisation.id))
+      .groupBy(supplierServices.id)
+      .orderBy(asc(supplierServices.sortOrder), asc(supplierServices.name)),
   ]);
 
-  const staffById = new Map(staff.map(({ u }) => [u.id, u.fullName || u.email]));
+  const signageWf =
+    wfs.find((w) => w.appliesTo === "signage" && w.isDefault && !w.isArchived) ??
+    wfs.find((w) => w.appliesTo === "signage");
+  const signageSteps = steps.filter((st) => st.workflowId === signageWf?.id);
+  const departmentSteps = signageSteps.filter((st) =>
+    isDepartmentStep({ kind: st.kind, defaultFor: st.defaultFor as ("organiser" | "sponsor")[] }),
+  );
+  const firstGroup = Math.min(
+    ...departmentSteps.map((st) => (st.parallelGroup == null ? Infinity : st.parallelGroup)),
+  );
+  const signoffPeople = staff
+    .filter(
+      ({ m }) =>
+        m.role !== "viewer" &&
+        (m.permissionOverrides as Record<string, unknown>)?.["approval.decide"] !== false,
+    )
+    .map(({ m, u }) => ({ id: u.id, name: u.fullName || u.email, role: m.role }));
 
   return (
-    <div className="flex max-w-5xl flex-col gap-8 p-4 sm:p-6">
+    <div className="flex max-w-5xl flex-col gap-6 p-4 sm:p-6">
       <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+      <nav className="flex gap-1 overflow-x-auto border-b" aria-label="Settings sections">
+        {tabs.map((t) => (
+          <Link
+            key={t.id}
+            href={t.id === "general" ? "/settings" : `/settings?tab=${t.id}`}
+            className={`px-3 py-2 text-sm whitespace-nowrap ${
+              tab === t.id
+                ? "border-primary text-foreground border-b-2 font-medium"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            aria-current={tab === t.id ? "page" : undefined}
+          >
+            {t.label}
+          </Link>
+        ))}
+      </nav>
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Organisation</h2>
-        <p className="text-muted-foreground text-sm">
-          {session.organisation.brandName} · currency {session.organisation.settings.currency} ·
-          Event Director threshold £
-          {session.organisation.settings.cost_threshold_for_director.toLocaleString("en-GB")} ·
-          escalate after {session.organisation.settings.escalate_after_days} days overdue · install
-          photo {session.organisation.settings.install_photo_required ? "required" : "optional"}
-        </p>
-      </section>
+      {tab === "general" && (
+        <>
+          <section>
+            <h2 className="mb-2 text-sm font-semibold">Organisation</h2>
+            <p className="text-muted-foreground text-sm">
+              {session.organisation.brandName} · currency {session.organisation.settings.currency} ·
+              escalate after {session.organisation.settings.escalate_after_days} days overdue ·
+              install photo{" "}
+              {session.organisation.settings.install_photo_required ? "required" : "optional"}
+            </p>
+          </section>
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Calendar feed</h2>
-        <p className="text-muted-foreground mb-2 text-sm">
-          Subscribe to every deadline, install date and your pending sign-offs from your own
-          calendar (Google Calendar, Outlook or Apple Calendar — &ldquo;add calendar from
-          URL&rdquo;). The link is personal to you; treat it like a password.
-        </p>
-        <FeedLink userId={session.user.id} />
-      </section>
+          <section>
+            <h2 className="mb-2 text-sm font-semibold">Calendar feed</h2>
+            <p className="text-muted-foreground mb-2 text-sm">
+              Subscribe to every deadline, install date and your pending sign-offs from your own
+              calendar (Google Calendar, Outlook or Apple Calendar — &ldquo;add calendar from
+              URL&rdquo;). The link is personal to you; treat it like a password.
+            </p>
+            <FeedLink userId={session.user.id} />
+          </section>
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">My notifications</h2>
-        <p className="text-muted-foreground mb-2 text-sm">
-          Untick anything you don&rsquo;t want to be notified about. These apply to in-app
-          notifications and the emails that mirror them.
-        </p>
-        {!emailConfigured() && (
-          <p className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-            Email is off, so notifications only appear in the app (the bell). An admin can switch
-            email on by adding a Resend API key in the hosting settings.
-          </p>
-        )}
-        <NotificationPrefsForm initial={me?.notificationPrefs ?? {}} />
-      </section>
+          <section>
+            <h2 className="mb-2 text-sm font-semibold">My notifications</h2>
+            <p className="text-muted-foreground mb-2 text-sm">
+              Untick anything you don&rsquo;t want to be notified about. These apply to in-app
+              notifications and the emails that mirror them.
+            </p>
+            {!emailConfigured() && (
+              <p className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                Email is off, so notifications only appear in the app (the bell). An admin can
+                switch email on by adding a Resend API key in the hosting settings.
+              </p>
+            )}
+            <NotificationPrefsForm initial={me?.notificationPrefs ?? {}} />
+          </section>
+        </>
+      )}
 
-      <section>
-        <h2 className="mb-2 text-sm font-semibold">Team</h2>
-        {canUsers && (
-          <p className="text-muted-foreground mb-2 text-sm">
-            Set each person&rsquo;s role, fine-tune what they can do under Permissions, and invite
-            new staff. Approving stays tied to sign-off assignment — the checkbox can only take it
-            away.
-          </p>
-        )}
-        <TeamTable
-          members={staff.map(({ m, u }) => ({
-            membershipId: m.id,
-            userId: u.id,
-            name: u.fullName,
-            email: u.email,
-            role: m.role,
-            overrides: m.permissionOverrides as PermissionOverrides,
-          }))}
-          invites={pendingInvites.map((inv) => ({
-            id: inv.id,
-            email: inv.invitedEmail,
-            role: inv.role,
-          }))}
-          currentUserId={session.user.id}
-          canManage={canUsers}
-        />
-      </section>
-
-      {canUsers && (
-        <section>
-          <h2 className="mb-2 text-sm font-semibold">External access</h2>
-          <div className="mb-4 rounded-lg border p-4">
-            <h3 className="mb-3 text-sm font-medium">Invite an external party</h3>
-            <InviteExternalForm
-              editions={editionRows.map((e) => ({ id: e.id, label: `${e.code} — ${e.name}` }))}
-              venues={venueRows.map((v) => ({ id: v.id, label: v.name }))}
-              suppliers={supplierRows.map((sp) => ({ id: sp.id, label: sp.name }))}
-              exhibitors={exhibitorRows.map((x) => ({
-                id: x.id,
-                label: `${x.companyName} (${x.standNumber})`,
-                editionId: x.editionId,
+      {tab === "team" && (
+        <>
+          <section>
+            <h2 className="mb-2 text-sm font-semibold">Team</h2>
+            {canUsers && (
+              <p className="text-muted-foreground mb-2 text-sm">
+                Set each person&rsquo;s role, fine-tune what they can do under Permissions, and
+                invite new staff. Approving stays tied to sign-off assignment — the checkbox can
+                only take it away.
+              </p>
+            )}
+            <TeamTable
+              members={staff.map(({ m, u }) => ({
+                membershipId: m.id,
+                userId: u.id,
+                name: u.fullName,
+                email: u.email,
+                role: m.role,
+                overrides: m.permissionOverrides as PermissionOverrides,
               }))}
-              sponsors={sponsorRows.map((sp) => ({
-                id: sp.id,
-                label: sp.companyName,
-                editionId: sp.editionId,
+              invites={pendingInvites.map((inv) => ({
+                id: inv.id,
+                email: inv.invitedEmail,
+                role: inv.role,
               }))}
-              showStandRoles={standsEnabled}
+              currentUserId={session.user.id}
+              canManage={canUsers}
             />
+          </section>
+
+          {canUsers && (
+            <section>
+              <h2 className="mb-2 text-sm font-semibold">External access</h2>
+              <div className="mb-4 rounded-lg border p-4">
+                <h3 className="mb-3 text-sm font-medium">Invite an external party</h3>
+                <InviteExternalForm
+                  editions={editionRows.map((e) => ({ id: e.id, label: `${e.code} — ${e.name}` }))}
+                  venues={venueRows.map((v) => ({ id: v.id, label: v.name }))}
+                  suppliers={supplierRows.map((sp) => ({ id: sp.id, label: sp.name }))}
+                  exhibitors={exhibitorRows.map((x) => ({
+                    id: x.id,
+                    label: `${x.companyName} (${x.standNumber})`,
+                    editionId: x.editionId,
+                  }))}
+                  sponsors={sponsorRows.map((sp) => ({
+                    id: sp.id,
+                    label: sp.companyName,
+                    editionId: sp.editionId,
+                  }))}
+                  showStandRoles={standsEnabled}
+                />
+              </div>
+              <div className="overflow-x-auto rounded-lg border">
+                <table className="w-full text-sm">
+                  <tbody>
+                    {grants.map(({ g, u }) => (
+                      <tr key={g.id} className="border-b last:border-0">
+                        <td className="px-3 py-2 font-medium">{u?.fullName || g.invitedEmail}</td>
+                        <td className="px-3 py-2">{roleLabel(g.role)}</td>
+                        <td className="text-muted-foreground px-3 py-2">
+                          {g.revokedAt
+                            ? `Revoked ${formatDateTime(g.revokedAt)}`
+                            : g.acceptedAt
+                              ? `Accepted ${formatDateTime(g.acceptedAt)}`
+                              : "Invited"}
+                          {g.expiresAt ? ` · expires ${formatDate(g.expiresAt)}` : ""}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          {!g.revokedAt && <RevokeGrantButton grantId={g.id} />}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </>
+      )}
+
+      {tab === "signoff" && (
+        <section className="space-y-3">
+          <div>
+            <h2 className="text-sm font-semibold">Who signs off signage</h2>
+            <p className="text-muted-foreground text-sm">
+              The departments that approve artwork. Organiser signage and sponsor signage each get
+              their own defaults{canUsers ? "" : " — only admins can change these"}.
+            </p>
           </div>
-          <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full text-sm">
-              <tbody>
-                {grants.map(({ g, u }) => (
-                  <tr key={g.id} className="border-b last:border-0">
-                    <td className="px-3 py-2 font-medium">{u?.fullName || g.invitedEmail}</td>
-                    <td className="px-3 py-2">{roleLabel(g.role)}</td>
-                    <td className="text-muted-foreground px-3 py-2">
-                      {g.revokedAt
-                        ? `Revoked ${formatDateTime(g.revokedAt)}`
-                        : g.acceptedAt
-                          ? `Accepted ${formatDateTime(g.acceptedAt)}`
-                          : "Invited"}
-                      {g.expiresAt ? ` · expires ${formatDate(g.expiresAt)}` : ""}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      {!g.revokedAt && <RevokeGrantButton grantId={g.id} />}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <SignoffEditor
+            steps={departmentSteps.map((st) => ({
+              id: st.id,
+              name: st.name,
+              department: st.approverRole,
+              defaultUserId: st.approverType === "user" ? st.approverUserId : null,
+              defaultFor: st.defaultFor,
+              slaDays: st.slaDays,
+              together: st.parallelGroup != null && st.parallelGroup === firstGroup,
+            }))}
+            alwaysSteps={signageSteps
+              .filter((st) => !departmentSteps.includes(st))
+              .map((st) =>
+                st.conditions.some((c) => c !== "always")
+                  ? `${st.name} (${st.conditions
+                      .filter((c) => c !== "always")
+                      .map((c) => CONDITION_LABELS[c] ?? statusLabel(c))
+                      .join(" or ")})`
+                  : st.name,
+              )}
+            people={signoffPeople}
+            canEdit={canUsers}
+          />
         </section>
       )}
 
-      {canManage && (
-        <section id="events-venues" className="scroll-mt-20 space-y-4">
+      {tab === "types" && (
+        <section className="space-y-3">
           <div>
-            <h2 className="text-sm font-semibold">Events &amp; venues</h2>
+            <h2 className="text-sm font-semibold">Signage types</h2>
             <p className="text-muted-foreground text-sm">
-              Each show (edition) belongs to an event brand and takes place at a venue.
+              What people can choose when they add an item — marked print or digital. Hiding a type
+              removes it from the list; items already using it keep it.
+            </p>
+          </div>
+          <ItemTypesEditor
+            rows={types.map((t) => ({
+              id: t.id,
+              name: t.name,
+              kind: t.kind,
+              format: t.format,
+              defaultFixingMethod: t.defaultFixingMethod,
+              requiresVenueApprovalDefault: t.requiresVenueApprovalDefault,
+              isArchived: t.isArchived,
+            }))}
+            canEdit={canManage}
+          />
+        </section>
+      )}
+
+      {tab === "services" && (
+        <section className="space-y-3">
+          <div>
+            <h2 className="text-sm font-semibold">Supplier services</h2>
+            <p className="text-muted-foreground text-sm">
+              The kinds of work suppliers do. You tick these on each supplier under{" "}
+              <Link href="/suppliers" className="underline">
+                Suppliers
+              </Link>
+              , and people can then find the right company quickly.
+            </p>
+          </div>
+          <ServicesEditor
+            rows={serviceRows.map((r) => ({ ...r, supplierCount: Number(r.supplierCount) }))}
+            canEdit={canManage}
+          />
+        </section>
+      )}
+
+      {tab === "venues" && (
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-sm font-semibold">Venues &amp; show series</h2>
+            <p className="text-muted-foreground text-sm">
+              Venues (with their address) and the show series each show belongs to. You can also add
+              both straight from the New show form.
             </p>
           </div>
           <DirectorySection
             type="event"
-            noun="Event"
+            noun="Show series"
             canEdit={canManage}
             fields={[
               {
@@ -301,171 +473,7 @@ export default async function SettingsPage() {
         </section>
       )}
 
-      {canManage && (
-        <section className="space-y-4">
-          <div>
-            <h2 className="text-sm font-semibold">Suppliers &amp; contractors</h2>
-            <p className="text-muted-foreground text-sm">
-              Printers and producers you order from, and the crews who install.
-            </p>
-          </div>
-          <DirectorySection
-            type="supplier"
-            noun="Supplier"
-            canEdit={canManage}
-            fields={[
-              { key: "name", label: "Name", required: true, listed: true },
-              {
-                key: "kind",
-                label: "Type",
-                type: "select",
-                required: true,
-                listed: true,
-                options: [
-                  { value: "print", label: "Print" },
-                  { value: "rigging", label: "Rigging" },
-                  { value: "av", label: "AV" },
-                  { value: "contractor", label: "Contractor" },
-                  { value: "structural_engineer", label: "Structural engineer" },
-                  { value: "other", label: "Other" },
-                ],
-              },
-              { key: "contactName", label: "Contact name", listed: true },
-              { key: "email", label: "Email", type: "email", listed: true },
-              { key: "phone", label: "Phone" },
-            ]}
-            rows={supplierRows.map((sp) => ({
-              id: sp.id,
-              name: sp.name,
-              kind: sp.kind,
-              contactName: sp.contactName,
-              email: sp.email,
-              phone: sp.phone,
-            }))}
-          />
-          <DirectorySection
-            type="contractor"
-            noun="Contractor"
-            canEdit={canManage}
-            fields={[
-              { key: "name", label: "Name", required: true, listed: true },
-              { key: "contactName", label: "Contact name", listed: true },
-              { key: "email", label: "Email", type: "email", listed: true },
-              { key: "phone", label: "Phone" },
-              { key: "insuranceExpiry", label: "Insurance expires", type: "date", listed: true },
-            ]}
-            rows={contractorRows.map((c) => ({
-              id: c.id,
-              name: c.name,
-              contactName: c.contactName,
-              email: c.email,
-              phone: c.phone,
-              insuranceExpiry: c.insuranceExpiry,
-            }))}
-          />
-        </section>
-      )}
-
-      {(canManage || canUsers) && (
-        <>
-          <section>
-            <h2 className="mb-2 text-sm font-semibold">Item types</h2>
-            <div className="overflow-x-auto rounded-lg border">
-              <table className="w-full text-sm">
-                <tbody>
-                  {types.map((t) => (
-                    <tr key={t.id} className="border-b last:border-0">
-                      <td className="px-3 py-2 font-medium">{t.name}</td>
-                      <td className="text-muted-foreground px-3 py-2">
-                        {t.kind === "sponsorship_item" ? "Sponsorship item" : "Signage"}
-                      </td>
-                      <td className="text-muted-foreground px-3 py-2">
-                        {t.defaultFixingMethod ? statusLabel(t.defaultFixingMethod) : "—"}
-                      </td>
-                      <td className="px-3 py-2">
-                        {t.requiresVenueApprovalDefault ? "Venue approval by default" : ""}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section>
-            <h2 className="mb-2 text-sm font-semibold">Workflows</h2>
-            <div className="space-y-4">
-              {wfs.map((wf) => (
-                <div key={wf.id} className="rounded-lg border p-4">
-                  <p className="mb-2 text-sm font-medium">
-                    {wf.name}{" "}
-                    <span className="text-muted-foreground font-normal">
-                      ({wf.appliesTo}
-                      {wf.isDefault ? ", default" : ""})
-                    </span>
-                  </p>
-                  <ol className="text-muted-foreground space-y-1.5 text-sm">
-                    {steps
-                      .filter((st) => st.workflowId === wf.id)
-                      .map((st) => (
-                        <li key={st.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                          <span>
-                            {st.sortOrder}. {st.name} — {st.kind} ·
-                          </span>
-                          {canUsers ? (
-                            <WorkflowApproverForm
-                              stepId={st.id}
-                              approverType={st.approverType}
-                              approverRole={st.approverRole}
-                              approverUserId={st.approverUserId}
-                              staff={staff
-                                .filter(
-                                  ({ m }) =>
-                                    m.role !== "viewer" &&
-                                    (m.permissionOverrides as Record<string, unknown>)?.[
-                                      "approval.decide"
-                                    ] !== false,
-                                )
-                                .map(({ u }) => ({
-                                  id: u.id,
-                                  name: u.fullName || u.email,
-                                }))}
-                            />
-                          ) : (
-                            <span>
-                              {st.approverType === "user"
-                                ? (staffById.get(st.approverUserId ?? "") ?? "a named person")
-                                : st.approverRole
-                                  ? roleLabel(st.approverRole)
-                                  : "a named person"}
-                            </span>
-                          )}
-                          <span>
-                            · {st.slaDays} days to decide
-                            {st.parallelGroup != null ? " · at the same time as others" : ""}
-                            {st.invalidateOnNewVersion ? " · asked again when artwork changes" : ""}
-                            {st.conditions.filter((c) => c !== "always").length > 0
-                              ? ` · only ${st.conditions
-                                  .filter((c) => c !== "always")
-                                  .map((c) => CONDITION_LABELS[c] ?? statusLabel(c))
-                                  .join(" or ")}`
-                              : ""}
-                          </span>
-                        </li>
-                      ))}
-                  </ol>
-                </div>
-              ))}
-            </div>
-            <p className="text-muted-foreground mt-2 text-xs">
-              Approver changes apply to future runs only — sign-offs already in flight keep the
-              approver they started with. Only admins choose who signs off; any team member who can sign off can be named on a step.
-            </p>
-          </section>
-        </>
-      )}
-
-      {canManage && (
+      {tab === "deleted" && (
         <section>
           <h2 className="mb-2 text-sm font-semibold">Deleted items</h2>
           {deleted.length === 0 ? (

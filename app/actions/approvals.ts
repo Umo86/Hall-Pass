@@ -214,7 +214,7 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
             conditions: data.conditionsText,
             lockedVersionId: currentVersionId,
           },
-          summary: `${row.stepNameSnapshot} ${data.decision.replace(/_/g, " ")} on ${item.ref}`,
+          summary: decisionSummary(row.stepNameSnapshot, data),
         });
       } else {
         const b = bundle as Awaited<ReturnType<typeof loadStandBundle>> & object;
@@ -302,7 +302,7 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
             conditions: data.conditionsText,
             lockedVersion: currentVersionId,
           },
-          summary: `${row.stepNameSnapshot} ${data.decision.replace(/_/g, " ")} on ${sub.ref}`,
+          summary: decisionSummary(row.stepNameSnapshot, data),
         });
       }
       return statusNote;
@@ -451,6 +451,23 @@ export async function resubmitSignageItem(input: unknown): Promise<ActionResult>
 }
 
 /** Deleted or held items take no decisions until restored or resumed. */
+const DECISION_WORDS: Record<string, string> = {
+  approve: "approved",
+  approve_with_conditions: "approved with conditions",
+  request_changes: "changes requested",
+  reject: "rejected",
+  confirm: "confirmed",
+};
+
+/** "Marketing sign-off: changes requested — “Logo too small”" for the History tab. */
+function decisionSummary(
+  step: string,
+  data: { decision: string; comment?: string; conditionsText?: string },
+) {
+  const note = data.conditionsText?.trim() || data.comment?.trim();
+  return `${step}: ${DECISION_WORDS[data.decision] ?? data.decision}${note ? ` — “${note}”` : ""}`;
+}
+
 function photoPrefix(orgId: string, editionId: string, entityType: string, entityId: string) {
   return `${orgId}/${editionId}/${entityType}/${entityId}/`;
 }

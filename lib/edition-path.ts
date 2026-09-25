@@ -6,6 +6,7 @@ export const RESERVED_SEGMENTS = [
   "editions",
   "approvals",
   "settings",
+  "suppliers",
   "portal",
   "login",
   "invite",

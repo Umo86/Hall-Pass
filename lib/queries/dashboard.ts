@@ -30,14 +30,16 @@ export async function dashboardData(editionId: string) {
   const [statusCounts, sponsorshipCount, standCounts, budgetRow, edition, pendingRows, forDeadlines] =
     await Promise.all([
       db
+        // Same items as the signage schedule: organiser and sponsor signage
+        // plus everything from the Sponsorship section.
         .select({ status: signageItems.status, n: count() })
         .from(signageItems)
-        .where(signageOnly)
+        .where(liveItems)
         .groupBy(signageItems.status),
       db
         .select({ n: count() })
         .from(signageItems)
-        .where(and(liveItems, eq(signageItems.kind, "sponsorship_item"))),
+        .where(and(liveItems, eq(signageItems.category, "sponsor"))),
       standsEnabled
         ? db
             .select({ status: standSubmissions.status, n: count() })

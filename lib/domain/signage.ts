@@ -2,7 +2,7 @@
  * Domain glue between signage items, the status machine and the workflow
  * engine. Used by server actions; kept out of components entirely.
  */
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db, Tx } from "@/lib/db/client";
 import {
   editions,
@@ -16,7 +16,17 @@ import {
 } from "@/lib/db/schema";
 import { notify } from "@/lib/notify";
 import type { SignageItemCtx } from "@/lib/authz";
-import { createRun, type EngineSettings, type EntityCtx, type Instance } from "@/lib/workflow";
+import {
+  createRun,
+  defaultSignoffs,
+  isDepartmentStep,
+  sameSignoffs,
+  type EngineSettings,
+  type EntityCtx,
+  type Instance,
+  type SignageCategory,
+  type SignoffPlan,
+} from "@/lib/workflow";
 import { loadStepDefs, persistRun } from "@/lib/workflow/persist";
 
 export type ItemRow = typeof signageItems.$inferSelect;
@@ -73,6 +83,8 @@ export function itemEntityCtx(bundle: ItemBundle): EntityCtx {
     costEstimate: bundle.item.costEstimate ? Number(bundle.item.costEstimate) : null,
     fixingMethod: bundle.item.fixingMethod,
     supplierId: bundle.item.supplierId,
+    category: bundle.item.category,
+    signoffs: bundle.item.signoffs ?? null,
   };
 }
 
@@ -118,7 +130,7 @@ export function itemCreationRecipients(
   creatorUserId: string,
 ): string[] {
   const roles = new Set<string>([item.ownerRole]);
-  if (item.kind === "sponsorship_item" || item.category === "sponsorship") roles.add("sales");
+  if (item.kind === "sponsorship_item" || item.category === "sponsor") roles.add("sales");
   return [
     ...new Set(members.filter((m) => roles.has(m.role)).map((m) => m.userId)),
   ].filter((id) => id !== creatorUserId);
@@ -269,6 +281,7 @@ export async function notifyPendingAssignees(
   instances: Array<{
     status: string;
     stepName: string;
+    stepKind?: string;
     assignedRole: string | null;
     assignedUserId: string | null;
   }>,
@@ -286,9 +299,20 @@ export async function notifyPendingAssignees(
     await notify(tx, {
       userIds: assignees,
       kind: "approval_requested",
-      title: `${inst.stepName}: ${item.ref} — ${item.name}`,
-      body: "It's your turn to sign off.",
-      link: `/${bundle.edition.code}/signage/${item.ref}?tab=approvals`,
+      ...(inst.stepKind === "confirmation"
+        ? {
+            title: `To confirm — ${inst.stepName}: ${item.name} (${item.ref})`,
+            body: `${bundle.edition.name}. Confirm it in Hall Pass once it's done.`,
+          }
+        : {
+            title: `Please sign off: ${item.name} (${item.ref})`,
+            body: [
+              `${inst.stepName} for ${bundle.edition.name}.`,
+              item.category === "sponsor" ? "Sponsor signage." : "Organiser signage.",
+              "Open it to view the artwork, then approve, ask for changes or reject — you can leave a comment either way.",
+            ].join(" "),
+          }),
+      link: `/${bundle.edition.code}/${item.kind === "sponsorship_item" ? "sponsorship" : "signage"}/${item.ref}?tab=artwork`,
       entityType: "signage_item",
       entityId: item.id,
     });
@@ -361,4 +385,61 @@ export function commentRecipients(input: {
   }
   ids.delete(input.authorId);
   return [...ids];
+}
+
+/**
+ * Check an item's sign-off choices and store them in their simplest form:
+ * each step must be a department step of the item's workflow, and each named
+ * person must be in that department (or an admin) with sign-off rights.
+ * Returns null when the choices are just the category defaults, so later
+ * changes to the defaults still apply to the item.
+ */
+export async function normaliseSignoffs(
+  db: Db | Tx,
+  opts: {
+    organisationId: string;
+    workflowId: string | null;
+    category: SignageCategory | null;
+    plan: SignoffPlan | null | undefined;
+  },
+): Promise<SignoffPlan | null> {
+  if (!opts.plan) return null;
+  if (!opts.workflowId) return null;
+  const steps = (await loadStepDefs(db, opts.workflowId)).filter(isDepartmentStep);
+  const byId = new Map(steps.map((s) => [s.id, s]));
+  const seen = new Set<string>();
+  const plan: SignoffPlan = [];
+  for (const entry of opts.plan) {
+    const step = byId.get(entry.stepId);
+    if (!step) throw new Error("That sign-off step no longer exists — reload the page");
+    if (seen.has(step.id)) continue;
+    seen.add(step.id);
+    plan.push({ stepId: step.id, userId: entry.userId || null });
+  }
+  if (plan.length === 0) throw new Error("Choose at least one department to sign this off");
+  const userIds = plan.map((p) => p.userId).filter((u): u is string => Boolean(u));
+  if (userIds.length > 0) {
+    const members = await db
+      .select({
+        userId: memberships.userId,
+        role: memberships.role,
+        overrides: memberships.permissionOverrides,
+      })
+      .from(memberships)
+      .where(and(eq(memberships.organisationId, opts.organisationId), inArray(memberships.userId, userIds)));
+    const byUser = new Map(members.map((m) => [m.userId, m]));
+    for (const entry of plan) {
+      if (!entry.userId) continue;
+      const m = byUser.get(entry.userId);
+      const step = byId.get(entry.stepId)!;
+      if (!m) throw new Error("A chosen person is no longer on the team — pick someone else");
+      if ((m.overrides as Record<string, unknown>)?.["approval.decide"] === false || m.role === "viewer") {
+        throw new Error("A chosen person can't sign off — pick someone else");
+      }
+      if (m.role !== "admin" && step.approverRole && m.role !== step.approverRole) {
+        throw new Error(`${step.name}: pick someone from that department`);
+      }
+    }
+  }
+  return sameSignoffs(plan, defaultSignoffs(steps, opts.category)) ? null : plan;
 }

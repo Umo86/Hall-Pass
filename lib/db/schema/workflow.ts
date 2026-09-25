@@ -70,6 +70,13 @@ export const workflowSteps = pgTable(
     slaDays: integer("sla_days").notNull().default(0),
     invalidateOnNewVersion: boolean("invalidate_on_new_version").notNull().default(true),
     restartFromHereOnChanges: boolean("restart_from_here_on_changes").notNull().default(true),
+    /**
+     * Department sign-off steps list the categories that get them by default
+     * ("organiser", "sponsor"); items can switch them on or off. Empty for
+     * steps driven only by conditions (venue approval, confirmations).
+     */
+    defaultFor: text("default_for").array().notNull().default([]),
+    isArchived: boolean("is_archived").notNull().default(false),
     ...timestamps,
   },
   (t) => [

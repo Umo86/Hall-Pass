@@ -23,7 +23,17 @@ export type StepDef = {
   slaDays: number;
   invalidateOnNewVersion: boolean;
   restartFromHereOnChanges: boolean;
+  /**
+   * Department sign-off steps: the categories that get this step by default.
+   * Empty (or absent) for steps that only follow their conditions.
+   */
+  defaultFor?: SignageCategory[];
 };
+
+export type SignageCategory = "organiser" | "sponsor";
+
+/** Who signs an item off: department steps and, optionally, a named person. */
+export type SignoffPlan = { stepId: string; userId: string | null }[];
 
 export type SignageEntityCtx = {
   kind: "signage";
@@ -33,6 +43,10 @@ export type SignageEntityCtx = {
   costEstimate: number | null;
   fixingMethod: string | null;
   supplierId: string | null;
+  /** Organiser or sponsor signage; picks the default sign-offs. */
+  category?: SignageCategory | null;
+  /** The item's own sign-off choices; null or absent means the defaults. */
+  signoffs?: SignoffPlan | null;
 };
 
 export type StandEntityCtx = {

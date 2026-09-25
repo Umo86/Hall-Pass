@@ -13,6 +13,7 @@ import {
   MapPin,
   Settings,
   Signpost,
+  Truck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { editionCodeFromPath } from "@/lib/edition-path";
@@ -62,7 +63,8 @@ export function AppNav({
     : [];
   const globalItems: NavItem[] = [
     { label: "My Work", href: "/approvals", icon: ClipboardCheck },
-    { label: "Editions", href: "/editions", icon: Layers },
+    { label: "Shows", href: "/editions", icon: Layers },
+    { label: "Suppliers", href: "/suppliers", icon: Truck },
     { label: "Settings", href: "/settings", icon: Settings },
   ];
 

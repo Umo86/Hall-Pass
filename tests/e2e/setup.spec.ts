@@ -34,15 +34,15 @@ test.describe("setting up a show", () => {
     await ctx.close();
   });
 
-  test("an edition can be edited and bad dates are refused", async ({ browser, baseURL }) => {
+  test("a show can be edited and bad dates are refused", async ({ browser, baseURL }) => {
     const ctx = await browser.newContext();
     await signInAs(ctx, "admin@media10.test", baseURL!);
     const page = await ctx.newPage();
     await page.goto(`${baseURL}/editions`);
-    const row = page.locator("tr", { hasText: "BIRM27" });
+    const row = page.locator("li", { hasText: "BIRM27" }).first();
     await row.getByRole("button", { name: "Edit" }).click();
     const dialog = page.getByRole("dialog");
-    const buildEnd = dialog.getByLabel("Build end");
+    const buildEnd = dialog.getByLabel("Build ends");
     const original = await buildEnd.inputValue();
     await buildEnd.fill("2020-01-01"); // before build start
     await dialog.getByRole("button", { name: "Save" }).click();

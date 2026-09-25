@@ -3,6 +3,7 @@ import {
   date,
   index,
   integer,
+  jsonb,
   numeric,
   pgTable,
   text,
@@ -13,6 +14,7 @@ import {
 import {
   fixingMethod,
   installSlot,
+  itemFormat,
   itemKind,
   ownerRole,
   proofStatus,
@@ -25,6 +27,9 @@ import { halls, locations } from "./floorplans";
 import { contractors, sponsorEntitlements, sponsors, suppliers } from "./parties";
 import { organisations, timestamps, users } from "./tenancy";
 import { workflows } from "./workflow";
+
+/** One sign-off on an item: a department step and, optionally, the person. */
+export type SignoffPlan = { stepId: string; userId: string | null }[];
 
 export const itemTypes = pgTable(
   "item_types",
@@ -42,6 +47,9 @@ export const itemTypes = pgTable(
       .notNull()
       .default(false),
     sortOrder: integer("sort_order").notNull().default(0),
+    /** Print or digital; empty for merchandise (bags, lanyards). */
+    format: itemFormat("format"),
+    isArchived: boolean("is_archived").notNull().default(false),
     ...timestamps,
   },
   (t) => [
@@ -99,6 +107,11 @@ export const signageItems = pgTable(
     onHoldReason: text("on_hold_reason"),
     workflowId: uuid("workflow_id").references(() => workflows.id),
     currentRunNumber: integer("current_run_number").notNull().default(0),
+    /**
+     * Who signs this item off: department steps and, optionally, a named
+     * person in each. Null means the admin defaults for its category.
+     */
+    signoffs: jsonb("signoffs").$type<SignoffPlan>(),
     // FK added in SQL migration (artwork_versions is declared after this table).
     currentArtworkVersionId: uuid("current_artwork_version_id"),
     installedAt: timestamp("installed_at", { withTimezone: true }),

@@ -14,7 +14,7 @@ import { getEditionByCode } from "@/lib/queries/editions";
 import { listSponsorshipRows } from "@/lib/queries/signage";
 import { SponsorsPanel } from "@/components/sponsorship/sponsors-panel";
 
-export const metadata = { title: "Sponsorship items" };
+export const metadata = { title: "Sponsorship" };
 export const dynamic = "force-dynamic";
 
 /**
@@ -57,10 +57,10 @@ export default async function SponsorshipPage({
     <div className="flex flex-col gap-4 p-4 sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Sponsorship items</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Sponsorship</h1>
           <p className="text-muted-foreground text-sm">
-            Sold deliverables — branded bags, lanyards and venue branding — with the same
-            artwork sign-off as signage.
+            Everything sold to sponsors — their signage and items like bags and lanyards — with
+            the same artwork sign-off. It all shows in the signage schedule too.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -98,8 +98,8 @@ export default async function SponsorshipPage({
               <tr className="text-muted-foreground border-b text-left">
                 <th className="px-3 py-2 font-medium">Ref</th>
                 <th className="px-3 py-2 font-medium">Name</th>
-                <th className="px-3 py-2 font-medium">Type</th>
                 <th className="px-3 py-2 font-medium">Sponsor</th>
+                <th className="px-3 py-2 font-medium">What</th>
                 <th className="px-3 py-2 font-medium">Status</th>
                 <th className="px-3 py-2 font-medium">Qty</th>
                 <th className="px-3 py-2 font-medium">Artwork</th>
@@ -111,13 +111,19 @@ export default async function SponsorshipPage({
               {rows.map((r) => (
                 <tr key={r.id} className="hover:bg-muted/30 border-b last:border-0">
                   <td className="px-3 py-2 font-medium whitespace-nowrap">
-                    <Link href={`/${editionCode}/sponsorship/${r.ref}`} className="hover:underline">
+                    <Link
+                      href={`/${editionCode}/${r.kind === "sponsorship_item" ? "sponsorship" : "signage"}/${r.ref}`}
+                      className="hover:underline"
+                    >
                       {r.ref}
                     </Link>
                   </td>
                   <td className="px-3 py-2">{r.name}</td>
-                  <td className="text-muted-foreground px-3 py-2">{r.typeName ?? "—"}</td>
-                  <td className="px-3 py-2">{r.sponsorName ?? "—"}</td>
+                  <td className="px-3 py-2 font-medium">{r.sponsorName ?? "—"}</td>
+                  <td className="text-muted-foreground px-3 py-2">
+                    {r.kind === "signage" ? "Signage" : "Sponsorship item"}
+                    {r.typeName ? ` · ${r.typeName}` : ""}
+                  </td>
                   <td className="px-3 py-2">
                     <StatusBadge status={r.status} />
                   </td>

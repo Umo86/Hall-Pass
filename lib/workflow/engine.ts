@@ -4,6 +4,7 @@
  * the approval_instances table. Every rule here is unit tested.
  */
 import { stepApplies } from "./conditions";
+import { effectiveSignoffs, isDepartmentStep } from "./signoffs";
 import {
   ConflictError,
   POSITIVE_STATUSES,
@@ -117,6 +118,39 @@ export type CreateRunInput = {
  * whose conditions are all false are created as `skipped` so the full
  * chain stays visible. Then the first applicable stage activates.
  */
+/**
+ * Whether a step runs for this entity and who it goes to. Department steps
+ * follow the item's sign-off choices (or the category defaults) and may name
+ * a person; every other step follows its conditions and configured approver.
+ */
+function stepSetup(
+  step: StepDef,
+  entity: EntityCtx,
+  settings: EngineSettings,
+): Pick<Instance, "status" | "assignedRole" | "assignedUserId"> {
+  const configured = {
+    assignedRole: step.approverType === "role" ? step.approverRole : null,
+    assignedUserId: step.approverType === "user" ? step.approverUserId : null,
+  };
+  if (entity.kind === "signage" && isDepartmentStep(step)) {
+    const choice = effectiveSignoffs([step], entity.category, entity.signoffs ?? null).find(
+      (p) => p.stepId === step.id,
+    );
+    if (!choice) return { status: "skipped", ...configured };
+    if (entity.signoffs) {
+      // An explicit choice: a named person, or anyone in the department.
+      return choice.userId
+        ? { status: "waiting", assignedRole: null, assignedUserId: choice.userId }
+        : { status: "waiting", assignedRole: step.approverRole, assignedUserId: null };
+    }
+    return { status: "waiting", ...configured };
+  }
+  return {
+    status: stepApplies(step.conditions, entity, settings) ? "waiting" : "skipped",
+    ...configured,
+  };
+}
+
 export function createRun(input: CreateRunInput): Instance[] {
   const { steps, entity, settings, runNumber, now } = input;
   const instances: Instance[] = [...steps]
@@ -129,9 +163,7 @@ export function createRun(input: CreateRunInput): Instance[] {
       stepKind: step.kind,
       sortOrder: step.sortOrder,
       parallelGroup: step.parallelGroup,
-      status: stepApplies(step.conditions, entity, settings) ? "waiting" : "skipped",
-      assignedRole: step.approverType === "role" ? step.approverRole : null,
-      assignedUserId: step.approverType === "user" ? step.approverUserId : null,
+      ...stepSetup(step, entity, settings),
       delegatedFromUserId: null,
       decidedBy: null,
       decidedAt: null,

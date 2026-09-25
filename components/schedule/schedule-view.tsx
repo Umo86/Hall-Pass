@@ -57,14 +57,10 @@ type Props = {
 
 // Shown by default; the rest stay one click away in the Columns menu.
 const DEFAULT_HIDDEN: VisibilityState = {
-  category: false,
-  typeName: false,
   hallName: false,
   size: false,
   quantity: false,
   fixingMethod: false,
-  sponsorName: false,
-  supplierName: false,
   version: false,
   costEstimate: false,
   costActual: false,
@@ -83,6 +79,7 @@ export function ScheduleView({
   const [view, setView] = useQueryState("view", parseAsString.withDefault("table"));
   const [status, setStatus] = useQueryState("status", parseAsString.withDefault(""));
   const [category, setCategory] = useQueryState("category", parseAsString.withDefault(""));
+  const [format, setFormat] = useQueryState("format", parseAsString.withDefault(""));
   const [q, setQ] = useQueryState("q", parseAsString.withDefault(""));
   const [group, setGroup] = useQueryState("group", parseAsString.withDefault(""));
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -96,13 +93,22 @@ export function ScheduleView({
     return rows.filter((r) => {
       if (status && r.status !== status) return false;
       if (category && r.category !== category) return false;
+      if (format && r.format !== format) return false;
       if (!needle) return true;
-      return [r.ref, r.name, r.locationName ?? "", r.hallName ?? "", r.typeName ?? ""]
+      return [
+        r.ref,
+        r.name,
+        r.locationName ?? "",
+        r.hallName ?? "",
+        r.typeName ?? "",
+        r.sponsorName ?? "",
+        r.supplierName ?? "",
+      ]
         .join(" ")
         .toLowerCase()
         .includes(needle);
     });
-  }, [rows, q, status, category]);
+  }, [rows, q, status, category, format]);
 
   const columns = useMemo<ColumnDef<ScheduleRow>[]>(() => {
     const selectCol: ColumnDef<ScheduleRow>[] = [
@@ -137,7 +143,7 @@ export function ScheduleView({
         header: "Ref",
         cell: ({ row }) => (
           <Link
-            href={`/${editionCode}/signage/${row.original.ref}`}
+            href={itemHref(editionCode, row.original)}
             className="font-medium hover:underline"
             onClick={(e) => e.stopPropagation()}
           >
@@ -152,6 +158,33 @@ export function ScheduleView({
         cell: ({ getValue }) => <StatusBadge status={getValue<string>()} />,
       },
       {
+        accessorKey: "category",
+        header: "Category",
+        cell: ({ getValue }) => {
+          const v = getValue<string | null>();
+          return v === "sponsor" ? "Sponsor" : v === "organiser" ? "Organiser" : "—";
+        },
+      },
+      { accessorKey: "sponsorName", header: "Sponsor", cell: ({ getValue }) => getValue() ?? "—" },
+      { accessorKey: "typeName", header: "Type", cell: ({ getValue }) => getValue() ?? "—" },
+      {
+        accessorKey: "format",
+        header: "Format",
+        cell: ({ row }) =>
+          row.original.kind === "sponsorship_item"
+            ? "Merchandise"
+            : row.original.format === "digital"
+              ? "Digital"
+              : row.original.format === "print"
+                ? "Print"
+                : "—",
+      },
+      {
+        accessorKey: "supplierName",
+        header: "Supplier",
+        cell: ({ getValue }) => getValue() ?? "—",
+      },
+      {
         id: "nextStep",
         header: "Sitting with",
         cell: ({ row }) => {
@@ -164,15 +197,6 @@ export function ScheduleView({
           );
         },
       },
-      {
-        accessorKey: "category",
-        header: "Category",
-        cell: ({ getValue }) => {
-          const v = getValue<string | null>();
-          return v ? statusLabel(v) : "—";
-        },
-      },
-      { accessorKey: "typeName", header: "Type" },
       { accessorKey: "hallName", header: "Hall" },
       { accessorKey: "locationName", header: "Location" },
       {
@@ -191,12 +215,6 @@ export function ScheduleView({
           const v = getValue<string | null>();
           return v ? statusLabel(v) : "—";
         },
-      },
-      { accessorKey: "sponsorName", header: "Sponsor", cell: ({ getValue }) => getValue() ?? "—" },
-      {
-        accessorKey: "supplierName",
-        header: "Supplier",
-        cell: ({ getValue }) => getValue() ?? "—",
       },
       {
         accessorKey: "installDate",
@@ -295,10 +313,19 @@ export function ScheduleView({
           className="border-input h-8 rounded-md border bg-transparent px-2 text-sm"
           aria-label="Filter by category"
         >
-          <option value="">All categories</option>
-          <option value="directional">Directional</option>
-          <option value="venue">Venue</option>
-          <option value="sponsorship">Sponsorship</option>
+          <option value="">Organiser &amp; sponsor</option>
+          <option value="organiser">Organiser signage</option>
+          <option value="sponsor">Sponsor signage</option>
+        </select>
+        <select
+          value={format}
+          onChange={(e) => setFormat(e.target.value || null)}
+          className="border-input h-8 rounded-md border bg-transparent px-2 text-sm"
+          aria-label="Filter by print or digital"
+        >
+          <option value="">Print &amp; digital</option>
+          <option value="print">Print</option>
+          <option value="digital">Digital</option>
         </select>
         <select
           value={group}
@@ -392,6 +419,7 @@ export function ScheduleView({
               void setQ(null);
               void setStatus(null);
               void setCategory(null);
+              void setFormat(null);
             }}
           >
             Clear filters
@@ -448,7 +476,7 @@ export function ScheduleView({
                       <tr
                         key={row.id}
                         className="hover:bg-muted/30 cursor-pointer border-b last:border-0"
-                        onClick={() => router.push(`/${editionCode}/signage/${row.original.ref}`)}
+                        onClick={() => router.push(itemHref(editionCode, row.original))}
                       >
                         {row.getVisibleCells().map((cell) => (
                           <td key={cell.id} className="px-3 py-2 whitespace-nowrap">
@@ -466,6 +494,11 @@ export function ScheduleView({
       )}
     </div>
   );
+}
+
+/** Sponsorship-section items open under Sponsorship; everything else under Signage. */
+function itemHref(editionCode: string, r: Pick<ScheduleRow, "ref" | "kind">) {
+  return `/${editionCode}/${r.kind === "sponsorship_item" ? "sponsorship" : "signage"}/${r.ref}`;
 }
 
 /** Phone layout: one tappable card per item. */
@@ -500,7 +533,7 @@ function ItemCard({
 }) {
   return (
     <Link
-      href={`/${editionCode}/signage/${r.ref}`}
+      href={itemHref(editionCode, r)}
       className="bg-background block rounded-md border p-3 text-sm shadow-xs hover:shadow"
     >
       <div className="flex items-center justify-between gap-2">
@@ -512,6 +545,15 @@ function ItemCard({
         ) : null}
       </div>
       <p className="mt-0.5 line-clamp-2">{r.name}</p>
+      <p className="text-muted-foreground mt-0.5 text-xs">
+        {[
+          r.category === "sponsor" ? `Sponsor: ${r.sponsorName ?? "—"}` : "Organiser",
+          r.typeName,
+          r.supplierName ? `Supplier: ${r.supplierName}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </p>
       <p className="text-muted-foreground mt-1 text-xs">
         {[r.hallName, r.locationName].filter(Boolean).join(" · ") || "No location"}
         {r.pendingSteps.length > 0 && (
@@ -554,7 +596,7 @@ function SimpleTable({
           {rows.map((r) => (
             <tr key={r.id} className="hover:bg-muted/30 border-b last:border-0">
               <td className="px-3 py-2 font-medium whitespace-nowrap">
-                <Link href={`/${editionCode}/signage/${r.ref}`} className="hover:underline">
+                <Link href={itemHref(editionCode, r)} className="hover:underline">
                   {r.ref}
                 </Link>
               </td>
