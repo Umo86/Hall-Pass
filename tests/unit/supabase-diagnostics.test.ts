@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkAuthService,
   databaseProjectRef,
+  keyProjectRef,
   signInErrorMessage,
   supabaseProjectRef,
 } from "@/lib/auth/supabase-diagnostics";
@@ -80,5 +81,29 @@ describe("checkAuthService", () => {
       throw new Error("offline");
     }) as unknown as typeof fetch;
     expect(await checkAuthService("https://x.supabase.co", "k", down)).toBe("unreachable");
+  });
+});
+
+describe("sign-in service unreachable", () => {
+  it("names the host it couldn't reach", () => {
+    expect(
+      signInErrorMessage(
+        { name: "AuthRetryableFetchError", message: "fetch failed", status: 0 },
+        "https://abc.supabase.co",
+      ),
+    ).toBe(
+      "Sign-in isn't working right now: couldn't reach the sign-in service at abc.supabase.co. Please tell your admin.",
+    );
+  });
+});
+
+describe("keyProjectRef", () => {
+  it("reads the project from a legacy anon key and not from a publishable key", () => {
+    const payload = Buffer.from(JSON.stringify({ ref: "abcd1234", role: "anon" })).toString(
+      "base64url",
+    );
+    expect(keyProjectRef(`h.${payload}.s`)).toBe("abcd1234");
+    expect(keyProjectRef("sb_publishable_xyz")).toBe("unknown");
+    expect(keyProjectRef(undefined)).toBe("not set");
   });
 });

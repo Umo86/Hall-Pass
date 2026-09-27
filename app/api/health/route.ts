@@ -4,8 +4,10 @@ import { supabaseConfigured, supabasePublicKey } from "@/lib/auth/supabase-serve
 import {
   checkAuthService,
   databaseProjectRef,
+  keyProjectRef,
   supabaseProjectRef,
 } from "@/lib/auth/supabase-diagnostics";
+import { resolveSupabaseUrl } from "@/lib/auth/supabase-config";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +37,7 @@ export async function GET() {
       databaseError = describeDbError(err, process.env.DATABASE_URL);
     }
   }
+  const supabase = resolveSupabaseUrl();
   const auth = devAuthEnabled() ? "demo" : supabaseConfigured() ? "supabase" : "none";
   const ok = database === "ok" && seeded && auth !== "none";
   return NextResponse.json(
@@ -46,12 +49,12 @@ export async function GET() {
       auth,
       // Project ids are public (they're in every page's sign-in requests).
       // Sign-in and the database must use the same project.
-      supabaseProject: supabaseProjectRef(process.env.NEXT_PUBLIC_SUPABASE_URL),
+      supabaseProject: supabaseProjectRef(supabase.url ?? undefined),
+      supabaseUrlSource: supabase.source,
+      ...(supabase.note ? { supabaseUrlNote: supabase.note } : {}),
+      supabaseKeyProject: keyProjectRef(supabasePublicKey()),
       databaseProject: databaseProjectRef(process.env.DATABASE_URL),
-      authService: await checkAuthService(
-        process.env.NEXT_PUBLIC_SUPABASE_URL,
-        supabasePublicKey(),
-      ),
+      authService: await checkAuthService(supabase.url ?? undefined, supabasePublicKey()),
       storage: process.env.BLOB_READ_WRITE_TOKEN
         ? "vercel-blob"
         : Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY)

@@ -10,6 +10,7 @@ import { memberships, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
 import { DEV_COOKIE, demoEmailAllowed, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
+import { supabaseUrl } from "@/lib/auth/supabase-config";
 import { emailIsInvited, sendAccountEmail } from "@/lib/auth/account-link";
 import { signInErrorMessage, supabaseProjectRef } from "@/lib/auth/supabase-diagnostics";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
@@ -39,11 +40,11 @@ export async function signInWithPassword(input: unknown): Promise<AuthResult> {
     password: parsed.data.password,
   });
   if (error) {
-    const message = signInErrorMessage(error);
+    const message = signInErrorMessage(error, supabaseUrl());
     if (message !== "Incorrect email or password") {
       console.error(
         "signInWithPassword: Supabase refused",
-        supabaseProjectRef(process.env.NEXT_PUBLIC_SUPABASE_URL),
+        supabaseProjectRef(supabaseUrl()),
         error.status,
         error.code,
         error.message,

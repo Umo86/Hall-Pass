@@ -3,6 +3,7 @@ import { LoginCard, type DevUser } from "@/components/auth/login-card";
 import { brandName } from "@/lib/config";
 import { demoEmailAllowed, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
+import { supabaseUrl } from "@/lib/auth/supabase-config";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 import { roleLabel } from "@/lib/format";
 import { brandImage } from "@/lib/brand-images";
@@ -90,7 +91,7 @@ export default async function LoginPage({
       notice={error ? (NOTICES[error] ?? "Sign-in didn't work — please try again.") : null}
       unprovisionedEmail={unprovisionedEmail}
       configStatus={{
-        supabaseUrl: Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL),
+        supabaseUrl: Boolean(supabaseUrl()),
         supabaseKey: Boolean(
           process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
           process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,

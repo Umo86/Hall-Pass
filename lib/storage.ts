@@ -10,6 +10,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { supabaseUrl } from "@/lib/auth/supabase-config";
 import path from "node:path";
 import { createClient } from "@supabase/supabase-js";
 
@@ -37,7 +38,7 @@ async function blobUrlFor(bucket: Bucket, storagePath: string): Promise<string> 
 }
 
 function supabaseAdmin() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const url = supabaseUrl();
   // New projects issue sb_secret_… keys in place of the legacy service role key.
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY;
   if (!url || !key) return null;

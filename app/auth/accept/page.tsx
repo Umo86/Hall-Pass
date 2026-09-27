@@ -1,6 +1,7 @@
 import { AcceptAccount } from "@/components/auth/accept-account";
 import { brandName } from "@/lib/config";
 import { supabasePublicKey } from "@/lib/auth/supabase-server";
+import { supabaseUrl } from "@/lib/auth/supabase-config";
 
 export const metadata = { title: "Set up your account" };
 export const dynamic = "force-dynamic";
@@ -18,10 +19,7 @@ export default function AcceptPage() {
           <h1 className="text-xl font-semibold tracking-tight">{brandName}</h1>
           <p className="text-muted-foreground text-sm">Set up your account</p>
         </div>
-        <AcceptAccount
-          supabaseUrl={process.env.NEXT_PUBLIC_SUPABASE_URL ?? ""}
-          supabaseKey={supabasePublicKey() ?? ""}
-        />
+        <AcceptAccount supabaseUrl={supabaseUrl() ?? ""} supabaseKey={supabasePublicKey() ?? ""} />
       </div>
     </div>
   );

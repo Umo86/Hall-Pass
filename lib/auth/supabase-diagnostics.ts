@@ -4,12 +4,15 @@
  * email sign-in switched off, Supabase unreachable) says so, so the admin
  * can fix the set-up instead of everyone retyping their password.
  */
-export function signInErrorMessage(error: {
-  code?: string;
-  status?: number;
-  message?: string;
-}): string {
+export function signInErrorMessage(
+  error: { code?: string; status?: number; message?: string; name?: string },
+  serviceUrl?: string,
+): string {
   const msg = error.message ?? "";
+  if (error.name === "AuthRetryableFetchError" || /fetch failed/i.test(msg)) {
+    const where = serviceUrl ? ` at ${serviceUrl.replace(/^https?:\/\//, "")}` : "";
+    return `Sign-in isn't working right now: couldn't reach the sign-in service${where}. Please tell your admin.`;
+  }
   if (error.code === "invalid_credentials" || /invalid login credentials/i.test(msg)) {
     return "Incorrect email or password";
   }
@@ -75,5 +78,23 @@ export async function checkAuthService(
     return settings.external?.email === false ? "email sign-in is switched off" : "ok";
   } catch {
     return "unreachable";
+  }
+}
+
+/**
+ * Which project a legacy anon key (a JWT) was issued for. The anon key is
+ * public; newer sb_publishable_ keys don't say, so they read as "unknown".
+ */
+export function keyProjectRef(key: string | undefined): string {
+  if (!key) return "not set";
+  const parts = key.trim().split(".");
+  if (parts.length !== 3) return "unknown";
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as {
+      ref?: unknown;
+    };
+    return typeof payload.ref === "string" ? payload.ref : "unknown";
+  } catch {
+    return "unknown";
   }
 }

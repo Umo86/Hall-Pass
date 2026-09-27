@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
+import { resolveSupabaseKey, supabaseUrl } from "@/lib/auth/supabase-config";
 
 const PATH_HEADER = "x-hp-path";
 
@@ -15,10 +16,8 @@ export async function proxy(request: NextRequest) {
     headers.set(PATH_HEADER, `${request.nextUrl.pathname}${request.nextUrl.search}`);
     return headers;
   };
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  const url = supabaseUrl();
+  const key = resolveSupabaseKey();
   if (!url || !key) return NextResponse.next({ request: { headers: withPath() } });
 
   let response = NextResponse.next({ request: { headers: withPath() } });
