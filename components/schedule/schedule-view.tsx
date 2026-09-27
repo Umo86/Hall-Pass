@@ -17,6 +17,7 @@ import { parseAsString, useQueryState } from "nuqs";
 import { ArrowUpDown, Columns3, Kanban, Plus, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ScrollX } from "@/components/ui/scroll-x";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -448,7 +449,7 @@ export function ScheduleView({
                 ))}
               </div>
             ) : (
-              <div className="max-h-[70vh] overflow-auto rounded-lg border">
+              <ScrollX className="max-h-[70vh] rounded-lg border" label="schedule">
                 <table className="w-full text-sm">
                   {/* Opaque header: rows scroll underneath it inside the capped box. */}
                   <thead className="bg-muted sticky top-0 z-10">
@@ -488,7 +489,7 @@ export function ScheduleView({
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </ScrollX>
             )}
           </div>
         </>
@@ -581,7 +582,7 @@ function SimpleTable({
   canSeeCosts: boolean;
 }) {
   return (
-    <div className="max-h-[70vh] overflow-auto rounded-lg border">
+    <ScrollX className="max-h-[70vh] rounded-lg border" label="schedule">
       <table className="w-full text-sm">
         <thead className="bg-muted sticky top-0 z-10">
           <tr className="text-muted-foreground border-b text-left">
@@ -612,7 +613,7 @@ function SimpleTable({
           ))}
         </tbody>
       </table>
-    </div>
+    </ScrollX>
   );
 }
 

@@ -42,7 +42,8 @@ test.describe("My Work board", () => {
     await expect(card.getByText("from Olivia Ops")).toBeVisible();
 
     // Drag it to In progress.
-    await card.dragTo(column(mkt, "In progress"));
+    // Drop near the top: the column can be taller than the screen.
+    await card.dragTo(column(mkt, "In progress"), { targetPosition: { x: 40, y: 16 } });
     await expect(column(mkt, "In progress").getByRole("listitem", { name: title })).toBeVisible();
 
     // Open it: add a late subtask and a file, on the task and the subtask.

@@ -1,7 +1,10 @@
+import { cookies } from "next/headers";
 import { and, count, desc, eq, isNull } from "drizzle-orm";
 import { AppNav } from "@/components/app-nav";
 import { EditionSwitcher } from "@/components/edition-switcher";
 import { MobileNav } from "@/components/mobile-nav";
+import { SidebarToggle } from "@/components/sidebar-toggle";
+import { SIDEBAR_COOKIE } from "@/lib/sidebar";
 import { NotificationsBell } from "@/components/notifications-bell";
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { Wordmark } from "@/components/wordmark";
@@ -32,6 +35,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       .where(and(eq(notifications.userId, session.user.id), isNull(notifications.readAt))),
   ]);
 
+  const sidebarHidden = (await cookies()).get(SIDEBAR_COOKIE)?.value === "hidden";
   const navEditions = editions.map((e) => ({ code: e.edition.code, status: e.edition.status }));
   const navOptions = {
     canSetup: can(session.actor, { type: "settings.manage" }),
@@ -39,7 +43,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   };
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div
+      className="group/app flex min-h-screen flex-col"
+      data-sidebar={sidebarHidden ? "hidden" : "shown"}
+    >
       <DemoBanner />
       <header className="bg-background sticky top-0 z-40 flex h-14 items-center gap-2 border-b px-3 sm:gap-4 sm:px-4">
         <MobileNav
@@ -47,6 +54,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           options={navOptions}
           brandName={session.organisation.brandName}
         />
+        <SidebarToggle initiallyHidden={sidebarHidden} />
         <Wordmark name={session.organisation.brandName} size="sm" />
         <EditionSwitcher
           editions={editions.map((e) => ({
@@ -73,7 +81,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </div>
       </header>
       <div className="flex flex-1">
-        <aside className="bg-sidebar text-sidebar-foreground hidden w-56 shrink-0 border-r md:block">
+        <aside className="bg-sidebar text-sidebar-foreground hidden w-56 shrink-0 border-r md:block md:group-data-[sidebar=hidden]/app:hidden">
           <AppNav editions={navEditions} options={navOptions} />
         </aside>
         <main className="min-w-0 flex-1">{children}</main>
