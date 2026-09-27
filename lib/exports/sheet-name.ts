@@ -4,7 +4,10 @@
  * holds the lower-cased names already taken and is updated.
  */
 export function safeSheetName(raw: string, used: Set<string>): string {
-  let base = raw.replace(/[\\/:?*[\]]/g, "-").replace(/^'+|'+$/g, "").trim();
+  let base = raw
+    .replace(/[\\/:?*[\]]/g, "-")
+    .replace(/^'+|'+$/g, "")
+    .trim();
   if (!base || base.toLowerCase() === "history") base = base ? `${base} (1)` : "Sheet";
   base = base.slice(0, 31);
   let name = base;

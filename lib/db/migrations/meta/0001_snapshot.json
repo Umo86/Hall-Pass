@@ -185,39 +185,27 @@
         "external_grants_user_id_users_id_fk": {
           "name": "external_grants_user_id_users_id_fk",
           "tableFrom": "external_grants",
-          "columnsFrom": [
-            "user_id"
-          ],
+          "columnsFrom": ["user_id"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "external_grants_organisation_id_organisations_id_fk": {
           "name": "external_grants_organisation_id_organisations_id_fk",
           "tableFrom": "external_grants",
-          "columnsFrom": [
-            "organisation_id"
-          ],
+          "columnsFrom": ["organisation_id"],
           "tableTo": "organisations",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "external_grants_invited_by_users_id_fk": {
           "name": "external_grants_invited_by_users_id_fk",
           "tableFrom": "external_grants",
-          "columnsFrom": [
-            "invited_by"
-          ],
+          "columnsFrom": ["invited_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -309,26 +297,18 @@
         "memberships_user_id_users_id_fk": {
           "name": "memberships_user_id_users_id_fk",
           "tableFrom": "memberships",
-          "columnsFrom": [
-            "user_id"
-          ],
+          "columnsFrom": ["user_id"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "memberships_organisation_id_organisations_id_fk": {
           "name": "memberships_organisation_id_organisations_id_fk",
           "tableFrom": "memberships",
-          "columnsFrom": [
-            "organisation_id"
-          ],
+          "columnsFrom": ["organisation_id"],
           "tableTo": "organisations",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -337,10 +317,7 @@
       "uniqueConstraints": {
         "memberships_user_org_unique": {
           "name": "memberships_user_org_unique",
-          "columns": [
-            "user_id",
-            "organisation_id"
-          ],
+          "columns": ["user_id", "organisation_id"],
           "nullsNotDistinct": false
         }
       },
@@ -412,9 +389,7 @@
       "uniqueConstraints": {
         "organisations_slug_unique": {
           "name": "organisations_slug_unique",
-          "columns": [
-            "slug"
-          ],
+          "columns": ["slug"],
           "nullsNotDistinct": false
         }
       },
@@ -498,9 +473,7 @@
       "uniqueConstraints": {
         "users_email_unique": {
           "name": "users_email_unique",
-          "columns": [
-            "email"
-          ],
+          "columns": ["email"],
           "nullsNotDistinct": false
         }
       },
@@ -574,13 +547,9 @@
         "edition_counters_edition_id_editions_id_fk": {
           "name": "edition_counters_edition_id_editions_id_fk",
           "tableFrom": "edition_counters",
-          "columnsFrom": [
-            "edition_id"
-          ],
+          "columnsFrom": ["edition_id"],
           "tableTo": "editions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -589,10 +558,7 @@
       "uniqueConstraints": {
         "edition_counters_edition_key_unique": {
           "name": "edition_counters_edition_key_unique",
-          "columns": [
-            "edition_id",
-            "key"
-          ],
+          "columns": ["edition_id", "key"],
           "nullsNotDistinct": false
         }
       },
@@ -678,13 +644,9 @@
         "edition_deadlines_edition_id_editions_id_fk": {
           "name": "edition_deadlines_edition_id_editions_id_fk",
           "tableFrom": "edition_deadlines",
-          "columnsFrom": [
-            "edition_id"
-          ],
+          "columnsFrom": ["edition_id"],
           "tableTo": "editions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -693,10 +655,7 @@
       "uniqueConstraints": {
         "edition_deadlines_edition_key_unique": {
           "name": "edition_deadlines_edition_key_unique",
-          "columns": [
-            "edition_id",
-            "key"
-          ],
+          "columns": ["edition_id", "key"],
           "nullsNotDistinct": false
         }
       },
@@ -869,26 +828,18 @@
         "editions_event_id_events_id_fk": {
           "name": "editions_event_id_events_id_fk",
           "tableFrom": "editions",
-          "columnsFrom": [
-            "event_id"
-          ],
+          "columnsFrom": ["event_id"],
           "tableTo": "events",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "editions_venue_id_venues_id_fk": {
           "name": "editions_venue_id_venues_id_fk",
           "tableFrom": "editions",
-          "columnsFrom": [
-            "venue_id"
-          ],
+          "columnsFrom": ["venue_id"],
           "tableTo": "venues",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -964,13 +915,9 @@
         "events_organisation_id_organisations_id_fk": {
           "name": "events_organisation_id_organisations_id_fk",
           "tableFrom": "events",
-          "columnsFrom": [
-            "organisation_id"
-          ],
+          "columnsFrom": ["organisation_id"],
           "tableTo": "organisations",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -979,10 +926,7 @@
       "uniqueConstraints": {
         "events_org_code_unique": {
           "name": "events_org_code_unique",
-          "columns": [
-            "organisation_id",
-            "code"
-          ],
+          "columns": ["organisation_id", "code"],
           "nullsNotDistinct": false
         }
       },
@@ -1081,13 +1025,9 @@
         "venue_rules_venue_id_venues_id_fk": {
           "name": "venue_rules_venue_id_venues_id_fk",
           "tableFrom": "venue_rules",
-          "columnsFrom": [
-            "venue_id"
-          ],
+          "columnsFrom": ["venue_id"],
           "tableTo": "venues",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -1194,13 +1134,9 @@
         "venues_organisation_id_organisations_id_fk": {
           "name": "venues_organisation_id_organisations_id_fk",
           "tableFrom": "venues",
-          "columnsFrom": [
-            "organisation_id"
-          ],
+          "columnsFrom": ["organisation_id"],
           "tableTo": "organisations",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -1209,10 +1145,7 @@
       "uniqueConstraints": {
         "venues_org_code_unique": {
           "name": "venues_org_code_unique",
-          "columns": [
-            "organisation_id",
-            "code"
-          ],
+          "columns": ["organisation_id", "code"],
           "nullsNotDistinct": false
         }
       },
@@ -1304,13 +1237,9 @@
         "halls_edition_id_editions_id_fk": {
           "name": "halls_edition_id_editions_id_fk",
           "tableFrom": "halls",
-          "columnsFrom": [
-            "edition_id"
-          ],
+          "columnsFrom": ["edition_id"],
           "tableTo": "editions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -1404,13 +1333,9 @@
         "locations_hall_id_halls_id_fk": {
           "name": "locations_hall_id_halls_id_fk",
           "tableFrom": "locations",
-          "columnsFrom": [
-            "hall_id"
-          ],
+          "columnsFrom": ["hall_id"],
           "tableTo": "halls",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -1504,13 +1429,9 @@
         "contractors_organisation_id_organisations_id_fk": {
           "name": "contractors_organisation_id_organisations_id_fk",
           "tableFrom": "contractors",
-          "columnsFrom": [
-            "organisation_id"
-          ],
+          "columnsFrom": ["organisation_id"],
           "tableTo": "organisations",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -1654,39 +1575,27 @@
         "exhibitors_edition_id_editions_id_fk": {
           "name": "exhibitors_edition_id_editions_id_fk",
           "tableFrom": "exhibitors",
-          "columnsFrom": [
-            "edition_id"
-          ],
+          "columnsFrom": ["edition_id"],
           "tableTo": "editions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "exhibitors_hall_id_halls_id_fk": {
           "name": "exhibitors_hall_id_halls_id_fk",
           "tableFrom": "exhibitors",
-          "columnsFrom": [
-            "hall_id"
-          ],
+          "columnsFrom": ["hall_id"],
           "tableTo": "halls",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "exhibitors_contractor_id_contractors_id_fk": {
           "name": "exhibitors_contractor_id_contractors_id_fk",
           "tableFrom": "exhibitors",
-          "columnsFrom": [
-            "contractor_id"
-          ],
+          "columnsFrom": ["contractor_id"],
           "tableTo": "contractors",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -1695,10 +1604,7 @@
       "uniqueConstraints": {
         "exhibitors_edition_stand_unique": {
           "name": "exhibitors_edition_stand_unique",
-          "columns": [
-            "edition_id",
-            "stand_number"
-          ],
+          "columns": ["edition_id", "stand_number"],
           "nullsNotDistinct": false
         }
       },
@@ -1772,13 +1678,9 @@
         "sponsor_entitlements_sponsor_id_sponsors_id_fk": {
           "name": "sponsor_entitlements_sponsor_id_sponsors_id_fk",
           "tableFrom": "sponsor_entitlements",
-          "columnsFrom": [
-            "sponsor_id"
-          ],
+          "columnsFrom": ["sponsor_id"],
           "tableTo": "sponsors",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -1872,13 +1774,9 @@
         "sponsors_edition_id_editions_id_fk": {
           "name": "sponsors_edition_id_editions_id_fk",
           "tableFrom": "sponsors",
-          "columnsFrom": [
-            "edition_id"
-          ],
+          "columnsFrom": ["edition_id"],
           "tableTo": "editions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -1979,13 +1877,9 @@
         "suppliers_organisation_id_organisations_id_fk": {
           "name": "suppliers_organisation_id_organisations_id_fk",
           "tableFrom": "suppliers",
-          "columnsFrom": [
-            "organisation_id"
-          ],
+          "columnsFrom": ["organisation_id"],
           "tableTo": "organisations",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -2279,52 +2173,36 @@
         "approval_instances_workflow_step_id_workflow_steps_id_fk": {
           "name": "approval_instances_workflow_step_id_workflow_steps_id_fk",
           "tableFrom": "approval_instances",
-          "columnsFrom": [
-            "workflow_step_id"
-          ],
+          "columnsFrom": ["workflow_step_id"],
           "tableTo": "workflow_steps",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "approval_instances_assigned_user_id_users_id_fk": {
           "name": "approval_instances_assigned_user_id_users_id_fk",
           "tableFrom": "approval_instances",
-          "columnsFrom": [
-            "assigned_user_id"
-          ],
+          "columnsFrom": ["assigned_user_id"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "approval_instances_delegated_from_user_id_users_id_fk": {
           "name": "approval_instances_delegated_from_user_id_users_id_fk",
           "tableFrom": "approval_instances",
-          "columnsFrom": [
-            "delegated_from_user_id"
-          ],
+          "columnsFrom": ["delegated_from_user_id"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "approval_instances_decided_by_users_id_fk": {
           "name": "approval_instances_decided_by_users_id_fk",
           "tableFrom": "approval_instances",
-          "columnsFrom": [
-            "decided_by"
-          ],
+          "columnsFrom": ["decided_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -2415,12 +2293,7 @@
       "uniqueConstraints": {
         "reminder_log_unique_send": {
           "name": "reminder_log_unique_send",
-          "columns": [
-            "target_type",
-            "target_id",
-            "kind",
-            "sent_on"
-          ],
+          "columns": ["target_type", "target_id", "kind", "sent_on"],
           "nullsNotDistinct": false
         }
       },
@@ -2568,26 +2441,18 @@
         "workflow_steps_workflow_id_workflows_id_fk": {
           "name": "workflow_steps_workflow_id_workflows_id_fk",
           "tableFrom": "workflow_steps",
-          "columnsFrom": [
-            "workflow_id"
-          ],
+          "columnsFrom": ["workflow_id"],
           "tableTo": "workflows",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "workflow_steps_approver_user_id_users_id_fk": {
           "name": "workflow_steps_approver_user_id_users_id_fk",
           "tableFrom": "workflow_steps",
-          "columnsFrom": [
-            "approver_user_id"
-          ],
+          "columnsFrom": ["approver_user_id"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -2678,13 +2543,9 @@
         "workflows_organisation_id_organisations_id_fk": {
           "name": "workflows_organisation_id_organisations_id_fk",
           "tableFrom": "workflows",
-          "columnsFrom": [
-            "organisation_id"
-          ],
+          "columnsFrom": ["organisation_id"],
           "tableTo": "organisations",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -2788,13 +2649,9 @@
         "artwork_annotations_artwork_version_id_artwork_versions_id_fk": {
           "name": "artwork_annotations_artwork_version_id_artwork_versions_id_fk",
           "tableFrom": "artwork_annotations",
-          "columnsFrom": [
-            "artwork_version_id"
-          ],
+          "columnsFrom": ["artwork_version_id"],
           "tableTo": "artwork_versions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -2941,26 +2798,18 @@
         "artwork_versions_signage_item_id_signage_items_id_fk": {
           "name": "artwork_versions_signage_item_id_signage_items_id_fk",
           "tableFrom": "artwork_versions",
-          "columnsFrom": [
-            "signage_item_id"
-          ],
+          "columnsFrom": ["signage_item_id"],
           "tableTo": "signage_items",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "artwork_versions_uploaded_by_users_id_fk": {
           "name": "artwork_versions_uploaded_by_users_id_fk",
           "tableFrom": "artwork_versions",
-          "columnsFrom": [
-            "uploaded_by"
-          ],
+          "columnsFrom": ["uploaded_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -2969,10 +2818,7 @@
       "uniqueConstraints": {
         "artwork_versions_item_version_unique": {
           "name": "artwork_versions_item_version_unique",
-          "columns": [
-            "signage_item_id",
-            "version_number"
-          ],
+          "columns": ["signage_item_id", "version_number"],
           "nullsNotDistinct": false
         }
       },
@@ -3087,26 +2933,18 @@
         "item_types_organisation_id_organisations_id_fk": {
           "name": "item_types_organisation_id_organisations_id_fk",
           "tableFrom": "item_types",
-          "columnsFrom": [
-            "organisation_id"
-          ],
+          "columnsFrom": ["organisation_id"],
           "tableTo": "organisations",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "item_types_default_workflow_id_workflows_id_fk": {
           "name": "item_types_default_workflow_id_workflows_id_fk",
           "tableFrom": "item_types",
-          "columnsFrom": [
-            "default_workflow_id"
-          ],
+          "columnsFrom": ["default_workflow_id"],
           "tableTo": "workflows",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -3115,10 +2953,7 @@
       "uniqueConstraints": {
         "item_types_org_code_unique": {
           "name": "item_types_org_code_unique",
-          "columns": [
-            "organisation_id",
-            "code"
-          ],
+          "columns": ["organisation_id", "code"],
           "nullsNotDistinct": false
         }
       },
@@ -3649,156 +3484,108 @@
         "signage_items_edition_id_editions_id_fk": {
           "name": "signage_items_edition_id_editions_id_fk",
           "tableFrom": "signage_items",
-          "columnsFrom": [
-            "edition_id"
-          ],
+          "columnsFrom": ["edition_id"],
           "tableTo": "editions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "signage_items_item_type_id_item_types_id_fk": {
           "name": "signage_items_item_type_id_item_types_id_fk",
           "tableFrom": "signage_items",
-          "columnsFrom": [
-            "item_type_id"
-          ],
+          "columnsFrom": ["item_type_id"],
           "tableTo": "item_types",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "signage_items_hall_id_halls_id_fk": {
           "name": "signage_items_hall_id_halls_id_fk",
           "tableFrom": "signage_items",
-          "columnsFrom": [
-            "hall_id"
-          ],
+          "columnsFrom": ["hall_id"],
           "tableTo": "halls",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "signage_items_location_id_locations_id_fk": {
           "name": "signage_items_location_id_locations_id_fk",
           "tableFrom": "signage_items",
-          "columnsFrom": [
-            "location_id"
-          ],
+          "columnsFrom": ["location_id"],
           "tableTo": "locations",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "signage_items_owner_user_id_users_id_fk": {
           "name": "signage_items_owner_user_id_users_id_fk",
           "tableFrom": "signage_items",
-          "columnsFrom": [
-            "owner_user_id"
-          ],
+          "columnsFrom": ["owner_user_id"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "signage_items_sponsor_id_sponsors_id_fk": {
           "name": "signage_items_sponsor_id_sponsors_id_fk",
           "tableFrom": "signage_items",
-          "columnsFrom": [
-            "sponsor_id"
-          ],
+          "columnsFrom": ["sponsor_id"],
           "tableTo": "sponsors",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "signage_items_sponsor_entitlement_id_sponsor_entitlements_id_fk": {
           "name": "signage_items_sponsor_entitlement_id_sponsor_entitlements_id_fk",
           "tableFrom": "signage_items",
-          "columnsFrom": [
-            "sponsor_entitlement_id"
-          ],
+          "columnsFrom": ["sponsor_entitlement_id"],
           "tableTo": "sponsor_entitlements",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "signage_items_supplier_id_suppliers_id_fk": {
           "name": "signage_items_supplier_id_suppliers_id_fk",
           "tableFrom": "signage_items",
-          "columnsFrom": [
-            "supplier_id"
-          ],
+          "columnsFrom": ["supplier_id"],
           "tableTo": "suppliers",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "signage_items_install_contractor_id_contractors_id_fk": {
           "name": "signage_items_install_contractor_id_contractors_id_fk",
           "tableFrom": "signage_items",
-          "columnsFrom": [
-            "install_contractor_id"
-          ],
+          "columnsFrom": ["install_contractor_id"],
           "tableTo": "contractors",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "signage_items_workflow_id_workflows_id_fk": {
           "name": "signage_items_workflow_id_workflows_id_fk",
           "tableFrom": "signage_items",
-          "columnsFrom": [
-            "workflow_id"
-          ],
+          "columnsFrom": ["workflow_id"],
           "tableTo": "workflows",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "signage_items_installed_by_users_id_fk": {
           "name": "signage_items_installed_by_users_id_fk",
           "tableFrom": "signage_items",
-          "columnsFrom": [
-            "installed_by"
-          ],
+          "columnsFrom": ["installed_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "signage_items_created_by_users_id_fk": {
           "name": "signage_items_created_by_users_id_fk",
           "tableFrom": "signage_items",
-          "columnsFrom": [
-            "created_by"
-          ],
+          "columnsFrom": ["created_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -3807,17 +3594,12 @@
       "uniqueConstraints": {
         "signage_items_ref_unique": {
           "name": "signage_items_ref_unique",
-          "columns": [
-            "ref"
-          ],
+          "columns": ["ref"],
           "nullsNotDistinct": false
         },
         "signage_items_edition_seq_unique": {
           "name": "signage_items_edition_seq_unique",
-          "columns": [
-            "edition_id",
-            "seq"
-          ],
+          "columns": ["edition_id", "seq"],
           "nullsNotDistinct": false
         }
       },
@@ -4156,91 +3938,63 @@
         "stand_submissions_edition_id_editions_id_fk": {
           "name": "stand_submissions_edition_id_editions_id_fk",
           "tableFrom": "stand_submissions",
-          "columnsFrom": [
-            "edition_id"
-          ],
+          "columnsFrom": ["edition_id"],
           "tableTo": "editions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "stand_submissions_exhibitor_id_exhibitors_id_fk": {
           "name": "stand_submissions_exhibitor_id_exhibitors_id_fk",
           "tableFrom": "stand_submissions",
-          "columnsFrom": [
-            "exhibitor_id"
-          ],
+          "columnsFrom": ["exhibitor_id"],
           "tableTo": "exhibitors",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "stand_submissions_contractor_id_contractors_id_fk": {
           "name": "stand_submissions_contractor_id_contractors_id_fk",
           "tableFrom": "stand_submissions",
-          "columnsFrom": [
-            "contractor_id"
-          ],
+          "columnsFrom": ["contractor_id"],
           "tableTo": "contractors",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "stand_submissions_submitted_by_users_id_fk": {
           "name": "stand_submissions_submitted_by_users_id_fk",
           "tableFrom": "stand_submissions",
-          "columnsFrom": [
-            "submitted_by"
-          ],
+          "columnsFrom": ["submitted_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "stand_submissions_build_check_by_users_id_fk": {
           "name": "stand_submissions_build_check_by_users_id_fk",
           "tableFrom": "stand_submissions",
-          "columnsFrom": [
-            "build_check_by"
-          ],
+          "columnsFrom": ["build_check_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "stand_submissions_workflow_id_workflows_id_fk": {
           "name": "stand_submissions_workflow_id_workflows_id_fk",
           "tableFrom": "stand_submissions",
-          "columnsFrom": [
-            "workflow_id"
-          ],
+          "columnsFrom": ["workflow_id"],
           "tableTo": "workflows",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "stand_submissions_created_by_users_id_fk": {
           "name": "stand_submissions_created_by_users_id_fk",
           "tableFrom": "stand_submissions",
-          "columnsFrom": [
-            "created_by"
-          ],
+          "columnsFrom": ["created_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -4249,16 +4003,12 @@
       "uniqueConstraints": {
         "stand_submissions_ref_unique": {
           "name": "stand_submissions_ref_unique",
-          "columns": [
-            "ref"
-          ],
+          "columns": ["ref"],
           "nullsNotDistinct": false
         },
         "stand_submissions_exhibitor_unique": {
           "name": "stand_submissions_exhibitor_unique",
-          "columns": [
-            "exhibitor_id"
-          ],
+          "columns": ["exhibitor_id"],
           "nullsNotDistinct": false
         }
       },
@@ -4465,39 +4215,27 @@
         "documents_organisation_id_organisations_id_fk": {
           "name": "documents_organisation_id_organisations_id_fk",
           "tableFrom": "documents",
-          "columnsFrom": [
-            "organisation_id"
-          ],
+          "columnsFrom": ["organisation_id"],
           "tableTo": "organisations",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "documents_edition_id_editions_id_fk": {
           "name": "documents_edition_id_editions_id_fk",
           "tableFrom": "documents",
-          "columnsFrom": [
-            "edition_id"
-          ],
+          "columnsFrom": ["edition_id"],
           "tableTo": "editions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "documents_uploaded_by_users_id_fk": {
           "name": "documents_uploaded_by_users_id_fk",
           "tableFrom": "documents",
-          "columnsFrom": [
-            "uploaded_by"
-          ],
+          "columnsFrom": ["uploaded_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -4649,26 +4387,18 @@
         "change_requests_requested_by_users_id_fk": {
           "name": "change_requests_requested_by_users_id_fk",
           "tableFrom": "change_requests",
-          "columnsFrom": [
-            "requested_by"
-          ],
+          "columnsFrom": ["requested_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "change_requests_decided_by_users_id_fk": {
           "name": "change_requests_decided_by_users_id_fk",
           "tableFrom": "change_requests",
-          "columnsFrom": [
-            "decided_by"
-          ],
+          "columnsFrom": ["decided_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -4753,26 +4483,18 @@
         "comment_attachments_comment_id_comments_id_fk": {
           "name": "comment_attachments_comment_id_comments_id_fk",
           "tableFrom": "comment_attachments",
-          "columnsFrom": [
-            "comment_id"
-          ],
+          "columnsFrom": ["comment_id"],
           "tableTo": "comments",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "comment_attachments_document_id_documents_id_fk": {
           "name": "comment_attachments_document_id_documents_id_fk",
           "tableFrom": "comment_attachments",
-          "columnsFrom": [
-            "document_id"
-          ],
+          "columnsFrom": ["document_id"],
           "tableTo": "documents",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -4923,13 +4645,9 @@
         "comments_author_id_users_id_fk": {
           "name": "comments_author_id_users_id_fk",
           "tableFrom": "comments",
-          "columnsFrom": [
-            "author_id"
-          ],
+          "columnsFrom": ["author_id"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -5151,26 +4869,18 @@
         "exports_edition_id_editions_id_fk": {
           "name": "exports_edition_id_editions_id_fk",
           "tableFrom": "exports",
-          "columnsFrom": [
-            "edition_id"
-          ],
+          "columnsFrom": ["edition_id"],
           "tableTo": "editions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "exports_generated_by_users_id_fk": {
           "name": "exports_generated_by_users_id_fk",
           "tableFrom": "exports",
-          "columnsFrom": [
-            "generated_by"
-          ],
+          "columnsFrom": ["generated_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -5304,13 +5014,9 @@
         "notifications_user_id_users_id_fk": {
           "name": "notifications_user_id_users_id_fk",
           "tableFrom": "notifications",
-          "columnsFrom": [
-            "user_id"
-          ],
+          "columnsFrom": ["user_id"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -5546,91 +5252,63 @@
         "snags_edition_id_editions_id_fk": {
           "name": "snags_edition_id_editions_id_fk",
           "tableFrom": "snags",
-          "columnsFrom": [
-            "edition_id"
-          ],
+          "columnsFrom": ["edition_id"],
           "tableTo": "editions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "snags_signage_item_id_signage_items_id_fk": {
           "name": "snags_signage_item_id_signage_items_id_fk",
           "tableFrom": "snags",
-          "columnsFrom": [
-            "signage_item_id"
-          ],
+          "columnsFrom": ["signage_item_id"],
           "tableTo": "signage_items",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "snags_stand_submission_id_stand_submissions_id_fk": {
           "name": "snags_stand_submission_id_stand_submissions_id_fk",
           "tableFrom": "snags",
-          "columnsFrom": [
-            "stand_submission_id"
-          ],
+          "columnsFrom": ["stand_submission_id"],
           "tableTo": "stand_submissions",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "snags_assigned_user_id_users_id_fk": {
           "name": "snags_assigned_user_id_users_id_fk",
           "tableFrom": "snags",
-          "columnsFrom": [
-            "assigned_user_id"
-          ],
+          "columnsFrom": ["assigned_user_id"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "snags_assigned_supplier_id_suppliers_id_fk": {
           "name": "snags_assigned_supplier_id_suppliers_id_fk",
           "tableFrom": "snags",
-          "columnsFrom": [
-            "assigned_supplier_id"
-          ],
+          "columnsFrom": ["assigned_supplier_id"],
           "tableTo": "suppliers",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "snags_assigned_contractor_id_contractors_id_fk": {
           "name": "snags_assigned_contractor_id_contractors_id_fk",
           "tableFrom": "snags",
-          "columnsFrom": [
-            "assigned_contractor_id"
-          ],
+          "columnsFrom": ["assigned_contractor_id"],
           "tableTo": "contractors",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         },
         "snags_resolved_by_users_id_fk": {
           "name": "snags_resolved_by_users_id_fk",
           "tableFrom": "snags",
-          "columnsFrom": [
-            "resolved_by"
-          ],
+          "columnsFrom": ["resolved_by"],
           "tableTo": "users",
-          "columnsTo": [
-            "id"
-          ],
+          "columnsTo": ["id"],
           "onUpdate": "no action",
           "onDelete": "no action"
         }
@@ -5830,27 +5508,17 @@
     "public.actor_type": {
       "name": "actor_type",
       "schema": "public",
-      "values": [
-        "user",
-        "system",
-        "cron"
-      ]
+      "values": ["user", "system", "cron"]
     },
     "public.approval_entity_type": {
       "name": "approval_entity_type",
       "schema": "public",
-      "values": [
-        "signage_item",
-        "stand_submission"
-      ]
+      "values": ["signage_item", "stand_submission"]
     },
     "public.approver_type": {
       "name": "approver_type",
       "schema": "public",
-      "values": [
-        "role",
-        "user"
-      ]
+      "values": ["role", "user"]
     },
     "public.audit_action": {
       "name": "audit_action",
@@ -5878,12 +5546,7 @@
     "public.change_request_status": {
       "name": "change_request_status",
       "schema": "public",
-      "values": [
-        "open",
-        "approved",
-        "rejected",
-        "applied"
-      ]
+      "values": ["open", "approved", "rejected", "applied"]
     },
     "public.deadline_key": {
       "name": "deadline_key",
@@ -5918,29 +5581,17 @@
     "public.document_status": {
       "name": "document_status",
       "schema": "public",
-      "values": [
-        "received",
-        "accepted",
-        "rejected"
-      ]
+      "values": ["received", "accepted", "rejected"]
     },
     "public.edition_status": {
       "name": "edition_status",
       "schema": "public",
-      "values": [
-        "planning",
-        "live",
-        "closed",
-        "archived"
-      ]
+      "values": ["planning", "live", "closed", "archived"]
     },
     "public.email_status": {
       "name": "email_status",
       "schema": "public",
-      "values": [
-        "sent",
-        "failed"
-      ]
+      "values": ["sent", "failed"]
     },
     "public.entity_type": {
       "name": "entity_type",
@@ -5983,11 +5634,7 @@
     "public.install_slot": {
       "name": "install_slot",
       "schema": "public",
-      "values": [
-        "am",
-        "pm",
-        "overnight"
-      ]
+      "values": ["am", "pm", "overnight"]
     },
     "public.instance_status": {
       "name": "instance_status",
@@ -6007,60 +5654,32 @@
     "public.owner_role": {
       "name": "owner_role",
       "schema": "public",
-      "values": [
-        "ops",
-        "marketing"
-      ]
+      "values": ["ops", "marketing"]
     },
     "public.proof_status": {
       "name": "proof_status",
       "schema": "public",
-      "values": [
-        "draft",
-        "proof",
-        "final"
-      ]
+      "values": ["draft", "proof", "final"]
     },
     "public.reminder_kind": {
       "name": "reminder_kind",
       "schema": "public",
-      "values": [
-        "minus7",
-        "minus2",
-        "due",
-        "overdue",
-        "escalation",
-        "chaser",
-        "expiry"
-      ]
+      "values": ["minus7", "minus2", "due", "overdue", "escalation", "chaser", "expiry"]
     },
     "public.reminder_target_type": {
       "name": "reminder_target_type",
       "schema": "public",
-      "values": [
-        "approval_instance",
-        "signage_item",
-        "exhibitor",
-        "document"
-      ]
+      "values": ["approval_instance", "signage_item", "exhibitor", "document"]
     },
     "public.scope_type": {
       "name": "scope_type",
       "schema": "public",
-      "values": [
-        "venue",
-        "supplier",
-        "exhibitor",
-        "sponsor"
-      ]
+      "values": ["venue", "supplier", "exhibitor", "sponsor"]
     },
     "public.sided": {
       "name": "sided",
       "schema": "public",
-      "values": [
-        "single",
-        "double"
-      ]
+      "values": ["single", "double"]
     },
     "public.signage_status": {
       "name": "signage_status",
@@ -6084,42 +5703,22 @@
     "public.snag_severity": {
       "name": "snag_severity",
       "schema": "public",
-      "values": [
-        "low",
-        "medium",
-        "high"
-      ]
+      "values": ["low", "medium", "high"]
     },
     "public.snag_status": {
       "name": "snag_status",
       "schema": "public",
-      "values": [
-        "open",
-        "in_progress",
-        "resolved",
-        "wont_fix"
-      ]
+      "values": ["open", "in_progress", "resolved", "wont_fix"]
     },
     "public.staff_role": {
       "name": "staff_role",
       "schema": "public",
-      "values": [
-        "admin",
-        "ops",
-        "marketing",
-        "sales",
-        "event_director",
-        "viewer"
-      ]
+      "values": ["admin", "ops", "marketing", "sales", "event_director", "viewer"]
     },
     "public.stand_outcome": {
       "name": "stand_outcome",
       "schema": "public",
-      "values": [
-        "approved",
-        "approved_with_conditions",
-        "rejected"
-      ]
+      "values": ["approved", "approved_with_conditions", "rejected"]
     },
     "public.stand_status": {
       "name": "stand_status",
@@ -6140,39 +5739,22 @@
     "public.stand_type": {
       "name": "stand_type",
       "schema": "public",
-      "values": [
-        "space_only",
-        "shell",
-        "custom_shell"
-      ]
+      "values": ["space_only", "shell", "custom_shell"]
     },
     "public.step_kind": {
       "name": "step_kind",
       "schema": "public",
-      "values": [
-        "approval",
-        "confirmation"
-      ]
+      "values": ["approval", "confirmation"]
     },
     "public.supplier_kind": {
       "name": "supplier_kind",
       "schema": "public",
-      "values": [
-        "print",
-        "rigging",
-        "av",
-        "contractor",
-        "structural_engineer",
-        "other"
-      ]
+      "values": ["print", "rigging", "av", "contractor", "structural_engineer", "other"]
     },
     "public.workflow_applies_to": {
       "name": "workflow_applies_to",
       "schema": "public",
-      "values": [
-        "signage",
-        "stand"
-      ]
+      "values": ["signage", "stand"]
     }
   },
   "schemas": {},

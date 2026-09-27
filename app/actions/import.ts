@@ -15,6 +15,7 @@ import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { nextSignageRef } from "@/lib/refs";
 import { defaultSignageWorkflowId } from "@/lib/domain/signage";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
+import { importColumnFinder, type ImportColumn } from "@/lib/exports/import-columns";
 
 const rowSchema = z.object({
   ref: z.string().trim().optional().or(z.literal("")),
@@ -22,6 +23,7 @@ const rowSchema = z.object({
   type: z.string().trim().optional(),
   hall: z.string().trim().optional(),
   location: z.string().trim().optional(),
+  standNumber: z.string().trim().max(50).optional(),
   widthMm: z.coerce.number().int().positive().optional().nullable(),
   heightMm: z.coerce.number().int().positive().optional().nullable(),
   quantity: z.coerce.number().int().positive().optional().nullable(),
@@ -161,6 +163,21 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
   const parsed: Array<{ rowNumber: number; data: z.infer<typeof rowSchema> }> = [];
   const errors: { row: number; message: string }[] = [];
 
+  // Columns are found by their headings, so older sheets still import.
+  const headings: string[] = [];
+  ws.getRow(1).eachCell({ includeEmpty: true }, (c, i) => {
+    const v = c.value;
+    headings[i - 1] =
+      v == null
+        ? ""
+        : typeof v === "object" && "richText" in v
+          ? v.richText.map((t) => t.text).join("")
+          : typeof v === "object" && "text" in v
+            ? String(v.text)
+            : String(v);
+  });
+  const column = importColumnFinder(Array.from(headings, (h) => h ?? ""));
+
   ws.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return; // header
     const cell = (i: number) => {
@@ -170,27 +187,32 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
       if (v instanceof Date) return v.toISOString().slice(0, 10);
       return String(v);
     };
+    const at = (name: ImportColumn) => {
+      const i = column(name);
+      return i ? cell(i) : "";
+    };
     const raw = {
-      ref: cell(1),
-      name: cell(2),
-      type: cell(3),
-      hall: cell(4),
-      location: cell(5),
-      widthMm: cell(6) || null,
-      heightMm: cell(7) || null,
-      quantity: cell(8) || null,
-      sided: cell(9),
-      material: cell(10),
-      finish: cell(11),
-      fixing: cell(12),
-      sponsor: cell(13),
-      supplier: cell(14),
-      requiresVenueApproval: cell(15),
-      costEstimate: cell(16) || null,
-      installDate: cell(17),
-      installSlot: cell(18),
-      description: cell(19),
-      category: cell(20),
+      ref: at("Ref"),
+      name: at("Name"),
+      type: at("Type"),
+      hall: at("Hall"),
+      location: at("Location"),
+      standNumber: at("Stand no."),
+      widthMm: at("Width mm") || null,
+      heightMm: at("Height mm") || null,
+      quantity: at("Quantity") || null,
+      sided: at("Sided"),
+      material: at("Material"),
+      finish: at("Finish"),
+      fixing: at("Fixing"),
+      sponsor: at("Sponsor"),
+      supplier: at("Supplier"),
+      requiresVenueApproval: at("Requires venue approval"),
+      costEstimate: at("Cost estimate") || null,
+      installDate: at("Install date"),
+      installSlot: at("Install slot"),
+      description: at("Description"),
+      category: at("Category"),
     };
     if (!raw.name && !raw.ref) return; // blank row
     const res = rowSchema.safeParse(raw);
@@ -301,6 +323,7 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
             itemTypeId,
             hallId: hall?.id,
             locationId,
+            standNumber: data.standNumber || undefined,
             widthMm: data.widthMm ?? undefined,
             heightMm: data.heightMm ?? undefined,
             quantity: data.quantity ?? undefined,

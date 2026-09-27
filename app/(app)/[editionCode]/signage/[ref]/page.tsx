@@ -263,6 +263,7 @@ async function DetailsTab({
             .filter(Boolean)
             .join(" · ") || "—",
         ],
+        ["Stand no.", item.standNumber || "—"],
         [
           "Size",
           item.widthMm && item.heightMm
@@ -386,6 +387,7 @@ async function DetailsTab({
           itemTypeId: item.itemTypeId,
           hallId: item.hallId,
           locationId: item.locationId,
+          standNumber: item.standNumber,
           ownerRole: item.ownerRole,
           sponsorId: item.sponsorId,
           sponsorEntitlementId: item.sponsorEntitlementId,

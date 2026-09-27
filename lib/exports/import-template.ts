@@ -1,28 +1,9 @@
 import "server-only";
 import ExcelJS from "exceljs";
 
-export const IMPORT_COLUMNS = [
-  "Ref",
-  "Name",
-  "Type",
-  "Hall",
-  "Location",
-  "Width mm",
-  "Height mm",
-  "Quantity",
-  "Sided",
-  "Material",
-  "Finish",
-  "Fixing",
-  "Sponsor",
-  "Supplier",
-  "Requires venue approval",
-  "Cost estimate",
-  "Install date",
-  "Install slot",
-  "Description",
-  "Category",
-] as const;
+import { IMPORT_COLUMNS } from "./import-columns";
+
+export { IMPORT_COLUMNS };
 
 export async function buildImportTemplate(): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
@@ -35,6 +16,7 @@ export async function buildImportTemplate(): Promise<Buffer> {
     "Hanging banner",
     "Hall 1",
     "Main entrance",
+    "B12",
     3000,
     1000,
     1,

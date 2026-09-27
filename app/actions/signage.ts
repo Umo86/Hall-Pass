@@ -54,6 +54,7 @@ const itemFields = z.object({
   itemTypeId: z.string().uuid().optional().nullable(),
   hallId: z.string().uuid().optional().nullable(),
   locationId: z.string().uuid().optional().nullable(),
+  standNumber: z.string().trim().max(50).optional().nullable(),
   ownerRole: z.enum(["ops", "marketing"]).default("ops"),
   sponsorId: z.string().uuid().optional().nullable(),
   sponsorEntitlementId: z.string().uuid().optional().nullable(),
@@ -176,6 +177,7 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
           itemTypeId: data.itemTypeId ?? null,
           hallId: data.hallId ?? null,
           locationId: data.locationId ?? null,
+          standNumber: data.standNumber || null,
           ownerRole: data.ownerRole,
           ownerUserId: session.user.id,
           sponsorId: data.sponsorId ?? null,
@@ -280,6 +282,7 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
       assign("itemTypeId", "itemTypeId");
       assign("hallId", "hallId");
       assign("locationId", "locationId");
+      assign("standNumber", "standNumber");
       assign("ownerRole", "ownerRole");
       assign("sponsorId", "sponsorId");
       assign("sponsorEntitlementId", "sponsorEntitlementId");

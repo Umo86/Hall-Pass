@@ -35,7 +35,9 @@ export async function exportSession(
   if (session) return { session };
   const url = new URL(req.url);
   const next = `${url.pathname}${url.search}`;
-  return { response: NextResponse.redirect(new URL(`/login?next=${encodeURIComponent(next)}`, url)) };
+  return {
+    response: NextResponse.redirect(new URL(`/login?next=${encodeURIComponent(next)}`, url)),
+  };
 }
 
 /** An edition of the signed-in organisation, looked up by its code. */

@@ -57,6 +57,13 @@
       "when": 1790344364546,
       "tag": "0007_task_board",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790525113552,
+      "tag": "0008_stand_no_services",
+      "breakpoints": true
     }
   ]
 }

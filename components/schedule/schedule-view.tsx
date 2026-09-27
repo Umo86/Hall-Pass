@@ -101,6 +101,7 @@ export function ScheduleView({
         r.ref,
         r.name,
         r.locationName ?? "",
+        r.standNumber ?? "",
         r.hallName ?? "",
         r.typeName ?? "",
         r.sponsorName ?? "",
@@ -201,6 +202,11 @@ export function ScheduleView({
       },
       { accessorKey: "hallName", header: "Hall" },
       { accessorKey: "locationName", header: "Location" },
+      {
+        accessorKey: "standNumber",
+        header: "Stand no.",
+        cell: ({ row }) => row.original.standNumber ?? "—",
+      },
       {
         id: "size",
         header: "Size (mm)",
@@ -557,7 +563,9 @@ function ItemCard({
           .join(" · ")}
       </p>
       <p className="text-muted-foreground mt-1 text-xs">
-        {[r.hallName, r.locationName].filter(Boolean).join(" · ") || "No location"}
+        {[r.hallName, r.locationName, r.standNumber ? `Stand ${r.standNumber}` : null]
+          .filter(Boolean)
+          .join(" · ") || "No location"}
         {r.pendingSteps.length > 0 && (
           <>
             {" · "}
@@ -590,6 +598,7 @@ function SimpleTable({
             <th className="px-3 py-2 font-medium">Name</th>
             <th className="px-3 py-2 font-medium">Status</th>
             <th className="px-3 py-2 font-medium">Location</th>
+            <th className="px-3 py-2 font-medium">Stand no.</th>
             <th className="px-3 py-2 font-medium">Install</th>
             {canSeeCosts && <th className="px-3 py-2 font-medium">Estimate</th>}
           </tr>
@@ -607,6 +616,7 @@ function SimpleTable({
                 <StatusBadge status={r.status} />
               </td>
               <td className="text-muted-foreground px-3 py-2">{r.locationName ?? "—"}</td>
+              <td className="text-muted-foreground px-3 py-2">{r.standNumber ?? "—"}</td>
               <td className="px-3 py-2">{r.installDate ? formatDate(r.installDate) : "—"}</td>
               {canSeeCosts && <td className="px-3 py-2">{formatMoney(r.costEstimate)}</td>}
             </tr>

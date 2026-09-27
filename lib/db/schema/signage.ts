@@ -75,6 +75,8 @@ export const signageItems = pgTable(
     itemTypeId: uuid("item_type_id").references(() => itemTypes.id),
     hallId: uuid("hall_id").references(() => halls.id),
     locationId: uuid("location_id").references(() => locations.id),
+    // Nearest exhibitor stand, as people say it on site (e.g. "B12").
+    standNumber: text("stand_number"),
     ownerRole: ownerRole("owner_role").notNull().default("ops"),
     ownerUserId: uuid("owner_user_id").references(() => users.id),
     sponsorId: uuid("sponsor_id").references(() => sponsors.id),

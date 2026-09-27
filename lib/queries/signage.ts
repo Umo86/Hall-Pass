@@ -33,6 +33,7 @@ export type ScheduleRow = {
   format: string | null;
   hallName: string | null;
   locationName: string | null;
+  standNumber: string | null;
   sponsorName: string | null;
   supplierName: string | null;
   ownerRole: string;
@@ -114,6 +115,7 @@ export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]
     format: r.format,
     hallName: r.hallName,
     locationName: r.locationName,
+    standNumber: r.item.standNumber,
     sponsorName: r.sponsorName,
     supplierName: r.supplierName,
     ownerRole: r.item.ownerRole,

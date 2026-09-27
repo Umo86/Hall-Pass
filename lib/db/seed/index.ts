@@ -311,6 +311,8 @@ async function main() {
     "Staffing",
     "Furniture",
     "Structural engineering",
+    "Floor Manager",
+    "Security",
   ];
   const serviceRows: Record<string, typeof s.supplierServices.$inferSelect> = {};
   for (const [i, name] of serviceNames.entries()) {

@@ -51,6 +51,7 @@ export type ItemFormValues = {
   itemTypeId?: string | null;
   hallId?: string | null;
   locationId?: string | null;
+  standNumber?: string | null;
   ownerRole?: string;
   sponsorId?: string | null;
   sponsorEntitlementId?: string | null;
@@ -518,6 +519,17 @@ export function ItemForm({
                     </option>
                   ))}
                 </SelectNative>,
+              )}
+              {field(
+                "standNumber",
+                "Stand no.",
+                <Input
+                  id="standNumber"
+                  name="standNumber"
+                  defaultValue={values.standNumber ?? ""}
+                  placeholder="e.g. B12"
+                  maxLength={50}
+                />,
               )}
             </section>
             <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
