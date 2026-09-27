@@ -11,6 +11,7 @@ import { writeAudit } from "@/lib/audit";
 import { DEV_COOKIE, demoEmailAllowed, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
 import { emailIsInvited, sendAccountEmail } from "@/lib/auth/account-link";
+import { signInErrorMessage, supabaseProjectRef } from "@/lib/auth/supabase-diagnostics";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 
 export type AuthResult = { ok: true; message?: string } | { ok: false; error: string };
@@ -37,7 +38,19 @@ export async function signInWithPassword(input: unknown): Promise<AuthResult> {
     email: parsed.data.email.trim().toLowerCase(),
     password: parsed.data.password,
   });
-  if (error) return { ok: false, error: "Incorrect email or password" };
+  if (error) {
+    const message = signInErrorMessage(error);
+    if (message !== "Incorrect email or password") {
+      console.error(
+        "signInWithPassword: Supabase refused",
+        supabaseProjectRef(process.env.NEXT_PUBLIC_SUPABASE_URL),
+        error.status,
+        error.code,
+        error.message,
+      );
+    }
+    return { ok: false, error: message };
+  }
   if (!(await emailIsInvited(parsed.data.email))) {
     await supabase.auth.signOut();
     return {

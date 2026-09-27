@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { devAuthEnabled } from "@/lib/auth/actor";
-import { supabaseConfigured } from "@/lib/auth/supabase-server";
+import { supabaseConfigured, supabasePublicKey } from "@/lib/auth/supabase-server";
+import {
+  checkAuthService,
+  databaseProjectRef,
+  supabaseProjectRef,
+} from "@/lib/auth/supabase-diagnostics";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +44,14 @@ export async function GET() {
       ...(databaseError ? { databaseError } : {}),
       seeded,
       auth,
+      // Project ids are public (they're in every page's sign-in requests).
+      // Sign-in and the database must use the same project.
+      supabaseProject: supabaseProjectRef(process.env.NEXT_PUBLIC_SUPABASE_URL),
+      databaseProject: databaseProjectRef(process.env.DATABASE_URL),
+      authService: await checkAuthService(
+        process.env.NEXT_PUBLIC_SUPABASE_URL,
+        supabasePublicKey(),
+      ),
       storage: process.env.BLOB_READ_WRITE_TOKEN
         ? "vercel-blob"
         : Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY)
