@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { acceptInvite } from "@/app/actions/invites";
 
 export function InviteForm({
@@ -64,8 +65,7 @@ export function InviteForm({
         <>
           <label className="block space-y-1.5">
             <span className="text-sm font-medium">Choose a password</span>
-            <Input
-              type="password"
+            <PasswordInput
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="new-password"
@@ -76,8 +76,7 @@ export function InviteForm({
           </label>
           <label className="block space-y-1.5">
             <span className="text-sm font-medium">Type it again</span>
-            <Input
-              type="password"
+            <PasswordInput
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
               autoComplete="new-password"

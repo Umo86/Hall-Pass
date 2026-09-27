@@ -5,6 +5,7 @@ import { useEffect, useState, useTransition } from "react";
 import { createBrowserClient } from "@supabase/ssr";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { completeAccount } from "@/app/actions/auth";
 
 type State =
@@ -125,12 +126,12 @@ export function AcceptAccount({
       </label>
       <label className="block space-y-1.5">
         <span className="text-sm font-medium">Choose a password</span>
-        <Input name="password" type="password" autoComplete="new-password" minLength={8} required />
+        <PasswordInput name="password" autoComplete="new-password" minLength={8} required />
         <span className="text-muted-foreground block text-xs">At least 8 characters.</span>
       </label>
       <label className="block space-y-1.5">
         <span className="text-sm font-medium">Type it again</span>
-        <Input name="confirm" type="password" autoComplete="new-password" required />
+        <PasswordInput name="confirm" autoComplete="new-password" required />
       </label>
       <Button type="submit" className="w-full" disabled={pending}>
         Create my account

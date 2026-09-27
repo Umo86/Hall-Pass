@@ -6,6 +6,7 @@ import { ArrowLeft, Building2, Check, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AccentRule, Wordmark } from "@/components/wordmark";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import {
   devSignIn,
   sendPasswordReset,
@@ -201,9 +202,8 @@ function EmailSignIn({ next }: { next: string | null }) {
                 Forgot password?
               </button>
             </div>
-            <Input
+            <PasswordInput
               id="password"
-              type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoComplete="current-password"

@@ -67,6 +67,13 @@ test.describe("Approvals", () => {
     await expect(lara.getByText("You're invited to sign off signage artwork")).toBeVisible();
     await expect(lara.getByLabel("Your name")).toHaveValue(person);
     await lara.getByLabel("Choose a password").fill("s3cure-pass");
+    // The eye shows what's been typed, and hides it again.
+    const pw = lara.getByLabel("Choose a password");
+    await expect(pw).toHaveAttribute("type", "password");
+    await lara.getByRole("button", { name: "Show password" }).first().click();
+    await expect(pw).toHaveAttribute("type", "text");
+    await lara.getByRole("button", { name: "Hide password" }).click();
+    await expect(pw).toHaveAttribute("type", "password");
     await lara.getByLabel("Type it again").fill("s3cure-pass");
     await lara.getByRole("button", { name: "Create my account" }).click();
     await lara.waitForURL("**/my-work");
