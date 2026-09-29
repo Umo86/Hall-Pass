@@ -48,6 +48,17 @@ import { AddPanelButton } from "@/components/stand-designs/add-panel";
 
 export const dynamic = "force-dynamic";
 
+/** The browser tab shows the ref and name, e.g. "SIG-BIRM27-001 · Main entrance arch banner". */
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ editionCode: string; ref: string }>;
+}) {
+  const { ref } = await params;
+  const item = await getItemByRef(decodeURIComponent(ref));
+  return { title: item ? `${item.ref} · ${item.name}` : "Not found" };
+}
+
 type TabId = "details" | "artwork" | "panels" | "changes" | "comments" | "history";
 type Tab = { id: TabId; label: string };
 
@@ -444,7 +455,7 @@ async function DetailsTab({
       {!canEdit && (
         <p className="text-muted-foreground text-sm">
           {editionIsReadOnly(bundle.edition.status)
-            ? "This show is closed, so its items can no longer be changed."
+            ? "This show is archived, so its items can no longer be changed."
             : "You can view this item but not change it."}
         </p>
       )}
@@ -779,7 +790,7 @@ async function StandDetails({
       {!canEdit && (
         <p className="text-muted-foreground text-sm">
           {editionIsReadOnly(bundle.edition.status)
-            ? "This show is closed, so its stands can no longer be changed."
+            ? "This show is archived, so its stands can no longer be changed."
             : "You can view this stand but not change it."}
         </p>
       )}
@@ -828,7 +839,9 @@ async function PanelsSection({
     }),
   ]);
   const designApproved = APPROVED_OR_LATER.includes(item.status);
-  const approved = panels.filter((p) => APPROVED_OR_LATER.includes(p.status as typeof item.status)).length;
+  const approved = panels.filter((p) =>
+    APPROVED_OR_LATER.includes(p.status as typeof item.status),
+  ).length;
   return (
     <div className="grid gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">

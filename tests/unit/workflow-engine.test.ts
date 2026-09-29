@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-
   applyDecision,
   applyDelegation,
   applyHoldShift,
@@ -87,7 +86,13 @@ function decideOk(
 
 describe("run creation (6.1)", () => {
   it("creates one instance per step with snapshots; departments not chosen are skipped but visible", () => {
-    const run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    const run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     expect(run).toHaveLength(8);
     expect(byName(run, "Operations sign-off").status).toBe("skipped"); // not chosen
     expect(byName(run, "Sales sign-off").status).toBe("skipped"); // not chosen
@@ -106,7 +111,13 @@ describe("run creation (6.1)", () => {
   });
 
   it("sponsor signage adds Sales to the first group", () => {
-    const run = createRun({ steps: defaultSignageSteps, entity: richSignage, settings, runNumber: 1, now: NOW });
+    const run = createRun({
+      steps: defaultSignageSteps,
+      entity: richSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     for (const name of ["Operations sign-off", "Marketing sign-off", "Sales sign-off"]) {
       expect(byName(run, name).status).toBe("pending");
     }
@@ -149,14 +160,26 @@ describe("run creation (6.1)", () => {
         ? { ...s, approverType: "user" as const, approverUserId: "user-42" }
         : s,
     );
-    const run = createRun({ steps, entity: { ...plainSignage, signoffs: null }, settings, runNumber: 1, now: NOW });
+    const run = createRun({
+      steps,
+      entity: { ...plainSignage, signoffs: null },
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     const inst = byName(run, "Marketing sign-off");
     expect(inst.assignedUserId).toBe("user-42");
     expect(inst.assignedRole).toBeNull();
   });
 
   it("stand run: engineer step only when complex; venue only when the venue requires it", () => {
-    const simple = createRun({ steps: defaultStandSteps, entity: simpleStand, settings, runNumber: 1, now: NOW });
+    const simple = createRun({
+      steps: defaultStandSteps,
+      entity: simpleStand,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     expect(byName(simple, "Structural engineer review").status).toBe("skipped");
     expect(byName(simple, "Venue approval").status).toBe("waiting");
 
@@ -174,7 +197,13 @@ describe("run creation (6.1)", () => {
 
 describe("activation (6.2)", () => {
   it("parallel group activates together with due dates from SLA", () => {
-    const run = createRun({ steps: defaultSignageSteps, entity: richSignage, settings, runNumber: 1, now: NOW });
+    const run = createRun({
+      steps: defaultSignageSteps,
+      entity: richSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     const marketing = byName(run, "Marketing sign-off");
     const sponsor = byName(run, "Sales sign-off");
     expect(marketing.status).toBe("pending");
@@ -185,7 +214,13 @@ describe("activation (6.2)", () => {
   });
 
   it("next stage activates only when every instance in the group is settled", () => {
-    let run = createRun({ steps: defaultSignageSteps, entity: richSignage, settings, runNumber: 1, now: NOW });
+    let run = createRun({
+      steps: defaultSignageSteps,
+      entity: richSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     run = decideOk(run, "Marketing sign-off", "approve", richSignage).instances;
     run = decideOk(run, "Sales sign-off", "approve", richSignage).instances;
     expect(byName(run, "Venue approval").status).toBe("waiting"); // Operations still pending
@@ -194,7 +229,13 @@ describe("activation (6.2)", () => {
   });
 
   it("skipped steps do not block activation", () => {
-    const run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    const run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     const afterMarketing = decideOk(run, "Marketing sign-off").instances;
     // Operations and Sales (same group) were not chosen, so the next step activates.
     expect(byName(afterMarketing, "Senior management sign-off").status).toBe("pending");
@@ -203,7 +244,13 @@ describe("activation (6.2)", () => {
 
 describe("decisions (6.3)", () => {
   it("the run is approved when the last approval step settles, before production", () => {
-    let run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    let run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     run = decideOk(run, "Marketing sign-off").instances;
     const approved = decideOk(run, "Senior management sign-off");
     expect(approved.entityEvent.type).toBe("run_approved");
@@ -220,7 +267,13 @@ describe("decisions (6.3)", () => {
   });
 
   it("an item walks from review to installed through legal transitions only", () => {
-    let run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    let run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     let status: SignageStatus = "in_review";
     const CONFIRMATION_EVENTS = {
       "Sent to print": "sent_to_print",
@@ -237,16 +290,26 @@ describe("decisions (6.3)", () => {
     for (const [name, type] of steps) {
       const res = decideOk(run, name, type);
       run = res.instances;
-      if (res.entityEvent.type === "run_approved") status = signageTransition(status, "run_approved");
+      if (res.entityEvent.type === "run_approved")
+        status = signageTransition(status, "run_approved");
       else if (type === "confirm") {
-        status = signageTransition(status, CONFIRMATION_EVENTS[name as keyof typeof CONFIRMATION_EVENTS]);
+        status = signageTransition(
+          status,
+          CONFIRMATION_EVENTS[name as keyof typeof CONFIRMATION_EVENTS],
+        );
       }
     }
     expect(status).toBe("installed");
   });
 
   it("any conditions anywhere make the run approved_with_conditions", () => {
-    let run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    let run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     const marketing = byName(run, "Marketing sign-off");
     run = applyDecision(run, {
       instanceId: marketing.id,
@@ -265,7 +328,13 @@ describe("decisions (6.3)", () => {
   });
 
   it("request_changes and reject need a comment; approve_with_conditions needs text", () => {
-    const run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    const run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     const inst = byName(run, "Marketing sign-off");
     const base = {
       instanceId: inst.id,
@@ -281,9 +350,9 @@ describe("decisions (6.3)", () => {
     expect(() =>
       applyDecision(run, { ...base, decision: { type: "request_changes", comment: " " } }),
     ).toThrow(WorkflowError);
-    expect(() => applyDecision(run, { ...base, decision: { type: "reject", comment: "" } })).toThrow(
-      WorkflowError,
-    );
+    expect(() =>
+      applyDecision(run, { ...base, decision: { type: "reject", comment: "" } }),
+    ).toThrow(WorkflowError);
     expect(() =>
       applyDecision(run, {
         ...base,
@@ -293,7 +362,13 @@ describe("decisions (6.3)", () => {
   });
 
   it("confirmation steps cannot be approved; approval steps cannot be confirmed", () => {
-    let run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    let run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     const marketing = byName(run, "Marketing sign-off");
     expect(() =>
       applyDecision(run, {
@@ -329,7 +404,13 @@ describe("decisions (6.3)", () => {
   });
 
   it("optimistic lock: stale expected status or version conflicts", () => {
-    const run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    const run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     const inst = byName(run, "Marketing sign-off");
     // Two clients open the same step. First decides fine.
     const first = decideOk(run, "Marketing sign-off");
@@ -368,7 +449,13 @@ describe("decisions (6.3)", () => {
 
   it("supplier step with no supplier falls back to ops and is flagged", () => {
     const noSupplier = { ...plainSignage, supplierId: null };
-    let run = createRun({ steps: defaultSignageSteps, entity: noSupplier, settings, runNumber: 1, now: NOW });
+    let run = createRun({
+      steps: defaultSignageSteps,
+      entity: noSupplier,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     run = decideOk(run, "Marketing sign-off", "approve", noSupplier).instances;
     run = decideOk(run, "Senior management sign-off", "approve", noSupplier).instances;
     const print = byName(run, "Sent to print");
@@ -380,16 +467,32 @@ describe("decisions (6.3)", () => {
 
 describe("delegation (6.3)", () => {
   it("stores the delegator and reassigns to the named user", () => {
-    const run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    const run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     const inst = byName(run, "Marketing sign-off");
-    const after = applyDelegation(run, { instanceId: inst.id, toUserId: "kate", fromUserId: "mark" });
+    const after = applyDelegation(run, {
+      instanceId: inst.id,
+      toUserId: "kate",
+      fromUserId: "mark",
+    });
     const delegated = byName(after, "Marketing sign-off");
     expect(delegated.assignedUserId).toBe("kate");
     expect(delegated.delegatedFromUserId).toBe("mark");
   });
 
   it("only pending steps can be delegated", () => {
-    const run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    const run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     const waiting = byName(run, "Senior management sign-off");
     expect(() =>
       applyDelegation(run, { instanceId: waiting.id, toUserId: "a", fromUserId: "b" }),
@@ -399,7 +502,13 @@ describe("delegation (6.3)", () => {
 
 describe("changes-requested restart (6.3)", () => {
   function runToOpsChangesRequested() {
-    let run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    let run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     run = decideOk(run, "Marketing sign-off").instances;
     const ops = byName(run, "Senior management sign-off");
     const res = applyDecision(run, {
@@ -454,16 +563,27 @@ describe("changes-requested restart (6.3)", () => {
 
 describe("invalidation on new version (6.4)", () => {
   it("invalidates exactly the configured decided steps and re-creates them in position", () => {
-    let run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    let run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     run = decideOk(run, "Marketing sign-off").instances;
     run = decideOk(run, "Senior management sign-off").instances;
     run = decideOk(run, "Sent to print", "confirm").instances;
     run = decideOk(run, "Delivered", "confirm").instances; // invalidate_on_new_version = false
 
-    const { instances, invalidated } = invalidateOnNewVersion(run, { entity: plainSignage, now: NOW });
+    const { instances, invalidated } = invalidateOnNewVersion(run, {
+      entity: plainSignage,
+      now: NOW,
+    });
     const invalidatedNames = invalidated.map((i) => i.stepName).sort();
     // Delivered has invalidate=false so its confirmation stands.
-    expect(invalidatedNames).toEqual(["Marketing sign-off", "Senior management sign-off", "Sent to print"].sort());
+    expect(invalidatedNames).toEqual(
+      ["Marketing sign-off", "Senior management sign-off", "Sent to print"].sort(),
+    );
     expect(byName(instances, "Delivered").status).toBe("confirmed");
     // Fresh instances exist and the earliest re-created step is pending again.
     expect(byName(instances, "Marketing sign-off").status).toBe("pending");
@@ -474,8 +594,17 @@ describe("invalidation on new version (6.4)", () => {
   });
 
   it("no decided invalidatable steps → nothing changes", () => {
-    const run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
-    const { instances, invalidated } = invalidateOnNewVersion(run, { entity: plainSignage, now: NOW });
+    const run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
+    const { instances, invalidated } = invalidateOnNewVersion(run, {
+      entity: plainSignage,
+      now: NOW,
+    });
     expect(invalidated).toHaveLength(0);
     expect(instances.filter((i) => i.status === "invalidated")).toHaveLength(0);
   });
@@ -483,12 +612,57 @@ describe("invalidation on new version (6.4)", () => {
 
 describe("hold shifting (5.1)", () => {
   it("shifts due dates of pending instances by the hold duration", () => {
-    const run = createRun({ steps: defaultSignageSteps, entity: plainSignage, settings, runNumber: 1, now: NOW });
+    const run = createRun({
+      steps: defaultSignageSteps,
+      entity: plainSignage,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
     const shifted = applyHoldShift(run, 4);
     const marketing = byName(shifted, "Marketing sign-off");
     expect(marketing.dueAt).toEqual(new Date("2027-03-08T09:00:00Z")); // +3 SLA +4 hold
     expect(marketing.holdShiftDays).toBe(4);
     // Waiting instances untouched.
     expect(byName(shifted, "Senior management sign-off").dueAt).toBeNull();
+  });
+});
+
+describe("confirmation due dates", () => {
+  // No department sign-offs and no venue approval: the run starts at
+  // "Sent to print".
+  const printOnly: SignageEntityCtx = {
+    ...plainSignage,
+    signoffs: [],
+    requiresVenueApproval: false,
+  };
+
+  it("fall on the item's own print, delivery and install dates", () => {
+    const entity: SignageEntityCtx = {
+      ...printOnly,
+      stepDueDates: { "Sent to print": "2027-03-10", Delivered: "2027-03-20", Installed: null },
+    };
+    let run = createRun({ steps: defaultSignageSteps, entity, settings, runNumber: 1, now: NOW });
+    expect(byName(run, "Sent to print").status).toBe("pending");
+    expect(byName(run, "Sent to print").dueAt).toEqual(new Date("2027-03-10T17:00:00Z"));
+    run = decideOk(run, "Sent to print", "confirm", entity).instances;
+    expect(byName(run, "Delivered").dueAt).toEqual(new Date("2027-03-20T17:00:00Z"));
+    run = decideOk(run, "Delivered", "confirm", entity).instances;
+    // No install date and no SLA: nothing to chase.
+    expect(byName(run, "Installed").status).toBe("pending");
+    expect(byName(run, "Installed").dueAt).toBeNull();
+  });
+
+  it("use the SLA when there is no date, and are never due immediately", () => {
+    let run = createRun({
+      steps: defaultSignageSteps,
+      entity: printOnly,
+      settings,
+      runNumber: 1,
+      now: NOW,
+    });
+    expect(byName(run, "Sent to print").dueAt).toEqual(new Date("2027-03-03T09:00:00Z")); // +2 days SLA
+    run = decideOk(run, "Sent to print", "confirm", printOnly).instances;
+    expect(byName(run, "Delivered").dueAt).toBeNull();
   });
 });

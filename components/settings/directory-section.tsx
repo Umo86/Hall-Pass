@@ -94,7 +94,9 @@ export function DirectorySection({
       <Dialog open={editing !== null} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{current ? `Edit ${noun.toLowerCase()}` : `Add ${noun.toLowerCase()}`}</DialogTitle>
+            <DialogTitle>
+              {current ? `Edit ${noun.toLowerCase()}` : `Add ${noun.toLowerCase()}`}
+            </DialogTitle>
             <DialogDescription>Only the name is required unless marked.</DialogDescription>
           </DialogHeader>
           <form

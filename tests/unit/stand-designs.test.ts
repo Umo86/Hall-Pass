@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mapPlanToWorkflow } from "@/lib/domain/stand-designs";
 import { artworkBlockedReason, PANEL_BLOCKED_MESSAGE } from "@/lib/artwork-rules";
 import { formatStandDesignRef, formatStandPanelRef } from "@/lib/refs";
-import { itemPath } from "@/lib/edition-path";
+import { itemPath, switchShowPath } from "@/lib/edition-path";
 import { can, type StaffActor } from "@/lib/authz";
 import type { StaffRole } from "@/lib/authz";
 
@@ -114,5 +114,19 @@ describe("who sets up and works on stands", () => {
     expect(
       can(staff("marketing"), { type: "signage.edit", item: { ...stand, kind: "stand_panel" } }),
     ).toBe(false);
+  });
+});
+
+describe("switching show", () => {
+  it("keeps the section but never the record", () => {
+    expect(switchShowPath("/BIRM27/signage/SIG-BIRM27-001?tab=artwork", "LON28")).toBe(
+      "/LON28/signage",
+    );
+    expect(switchShowPath("/BIRM27/stand-panels/STB-BIRM27-001-P1", "LON28")).toBe(
+      "/LON28/stand-designs",
+    );
+    expect(switchShowPath("/BIRM27/calendar", "LON28")).toBe("/LON28/calendar");
+    expect(switchShowPath("/BIRM27", "LON28")).toBe("/LON28/dashboard");
+    expect(switchShowPath("/my-work", "LON28")).toBe("/LON28/dashboard");
   });
 });

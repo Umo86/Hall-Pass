@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { suppliers } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
+import { plural } from "@/lib/format";
 import { can } from "@/lib/authz";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { listScheduleRows } from "@/lib/queries/signage";
@@ -35,7 +36,7 @@ export default async function SignagePage({
       <h1 className="text-xl font-semibold tracking-tight">
         Signage schedule{" "}
         <span className="text-muted-foreground text-base font-normal">
-          {ed.edition.code} · {rows.length} items
+          {ed.edition.code} · {plural(rows.length, "item")}
         </span>
       </h1>
       <ScheduleView

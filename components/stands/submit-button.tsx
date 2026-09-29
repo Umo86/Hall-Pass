@@ -33,7 +33,9 @@ export function SubmitStandButton({
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{isResubmit ? "Resubmit your design?" : "Submit your design?"}</DialogTitle>
+            <DialogTitle>
+              {isResubmit ? "Resubmit your design?" : "Submit your design?"}
+            </DialogTitle>
             <DialogDescription>
               {isResubmit
                 ? "Resubmitting increases the submission version and restarts the review from the step that requested changes. Earlier approvals stand."

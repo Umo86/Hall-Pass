@@ -188,7 +188,8 @@ export default async function CalendarPage({
   }
 
   for (const inst of pending) {
-    if (!inst.dueAt) continue;
+    // Print, delivery and install dates are on the calendar already.
+    if (!inst.dueAt || inst.stepKindSnapshot === "confirmation") continue;
     const date = inst.dueAt.toISOString().slice(0, 10);
     const item = itemById.get(inst.entityId);
     const stand = standById.get(inst.entityId);

@@ -91,7 +91,7 @@ export default async function SuppliersPage() {
         <div>
           <h2 className="text-sm font-semibold">Install contractors</h2>
           <p className="text-muted-foreground text-sm">
-            Crews who put signage up on site — chosen per item under Dates &amp; install.
+            Crews who put signage up on site — chosen per item under More details on the item form.
           </p>
         </div>
         <DirectorySection

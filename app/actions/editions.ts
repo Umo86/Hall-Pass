@@ -14,6 +14,8 @@ import {
   halls,
   locations,
   signageItems,
+  sponsorEntitlements,
+  sponsors,
   venues,
 } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
@@ -21,6 +23,7 @@ import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { buildStoragePath, putObject } from "@/lib/storage";
+import { formatStandDesignRef, formatStandPanelRef, STAND_SEQ_BASE } from "@/lib/refs";
 
 type ShowDates = {
   buildStart: string;
@@ -247,15 +250,15 @@ export async function cloneEdition(input: unknown): Promise<ActionResult<{ code:
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
   if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admin and ops can clone editions");
+    return fail("Only admins and operations can copy shows");
   }
   const data = parsed.data;
   const code = data.code.toUpperCase();
   // Only this organisation's shows can be copied.
   const source = await ownEdition(db, session.organisation.id, data.sourceEditionId);
-  if (!source) return fail("Source edition not found");
+  if (!source) return fail("Show not found");
   const clash = await db.query.editions.findFirst({ where: eq(editions.code, code) });
-  if (clash) return fail(`Edition code ${code} is already in use`);
+  if (clash) return fail(`Show code ${code} is already in use`);
 
   try {
     await db.transaction(async (tx) => {
@@ -324,49 +327,131 @@ export async function cloneEdition(input: unknown): Promise<ActionResult<{ code:
         }
       }
 
-      // Signage items as drafts, artwork/approvals/actuals/PO cleared.
+      // Sponsors come across (the same companies usually return), with what
+      // they're entitled to; what they've bought starts again.
+      const sponsorRows = await tx.select().from(sponsors).where(eq(sponsors.editionId, source.id));
+      const sponsorMap = new Map<string, string>();
+      for (const sp of sponsorRows) {
+        const [ns] = await tx
+          .insert(sponsors)
+          .values({
+            editionId: target.id,
+            companyName: sp.companyName,
+            contactName: sp.contactName,
+            contactEmail: sp.contactEmail,
+            packageName: sp.packageName,
+            notes: sp.notes,
+          })
+          .returning();
+        sponsorMap.set(sp.id, ns.id);
+        const ents = await tx
+          .select()
+          .from(sponsorEntitlements)
+          .where(eq(sponsorEntitlements.sponsorId, sp.id));
+        if (ents.length > 0) {
+          await tx
+            .insert(sponsorEntitlements)
+            .values(
+              ents.map((e) => ({
+                sponsorId: ns.id,
+                description: e.description,
+                quantity: e.quantity,
+              })),
+            );
+        }
+      }
+
+      // Every item as a draft: artwork, sign-offs, actual costs and POs
+      // cleared. Sponsor signage keeps its sponsor; items for sale are unsold
+      // again. Stands keep their own numbering and their panels.
       const items = await tx
         .select()
         .from(signageItems)
-        .where(and(eq(signageItems.editionId, source.id), isNull(signageItems.deletedAt)));
+        .where(and(eq(signageItems.editionId, source.id), isNull(signageItems.deletedAt)))
+        .orderBy(signageItems.seq);
       let seq = 0;
-      for (const item of items) {
-        seq += 1;
-        await tx.insert(signageItems).values({
-          editionId: target.id,
-          ref: `SIG-${code}-${String(seq).padStart(3, "0")}`,
-          seq,
-          name: item.name,
-          description: item.description,
-          kind: item.kind,
-          category: item.category,
-          itemTypeId: item.itemTypeId,
-          hallId: item.hallId ? (hallMap.get(item.hallId) ?? null) : null,
-          locationId: item.locationId ? (locMap.get(item.locationId) ?? null) : null,
-          ownerRole: item.ownerRole,
-          ownerUserId: item.ownerUserId,
-          sponsorId: null, // sponsors are edition-scoped
-          isSponsorDeliverable: false,
-          widthMm: item.widthMm,
-          heightMm: item.heightMm,
-          depthMm: item.depthMm,
-          quantity: item.quantity,
-          sided: item.sided,
-          material: item.material,
-          finish: item.finish,
-          fixingMethod: item.fixingMethod,
-          weightKg: item.weightKg,
-          requiresVenueApproval: item.requiresVenueApproval,
-          requiresEventDirector: item.requiresEventDirector,
-          budgetLine: item.budgetLine,
-          costEstimate: item.costEstimate,
-          supplierId: item.supplierId,
-          workflowId: item.workflowId,
-          status: "draft",
-          createdBy: session.user.id,
-        });
+      let standNo = 0;
+      let standSeq = 0;
+      const idMap = new Map<string, { id: string; ref: string; panels: number }>();
+      // Stands before their panels, whatever order they were made in.
+      const ordered = [
+        ...items.filter((i) => i.kind !== "stand_panel"),
+        ...items.filter((i) => i.kind === "stand_panel"),
+      ];
+      for (const item of ordered) {
+        let ref: string;
+        let itemSeq: number;
+        let parentItemId: string | null = null;
+        if (item.kind === "stand_design") {
+          standNo += 1;
+          standSeq += 1;
+          ref = formatStandDesignRef(code, standNo);
+          itemSeq = STAND_SEQ_BASE + standSeq;
+        } else if (item.kind === "stand_panel") {
+          const parent = item.parentItemId ? idMap.get(item.parentItemId) : undefined;
+          if (!parent) continue; // its stand wasn't copied
+          parent.panels += 1;
+          standSeq += 1;
+          ref = formatStandPanelRef(parent.ref, parent.panels);
+          itemSeq = STAND_SEQ_BASE + standSeq;
+          parentItemId = parent.id;
+        } else {
+          seq += 1;
+          ref = `SIG-${code}-${String(seq).padStart(3, "0")}`;
+          itemSeq = seq;
+        }
+        const forSale = item.kind === "sponsorship_item";
+        const sponsorId =
+          forSale || !item.sponsorId ? null : (sponsorMap.get(item.sponsorId) ?? null);
+        const [created] = await tx
+          .insert(signageItems)
+          .values({
+            editionId: target.id,
+            ref,
+            seq: itemSeq,
+            name: item.name,
+            description: item.description,
+            kind: item.kind,
+            parentItemId,
+            category: item.category,
+            itemTypeId: item.itemTypeId,
+            hallId: item.hallId ? (hallMap.get(item.hallId) ?? null) : null,
+            locationId: item.locationId ? (locMap.get(item.locationId) ?? null) : null,
+            standNumber: item.standNumber,
+            ownerRole: item.ownerRole,
+            ownerUserId: item.ownerUserId,
+            sponsorId,
+            sponsorEntitlementId: null,
+            isSponsorDeliverable: Boolean(sponsorId),
+            signoffs: item.signoffs,
+            photoPath: item.photoPath,
+            orderByDate: item.orderByDate,
+            widthMm: item.widthMm,
+            heightMm: item.heightMm,
+            depthMm: item.depthMm,
+            quantity: item.quantity,
+            sided: item.sided,
+            material: item.material,
+            finish: item.finish,
+            fixingMethod: item.fixingMethod,
+            weightKg: item.weightKg,
+            requiresVenueApproval: item.requiresVenueApproval,
+            requiresEventDirector: item.requiresEventDirector,
+            budgetLine: item.budgetLine,
+            costEstimate: item.costEstimate,
+            supplierId: item.supplierId,
+            workflowId: item.workflowId,
+            status: "draft",
+            createdBy: session.user.id,
+          })
+          .returning({ id: signageItems.id });
+        idMap.set(item.id, { id: created.id, ref, panels: 0 });
       }
-      await tx.insert(editionCounters).values({ editionId: target.id, key: "signage", value: seq });
+      await tx.insert(editionCounters).values([
+        { editionId: target.id, key: "signage", value: seq },
+        { editionId: target.id, key: "stand_design", value: standNo },
+        { editionId: target.id, key: "stand_item", value: standSeq },
+      ]);
 
       await writeAudit(tx, {
         organisationId: session.organisation.id,
@@ -375,12 +460,12 @@ export async function cloneEdition(input: unknown): Promise<ActionResult<{ code:
         entityType: "edition",
         entityId: target.id,
         action: "create",
-        after: { code, clonedFrom: source.code, items: seq },
-        summary: `Cloned ${source.code} → ${code} (${seq} items as drafts)`,
+        after: { code, clonedFrom: source.code, items: idMap.size },
+        summary: `Copied ${source.code} → ${code} (${idMap.size} items as drafts)`,
       });
     });
     revalidatePath("/", "layout");
-    return success({ code }, `Edition ${code} cloned from ${source.code}`);
+    return success({ code }, `Show ${code} copied from ${source.code}`);
   } catch (err) {
     return fail(err instanceof Error ? err.message : "Something went wrong");
   }

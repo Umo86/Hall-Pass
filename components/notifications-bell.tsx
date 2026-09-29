@@ -74,7 +74,12 @@ export function NotificationsBell({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label={`Notifications (${liveCount} unread)`} className="relative">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={`Notifications (${liveCount} unread)`}
+          className="relative"
+        >
           <Bell className="size-4" aria-hidden />
           {liveCount > 0 && (
             <span className="bg-destructive absolute top-1 right-1 flex size-4 items-center justify-center rounded-full text-[10px] font-semibold text-white">

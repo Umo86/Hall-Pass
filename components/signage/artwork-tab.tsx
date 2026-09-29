@@ -276,8 +276,8 @@ export function ArtworkTab({
                   )}
                 </p>
                 <p className="text-muted-foreground text-xs">
-                  {(v.fileSize / 1024).toFixed(0)} KB · uploaded
-                  by {v.uploaderName ?? "—"} {formatDateTime(v.createdAt)}
+                  {(v.fileSize / 1024).toFixed(0)} KB · uploaded by {v.uploaderName ?? "—"}{" "}
+                  {formatDateTime(v.createdAt)}
                 </p>
                 {v.notes && <p className="text-muted-foreground mt-1 text-xs">“{v.notes}”</p>}
               </div>

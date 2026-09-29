@@ -6,20 +6,21 @@ import { KIND_LABELS, MUTABLE_KINDS, type MutableKind } from "@/lib/notification
 import { updateNotificationPrefs } from "@/app/actions/notifications";
 
 export function NotificationPrefsForm({ initial }: { initial: Record<string, boolean> }) {
-  const [prefs, setPrefs] = useState<Record<MutableKind, boolean>>(() =>
-    Object.fromEntries(MUTABLE_KINDS.map((k) => [k, initial[k] !== false])) as Record<
-      MutableKind,
-      boolean
-    >,
+  const [prefs, setPrefs] = useState<Record<MutableKind, boolean>>(
+    () =>
+      Object.fromEntries(MUTABLE_KINDS.map((k) => [k, initial[k] !== false])) as Record<
+        MutableKind,
+        boolean
+      >,
   );
   const [pending, start] = useTransition();
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
 
   function save() {
     setMessage(null);
     start(async () => {
       const res = await updateNotificationPrefs(prefs);
-      setMessage(res.ok ? "Saved" : res.error);
+      setMessage(res.ok ? { text: "Saved", error: false } : { text: res.error, error: true });
     });
   }
 
@@ -44,7 +45,13 @@ export function NotificationPrefsForm({ initial }: { initial: Record<string, boo
         <Button size="sm" disabled={pending} onClick={save}>
           Save preferences
         </Button>
-        {message && <span className="text-muted-foreground text-sm">{message}</span>}
+        {message && (
+          <span
+            className={`text-sm ${message.error ? "text-destructive" : "text-muted-foreground"}`}
+          >
+            {message.text}
+          </span>
+        )}
       </div>
     </div>
   );

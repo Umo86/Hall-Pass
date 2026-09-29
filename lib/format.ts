@@ -42,8 +42,24 @@ export function formatMoney(value: string | number | null | undefined, currency 
   }).format(n);
 }
 
+/** Labels that plain "replace the underscores" gets wrong. */
+const STATUS_LABELS: Record<string, string> = {
+  wont_fix: "Won't fix",
+  on_hold: "On hold",
+};
+
 export function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+  return STATUS_LABELS[status] ?? status.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+}
+
+/** Install slots as people write them. */
+export function slotLabel(slot: string | null | undefined): string {
+  return slot ? ({ am: "AM", pm: "PM", overnight: "Overnight" }[slot] ?? statusLabel(slot)) : "";
+}
+
+/** "1 item", "12 items". */
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n.toLocaleString("en-GB")} ${n === 1 ? one : many}`;
 }
 
 /** Plain names for staff and external roles, as people say them. */

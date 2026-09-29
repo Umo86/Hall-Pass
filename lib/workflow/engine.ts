@@ -62,6 +62,22 @@ type ActivationOpts = {
 };
 
 /**
+ * When a newly pending step is due. Confirmations (sent to print, delivered,
+ * installed) fall due on the item's own date for that step when it has one;
+ * without a date or an SLA they have no due date rather than "due now".
+ */
+function dueDateFor(i: Instance, opts: ActivationOpts): Date | null {
+  const sla = i.slaDaysSnapshot ?? 0;
+  if (i.stepKind === "confirmation") {
+    const planned =
+      opts.entity.kind === "signage" ? opts.entity.stepDueDates?.[i.stepName] : null;
+    if (planned) return new Date(`${planned}T17:00:00Z`);
+    return sla > 0 ? addDays(opts.now, sla) : null;
+  }
+  return addDays(opts.now, sla);
+}
+
+/**
  * Activation (brief 6.2): the first stage with undecided instances becomes
  * pending; everything after reverts to waiting. Also applies the supplier
  * fallback (brief 6.3) when a supplier step activates with no supplier set.
@@ -78,7 +94,7 @@ export function activate(instances: Instance[], opts: ActivationOpts): Instance[
         if (i.status === "waiting") {
           i.status = "pending";
           i.pendingSince = opts.now;
-          i.dueAt = addDays(opts.now, i.slaDaysSnapshot ?? 0);
+          i.dueAt = dueDateFor(i, opts);
         }
         // Already pending (or changes_requested/rejected mid-flight): leave as is.
         if (
@@ -294,8 +310,7 @@ export function applyDecision(instances: Instance[], opts: DecideOpts): DecideRe
 }
 
 export type ResubmitResult =
-  | { mode: "restart_from_step"; instances: Instance[] }
-  | { mode: "new_run" };
+  { mode: "restart_from_step"; instances: Instance[] } | { mode: "new_run" };
 
 /**
  * Changes-requested restart (brief 6.3). If the requesting step restarts

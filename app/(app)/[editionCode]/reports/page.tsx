@@ -119,7 +119,7 @@ export default async function ReportsPage({
                 ))}
               </div>
               <p className="text-muted-foreground mt-2 text-xs">
-                Approval certificates are on each item&apos;s Production tab once it is signed off.
+                Approval certificates are on each item&apos;s Details tab once it is signed off.
               </p>
             </div>
           )}

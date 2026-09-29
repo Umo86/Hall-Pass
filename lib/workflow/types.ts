@@ -49,6 +49,12 @@ export type SignageEntityCtx = {
   category?: SignageCategory | null;
   /** The item's own sign-off choices; null or absent means the defaults. */
   signoffs?: SignoffPlan | null;
+  /**
+   * When each confirmation step is due, by step name (ISO date): the item's
+   * print deadline, delivery date and install date. A confirmation with no
+   * date and no SLA has no due date, so nobody is chased for it.
+   */
+  stepDueDates?: Record<string, string | null | undefined>;
 };
 
 export type StandEntityCtx = {

@@ -106,6 +106,11 @@ export function itemEntityCtx(bundle: ItemBundle): EntityCtx {
     supplierId: bundle.item.supplierId,
     category: bundle.item.category,
     signoffs: bundle.item.signoffs ?? null,
+    stepDueDates: {
+      "Sent to print": bundle.item.printDeadline,
+      Delivered: bundle.item.deliveryDate,
+      Installed: bundle.item.installDate,
+    },
   };
 }
 

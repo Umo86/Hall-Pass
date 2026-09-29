@@ -41,7 +41,7 @@ export function LifecycleButtons({
 }: Props) {
   const [dialog, setDialog] = useState<"hold" | "delete" | null>(null);
   const [reason, setReason] = useState("");
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
 
@@ -49,7 +49,13 @@ export function LifecycleButtons({
     setMessage(null);
     start(async () => {
       const res = await fn();
-      setMessage(res.ok ? (res.message ?? null) : (res.error ?? null));
+      setMessage(
+        res.ok
+          ? res.message
+            ? { text: res.message, error: false }
+            : null
+          : { text: res.error ?? "Something went wrong", error: true },
+      );
       setDialog(null);
       if (res.ok) router.refresh();
     });
@@ -58,22 +64,40 @@ export function LifecycleButtons({
   return (
     <div className="flex flex-wrap items-center gap-2">
       {canSubmit && status === "draft" && (
-        <Button size="sm" disabled={pending} onClick={() => run(() => submitForReview({ id: itemId }))}>
+        <Button
+          size="sm"
+          disabled={pending}
+          onClick={() => run(() => submitForReview({ id: itemId }))}
+        >
           Submit for review
         </Button>
       )}
       {canSubmit && status === "changes_requested" && (
-        <Button size="sm" disabled={pending} onClick={() => run(() => resubmitSignageItem({ id: itemId }))}>
+        <Button
+          size="sm"
+          disabled={pending}
+          onClick={() => run(() => resubmitSignageItem({ id: itemId }))}
+        >
           Resubmit
         </Button>
       )}
       {canHold && status === "rejected" && (
-        <Button size="sm" variant="outline" disabled={pending} onClick={() => run(() => reopenSignageItem({ id: itemId }))}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={pending}
+          onClick={() => run(() => reopenSignageItem({ id: itemId }))}
+        >
           Reopen
         </Button>
       )}
       {canHold && status === "on_hold" && (
-        <Button size="sm" variant="outline" disabled={pending} onClick={() => run(() => resumeSignageItem({ id: itemId }))}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={pending}
+          onClick={() => run(() => resumeSignageItem({ id: itemId }))}
+        >
           Resume
         </Button>
       )}
@@ -87,7 +111,11 @@ export function LifecycleButtons({
           Delete
         </Button>
       )}
-      {message && <span className="text-muted-foreground text-sm">{message}</span>}
+      {message && (
+        <span className={`text-sm ${message.error ? "text-destructive" : "text-muted-foreground"}`}>
+          {message.text}
+        </span>
+      )}
 
       <Dialog open={dialog === "hold"} onOpenChange={(o) => !o && setDialog(null)}>
         <DialogContent>

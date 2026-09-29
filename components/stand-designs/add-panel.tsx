@@ -56,11 +56,17 @@ export function AddPanelButton({
     });
   }
 
-  const field = (id: string, label: string, control: React.ReactNode, className = "") => (
+  const field = (
+    id: string,
+    label: string,
+    control: React.ReactNode,
+    className = "",
+    name = id,
+  ) => (
     <div className={`grid gap-1.5 ${className}`}>
       <Label htmlFor={id}>{label}</Label>
       {control}
-      {errors[id] && <p className="text-destructive text-xs">{errors[id]}</p>}
+      {errors[name] && <p className="text-destructive text-xs">{errors[name]}</p>}
     </div>
   );
 
@@ -84,6 +90,7 @@ export function AddPanelButton({
               "Panel name",
               <Input id="panelName" name="name" required placeholder="e.g. Back wall left" />,
               "col-span-2",
+              "name",
             )}
             {field(
               "widthMm",

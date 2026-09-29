@@ -26,7 +26,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { StatusBadge } from "@/components/status-badge";
-import { formatDate, formatMoney, statusLabel, roleLabel } from "@/lib/format";
+import { formatDate, formatMoney, slotLabel, statusLabel, roleLabel } from "@/lib/format";
 import type { ScheduleRow } from "@/lib/queries/signage";
 import { BulkActionsBar } from "./bulk-actions";
 import { itemPath } from "@/lib/edition-path";
@@ -230,7 +230,7 @@ export function ScheduleView({
         header: "Install",
         cell: ({ row }) =>
           row.original.installDate
-            ? `${formatDate(row.original.installDate)}${row.original.installSlot ? ` ${row.original.installSlot.toUpperCase()}` : ""}`
+            ? `${formatDate(row.original.installDate)}${row.original.installSlot ? ` ${slotLabel(row.original.installSlot)}` : ""}`
             : "—",
       },
       {

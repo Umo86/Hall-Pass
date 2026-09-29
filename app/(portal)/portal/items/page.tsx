@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requirePortalSession } from "@/lib/auth/actor";
 import { visibleItemsForExternal } from "@/lib/queries/portal";
-import { formatDate, statusLabel } from "@/lib/format";
+import { formatDate, slotLabel, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 
 export const metadata = { title: "My Items" };
@@ -16,7 +16,8 @@ export default async function PortalItemsPage() {
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <h1 className="text-xl font-semibold tracking-tight">
-        My items <span className="text-muted-foreground text-base font-normal">({rows.length})</span>
+        My items{" "}
+        <span className="text-muted-foreground text-base font-normal">({rows.length})</span>
       </h1>
 
       {rows.length === 0 ? (
@@ -49,7 +50,10 @@ export default async function PortalItemsPage() {
               {rows.map((r) => (
                 <tr key={r.item.id} className="border-b last:border-0">
                   <td className="px-3 py-2 font-medium">
-                    <Link href={`/portal/items/${r.item.ref}`} className="text-primary hover:underline">
+                    <Link
+                      href={`/portal/items/${r.item.ref}`}
+                      className="text-primary hover:underline"
+                    >
                       {r.item.ref}
                     </Link>
                   </td>
@@ -77,7 +81,7 @@ export default async function PortalItemsPage() {
                       <td className="px-3 py-2">{formatDate(r.item.deliveryDate)}</td>
                       <td className="px-3 py-2">
                         {r.item.installDate
-                          ? `${formatDate(r.item.installDate)}${r.item.installSlot ? ` ${r.item.installSlot.toUpperCase()}` : ""}`
+                          ? `${formatDate(r.item.installDate)}${r.item.installSlot ? ` ${slotLabel(r.item.installSlot)}` : ""}`
                           : "—"}
                       </td>
                       <td className="px-3 py-2">{r.item.poNumber ?? "—"}</td>

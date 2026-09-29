@@ -88,7 +88,12 @@ export function ApproversEditor({
           {error ?? notice}
           {inviteUrl && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Input readOnly value={inviteUrl} aria-label="Invitation link" className="h-8 flex-1" />
+              <Input
+                readOnly
+                value={inviteUrl}
+                aria-label="Invitation link"
+                className="h-8 flex-1"
+              />
               <Button
                 size="sm"
                 variant="outline"
@@ -202,7 +207,10 @@ function AddDepartment({
       onSubmit={(e) => {
         e.preventDefault();
         const form = e.currentTarget;
-        run(() => saveDepartment(departmentFromForm(form)), () => form.reset());
+        run(
+          () => saveDepartment(departmentFromForm(form)),
+          () => form.reset(),
+        );
       }}
     >
       <p className="text-sm font-medium">Add a department</p>
@@ -352,7 +360,10 @@ function DepartmentCard({
               />
             </li>
           ) : (
-            <li key={a.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
+            <li
+              key={a.id}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm"
+            >
               <div className="min-w-0 basis-full sm:basis-0 sm:flex-1">
                 <p className="font-medium">
                   {a.fullName}
@@ -368,7 +379,9 @@ function DepartmentCard({
               </div>
               <span
                 className={`text-xs ${
-                  a.state === "active" ? "text-green-700 dark:text-green-400" : "text-amber-800 dark:text-amber-300"
+                  a.state === "active"
+                    ? "text-green-700 dark:text-green-400"
+                    : "text-amber-800 dark:text-amber-300"
                 }`}
               >
                 {STATE_LABEL[a.state]}

@@ -4,7 +4,7 @@ import { requireStaffSession } from "@/lib/auth/actor";
 import { getEditionByCode, editionForDeadlines } from "@/lib/queries/editions";
 import { listStandRows } from "@/lib/queries/stands";
 import { standDesignDue } from "@/lib/deadlines";
-import { daysUntil, formatDate, statusLabel } from "@/lib/format";
+import { daysUntil, formatDate, plural, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 
 export const metadata = { title: "Stand approvals" };
@@ -36,7 +36,7 @@ export default async function StandsPage({
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold tracking-tight">Stand approvals</h1>
         <span className="text-muted-foreground text-sm">
-          {rows.length} exhibitors
+          {plural(rows.length, "exhibitor")}
           {due
             ? ` · designs due ${formatDate(due)}${dueIn != null ? ` (${dueIn >= 0 ? `in ${dueIn} days` : `${-dueIn} days overdue`})` : ""}`
             : ""}

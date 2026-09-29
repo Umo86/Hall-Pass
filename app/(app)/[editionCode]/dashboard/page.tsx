@@ -6,6 +6,7 @@ import { standsEnabled } from "@/lib/config";
 import { getEditionByCode, showLogoUrl } from "@/lib/queries/editions";
 import { dashboardData, refsForInstanceEntities } from "@/lib/queries/dashboard";
 import { formatDate, formatDateTime, formatMoney, roleLabel } from "@/lib/format";
+import { itemPath } from "@/lib/edition-path";
 import { StatusBadge } from "@/components/status-badge";
 
 export const metadata = { title: "Dashboard" };
@@ -36,15 +37,6 @@ const FUNNEL = [
   "rejected",
 ];
 
-const DEADLINE_LABELS: Record<string, string> = {
-  stand_design_due: "Stand designs due",
-  insurance_due: "Insurance documents due",
-  venue_rigging_submission: "Venue rigging submission",
-  artwork_due: "Artwork due",
-  print_deadline: "Print deadline",
-  delivery: "Delivery to venue",
-};
-
 export default async function DashboardPage({
   params,
   searchParams,
@@ -73,7 +65,7 @@ export default async function DashboardPage({
     if (!entry) return null;
     const href =
       inst.entityType === "signage_item"
-        ? `/${editionCode}/signage/${entry.ref}`
+        ? itemPath(editionCode, { kind: entry.kind ?? "signage", ref: entry.ref })
         : `/${editionCode}/stands/${entry.ref}`;
     return { ...entry, href };
   }
@@ -182,7 +174,7 @@ export default async function DashboardPage({
             <ul className="space-y-1.5 text-sm">
               {data.sittingWith.map(([role, n]) => (
                 <li key={role} className="flex justify-between">
-                  <span>{roleLabel(role)}</span>
+                  <span>{role}</span>
                   <span className="font-semibold">{n}</span>
                 </li>
               ))}
@@ -225,11 +217,23 @@ export default async function DashboardPage({
           ) : (
             <ul className="space-y-1.5 text-sm">
               {data.upcomingDeadlines.map((d) => (
-                <li key={d.key} className="flex justify-between">
-                  <span>{DEADLINE_LABELS[d.key] ?? d.key}</span>
-                  <span className="font-medium">{formatDate(d.date)}</span>
+                <li key={d.id} className="flex justify-between gap-3">
+                  <Link href={d.href} className="min-w-0 truncate hover:underline">
+                    {d.label}
+                  </Link>
+                  <span className="shrink-0 font-medium">{formatDate(d.date)}</span>
                 </li>
               ))}
+              {data.upcomingCount > data.upcomingDeadlines.length && (
+                <li>
+                  <Link
+                    href={`/${editionCode}/calendar`}
+                    className="text-muted-foreground text-xs hover:underline"
+                  >
+                    and {data.upcomingCount - data.upcomingDeadlines.length} more on the calendar
+                  </Link>
+                </li>
+              )}
             </ul>
           )}
         </div>

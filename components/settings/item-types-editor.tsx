@@ -73,7 +73,9 @@ export function ItemTypesEditor({ rows, canEdit }: { rows: ItemTypeRow[]; canEdi
     <ul className="divide-y rounded-lg border">
       {items.map((t) => (
         <li key={t.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
-          <span className={`min-w-0 flex-1 font-medium ${t.isArchived ? "text-muted-foreground line-through" : ""}`}>
+          <span
+            className={`min-w-0 flex-1 font-medium ${t.isArchived ? "text-muted-foreground line-through" : ""}`}
+          >
             {t.name}
           </span>
           <span className="text-muted-foreground text-xs">
@@ -153,7 +155,13 @@ export function ItemTypesEditor({ rows, canEdit }: { rows: ItemTypeRow[]; canEdi
           >
             <div className="space-y-1.5">
               <Label htmlFor="type-name">Name</Label>
-              <Input id="type-name" name="name" defaultValue={current?.name ?? ""} required placeholder="e.g. Pull-up banner" />
+              <Input
+                id="type-name"
+                name="name"
+                defaultValue={current?.name ?? ""}
+                required
+                placeholder="e.g. Pull-up banner"
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="type-kind">Used for</Label>

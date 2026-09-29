@@ -58,7 +58,10 @@ function InlineAdd({
       onSubmit={(e) => {
         e.preventDefault();
         if (!value.trim()) return;
-        run(() => onAdd(value), () => setValue(""));
+        run(
+          () => onAdd(value),
+          () => setValue(""),
+        );
       }}
     >
       <Input
@@ -96,7 +99,10 @@ function RenameDelete({
         className="flex flex-wrap items-center gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          run(() => onRename(value), () => setEditing(false));
+          run(
+            () => onRename(value),
+            () => setEditing(false),
+          );
         }}
       >
         <Input

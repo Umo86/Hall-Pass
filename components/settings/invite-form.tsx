@@ -78,7 +78,7 @@ export function InviteExternalForm({
         <Input id="inv-email" name="email" type="email" required />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="inv-edition">Edition</Label>
+        <Label htmlFor="inv-edition">Show</Label>
         <SelectNative
           id="inv-edition"
           name="editionId"

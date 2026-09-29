@@ -34,7 +34,8 @@ async function downscale(file: File): Promise<Blob> {
   }
 }
 
-type DecisionKind = "approve" | "approve_with_conditions" | "request_changes" | "reject" | "confirm";
+type DecisionKind =
+  "approve" | "approve_with_conditions" | "request_changes" | "reject" | "confirm";
 
 type Props = {
   instanceId: string;
@@ -140,7 +141,13 @@ export function DecideButtons(props: Props) {
         <Button
           key={kind}
           size="sm"
-          variant={kind === "approve" || kind === "confirm" ? "default" : kind === "reject" ? "destructive" : "outline"}
+          variant={
+            kind === "approve" || kind === "confirm"
+              ? "default"
+              : kind === "reject"
+                ? "destructive"
+                : "outline"
+          }
           onClick={() => setOpen(kind)}
         >
           {props.compact && kind === "approve_with_conditions" ? "With conditions" : LABELS[kind]}

@@ -18,7 +18,11 @@ export function ImportPanel({ editionId }: { editionId: string }) {
     <div className="space-y-3 rounded-lg border p-4">
       <h3 className="text-sm font-semibold">Import an existing schedule (Excel)</h3>
       <p className="text-muted-foreground text-sm">
-        <a href="/api/exports/import-template" className="text-primary underline-offset-2 hover:underline" download>
+        <a
+          href="/api/exports/import-template"
+          className="text-primary underline-offset-2 hover:underline"
+          download
+        >
           Download the template
         </a>
         , fill it in and upload. Rows with a Ref update that item; rows without create new items.

@@ -6,7 +6,14 @@ const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   "base64",
 );
-const inDays = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
+// Dates as the app counts them: in London, not UTC (they differ around midnight).
+const inDays = (n: number) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/London",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(Date.now() + n * 86_400_000));
 
 test.describe("sponsorship items", () => {
   test("sales adds an item to sell, adds a photo, then marks it sold to a new sponsor", async ({

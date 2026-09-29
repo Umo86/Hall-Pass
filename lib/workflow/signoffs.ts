@@ -4,7 +4,9 @@ import type { SignageCategory, SignoffPlan, StepDef } from "./types";
 export function isDepartmentStep(
   step: Pick<StepDef, "defaultFor" | "kind"> & { departmentId?: string | null },
 ): boolean {
-  return step.kind === "approval" && (Boolean(step.departmentId) || (step.defaultFor?.length ?? 0) > 0);
+  return (
+    step.kind === "approval" && (Boolean(step.departmentId) || (step.defaultFor?.length ?? 0) > 0)
+  );
 }
 
 /** The sign-offs an item of this category gets when nobody has changed them. */

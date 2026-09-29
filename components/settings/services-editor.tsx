@@ -42,10 +42,19 @@ export function ServicesEditor({ rows, canEdit }: { rows: ServiceRow[]; canEdit:
                 onSubmit={(e) => {
                   e.preventDefault();
                   const name = new FormData(e.currentTarget).get("name");
-                  run(() => saveSupplierService({ id: s.id, name }), () => setRenaming(null));
+                  run(
+                    () => saveSupplierService({ id: s.id, name }),
+                    () => setRenaming(null),
+                  );
                 }}
               >
-                <Input name="name" defaultValue={s.name} aria-label={`New name for ${s.name}`} className="h-8" autoFocus />
+                <Input
+                  name="name"
+                  defaultValue={s.name}
+                  aria-label={`New name for ${s.name}`}
+                  className="h-8"
+                  autoFocus
+                />
                 <Button size="sm" type="submit" disabled={pending}>
                   Save
                 </Button>
@@ -68,7 +77,9 @@ export function ServicesEditor({ rows, canEdit }: { rows: ServiceRow[]; canEdit:
                       size="sm"
                       variant="ghost"
                       disabled={pending}
-                      onClick={() => run(() => setSupplierServiceArchived({ id: s.id, archived: true }))}
+                      onClick={() =>
+                        run(() => setSupplierServiceArchived({ id: s.id, archived: true }))
+                      }
                     >
                       Remove
                     </Button>
@@ -86,10 +97,19 @@ export function ServicesEditor({ rows, canEdit }: { rows: ServiceRow[]; canEdit:
             e.preventDefault();
             const form = e.currentTarget;
             const name = new FormData(form).get("name");
-            run(() => saveSupplierService({ name }), () => form.reset());
+            run(
+              () => saveSupplierService({ name }),
+              () => form.reset(),
+            );
           }}
         >
-          <Input name="name" placeholder="e.g. Cleaning" aria-label="New service" className="h-9" required />
+          <Input
+            name="name"
+            placeholder="e.g. Cleaning"
+            aria-label="New service"
+            className="h-9"
+            required
+          />
           <Button type="submit" disabled={pending}>
             Add service
           </Button>
@@ -108,7 +128,9 @@ export function ServicesEditor({ rows, canEdit }: { rows: ServiceRow[]; canEdit:
                   size="sm"
                   variant="ghost"
                   disabled={pending}
-                  onClick={() => run(() => setSupplierServiceArchived({ id: s.id, archived: false }))}
+                  onClick={() =>
+                    run(() => setSupplierServiceArchived({ id: s.id, archived: false }))
+                  }
                 >
                   Restore
                 </Button>

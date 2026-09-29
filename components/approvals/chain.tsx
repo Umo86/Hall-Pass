@@ -78,8 +78,8 @@ export function ApprovalChain({
                         : inst.assignedDepartmentName
                           ? `Anyone in ${inst.assignedDepartmentName}`
                           : inst.assignedRole
-                          ? roleLabel(inst.assignedRole)
-                          : ""}
+                            ? roleLabel(inst.assignedRole)
+                            : ""}
                       {inst.noSupplierFallback ? " (no supplier set — assigned to ops)" : ""}
                     </span>
                     {inst.status === "pending" && inst.dueAt && (
@@ -115,17 +115,21 @@ export function ApprovalChain({
                         <p>
                           {superseded ? (
                             <>
-                              {statusLabel(inst.status)} — was decided by {inst.deciderName ?? "someone"}{" "}
-                              against {inst.lockedVersionLabel ?? "an earlier version"}, superseded by a
+                              {statusLabel(inst.status)} — was decided by{" "}
+                              {inst.deciderName ?? "someone"} against{" "}
+                              {inst.lockedVersionLabel ?? "an earlier version"}, superseded by a
                               newer version
                             </>
                           ) : (
                             <>
-                              Decided by {inst.deciderName ?? "—"} on {formatDateTime(inst.decidedAt)}
+                              Decided by {inst.deciderName ?? "—"} on{" "}
+                              {formatDateTime(inst.decidedAt)}
                               {inst.lockedVersionLabel ? ` against ${inst.lockedVersionLabel}` : ""}
                             </>
                           )}
-                          {inst.delegatedFromName ? ` (delegated by ${inst.delegatedFromName})` : ""}
+                          {inst.delegatedFromName
+                            ? ` (delegated by ${inst.delegatedFromName})`
+                            : ""}
                         </p>
                       )}
                       {inst.decisionComment && <p>“{inst.decisionComment}”</p>}

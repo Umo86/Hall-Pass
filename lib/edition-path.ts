@@ -40,6 +40,18 @@ export function itemPath(editionCode: string, item: { kind: string; ref: string 
   return `/${editionCode}/${section}/${encodeURIComponent(item.ref)}`;
 }
 
+/**
+ * Where to go when switching to another show from `pathname`: the same
+ * section of that show. A record's page (an item, a stand) belongs to one
+ * show only, so its list is used instead; panels live under Stand designs.
+ */
+export function switchShowPath(pathname: string, code: string): string {
+  const parts = pathname.split("/").filter(Boolean);
+  if (!parts[0] || RESERVED_SEGMENTS.includes(parts[0])) return `/${code}/dashboard`;
+  const section = parts[1] ?? "dashboard";
+  return `/${code}/${section === "stand-panels" ? "stand-designs" : section}`;
+}
+
 /** Kinds shown in the Signage and Sponsorship sections (not stands or panels). */
 export const SIGNAGE_KINDS = ["signage", "sponsorship_item"] as const;
 

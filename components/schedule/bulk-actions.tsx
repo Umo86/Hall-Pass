@@ -23,7 +23,7 @@ type Props = {
 
 export function BulkActionsBar({ selectedIds, suppliers, canEditCosts, canDelete, onDone }: Props) {
   const [dialog, setDialog] = useState<"supplier" | "install" | "delete" | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [pending, start] = useTransition();
   const [supplierId, setSupplierId] = useState(suppliers[0]?.id ?? "");
   const [installDate, setInstallDate] = useState("");
@@ -32,7 +32,9 @@ export function BulkActionsBar({ selectedIds, suppliers, canEditCosts, canDelete
   function run(input: Parameters<typeof bulkSignageAction>[0]) {
     start(async () => {
       const res = await bulkSignageAction(input);
-      setMessage(res.ok ? (res.message ?? "Done") : res.error);
+      setMessage(
+        res.ok ? { text: res.message ?? "Done", error: false } : { text: res.error, error: true },
+      );
       setDialog(null);
       if (res.ok) onDone();
     });
@@ -62,7 +64,11 @@ export function BulkActionsBar({ selectedIds, suppliers, canEditCosts, canDelete
           Delete
         </Button>
       )}
-      {message && <span className="text-muted-foreground">{message}</span>}
+      {message && (
+        <span className={message.error ? "text-destructive" : "text-muted-foreground"}>
+          {message.text}
+        </span>
+      )}
 
       <Dialog open={dialog === "supplier"} onOpenChange={(o) => !o && setDialog(null)}>
         <DialogContent>

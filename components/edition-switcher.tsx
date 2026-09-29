@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { ChevronsUpDown } from "lucide-react";
-import { editionCodeFromPath } from "@/lib/edition-path";
+import { editionCodeFromPath, switchShowPath } from "@/lib/edition-path";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -23,11 +23,7 @@ export function EditionSwitcher({ editions }: { editions: EditionOption[] }) {
     editions.find((e) => e.code === first) ?? editions.find((e) => e.status !== "archived");
 
   function go(code: string) {
-    if (first) {
-      router.push(pathname.replace(`/${first}`, `/${code}`));
-    } else {
-      router.push(`/${code}/dashboard`);
-    }
+    router.push(switchShowPath(pathname, code));
   }
 
   if (editions.length === 0) return null;
@@ -36,7 +32,7 @@ export function EditionSwitcher({ editions }: { editions: EditionOption[] }) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="outline" size="sm" className="gap-2">
-          <span className="font-medium">{current?.code ?? "Select edition"}</span>
+          <span className="font-medium">{current?.code ?? "Select show"}</span>
           <span className="text-muted-foreground hidden max-w-48 truncate sm:inline">
             {current?.name}
           </span>

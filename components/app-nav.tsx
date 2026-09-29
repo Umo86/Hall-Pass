@@ -74,7 +74,9 @@ export function AppNav({
 
   function renderItems(items: NavItem[]) {
     return items.map((item) => {
-      const active = pathname.startsWith(item.href);
+      const active =
+        pathname.startsWith(item.href) ||
+        (item.href.endsWith("/stand-designs") && pathname.includes("/stand-panels/"));
       return (
         <Link
           key={item.href}

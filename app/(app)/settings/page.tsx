@@ -113,8 +113,21 @@ export default async function SettingsPage({
       .then((rows) => rows.map((r) => r.edition)),
     db.select().from(venues).where(eq(venues.organisationId, session.organisation.id)),
     db.select().from(suppliers).where(eq(suppliers.organisationId, session.organisation.id)),
-    db.select().from(exhibitors),
-    db.select().from(sponsors),
+    // Only this organisation's shows' exhibitors and sponsors.
+    db
+      .select({ exhibitor: exhibitors })
+      .from(exhibitors)
+      .innerJoin(editions, eq(exhibitors.editionId, editions.id))
+      .innerJoin(events, eq(editions.eventId, events.id))
+      .where(eq(events.organisationId, session.organisation.id))
+      .then((rows) => rows.map((r) => r.exhibitor)),
+    db
+      .select({ sponsor: sponsors })
+      .from(sponsors)
+      .innerJoin(editions, eq(sponsors.editionId, editions.id))
+      .innerJoin(events, eq(editions.eventId, events.id))
+      .where(eq(events.organisationId, session.organisation.id))
+      .then((rows) => rows.map((r) => r.sponsor)),
     db
       .select()
       .from(staffInvites)
@@ -144,7 +157,6 @@ export default async function SettingsPage({
       .groupBy(supplierServices.id)
       .orderBy(asc(supplierServices.sortOrder), asc(supplierServices.name)),
   ]);
-
 
   return (
     <div className="flex max-w-5xl flex-col gap-6 p-4 sm:p-6">

@@ -29,7 +29,7 @@ const KEY_LABELS: Record<OverrideKey, string> = {
   "sponsorship.create": "Add sponsorship items",
   "costs.edit": "Edit costs",
   "approval.decide": "Approve / sign off (when assigned)",
-  "settings.manage": "Manage editions & settings",
+  "settings.manage": "Manage shows & settings",
 };
 
 const ROLE_DEFAULTS = OVERRIDE_ROLE_DEFAULTS;

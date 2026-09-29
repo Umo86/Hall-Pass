@@ -81,7 +81,7 @@ export function LoginCard({
                 Sign in to your schedule
               </h1>
               <ul className="text-muted-foreground mt-6 space-y-3 text-sm leading-relaxed">
-                <li>Approvals waiting on you, across every edition</li>
+                <li>Approvals waiting on you, across every show</li>
                 <li>Artwork locked by version and hash at every decision</li>
                 <li>One portal for venues, suppliers, sponsors and exhibitors</li>
               </ul>
