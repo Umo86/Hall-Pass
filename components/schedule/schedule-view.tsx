@@ -29,6 +29,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { formatDate, formatMoney, statusLabel, roleLabel } from "@/lib/format";
 import type { ScheduleRow } from "@/lib/queries/signage";
 import { BulkActionsBar } from "./bulk-actions";
+import { itemPath } from "@/lib/edition-path";
 
 const STATUS_ORDER = [
   "draft",
@@ -506,7 +507,7 @@ export function ScheduleView({
 
 /** Sponsorship-section items open under Sponsorship; everything else under Signage. */
 function itemHref(editionCode: string, r: Pick<ScheduleRow, "ref" | "kind">) {
-  return `/${editionCode}/${r.kind === "sponsorship_item" ? "sponsorship" : "signage"}/${r.ref}`;
+  return itemPath(editionCode, r);
 }
 
 /** Phone layout: one tappable card per item. */

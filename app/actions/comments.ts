@@ -14,6 +14,7 @@ import { commentRecipients, itemAuthzCtx, loadItemBundle } from "@/lib/domain/si
 import { loadStandBundle, standAuthzCtx, stepActiveFlags } from "@/lib/domain/stand";
 import { loadRun } from "@/lib/workflow/persist";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
+import { itemPath } from "@/lib/edition-path";
 
 const addSchema = z.object({
   entityType: z.enum(["signage_item", "stand_submission"]),
@@ -53,7 +54,7 @@ export async function addComment(input: unknown): Promise<ActionResult> {
     ref = bundle.item.ref;
     ownerId = bundle.item.ownerUserId;
     createdBy = bundle.item.createdBy;
-    link = `/${bundle.edition.code}/signage/${bundle.item.ref}?tab=comments`;
+    link = `${itemPath(bundle.edition.code, bundle.item)}?tab=comments`;
     if (!data.isInternal) {
       if (!can(session.actor, { type: "comment.external.write", entity: itemAuthzCtx(bundle) })) {
         return fail("You cannot comment on this item");

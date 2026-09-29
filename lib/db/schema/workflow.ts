@@ -96,6 +96,9 @@ export const workflows = pgTable(
       .references(() => organisations.id),
     name: text("name").notNull(),
     appliesTo: workflowAppliesTo("applies_to").notNull(),
+    // Set for a workflow kept for one kind of item ("stand_design"); signs
+    // never pick these up as their default.
+    forKind: text("for_kind"),
     isDefault: boolean("is_default").notNull().default(false),
     isArchived: boolean("is_archived").notNull().default(false),
     ...timestamps,

@@ -76,7 +76,7 @@ export type SignageItemCtx = {
   organisationId?: string;
   editionId: string;
   venueId: string;
-  kind?: "signage" | "sponsorship_item";
+  kind?: "signage" | "sponsorship_item" | "stand_design" | "stand_panel";
   ownerUserId?: string | null;
   sponsorId?: string | null;
   supplierId?: string | null;
@@ -121,6 +121,7 @@ export type Action =
   | { type: "signage.view"; item: SignageItemCtx }
   | { type: "signage.create" }
   | { type: "sponsorship.create" }
+  | { type: "stand_design.create" }
   | { type: "task.create" }
   | { type: "task.assign" }
   | { type: "task.update"; task: TaskCtx }
@@ -293,6 +294,11 @@ function isSponsorItem(item: SignageItemCtx) {
   return item.sponsorId != null;
 }
 
+/** Stands the organiser designs, and their panels: operations' own work. */
+function isStandItem(item: SignageItemCtx) {
+  return item.kind === "stand_design" || item.kind === "stand_panel";
+}
+
 /** The organisation of the record an action is about, if it names one. */
 function recordOrganisation(action: Action): string | undefined {
   const a = action as {
@@ -377,6 +383,9 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
     case "sponsorship.create":
       // Sales sell sponsorship items; ops also manage them.
       return OVERRIDE_ROLE_DEFAULTS[action.type].includes(role);
+    case "stand_design.create":
+      // Admins and operations set up stands, their approvers and panels.
+      return role === "admin" || role === "ops";
 
     case "task.create":
       return true; // everyone keeps their own to-do list, viewers included
@@ -392,6 +401,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return role === "admin" || action.task.createdByUserId === actor.userId;
 
     case "signage.edit":
+      if (isStandItem(action.item)) return role === "admin" || role === "ops";
       if (ownsGrantedCreation(actor, action.item)) return true;
       if (role === "admin" || role === "ops" || role === "marketing") return true;
       if (sponsorScopedRoles.includes(role)) {
@@ -404,6 +414,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return role === "admin" || role === "ops";
 
     case "artwork.upload":
+      if (isStandItem(action.item)) return role === "admin" || role === "ops";
       if (ownsGrantedCreation(actor, action.item)) return true;
       if (role === "admin" || role === "ops" || role === "marketing") return true;
       if (role === "sales") {
@@ -412,6 +423,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return false;
 
     case "signage.submit":
+      if (isStandItem(action.item)) return role === "admin" || role === "ops";
       if (ownsGrantedCreation(actor, action.item)) return true;
       if (role === "admin" || role === "ops" || role === "marketing") return true;
       if (role === "sales") {

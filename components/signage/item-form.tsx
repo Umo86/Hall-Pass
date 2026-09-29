@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { SelectNative } from "@/components/ui/select-native";
 import { Textarea } from "@/components/ui/textarea";
 import { createSignageItem, updateSignageItem } from "@/app/actions/signage";
+import { SignoffPicker, updatePlan } from "./signoff-picker";
 export type SignoffStepOption = {
   id: string;
   name: string;
@@ -161,20 +162,7 @@ export function ItemForm({
 
   function setStep(stepId: string, on: boolean, userId?: string | null) {
     setPlanTouched(true);
-    setPlan((current) => {
-      const rest = current.filter((p) => p.stepId !== stepId);
-      if (!on) return rest;
-      const step = steps.find((s) => s.id === stepId);
-      const existing = current.find((p) => p.stepId === stepId);
-      const chosen =
-        userId !== undefined ? userId : (existing?.userId ?? step?.defaultUserId ?? null);
-      // Keep the admin's order.
-      return steps
-        .filter((s) => s.id === stepId || rest.some((p) => p.stepId === s.id))
-        .map((s) =>
-          s.id === stepId ? { stepId, userId: chosen } : rest.find((p) => p.stepId === s.id)!,
-        );
-    });
+    setPlan((current) => updatePlan(steps, current, stepId, on, userId));
   }
   const [hallId, setHallId] = useState(values.hallId ?? "");
   const [pending, start] = useTransition();
@@ -588,54 +576,7 @@ export function ItemForm({
               </p>
             </div>
             {planTouched && <input type="hidden" name="signoffs" value={JSON.stringify(plan)} />}
-            <ul className="divide-y rounded-lg border" aria-label="Sign-off">
-              {steps.map((step) => {
-                const choice = plan.find((p) => p.stepId === step.id);
-                const people = step.people;
-                return (
-                  <li
-                    key={step.id}
-                    className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2"
-                  >
-                    <label className="flex min-w-48 flex-1 items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        className="size-4"
-                        checked={Boolean(choice)}
-                        onChange={(e) => setStep(step.id, e.target.checked)}
-                        aria-label={`Needs ${step.name}`}
-                      />
-                      <span className={choice ? "font-medium" : "text-muted-foreground"}>
-                        {step.name}
-                      </span>
-                    </label>
-                    {choice && (
-                      <SelectNative
-                        aria-label={`Who signs ${step.name}`}
-                        value={choice.userId ?? ""}
-                        onChange={(e) => setStep(step.id, true, e.target.value || null)}
-                        className="h-8 w-full sm:w-60"
-                      >
-                        <option value="">Anyone in {step.departmentName}</option>
-                        {people.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                            {p.jobTitle ? ` — ${p.jobTitle}` : ""}
-                            {p.id === step.defaultUserId ? " (main approver)" : ""}
-                          </option>
-                        ))}
-                      </SelectNative>
-                    )}
-                    {choice && people.length === 0 && (
-                      <p className="w-full text-xs text-amber-800 dark:text-amber-300">
-                        No approvers with an account in {step.departmentName} yet — add them under
-                        Approvals → Approvers.
-                      </p>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
+            <SignoffPicker steps={steps} plan={plan} onChange={setStep} />
             {plan.length === 0 && (
               <p className="text-destructive text-xs">Choose at least one department.</p>
             )}

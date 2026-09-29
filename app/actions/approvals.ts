@@ -34,6 +34,7 @@ import {
 import { loadStandBundle, standAuthzCtx, standEntityCtx } from "@/lib/domain/stand";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { buildStoragePath, putObject } from "@/lib/storage";
+import { itemPath } from "@/lib/edition-path";
 
 const decideSchema = z.object({
   instanceId: z.string().uuid(),
@@ -191,7 +192,7 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
             kind: "decision_made",
             title: `${row.stepNameSnapshot}: ${data.decision.replace(/_/g, " ")} — ${item.ref}`,
             body: data.comment || data.conditionsText || undefined,
-            link: `/${edition.code}/signage/${item.ref}`,
+            link: itemPath(edition.code, item),
             entityType: "signage_item",
             entityId: item.id,
           });

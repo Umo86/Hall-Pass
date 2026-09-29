@@ -30,6 +30,8 @@ import {
   startItemRun,
   type ItemBundle,
 } from "@/lib/domain/signage";
+import { itemPath } from "@/lib/edition-path";
+import { panelParent } from "@/lib/domain/stand-designs";
 
 const MAX_ARTWORK_BYTES = 200 * 1024 * 1024;
 const PREVIEWABLE = ["image/png", "image/jpeg", "image/tiff", "image/svg+xml"];
@@ -64,7 +66,7 @@ export async function uploadArtwork(
   if (!can(session.actor, { type: "artwork.upload", item: itemAuthzCtx(bundle) })) {
     return fail("You cannot upload artwork for this item");
   }
-  const blocked = artworkBlockedReason(bundle.item.status);
+  const blocked = artworkBlockedReason(bundle.item.status, await panelParent(db, bundle.item));
   if (blocked) return fail(blocked);
   if (file.size > MAX_ARTWORK_BYTES) return fail("Artwork files are limited to 200 MB");
   if (!artworkTypeAllowed(file.type, file.name)) return fail(ARTWORK_TYPE_MESSAGE);
@@ -128,7 +130,7 @@ export async function recordUploadedArtwork(
   if (!can(session.actor, { type: "artwork.upload", item: itemAuthzCtx(bundle) })) {
     return fail("You cannot upload artwork for this item");
   }
-  const blocked = artworkBlockedReason(bundle.item.status);
+  const blocked = artworkBlockedReason(bundle.item.status, await panelParent(db, bundle.item));
   if (blocked) return fail(blocked);
   if (!artworkTypeAllowed(input.mimeType, input.fileName)) return fail(ARTWORK_TYPE_MESSAGE);
   const prefix = `artwork/${bundle.organisation.id}/${bundle.edition.id}/signage_item/${bundle.item.id}/`;
@@ -232,7 +234,7 @@ async function recordArtworkVersion(
             kind: "approval_invalidated",
             title: `New artwork supersedes your approval — ${item.ref}`,
             body: `${inst.stepName}: your approval of the previous artwork is superseded by v${versionNumber}. Compare the versions and re-approve.`,
-            link: `/${bundle.edition.code}/signage/${item.ref}?tab=artwork&compare=${versionNumber}`,
+            link: `${itemPath(bundle.edition.code, item)}?tab=artwork&compare=${versionNumber}`,
             entityType: "signage_item",
             entityId: item.id,
           });
@@ -261,7 +263,7 @@ async function recordArtworkVersion(
             userIds: assignees,
             kind: "artwork_uploaded",
             title: `New artwork v${versionNumber}: ${item.ref}`,
-            link: `/${bundle.edition.code}/signage/${item.ref}?tab=artwork`,
+            link: `${itemPath(bundle.edition.code, item)}?tab=artwork`,
             entityType: "signage_item",
             entityId: item.id,
           });

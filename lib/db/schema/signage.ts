@@ -1,4 +1,5 @@
 import {
+  type AnyPgColumn,
   boolean,
   date,
   index,
@@ -117,6 +118,8 @@ export const signageItems = pgTable(
     onHoldReason: text("on_hold_reason"),
     workflowId: uuid("workflow_id").references(() => workflows.id),
     currentRunNumber: integer("current_run_number").notNull().default(0),
+    /** A stand panel's stand design. */
+    parentItemId: uuid("parent_item_id").references((): AnyPgColumn => signageItems.id),
     /**
      * Who signs this item off: department steps and, optionally, a named
      * person in each. Null means the admin defaults for its category.
@@ -133,6 +136,7 @@ export const signageItems = pgTable(
   },
   (t) => [
     index("signage_items_edition_status_idx").on(t.editionId, t.status),
+    index("signage_items_parent_idx").on(t.parentItemId),
     index("signage_items_edition_kind_idx").on(t.editionId, t.kind),
     index("signage_items_edition_idx").on(t.editionId),
     index("signage_items_item_type_idx").on(t.itemTypeId),

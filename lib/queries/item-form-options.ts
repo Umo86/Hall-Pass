@@ -1,6 +1,6 @@
 import "server-only";
 import { listDepartments } from "@/lib/domain/departments";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   contractors,
@@ -104,6 +104,7 @@ export async function itemFormOptions(opts: {
                 eq(workflows.organisationId, opts.organisationId),
                 eq(workflows.appliesTo, "signage"),
                 eq(workflows.isArchived, false),
+                isNull(workflows.forKind),
               ),
             )
             .orderBy(desc(workflows.isDefault), asc(workflows.name))

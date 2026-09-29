@@ -21,9 +21,32 @@ export function artworkTypeAllowed(mimeType: string | null | undefined, fileName
 
 const INSTALLED = ["installed", "snagged", "closed"];
 
-/** Why new artwork can't be added at this status, or null when it can. */
-export function artworkBlockedReason(status: string): string | null {
-  return INSTALLED.includes(status)
-    ? "This item is installed — an admin or ops user must reopen it before new artwork"
-    : null;
+const DESIGN_APPROVED = [
+  "approved",
+  "approved_with_conditions",
+  "in_production",
+  "delivered",
+  "installed",
+  "snagged",
+  "closed",
+];
+
+export const PANEL_BLOCKED_MESSAGE =
+  "The stand design must be approved before panel graphics can be added";
+
+/**
+ * Why new artwork can't be added, or null when it can. A stand panel also
+ * waits for its stand's design to be approved (pass the stand's status).
+ */
+export function artworkBlockedReason(
+  status: string,
+  panel?: { parentStatus: string | null } | null,
+): string | null {
+  if (INSTALLED.includes(status)) {
+    return "This item is installed — an admin or ops user must reopen it before new artwork";
+  }
+  if (panel && !(panel.parentStatus && DESIGN_APPROVED.includes(panel.parentStatus))) {
+    return PANEL_BLOCKED_MESSAGE;
+  }
+  return null;
 }

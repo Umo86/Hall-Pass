@@ -24,6 +24,25 @@ export function editionCodeFromPath(pathname: string): string | null {
   return null;
 }
 
+export type ItemKind = "signage" | "sponsorship_item" | "stand_design" | "stand_panel";
+
+/** Which section of a show each kind of item lives in. */
+export const ITEM_SECTION: Record<ItemKind, string> = {
+  signage: "signage",
+  sponsorship_item: "sponsorship",
+  stand_design: "stand-designs",
+  stand_panel: "stand-panels",
+};
+
+/** The page of a signage, sponsorship, stand or panel item. */
+export function itemPath(editionCode: string, item: { kind: string; ref: string }): string {
+  const section = ITEM_SECTION[item.kind as ItemKind] ?? "signage";
+  return `/${editionCode}/${section}/${encodeURIComponent(item.ref)}`;
+}
+
+/** Kinds shown in the Signage and Sponsorship sections (not stands or panels). */
+export const SIGNAGE_KINDS = ["signage", "sponsorship_item"] as const;
+
 /** Where staff land after signing in: their own work. */
 export const STAFF_HOME = "/my-work";
 /** Where external users land. */

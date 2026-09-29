@@ -298,7 +298,7 @@ export default async function SettingsPage({
             rows={types.map((t) => ({
               id: t.id,
               name: t.name,
-              kind: t.kind,
+              kind: t.kind as "signage" | "sponsorship_item",
               format: t.format,
               defaultFixingMethod: t.defaultFixingMethod,
               requiresVenueApprovalDefault: t.requiresVenueApprovalDefault,

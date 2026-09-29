@@ -3,14 +3,15 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Box,
   CalendarDays,
   ClipboardCheck,
-  ListTodo,
   FileBarChart,
   Gift,
   HardHat,
   Layers,
   LayoutDashboard,
+  ListTodo,
   MapPin,
   Settings,
   Signpost,
@@ -52,6 +53,7 @@ export function AppNav({
         { label: "Dashboard", href: `/${edition}/dashboard`, icon: LayoutDashboard },
         { label: "Signage", href: `/${edition}/signage`, icon: Signpost },
         { label: "Sponsorship", href: `/${edition}/sponsorship`, icon: Gift },
+        { label: "Stand designs", href: `/${edition}/stand-designs`, icon: Box },
         ...(options.showStands
           ? [{ label: "Stands", href: `/${edition}/stands`, icon: HardHat }]
           : []),

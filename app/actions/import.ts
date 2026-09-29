@@ -5,7 +5,7 @@ import { ownEdition } from "@/lib/domain/signage";
 import { revalidatePath } from "next/cache";
 import ExcelJS from "exceljs";
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { halls, itemTypes, locations, signageItems, sponsors, suppliers } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
@@ -16,6 +16,7 @@ import { nextSignageRef } from "@/lib/refs";
 import { defaultSignageWorkflowId } from "@/lib/domain/signage";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { importColumnFinder, type ImportColumn } from "@/lib/exports/import-columns";
+import { SIGNAGE_KINDS } from "@/lib/edition-path";
 
 const rowSchema = z.object({
   ref: z.string().trim().optional().or(z.literal("")),
@@ -143,7 +144,12 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
           deletedAt: signageItems.deletedAt,
         })
         .from(signageItems)
-        .where(eq(signageItems.editionId, editionId)),
+        .where(
+          and(
+            eq(signageItems.editionId, editionId),
+            inArray(signageItems.kind, [...SIGNAGE_KINDS]),
+          ),
+        ),
     ],
   );
   const itemByRef = new Map(itemRows.map((i) => [i.ref.toUpperCase(), i]));

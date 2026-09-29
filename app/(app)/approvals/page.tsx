@@ -20,6 +20,7 @@ import { brandImage } from "@/lib/brand-images";
 import { Input } from "@/components/ui/input";
 import { SelectNative } from "@/components/ui/select-native";
 import { Button } from "@/components/ui/button";
+import { itemPath } from "@/lib/edition-path";
 
 export const metadata = { title: "Approvals" };
 export const dynamic = "force-dynamic";
@@ -170,12 +171,17 @@ async function WaitingOnMe({
               edition: { code: string; name: string };
             };
             const ref = isSignage ? b.item!.ref : b.sub!.ref;
+            const kindLabel =
+              b.item?.kind === "stand_design"
+                ? "Stand design: "
+                : b.item?.kind === "stand_panel"
+                  ? "Stand panel: "
+                  : "";
             const title = isSignage
-              ? b.item!.name
+              ? `${kindLabel}${b.item!.name}`
               : `${b.exhibitor!.companyName} — stand ${b.exhibitor!.standNumber}`;
-            const section = b.item?.kind === "sponsorship_item" ? "sponsorship" : "signage";
             const href = isSignage
-              ? `/${b.edition.code}/${section}/${ref}?tab=artwork`
+              ? `${itemPath(b.edition.code, b.item!)}?tab=artwork`
               : `/${b.edition.code}/stands/${ref}`;
             return (
               <li key={raw.id} className="flex flex-wrap items-center gap-3 rounded-lg border p-3">

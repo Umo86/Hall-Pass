@@ -36,6 +36,7 @@ import {
   type SignoffPlan,
 } from "@/lib/workflow";
 import { loadStepDefs, persistRun } from "@/lib/workflow/persist";
+import { itemPath } from "@/lib/edition-path";
 
 export type ItemRow = typeof signageItems.$inferSelect;
 export type EditionRow = typeof editions.$inferSelect;
@@ -143,7 +144,7 @@ export async function startItemRun(tx: Tx, bundle: ItemBundle, now: Date): Promi
 export function itemCreationRecipients(
   members: Array<{ userId: string; role: string }>,
   item: {
-    kind: "signage" | "sponsorship_item";
+    kind: "signage" | "sponsorship_item" | "stand_design" | "stand_panel";
     category: string | null;
     ownerRole: "ops" | "marketing";
   },
@@ -160,7 +161,7 @@ export async function resolveItemCreationRecipients(
   db: Db | Tx,
   organisationId: string,
   item: {
-    kind: "signage" | "sponsorship_item";
+    kind: "signage" | "sponsorship_item" | "stand_design" | "stand_panel";
     category: string | null;
     ownerRole: "ops" | "marketing";
   },
@@ -243,7 +244,7 @@ export async function resolveAssigneeUserIds(
  * those.
  */
 export function missingSubmitFields(item: {
-  kind: "signage" | "sponsorship_item";
+  kind: "signage" | "sponsorship_item" | "stand_design" | "stand_panel";
   hallId: string | null;
   locationId: string | null;
   itemTypeId: string | null;
@@ -253,6 +254,14 @@ export function missingSubmitFields(item: {
   fixingMethod: string | null;
 }): string[] {
   const missing: string[] = [];
+  // A stand design needs only its drawings; a panel needs its size.
+  if (item.kind === "stand_design") return missing;
+  if (item.kind === "stand_panel") {
+    if (!item.widthMm) missing.push("width");
+    if (!item.heightMm) missing.push("height");
+    if (!item.quantity) missing.push("quantity");
+    return missing;
+  }
   if (item.kind === "signage") {
     if (!item.hallId) missing.push("hall");
     if (!item.locationId) missing.push("location");
@@ -292,6 +301,8 @@ export async function defaultSignageWorkflowId(
         eq(workflows.organisationId, organisationId),
         eq(workflows.appliesTo, "signage"),
         eq(workflows.isArchived, false),
+        // Stand-design sign-off is kept for stands.
+        isNull(workflows.forKind),
       ),
     )
     .orderBy(asc(workflows.createdAt));
@@ -340,7 +351,7 @@ export async function notifyPendingAssignees(
               "Open it to view the artwork, then approve, ask for changes or reject — you can leave a comment either way.",
             ].join(" "),
           }),
-      link: `/${bundle.edition.code}/${item.kind === "sponsorship_item" ? "sponsorship" : "signage"}/${item.ref}?tab=artwork`,
+      link: `${itemPath(bundle.edition.code, item)}?tab=artwork`,
       entityType: "signage_item",
       entityId: item.id,
     });

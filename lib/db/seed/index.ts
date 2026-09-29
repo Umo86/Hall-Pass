@@ -23,7 +23,8 @@ import {
 } from "@/lib/workflow";
 import { persistRun } from "@/lib/workflow/persist";
 import { syncDepartmentSteps } from "@/lib/domain/departments";
-import { formatSignageRef, formatStandRef } from "@/lib/refs";
+import { formatSignageRef, formatStandDesignRef, formatStandRef, STAND_SEQ_BASE } from "@/lib/refs";
+import { ensureStandDesignWorkflow } from "@/lib/domain/stand-designs";
 
 const url =
   process.env.DIRECT_DATABASE_URL ??
@@ -1627,8 +1628,57 @@ async function main() {
     .onConflictDoNothing();
   await client`
     UPDATE edition_counters ec
-    SET value = GREATEST(ec.value, (SELECT COALESCE(max(seq), 0) FROM signage_items si WHERE si.edition_id = ec.edition_id))
+    SET value = GREATEST(ec.value, (SELECT COALESCE(max(seq), 0) FROM signage_items si WHERE si.edition_id = ec.edition_id AND si.kind IN ('signage', 'sponsorship_item')))
     WHERE ec.edition_id = ${edition.id} AND ec.key = 'signage'`;
+
+  // ------------------------------------------------------------ stand designs
+  // One organiser stand, set up and waiting for its design: Operations and
+  // Marketing approve it, then its panels.
+  const standWfId = await ensureStandDesignWorkflow(db, org.id);
+  const standRef = formatStandDesignRef("BIRM27", 1);
+  if (!(await db.query.signageItems.findFirst({ where: eq(s.signageItems.ref, standRef) }))) {
+    const standSteps = await db
+      .select({ id: s.workflowSteps.id, name: s.workflowSteps.name })
+      .from(s.workflowSteps)
+      .where(eq(s.workflowSteps.workflowId, standWfId));
+    const stepFor = (name: string) => standSteps.find((st) => st.name === name)?.id;
+    const plan = [
+      ["Operations sign-off", byRole.ops],
+      ["Marketing sign-off", null],
+    ]
+      .filter(([name]) => stepFor(name as string))
+      .map(([name, userId]) => ({
+        stepId: stepFor(name as string)!,
+        userId: userId as string | null,
+      }));
+    await db.insert(s.signageItems).values({
+      editionId: edition.id,
+      ref: standRef,
+      seq: STAND_SEQ_BASE + 1,
+      name: "Feature stand — main entrance",
+      description:
+        "Organiser feature stand at the Hall 1 entrance: welcome desk and show graphics.",
+      kind: "stand_design",
+      category: "organiser",
+      signoffs: plan.length ? plan : null,
+      hallId: hallRows["Hall 1"].id,
+      standNumber: "A01",
+      widthMm: 6000,
+      depthMm: 4000,
+      heightMm: 3500,
+      ownerRole: "ops",
+      ownerUserId: byRole.ops,
+      workflowId: standWfId,
+      createdBy: byRole.ops,
+    });
+  }
+  await db
+    .insert(s.editionCounters)
+    .values([
+      { editionId: edition.id, key: "stand_design", value: 1 },
+      { editionId: edition.id, key: "stand_item", value: 1 },
+    ])
+    .onConflictDoNothing();
 
   // -------------------------------------------------------- stand submissions
   type StandPlan = {

@@ -36,6 +36,9 @@ import {
 } from "@/lib/domain/signage";
 import { diffDaysIso } from "@/lib/deadlines";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
+import { itemPath } from "@/lib/edition-path";
+import { panelParent } from "@/lib/domain/stand-designs";
+import { PANEL_BLOCKED_MESSAGE, artworkBlockedReason } from "@/lib/artwork-rules";
 
 const itemFields = z.object({
   name: z.string().trim().min(1, "Name is required").max(300),
@@ -232,7 +235,7 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
         userIds: recipients,
         kind: "item_created",
         title: `New ${data.kind === "sponsorship_item" ? "sponsorship item" : "signage"}: ${ref} — ${data.name}`,
-        link: `/${edition.code}/signage/${ref}`,
+        link: itemPath(edition.code, { kind: data.kind, ref }),
         entityType: "signage_item",
         entityId: item.id,
       });
@@ -539,6 +542,8 @@ export async function submitForReview(input: unknown): Promise<ActionResult> {
     return fail("You cannot submit items for review");
   }
   const i = bundle.item;
+  const panelBlocked = artworkBlockedReason(i.status, await panelParent(db, i));
+  if (panelBlocked === PANEL_BLOCKED_MESSAGE) return fail(panelBlocked);
   const missing = missingSubmitFields(i);
   if (missing.length > 0) {
     return fail(`Cannot submit yet — missing: ${missing.join(", ")}`);

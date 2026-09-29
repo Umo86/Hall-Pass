@@ -16,6 +16,7 @@ import { orderCountdown } from "@/lib/countdown";
 import { todayInLondon } from "@/lib/today";
 import { SponsorsPanel } from "@/components/sponsorship/sponsors-panel";
 import { SponsorshipCards, type SponsorshipCard } from "@/components/sponsorship/sponsorship-cards";
+import { itemPath } from "@/lib/edition-path";
 
 export const metadata = { title: "Sponsorship" };
 export const dynamic = "force-dynamic";
@@ -82,7 +83,7 @@ export default async function SponsorshipPage({
               id: r.id,
               ref: r.ref,
               name: r.name,
-              href: `/${editionCode}/${r.kind === "sponsorship_item" ? "sponsorship" : "signage"}/${r.ref}`,
+              href: itemPath(editionCode, r),
               kind: r.kind,
               typeName: r.typeName,
               quantity: r.quantity,

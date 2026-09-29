@@ -15,6 +15,7 @@ import { invalidateOnNewVersion } from "@/lib/workflow";
 import { loadRun, persistRun } from "@/lib/workflow/persist";
 import { itemAuthzCtx, itemEntityCtx, loadItemBundle } from "@/lib/domain/signage";
 import { notify } from "@/lib/notify";
+import { itemPath } from "@/lib/edition-path";
 
 /**
  * Change requests (brief §5): once an item is locked by approvals, edits go
@@ -115,7 +116,7 @@ export async function raiseChangeRequest(input: unknown): Promise<ActionResult> 
         kind: "change_request",
         title: `Change request on ${bundle.item.ref}`,
         body: parsed.data.reason,
-        link: `/${bundle.edition.code}/signage/${bundle.item.ref}?tab=changes`,
+        link: `${itemPath(bundle.edition.code, bundle.item)}?tab=changes`,
       });
     });
     revalidatePath("/", "layout");
@@ -199,7 +200,7 @@ export async function decideChangeRequest(input: unknown): Promise<ActionResult>
               kind: "approval_invalidated",
               title: `Approved change reopens your sign-off — ${bundle.item.ref}`,
               body: `${inst.stepName}: the item's spec changed after your decision and needs re-approval.`,
-              link: `/${bundle.edition.code}/signage/${bundle.item.ref}?tab=approvals`,
+              link: `${itemPath(bundle.edition.code, bundle.item)}?tab=artwork`,
             });
           }
         }
@@ -248,7 +249,7 @@ export async function decideChangeRequest(input: unknown): Promise<ActionResult>
         kind: "change_request",
         title: `Your change request on ${bundle.item.ref} was ${parsed.data.decision === "approve" ? "accepted" : "rejected"}`,
         body: parsed.data.comment,
-        link: `/${bundle.edition.code}/signage/${bundle.item.ref}?tab=changes`,
+        link: `${itemPath(bundle.edition.code, bundle.item)}?tab=changes`,
       });
     });
     revalidatePath("/", "layout");

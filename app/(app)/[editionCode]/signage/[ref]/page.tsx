@@ -4,7 +4,13 @@ import { and, count, eq } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { desc as descOrder } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { changeRequests, comments as commentsTable, memberships, users } from "@/lib/db/schema";
+import {
+  changeRequests,
+  comments as commentsTable,
+  memberships,
+  signageItems,
+  users,
+} from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, type ApprovalStepCtx } from "@/lib/authz";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
@@ -34,17 +40,37 @@ import { todayInLondon } from "@/lib/today";
 import { LifecycleButtons } from "@/components/signage/lifecycle-buttons";
 import { ChangesTab, type ChangeRequestRow } from "@/components/signage/changes-tab";
 import { QuickComment } from "@/components/signage/quick-comment";
+import { ITEM_SECTION } from "@/lib/edition-path";
+import { PANEL_BLOCKED_MESSAGE, artworkBlockedReason } from "@/lib/artwork-rules";
+import { listStandPanels, standFormOptions } from "@/lib/queries/stand-designs";
+import { StandForm } from "@/components/stand-designs/stand-form";
+import { AddPanelButton } from "@/components/stand-designs/add-panel";
 
 export const dynamic = "force-dynamic";
 
-const TABS = [
+type TabId = "details" | "artwork" | "panels" | "changes" | "comments" | "history";
+type Tab = { id: TabId; label: string };
+
+const TABS: Tab[] = [
   { id: "details", label: "Details" },
   { id: "artwork", label: "Artwork & sign-off" },
   { id: "changes", label: "Change requests" },
   { id: "comments", label: "Comments" },
   { id: "history", label: "History" },
-] as const;
-type TabId = (typeof TABS)[number]["id"];
+];
+
+/** A designed stand: its design goes for sign-off, then its panels. */
+const STAND_TABS: Tab[] = [
+  { id: "details", label: "Stand" },
+  { id: "artwork", label: "Design & sign-off" },
+  { id: "panels", label: "Panels" },
+  { id: "comments", label: "Comments" },
+  { id: "history", label: "History" },
+];
+
+const PANEL_TABS: Tab[] = TABS.map((t) =>
+  t.id === "artwork" ? { ...t, label: "Graphic & sign-off" } : t,
+);
 
 // Older links (notifications, bookmarks) use the previous tab names.
 const TAB_ALIASES: Record<string, TabId> = {
@@ -53,10 +79,11 @@ const TAB_ALIASES: Record<string, TabId> = {
   install: "details",
 };
 
-function resolveTab(raw: string | undefined): TabId {
+function resolveTab(raw: string | undefined, tabs: Tab[]): TabId {
   if (!raw) return "details";
-  if (TABS.some((t) => t.id === raw)) return raw as TabId;
-  return TAB_ALIASES[raw] ?? "details";
+  if (tabs.some((t) => t.id === raw)) return raw as TabId;
+  const alias = TAB_ALIASES[raw];
+  return alias && tabs.some((t) => t.id === alias) ? alias : "details";
 }
 
 export default async function ItemDetailPage({
@@ -69,7 +96,6 @@ export default async function ItemDetailPage({
   const session = await requireStaffSession();
   const { editionCode, ref } = await params;
   const { tab: rawTab } = await searchParams;
-  const tab = resolveTab(rawTab);
 
   const item = await getItemByRef(decodeURIComponent(ref));
   if (!item || item.deletedAt) notFound();
@@ -77,7 +103,28 @@ export default async function ItemDetailPage({
   // Only this organisation's items, and only under their own show's address.
   if (!bundle || bundle.edition.code !== editionCode.toUpperCase()) notFound();
   const isSponsorship = item.kind === "sponsorship_item";
-  const listSegment = isSponsorship ? "sponsorship" : "signage";
+  const isStand = item.kind === "stand_design";
+  const isPanel = item.kind === "stand_panel";
+  const tabs = isStand ? STAND_TABS : isPanel ? PANEL_TABS : TABS;
+  const tab = resolveTab(rawTab, tabs);
+  // A panel belongs to a stand: link back to it.
+  const parent =
+    isPanel && item.parentItemId
+      ? await db
+          .select({ ref: signageItems.ref, name: signageItems.name, status: signageItems.status })
+          .from(signageItems)
+          .where(eq(signageItems.id, item.parentItemId))
+          .then((r) => r[0] ?? null)
+      : null;
+  const listSegment = ITEM_SECTION[isPanel ? "stand_design" : item.kind];
+  const listLabel = isSponsorship
+    ? "Sponsorship"
+    : isStand || isPanel
+      ? "Stand designs"
+      : "Signage";
+  const listHref = parent
+    ? `/${editionCode}/stand-designs/${parent.ref}?tab=panels`
+    : `/${editionCode}/${listSegment}`;
 
   const [openChanges] = await db
     .select({ n: count() })
@@ -98,7 +145,7 @@ export default async function ItemDetailPage({
     can(session.actor, { type: "signage.edit", item: itemCtx }) &&
     !editionIsReadOnly(bundle.edition.status);
   const requiresInstallPhoto =
-    !isSponsorship && session.organisation.settings.install_photo_required;
+    !isSponsorship && !isStand && session.organisation.settings.install_photo_required;
 
   return (
     <div className="flex flex-col gap-4 p-4 sm:p-6">
@@ -106,8 +153,19 @@ export default async function ItemDetailPage({
         <div className="min-w-0">
           <p className="text-muted-foreground text-xs">
             <Link href={`/${editionCode}/${listSegment}`} className="hover:underline">
-              {isSponsorship ? "Sponsorship" : "Signage"}
+              {listLabel}
             </Link>{" "}
+            {parent && (
+              <>
+                /{" "}
+                <Link
+                  href={`/${editionCode}/stand-designs/${parent.ref}?tab=panels`}
+                  className="hover:underline"
+                >
+                  {parent.ref} {parent.name}
+                </Link>{" "}
+              </>
+            )}
             / {item.ref}
           </p>
           <h1 className="text-xl font-semibold tracking-tight">{item.name}</h1>
@@ -123,13 +181,13 @@ export default async function ItemDetailPage({
             canSubmit={can(session.actor, { type: "signage.submit", item: itemCtx })}
             canHold={can(session.actor, { type: "signage.hold" })}
             canDelete={can(session.actor, { type: "signage.delete" })}
-            listHref={`/${editionCode}/${listSegment}`}
+            listHref={listHref}
           />
         </div>
       </div>
 
       <nav className="flex gap-1 overflow-x-auto border-b" aria-label="Item sections">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <Link
             key={t.id}
             href={`?tab=${t.id}`}
@@ -146,7 +204,10 @@ export default async function ItemDetailPage({
         ))}
       </nav>
 
-      {tab === "details" && (
+      {tab === "details" && isStand && (
+        <StandDetails item={item} bundle={bundle} editionCode={editionCode} canEdit={canEdit} />
+      )}
+      {tab === "details" && !isStand && (
         <DetailsTab
           item={item}
           bundle={bundle}
@@ -163,6 +224,19 @@ export default async function ItemDetailPage({
           bundle={bundle}
           session={session}
           requiresInstallPhoto={requiresInstallPhoto}
+          parentStatus={parent?.status ?? null}
+        />
+      )}
+      {tab === "panels" && isStand && (
+        <PanelsSection
+          item={item}
+          bundle={bundle}
+          editionCode={editionCode}
+          canAdd={
+            can(session.actor, { type: "stand_design.create" }) &&
+            canEdit &&
+            APPROVED_OR_LATER.includes(item.status)
+          }
         />
       )}
       {tab === "changes" && <ChangesSection item={item} session={session} />}
@@ -198,7 +272,7 @@ async function DetailsTab({
     itemFormOptions({
       organisationId: bundle.organisation.id,
       editionId: bundle.edition.id,
-      kind: item.kind,
+      kind: formKind(item.kind),
       workflowId: item.workflowId,
       includeTypeId: item.itemTypeId,
     }),
@@ -376,7 +450,7 @@ async function DetailsTab({
       )}
       <ItemForm
         mode="edit"
-        kind={item.kind}
+        kind={formKind(item.kind)}
         status={item.status}
         readOnly={!canEdit}
         values={{
@@ -431,11 +505,13 @@ async function ArtworkAndSignOff({
   bundle,
   session,
   requiresInstallPhoto,
+  parentStatus,
 }: {
   item: Item;
   bundle: Bundle;
   session: StaffSession;
   requiresInstallPhoto: boolean;
+  parentStatus: string | null;
 }) {
   const itemCtx = itemAuthzCtx(bundle);
   const [versions, instanceRows, invalidation, staffRows, [comments]] = await Promise.all([
@@ -539,7 +615,9 @@ async function ArtworkAndSignOff({
 
   const uploadBlocked = ["installed", "snagged", "closed"].includes(item.status)
     ? "This item is installed — an admin or ops user must reopen it before new artwork can be uploaded."
-    : null;
+    : item.kind === "stand_panel" && artworkBlockedReason(item.status, { parentStatus })
+      ? `${PANEL_BLOCKED_MESSAGE}.`
+      : null;
 
   return (
     <div className="grid gap-8">
@@ -560,7 +638,9 @@ async function ArtworkAndSignOff({
         <h2 className="text-sm font-semibold">Sign-off</h2>
         {chain.length === 0 ? (
           <p className="text-muted-foreground text-sm">
-            Not sent for sign-off yet — add artwork, then use Submit for review.
+            {item.kind === "stand_design"
+              ? "Not sent for sign-off yet — upload the design, then use Submit for review."
+              : "Not sent for sign-off yet — add artwork, then use Submit for review."}
           </p>
         ) : (
           <ApprovalChain
@@ -613,7 +693,7 @@ async function ChangesSection({ item, session }: { item: Item; session: StaffSes
       canRaise={can(session.actor, { type: "change_request.raise" })}
       canDecide={can(session.actor, { type: "change_request.approve" })}
       status={item.status}
-      kind={item.kind}
+      kind={formKind(item.kind)}
       current={{
         name: item.name,
         widthMm: item.widthMm,
@@ -670,5 +750,150 @@ async function HistorySection({ itemId }: { itemId: string }) {
         </li>
       ))}
     </ol>
+  );
+}
+
+/** Panels edit like signs; everything else uses its own form. */
+function formKind(kind: Item["kind"]): "signage" | "sponsorship_item" {
+  return kind === "sponsorship_item" ? "sponsorship_item" : "signage";
+}
+
+async function StandDetails({
+  item,
+  bundle,
+  editionCode,
+  canEdit,
+}: {
+  item: Item;
+  bundle: Bundle;
+  editionCode: string;
+  canEdit: boolean;
+}) {
+  const options = await standFormOptions({
+    organisationId: bundle.organisation.id,
+    editionId: bundle.edition.id,
+    workflowId: item.workflowId,
+  });
+  return (
+    <div className="grid gap-4">
+      {!canEdit && (
+        <p className="text-muted-foreground text-sm">
+          {editionIsReadOnly(bundle.edition.status)
+            ? "This show is closed, so its stands can no longer be changed."
+            : "You can view this stand but not change it."}
+        </p>
+      )}
+      <StandForm
+        mode="edit"
+        editionCode={editionCode}
+        status={item.status}
+        readOnly={!canEdit}
+        values={{
+          id: item.id,
+          name: item.name,
+          standNumber: item.standNumber,
+          hallId: item.hallId,
+          locationId: item.locationId,
+          widthMm: item.widthMm,
+          depthMm: item.depthMm,
+          heightMm: item.heightMm,
+          category: item.category,
+          sponsorId: item.sponsorId,
+          description: item.description,
+          signoffs: item.signoffs ?? null,
+        }}
+        options={options}
+      />
+    </div>
+  );
+}
+
+async function PanelsSection({
+  item,
+  bundle,
+  editionCode,
+  canAdd,
+}: {
+  item: Item;
+  bundle: Bundle;
+  editionCode: string;
+  canAdd: boolean;
+}) {
+  const [panels, options] = await Promise.all([
+    listStandPanels(item.id),
+    standFormOptions({
+      organisationId: bundle.organisation.id,
+      editionId: bundle.edition.id,
+      workflowId: item.workflowId,
+    }),
+  ]);
+  const designApproved = APPROVED_OR_LATER.includes(item.status);
+  const approved = panels.filter((p) => APPROVED_OR_LATER.includes(p.status as typeof item.status)).length;
+  return (
+    <div className="grid gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold">Panels</h2>
+          <p className="text-muted-foreground text-xs">
+            {panels.length === 0
+              ? "The graphics that go on this stand."
+              : `${approved} of ${panels.length} approved`}
+          </p>
+        </div>
+        <AddPanelButton
+          standId={item.id}
+          editionCode={editionCode}
+          enabled={canAdd}
+          suppliers={options.suppliers}
+        />
+      </div>
+      {!designApproved && (
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          {panels.length > 0
+            ? "The design has gone back for sign-off since panels were added — check the panels still fit."
+            : "Panels can be added once the stand design is approved."}
+        </p>
+      )}
+      {panels.length > 0 && (
+        <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Panels">
+          {panels.map((p) => (
+            <li key={p.id}>
+              <Link
+                href={`/${editionCode}/stand-panels/${p.ref}`}
+                className="hover:border-primary/50 flex h-full gap-3 rounded-lg border p-3 transition-colors"
+                aria-label={p.name}
+              >
+                <div className="bg-muted flex size-20 shrink-0 items-center justify-center overflow-hidden rounded">
+                  {p.previewUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={p.previewUrl} alt="" className="size-full object-contain" />
+                  ) : (
+                    <span className="text-muted-foreground text-center text-[10px]">
+                      {p.version ? `v${p.version}` : "No graphic"}
+                    </span>
+                  )}
+                </div>
+                <div className="flex min-w-0 flex-col gap-1">
+                  <p className="truncate text-sm font-medium">{p.name}</p>
+                  <p className="text-muted-foreground text-xs">
+                    {[p.ref, p.size, p.quantity > 1 ? `${p.quantity} off` : null, p.supplierName]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                  <StatusBadge status={p.status} className="w-fit" />
+                  {p.waitingOn.length > 0 && (
+                    <p
+                      className={`text-xs ${p.waitingOn.some((w) => w.overdue) ? "text-destructive font-medium" : "text-muted-foreground"}`}
+                    >
+                      Next: {p.waitingOn.map((w) => w.name).join(", ")}
+                    </p>
+                  )}
+                </div>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

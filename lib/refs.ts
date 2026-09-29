@@ -30,6 +30,16 @@ export function formatSignageRef(editionCode: string, seq: number): string {
   return `SIG-${editionCode}-${String(seq).padStart(3, "0")}`;
 }
 
+/** An organiser-designed stand: STB-BIRM27-001. */
+export function formatStandDesignRef(editionCode: string, seq: number): string {
+  return `STB-${editionCode}-${String(seq).padStart(3, "0")}`;
+}
+
+/** A panel on a designed stand: STB-BIRM27-001-P2. */
+export function formatStandPanelRef(standRef: string, n: number): string {
+  return `${standRef}-P${n}`;
+}
+
 export function formatStandRef(editionCode: string, standNumber: string): string {
   return `STD-${editionCode}-${standNumber}`;
 }
@@ -41,4 +51,23 @@ export async function nextSignageRef(
 ): Promise<{ ref: string; seq: number }> {
   const seq = await nextCounterValue(tx, editionId, "signage");
   return { ref: formatSignageRef(editionCode, seq), seq };
+}
+
+/**
+ * Stands and panels share the show's item numbering (one number per item),
+ * but from their own range so signage refs keep counting without gaps.
+ */
+export const STAND_SEQ_BASE = 1_000_000;
+
+export async function nextStandItemSeq(tx: Tx, editionId: string): Promise<number> {
+  return STAND_SEQ_BASE + (await nextCounterValue(tx, editionId, "stand_item"));
+}
+
+export async function nextStandDesignRef(
+  tx: Tx,
+  editionId: string,
+  editionCode: string,
+): Promise<{ ref: string; seq: number }> {
+  const n = await nextCounterValue(tx, editionId, "stand_design");
+  return { ref: formatStandDesignRef(editionCode, n), seq: await nextStandItemSeq(tx, editionId) };
 }

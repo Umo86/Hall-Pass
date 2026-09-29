@@ -7,6 +7,7 @@ import { loadStandBundle, standAuthzCtx, stepActiveFlags } from "@/lib/domain/st
 import { getItemByRef } from "@/lib/queries/signage";
 import { getStandByRef } from "@/lib/queries/stands";
 import { loadRun } from "@/lib/workflow/persist";
+import { itemPath } from "@/lib/edition-path";
 
 export const metadata = { title: "Scan" };
 export const dynamic = "force-dynamic";
@@ -18,14 +19,14 @@ export default async function QrResolvePage({ params }: { params: Promise<{ ref:
   const session = await getSession();
   if (!session) redirect(`/login?next=/q/${encodeURIComponent(ref)}`);
 
-  if (ref.startsWith("SIG-")) {
+  if (ref.startsWith("SIG-") || ref.startsWith("STB-")) {
     const item = await getItemByRef(ref);
     if (item && !item.deletedAt) {
       const bundle = await loadItemBundle(db, item.id);
       if (bundle && can(session.actor, { type: "signage.view", item: itemAuthzCtx(bundle) })) {
         redirect(
           session.actor.kind === "staff"
-            ? `/${bundle.edition.code}/signage/${item.ref}`
+            ? itemPath(bundle.edition.code, item)
             : `/portal/items/${item.ref}`,
         );
       }

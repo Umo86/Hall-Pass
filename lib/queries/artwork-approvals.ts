@@ -1,4 +1,5 @@
 import "server-only";
+import { itemPath } from "@/lib/edition-path";
 import { and, desc, eq, ilike, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/lib/db/client";
@@ -51,7 +52,7 @@ export type ArtworkRow = {
   id: string;
   ref: string;
   name: string;
-  kind: "signage" | "sponsorship_item";
+  kind: "signage" | "sponsorship_item" | "stand_design" | "stand_panel";
   status: string;
   category: string | null;
   sponsorName: string | null;
@@ -187,7 +188,6 @@ export async function listArtworkApprovals(opts: {
           decidedAt: instance.decidedAt,
           comment: instance.decisionComment,
         }));
-      const section = item.kind === "sponsorship_item" ? "sponsorship" : "signage";
       return {
         id: item.id,
         ref: item.ref,
@@ -201,7 +201,7 @@ export async function listArtworkApprovals(opts: {
         version: version.versionNumber,
         uploadedAt: version.createdAt,
         previewUrl,
-        href: `/${showCode}/${section}/${item.ref}?tab=artwork`,
+        href: `${itemPath(showCode, item)}?tab=artwork`,
         signoffs,
       } satisfies ArtworkRow;
     }),

@@ -17,6 +17,7 @@ import { addMonths, monthGrid, monthLabel, parseMonthParam } from "@/lib/calenda
 import { cn } from "@/lib/utils";
 import { standsEnabled } from "@/lib/config";
 import { formatDate } from "@/lib/format";
+import { itemPath } from "@/lib/edition-path";
 
 export const metadata = { title: "Calendar" };
 export const dynamic = "force-dynamic";
@@ -151,8 +152,7 @@ export default async function CalendarPage({
   }
   add(edition.breakdownEnd, { label: "Breakdown ends", href: null, tone: "show" });
 
-  const itemHref = (item: { ref: string; kind: string }) =>
-    `/${editionCode}/${item.kind === "sponsorship_item" ? "sponsorship" : "signage"}/${item.ref}`;
+  const itemHref = (item: { ref: string; kind: string }) => itemPath(editionCode, item);
   const settled = ["installed", "snagged", "closed"];
   for (const item of items) {
     const open = !settled.includes(item.status);

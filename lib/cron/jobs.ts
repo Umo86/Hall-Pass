@@ -25,6 +25,7 @@ import { brandName, standsEnabled } from "@/lib/config";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { writeAudit } from "@/lib/audit";
 import { formatDate } from "@/lib/format";
+import { itemPath } from "@/lib/edition-path";
 
 export type JobResult = { job: string; sent: number; skipped: number };
 
@@ -82,7 +83,7 @@ async function pendingWithContext(): Promise<PendingRow[]> {
       out.push({
         instance,
         ref: bundle.item.ref,
-        link: `/${bundle.edition.code}/signage/${bundle.item.ref}?tab=approvals`,
+        link: `${itemPath(bundle.edition.code, bundle.item)}?tab=artwork`,
         editionId: bundle.edition.id,
         organisationId: bundle.organisation.id,
         ownerUserId: bundle.item.ownerUserId,
@@ -290,7 +291,7 @@ export async function missingArtwork(today: string): Promise<JobResult> {
         body: hasArtwork
           ? `${item.name} has artwork uploaded — submit it for review (${when}).`
           : `${item.name} has no artwork yet.`,
-        link: `/${edition.code}/${item.kind === "sponsorship_item" ? "sponsorship" : "signage"}/${item.ref}?tab=artwork`,
+        link: `${itemPath(edition.code, item)}?tab=artwork`,
         entityType: "signage_item",
         entityId: item.id,
       });

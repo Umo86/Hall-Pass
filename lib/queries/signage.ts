@@ -19,6 +19,7 @@ import {
 } from "@/lib/db/schema";
 import type { LabelRow } from "@/lib/exports/label-fields";
 import { loadItemBundle } from "@/lib/domain/signage";
+import { SIGNAGE_KINDS } from "@/lib/edition-path";
 import { loadRun } from "@/lib/workflow/persist";
 
 export type ScheduleRow = {
@@ -76,7 +77,14 @@ export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]
     .leftJoin(artworkVersions, eq(signageItems.currentArtworkVersionId, artworkVersions.id))
     // Everything for the show — organiser signage, sponsor signage and the
     // items sold in the Sponsorship section — in one schedule.
-    .where(and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt)))
+    .where(
+      and(
+        eq(signageItems.editionId, editionId),
+        isNull(signageItems.deletedAt),
+        // Stands and their panels live in Stand designs.
+        inArray(signageItems.kind, [...SIGNAGE_KINDS]),
+      ),
+    )
     .orderBy(asc(signageItems.seq));
 
   const ids = rows.map((r) => r.item.id);
@@ -109,7 +117,7 @@ export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]
     ref: r.item.ref,
     name: r.item.name,
     status: r.item.status,
-    kind: r.item.kind,
+    kind: r.item.kind as "signage" | "sponsorship_item",
     category: r.item.category,
     typeName: r.typeName,
     format: r.format,
@@ -188,6 +196,7 @@ export async function listSponsorshipRows(editionId: string): Promise<Sponsorshi
       and(
         eq(signageItems.editionId, editionId),
         or(eq(signageItems.kind, "sponsorship_item"), isNotNull(signageItems.sponsorId)),
+        inArray(signageItems.kind, [...SIGNAGE_KINDS]),
         isNull(signageItems.deletedAt),
       ),
     )
@@ -198,7 +207,7 @@ export async function listSponsorshipRows(editionId: string): Promise<Sponsorshi
     name: r.item.name,
     status: r.item.status,
     typeName: r.typeName,
-    kind: r.item.kind,
+    kind: r.item.kind as "signage" | "sponsorship_item",
     sponsorId: r.item.sponsorId,
     sponsorName: r.sponsorName,
     supplierName: r.supplierName,

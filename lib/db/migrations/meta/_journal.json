@@ -64,6 +64,13 @@
       "when": 1790525113552,
       "tag": "0008_stand_no_services",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790688915685,
+      "tag": "0009_stand_designs",
+      "breakpoints": true
     }
   ]
 }

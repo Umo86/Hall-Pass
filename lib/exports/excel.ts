@@ -1,6 +1,7 @@
 import "server-only";
 import ExcelJS from "exceljs";
 import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { SIGNAGE_KINDS } from "@/lib/edition-path";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -113,7 +114,13 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
     .leftJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
     .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
     // The same items as the on-screen schedule, sponsorship items included.
-    .where(and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt)))
+    .where(
+      and(
+        eq(signageItems.editionId, editionId),
+        isNull(signageItems.deletedAt),
+        inArray(signageItems.kind, [...SIGNAGE_KINDS]),
+      ),
+    )
     .orderBy(asc(signageItems.seq));
 
   const { byItem, orderedSteps } = await currentApprovals(rows.map((r) => r.item));
@@ -236,6 +243,7 @@ export async function buildSponsorWorkbook(editionId: string, includeCosts: bool
         eq(signageItems.editionId, editionId),
         isNotNull(signageItems.sponsorId),
         isNull(signageItems.deletedAt),
+        inArray(signageItems.kind, [...SIGNAGE_KINDS]),
       ),
     )
     .orderBy(asc(sponsors.companyName), asc(signageItems.seq));
@@ -353,7 +361,13 @@ export async function buildContractorSchedule(editionId: string) {
     .leftJoin(halls, eq(signageItems.hallId, halls.id))
     .leftJoin(locations, eq(signageItems.locationId, locations.id))
     .leftJoin(contractors, eq(signageItems.installContractorId, contractors.id))
-    .where(and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt)))
+    .where(
+      and(
+        eq(signageItems.editionId, editionId),
+        isNull(signageItems.deletedAt),
+        inArray(signageItems.kind, [...SIGNAGE_KINDS]),
+      ),
+    )
     .orderBy(asc(signageItems.installDate), asc(signageItems.seq));
 
   const wb = new ExcelJS.Workbook();
