@@ -95,6 +95,7 @@ The cheapest setup that still copes with large print-ready graphics:
 | Part | Service | Free allowance | What to know |
 | --- | --- | --- | --- |
 | Database + sign-in | Supabase **Free** | 500 MB database, 2 projects per organisation | Pauses after a quiet week; the daily cron's queries keep it awake. No automatic backups — the weekly GitHub Action below takes one. |
+| Database, alternative (see 3b) | Neon **Free** via Vercel | 1 GB, 6-hour restore window | Scales to zero and wakes by itself; Supabase then only handles sign-in. |
 | Files (artwork, photos, documents, exports) | Cloudflare **R2** | 10 GB storage, no egress fees, up to 5 GB per upload | Needs a Cloudflare account; R2 may ask for a payment method on first use but charges nothing inside the allowance. |
 | App | Vercel **Hobby** | Cron once a day, 1 GB Blob | Hobby is for non-commercial use; move to Pro when the tool runs a real show for a business. |
 
@@ -155,6 +156,31 @@ A project transfer keeps the URL, keys, data and sign-ins, so nothing in Vercel 
 3. **Billing** on the old organisation → downgrade to Free / cancel so the Pro charge stops.
 4. Check `/api/health` and sign in once. The daily cron keeps the free project from pausing;
    if it is ever paused, open it in the dashboard and click **Resume**.
+
+### 3b. Or: database on Neon via Vercel, Supabase for sign-in only
+
+Neon's Free plan (1 GB, scales to zero between requests and wakes by itself, 6-hour
+restore window) suits a tool that goes quiet between shows, and it lives in the Vercel
+dashboard. Sign-in stays on Supabase (its Free plan is fine for that); the daily cron
+makes one authenticated call a day so Supabase does not pause the idle project.
+
+1. Vercel → project → **Storage** → **Create Database** → **Neon** (Free), region
+   Frankfurt, connect it to the project. Vercel adds `DATABASE_URL`,
+   `DATABASE_URL_UNPOOLED` and `POSTGRES_URL`. If it refuses because `DATABASE_URL` already
+   exists, delete the old Supabase `DATABASE_URL` and `DIRECT_DATABASE_URL` variables
+   (Settings → Environment Variables) and connect again. Keep every `NEXT_PUBLIC_SUPABASE_*`
+   and `SUPABASE_*` variable.
+2. Load the schema and data into the empty database with the import file generated from
+   the live database (`neon-import.sql`, kept out of the repository because it holds real
+   data): `psql "<DATABASE_URL_UNPOOLED from Vercel>" -v ON_ERROR_STOP=1 -f neon-import.sql`.
+   It refuses to run on a database that already has data. `psql` comes with Postgres
+   (macOS: `brew install libpq`). Make the file again if the old database was used after it
+   was generated.
+3. **Redeploy** so the functions pick up the new variables. `/api/health` should show
+   `"databaseProvider":"neon"`, `"database":"ok"` and `"auth":"supabase"`. Sign in and open
+   the dashboard, Signage and Onsite.
+4. Then downgrade the Supabase organisation to Free (Billing). For the weekly backup, use
+   the Neon `DATABASE_URL_UNPOOLED` as the `DIRECT_DATABASE_URL` secret.
 
 ### 4. Weekly backup to the bucket
 

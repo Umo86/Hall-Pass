@@ -2,6 +2,7 @@ import { appUrl } from "@/lib/app-url";
 import "server-only";
 import { and, count, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { s3Delete, s3Enabled, s3List } from "@/lib/storage";
+import { databaseSupabaseRef, supabaseUrl } from "@/lib/auth/supabase-config";
 import { db, type Db, type Tx } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -769,5 +770,31 @@ export async function runDailyJobs(today: string): Promise<JobResult[]> {
   results.push(await dailyDigest(today));
   results.push(await taskReminders(today));
   results.push(await orphanArtworkSweep(today));
+  results.push(await supabaseKeepAlive());
   return results;
+}
+
+/**
+ * Job 10 — when the database lives elsewhere (Neon via Vercel), the Supabase
+ * project only ever sees sign-ins, which can be too quiet for its Free plan:
+ * a project that looks idle for a week is paused and sign-in stops working.
+ * One cheap authenticated call a day counts as activity. Skipped when the
+ * database is the Supabase project itself (the other jobs already use it).
+ */
+export async function supabaseKeepAlive(): Promise<JobResult> {
+  const url = supabaseUrl();
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY;
+  if (!url || !key || databaseSupabaseRef()) {
+    return { job: "supabase_keep_alive", sent: 0, skipped: 1 };
+  }
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const admin = createClient(url, key, { auth: { persistSession: false } });
+    const { error } = await admin.auth.admin.listUsers({ page: 1, perPage: 1 });
+    if (error) throw error;
+    return { job: "supabase_keep_alive", sent: 1, skipped: 0 };
+  } catch (err) {
+    console.error("supabase keep-alive failed", err);
+    return { job: "supabase_keep_alive", sent: 0, skipped: 1 };
+  }
 }

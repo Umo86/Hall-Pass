@@ -12,6 +12,21 @@ import { blobEnabled, s3Enabled, storageBackend } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
+/** Who hosts the database, from its host name (never the credentials). */
+function databaseProvider(url: string | undefined): string {
+  if (!url) return "not set";
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host.endsWith(".supabase.co") || host.endsWith(".supabase.com")) return "supabase";
+    if (host.endsWith(".neon.tech")) return "neon";
+    if (host.endsWith(".vercel-storage.com")) return "vercel-postgres";
+    if (host === "localhost" || host === "127.0.0.1") return "local";
+    return "other";
+  } catch {
+    return "invalid URL";
+  }
+}
+
 /**
  * Deployment health: configuration booleans only, no secrets. Used to verify
  * a deployment is fully wired without needing to sign in.
@@ -49,11 +64,13 @@ export async function GET() {
       seeded,
       auth,
       // Project ids are public (they're in every page's sign-in requests).
-      // Sign-in and the database must use the same project.
+      // When the database is itself a Supabase project, sign-in must use the
+      // same one; a Neon (or other) database pairs with any Supabase project.
       supabaseProject: supabaseProjectRef(supabase.url ?? undefined),
       supabaseUrlSource: supabase.source,
       ...(supabase.note ? { supabaseUrlNote: supabase.note } : {}),
       supabaseKeyProject: keyProjectRef(supabasePublicKey()),
+      databaseProvider: databaseProvider(process.env.DATABASE_URL),
       databaseProject: databaseProjectRef(process.env.DATABASE_URL),
       authService: await checkAuthService(supabase.url ?? undefined, supabasePublicKey()),
       storage: storageBackend(),
