@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  closeSignageItem,
   holdSignageItem,
   reopenSignageItem,
   resumeSignageItem,
@@ -28,18 +29,23 @@ type Props = {
   listHref: string;
   canSubmit: boolean;
   canHold: boolean;
+  canClose: boolean;
   canDelete: boolean;
 };
+
+/** Reopen from these undoes the install and goes back to Delivered. */
+const INSTALLED = ["installed", "snagged", "closed"];
 
 export function LifecycleButtons({
   itemId,
   status,
   canSubmit,
   canHold,
+  canClose,
   canDelete,
   listHref,
 }: Props) {
-  const [dialog, setDialog] = useState<"hold" | "delete" | null>(null);
+  const [dialog, setDialog] = useState<"hold" | "reopen" | "delete" | null>(null);
   const [reason, setReason] = useState("");
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [pending, start] = useTransition();
@@ -88,6 +94,20 @@ export function LifecycleButtons({
           disabled={pending}
           onClick={() => run(() => reopenSignageItem({ id: itemId }))}
         >
+          Reopen
+        </Button>
+      )}
+      {canClose && status === "installed" && (
+        <Button
+          size="sm"
+          disabled={pending}
+          onClick={() => run(() => closeSignageItem({ id: itemId }))}
+        >
+          Close
+        </Button>
+      )}
+      {canHold && INSTALLED.includes(status) && (
+        <Button size="sm" variant="outline" onClick={() => setDialog("reopen")}>
           Reopen
         </Button>
       )}
@@ -140,6 +160,34 @@ export function LifecycleButtons({
               onClick={() => run(() => holdSignageItem({ id: itemId, reason }))}
             >
               Put on hold
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={dialog === "reopen"} onOpenChange={(o) => !o && setDialog(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Undo the install?</DialogTitle>
+            <DialogDescription>
+              The item goes back to Delivered, its install photo is cleared and the Installed
+              confirmation is back on the list. Snags stay as they are.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Why? (required) — e.g. wrong location, reprinted after damage"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDialog(null)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={pending || !reason.trim()}
+              onClick={() => run(() => reopenSignageItem({ id: itemId, reason }))}
+            >
+              Reopen
             </Button>
           </DialogFooter>
         </DialogContent>

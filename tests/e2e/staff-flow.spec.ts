@@ -11,7 +11,11 @@ test.describe("staff flow", () => {
     await expect(page.getByRole("heading", { name: "My Work" })).toBeVisible();
   });
 
-  test("dashboard, schedule and item detail render seeded data", async ({ page, context, baseURL }) => {
+  test("dashboard, schedule and item detail render seeded data", async ({
+    page,
+    context,
+    baseURL,
+  }) => {
     await signInAs(context, "ops@media10.test", baseURL!);
     await page.goto("/BIRM27/dashboard");
     await expect(page.getByRole("heading", { name: "UKCW Birmingham 2027" })).toBeVisible();
@@ -45,6 +49,8 @@ test.describe("staff flow", () => {
     await page.getByLabel("Width (mm)").fill("1200");
     await page.getByLabel("Height (mm)").fill("800");
     await page.getByLabel("Fixing method").selectOption("wall_mounted");
+    // Nothing goes to print without a printer, so pick one now.
+    await page.getByLabel("Supplier").selectOption({ index: 1 });
     await page.getByRole("button", { name: "Create item" }).click();
     await page.waitForURL("**/signage/SIG-BIRM27-*");
     await expect(page.getByRole("heading", { name })).toBeVisible();
@@ -81,8 +87,8 @@ test.describe("staff flow", () => {
     await mktCtx.close();
 
     // Ops completes the technical check — the item is now approved — then
-    // tracks production through to installation (no supplier is set, so the
-    // print and delivery confirmations fall back to ops).
+    // tracks production through to installation (the supplier has no portal
+    // user here, so ops confirms print and delivery themselves).
     const opsCtx2 = await browser.newContext();
     await signInAs(opsCtx2, "ops@media10.test", baseURL!);
     const ops = await opsCtx2.newPage();
@@ -135,12 +141,14 @@ test.describe("staff flow", () => {
     await page.getByRole("button", { name: "Create item" }).click();
     await page.waitForURL("**/signage/SIG-BIRM27-*");
     page.once("dialog", (d) => d.accept());
-    await page.getByRole("button", { name: /delete/i }).first().click();
+    await page
+      .getByRole("button", { name: /delete/i })
+      .first()
+      .click();
     const confirmBtn = page.getByRole("dialog").getByRole("button", { name: /delete/i });
     if (await confirmBtn.count()) await confirmBtn.click();
     await page.waitForURL("**/BIRM27/signage");
     await expect(page.getByText(name)).toHaveCount(0);
     await ctx.close();
   });
-
 });

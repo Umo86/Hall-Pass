@@ -47,6 +47,7 @@ export default async function SignagePage({
         canEdit={can(session.actor, { type: "signage.create" })}
         canEditCosts={can(session.actor, { type: "costs.edit" })}
         canDelete={can(session.actor, { type: "signage.delete" })}
+        canClose={can(session.actor, { type: "signage.close" })}
       />
     </div>
   );

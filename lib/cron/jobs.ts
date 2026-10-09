@@ -7,6 +7,7 @@ import {
   auditLog,
   documents,
   editions,
+  events,
   exhibitors,
   memberships,
   organisations,
@@ -16,7 +17,13 @@ import {
   standSubmissions,
   tasks,
 } from "@/lib/db/schema";
-import { artworkDue, diffDaysIso, standDesignDue } from "@/lib/deadlines";
+import {
+  artworkDue,
+  diffDaysIso,
+  effectiveDeadline,
+  printDeadline,
+  standDesignDue,
+} from "@/lib/deadlines";
 import { editionForDeadlines } from "@/lib/queries/editions";
 import { notify } from "@/lib/notify";
 import { sendEmail } from "@/lib/email/send";
@@ -30,7 +37,18 @@ import { itemPath } from "@/lib/edition-path";
 export type JobResult = { job: string; sent: number; skipped: number };
 
 type ReminderTarget = "approval_instance" | "signage_item" | "exhibitor" | "document";
-type ReminderKind = "minus7" | "minus2" | "due" | "overdue" | "escalation" | "chaser" | "expiry";
+type ReminderKind =
+  | "minus7"
+  | "minus2"
+  | "due"
+  | "overdue"
+  | "escalation"
+  | "chaser"
+  | "expiry"
+  | "print_due"
+  | "delivery_due"
+  | "install_due"
+  | "order_by_due";
 
 /** Record a send; returns false when it already happened (idempotency). */
 async function recordSend(
@@ -47,7 +65,10 @@ async function recordSend(
   return rows.length > 0;
 }
 
-async function staffUserIdsByRoles(organisationId: string, roles: ("admin" | "ops")[]) {
+async function staffUserIdsByRoles(
+  organisationId: string,
+  roles: (typeof memberships.$inferSelect)["role"][],
+) {
   const rows = await db
     .select({ userId: memberships.userId })
     .from(memberships)
@@ -515,6 +536,144 @@ export async function taskReminders(today: string): Promise<JobResult> {
   return { job: "task_reminders", sent, skipped };
 }
 
+/** Which reminder each item still needs, from its status. */
+const BEFORE_PRINT = [
+  "draft",
+  "awaiting_artwork",
+  "in_review",
+  "changes_requested",
+  "approved",
+  "approved_with_conditions",
+];
+const BEFORE_DELIVERY = [...BEFORE_PRINT, "in_production"];
+const BEFORE_INSTALL = [...BEFORE_DELIVERY, "delivered"];
+
+type DateReminder = {
+  kind: "print_due" | "delivery_due" | "install_due" | "order_by_due";
+  due: string;
+  what: string;
+  /** Who gets it besides the owner. */
+  extraRoles: (typeof memberships.$inferSelect)["role"][];
+  tab: string;
+};
+
+/**
+ * Job 8 — print, delivery, install and order-by dates: a week and two days
+ * ahead, on the day, then weekly while overdue (same rhythm as artwork).
+ * Owner always; Operations for delivery and install; Sales for order-by.
+ */
+export async function dateReminders(today: string): Promise<JobResult> {
+  let sent = 0;
+  let skipped = 0;
+  const items = await db
+    .select({ item: signageItems, edition: editions, organisationId: events.organisationId })
+    .from(signageItems)
+    .innerJoin(editions, eq(signageItems.editionId, editions.id))
+    .innerJoin(events, eq(editions.eventId, events.id))
+    .where(
+      and(
+        isNull(signageItems.deletedAt),
+        inArray(signageItems.kind, ["signage", "sponsorship_item", "stand_panel"]),
+        sql`${signageItems.status} NOT IN ('on_hold', 'closed', 'rejected')`,
+      ),
+    );
+  const deadlineCache = new Map<string, Awaited<ReturnType<typeof editionForDeadlines>>>();
+  const roleCache = new Map<string, string[]>();
+  const usersFor = async (organisationId: string, roles: DateReminder["extraRoles"]) => {
+    const key = `${organisationId}:${roles.join(",")}`;
+    if (!roleCache.has(key)) {
+      roleCache.set(key, roles.length ? await staffUserIdsByRoles(organisationId, roles) : []);
+    }
+    return roleCache.get(key)!;
+  };
+  for (const { item, edition, organisationId } of items) {
+    if (editionIsReadOnly(edition.status) || edition.breakdownEnd < today) continue;
+    if (!deadlineCache.has(item.editionId)) {
+      deadlineCache.set(item.editionId, await editionForDeadlines(item.editionId));
+    }
+    const ed = deadlineCache.get(item.editionId);
+    if (!ed) continue;
+    const wanted: DateReminder[] = [];
+    const sponsorship = item.kind === "sponsorship_item";
+    if (sponsorship && !item.soldAt && item.orderByDate) {
+      wanted.push({
+        kind: "order_by_due",
+        due: item.orderByDate,
+        what: "Order-by date",
+        extraRoles: ["sales"],
+        tab: "details",
+      });
+    }
+    if (BEFORE_PRINT.includes(item.status)) {
+      const due = printDeadline({ printDeadline: item.printDeadline }, ed);
+      if (due)
+        wanted.push({
+          kind: "print_due",
+          due,
+          what: "Print deadline",
+          extraRoles: [],
+          tab: "artwork",
+        });
+    }
+    if (BEFORE_DELIVERY.includes(item.status)) {
+      const due = item.deliveryDate ?? effectiveDeadline(ed, "delivery");
+      if (due) {
+        wanted.push({
+          kind: "delivery_due",
+          due,
+          what: "Delivery",
+          extraRoles: ["ops"],
+          tab: "artwork",
+        });
+      }
+    }
+    if (BEFORE_INSTALL.includes(item.status) && item.installDate) {
+      wanted.push({
+        kind: "install_due",
+        due: item.installDate,
+        what: "Install",
+        extraRoles: ["ops"],
+        tab: "artwork",
+      });
+    }
+    for (const r of wanted) {
+      const diff = diffDaysIso(r.due, today);
+      if (!artworkChaseDay(diff)) continue;
+      const recipients = [
+        ...new Set([item.ownerUserId, ...(await usersFor(organisationId, r.extraRoles))]),
+      ].filter((id): id is string => Boolean(id));
+      if (recipients.length === 0) continue;
+      if (!(await recordSend("signage_item", item.id, r.kind, today))) {
+        skipped++;
+        continue;
+      }
+      const when =
+        diff < 0
+          ? `overdue (was ${formatDate(r.due)})`
+          : diff === 0
+            ? "today"
+            : `in ${diff} days (${formatDate(r.due)})`;
+      const state =
+        sponsorship && r.kind === "order_by_due"
+          ? "not sold yet"
+          : `status: ${item.status.replace(/_/g, " ")}`;
+      await db.transaction(async (tx) => {
+        await notify(tx, {
+          userIds: recipients,
+          kind: "date_reminder",
+          title: `${r.what} ${when}: ${item.ref}`,
+          body: `${item.name} — ${state}.`,
+          link: `${itemPath(edition.code, item)}?tab=${r.tab}`,
+          entityType: "signage_item",
+          entityId: item.id,
+        });
+      });
+      sent++;
+    }
+  }
+  return { job: "date_reminders", sent, skipped };
+}
+
 export async function runDailyJobs(today: string): Promise<JobResult[]> {
   const results: JobResult[] = [];
   results.push(await approvalReminders(today));
@@ -525,6 +684,7 @@ export async function runDailyJobs(today: string): Promise<JobResult[]> {
     results.push(await standChasers(today));
     results.push(await documentExpiry(today));
   }
+  results.push(await dateReminders(today));
   results.push(await dailyDigest(today));
   results.push(await taskReminders(today));
   return results;

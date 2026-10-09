@@ -24,6 +24,7 @@ import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { buildStoragePath, putObject } from "@/lib/storage";
 import { formatStandDesignRef, formatStandPanelRef, STAND_SEQ_BASE } from "@/lib/refs";
+import { DEADLINE_LABELS } from "@/lib/deadlines";
 
 type ShowDates = {
   buildStart: string;
@@ -349,15 +350,13 @@ export async function cloneEdition(input: unknown): Promise<ActionResult<{ code:
           .from(sponsorEntitlements)
           .where(eq(sponsorEntitlements.sponsorId, sp.id));
         if (ents.length > 0) {
-          await tx
-            .insert(sponsorEntitlements)
-            .values(
-              ents.map((e) => ({
-                sponsorId: ns.id,
-                description: e.description,
-                quantity: e.quantity,
-              })),
-            );
+          await tx.insert(sponsorEntitlements).values(
+            ents.map((e) => ({
+              sponsorId: ns.id,
+              description: e.description,
+              quantity: e.quantity,
+            })),
+          );
         }
       }
 
@@ -471,9 +470,28 @@ export async function cloneEdition(input: unknown): Promise<ActionResult<{ code:
   }
 }
 
+const deadlineRowSchema = z.object({
+  key: z.enum([
+    "stand_design_due",
+    "insurance_due",
+    "venue_rigging_submission",
+    "artwork_due",
+    "print_deadline",
+    "delivery",
+  ]),
+  daysBeforeBuildStart: z.coerce.number().int().min(0).max(730),
+  overrideDate: z.preprocess(blankToNull, z.string().date().nullable().optional()),
+});
+
 const updateSchema = datesSchema
   .extend({
     id: z.string().uuid(),
+    // Show deadlines: days before build, or a fixed date that wins. Arrives
+    // as JSON from the dialog; leaving it out keeps them as they are.
+    deadlines: z.preprocess(
+      (v) => (typeof v === "string" ? (v ? JSON.parse(v) : undefined) : v),
+      z.array(deadlineRowSchema).max(20).optional(),
+    ),
     name: z.string().trim().min(1).max(200),
     status: z.enum(["planning", "live", "closed", "archived"]),
     signageBudget: z.preprocess(blankToNull, z.coerce.number().nonnegative().nullable().optional()),
@@ -535,6 +553,26 @@ export async function updateEdition(input: unknown): Promise<ActionResult> {
   try {
     await db.transaction(async (tx) => {
       await tx.update(editions).set(set).where(eq(editions.id, current.id));
+      if (data.deadlines && current.status !== "archived") {
+        for (const d of data.deadlines) {
+          await tx
+            .insert(editionDeadlines)
+            .values({
+              editionId: current.id,
+              key: d.key,
+              label: DEADLINE_LABELS[d.key],
+              daysBeforeBuildStart: d.daysBeforeBuildStart,
+              overrideDate: d.overrideDate ?? null,
+            })
+            .onConflictDoUpdate({
+              target: [editionDeadlines.editionId, editionDeadlines.key],
+              set: {
+                daysBeforeBuildStart: d.daysBeforeBuildStart,
+                overrideDate: d.overrideDate ?? null,
+              },
+            });
+        }
+      }
       // The venue's address is kept on the venue, shared by its shows.
       if (data.venueAddress !== undefined && current.status !== "archived") {
         await tx
@@ -560,7 +598,7 @@ export async function updateEdition(input: unknown): Promise<ActionResult> {
           buildStart: current.buildStart,
           breakdownEnd: current.breakdownEnd,
         },
-        after: set,
+        after: { ...set, ...(data.deadlines ? { deadlines: data.deadlines } : {}) },
         summary: `Updated show ${current.code}`,
       });
     });

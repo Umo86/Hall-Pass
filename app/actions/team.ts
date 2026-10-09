@@ -4,11 +4,14 @@ import { unstable_rethrow } from "next/navigation";
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { and, count, eq, isNull, ne } from "drizzle-orm";
+import { and, count, eq, isNull, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvalInstances,
+  editions,
+  events,
   memberships,
+  signageItems,
   staffInvites,
   tasks,
   users,
@@ -241,6 +244,7 @@ export async function removeStaffMember(input: unknown): Promise<ActionResult> {
   if (!can(session.actor, { type: "users.manage" })) return fail("Only admins manage the team");
   const orgId = session.organisation.id;
 
+  let reassigned = 0;
   try {
     const name = await db.transaction(async (tx) => {
       const membership = await tx.query.memberships.findFirst({
@@ -299,6 +303,50 @@ export async function removeStaffMember(input: unknown): Promise<ActionResult> {
             ne(tasks.status, "done"),
           ),
         );
+      // Their items pass to the admin doing the removal, and any sign-off
+      // naming them personally falls back to the department.
+      const owned = await tx
+        .select({ id: signageItems.id, ref: signageItems.ref, editionId: signageItems.editionId })
+        .from(signageItems)
+        .innerJoin(editions, eq(signageItems.editionId, editions.id))
+        .innerJoin(events, eq(editions.eventId, events.id))
+        .where(
+          and(
+            eq(events.organisationId, orgId),
+            eq(signageItems.ownerUserId, membership.userId),
+            isNull(signageItems.deletedAt),
+          ),
+        );
+      for (const it of owned) {
+        await tx
+          .update(signageItems)
+          .set({ ownerUserId: session.user.id })
+          .where(eq(signageItems.id, it.id));
+        await writeAudit(tx, {
+          organisationId: orgId,
+          editionId: it.editionId,
+          actorUserId: session.user.id,
+          entityType: "signage_item",
+          entityId: it.id,
+          action: "update",
+          before: { ownerUserId: membership.userId },
+          after: { ownerUserId: session.user.id },
+          summary: `${it.ref}: owner reassigned after ${who} left the team`,
+        });
+      }
+      await tx.execute(sql`
+        UPDATE signage_items SET signoffs = (
+          SELECT jsonb_agg(
+            CASE WHEN s->>'userId' = ${membership.userId} THEN s || '{"userId": null}'::jsonb ELSE s END
+          ) FROM jsonb_array_elements(signoffs) AS s
+        )
+        WHERE signoffs @> ${JSON.stringify([{ userId: membership.userId }])}::jsonb
+          AND edition_id IN (
+            SELECT ed.id FROM editions ed JOIN events ev ON ev.id = ed.event_id
+            WHERE ev.organisation_id = ${orgId}
+          )
+      `);
+      reassigned = owned.length;
       if (member) {
         await tx
           .update(staffInvites)
@@ -325,7 +373,10 @@ export async function removeStaffMember(input: unknown): Promise<ActionResult> {
       return who;
     });
     revalidatePath("/settings");
-    return success(undefined, `${name} removed — their open tasks are now yours`);
+    return success(
+      undefined,
+      `${name} removed — their open tasks${reassigned ? ` and ${reassigned} item(s)` : ""} are now yours`,
+    );
   } catch (err) {
     return fail(err instanceof Error ? err.message : "Could not remove this person");
   }

@@ -336,7 +336,32 @@ export type EditableEdition = {
   signageBudget: string | null;
   venueId: string;
   logoUrl: string | null;
+  /** The show's deadlines: days before build, or a fixed date that wins. */
+  deadlines?: EditableDeadline[];
 };
+
+export type EditableDeadline = {
+  key: string;
+  label: string;
+  daysBeforeBuildStart: number;
+  overrideDate: string | null;
+};
+
+/** Pull the deadline rows out of the form and pack them as JSON for the action. */
+function packDeadlines(fd: FormData, deadlines: EditableDeadline[]) {
+  const rows = deadlines.map((d) => {
+    const days = fd.get(`dl_days_${d.key}`);
+    const date = fd.get(`dl_date_${d.key}`);
+    fd.delete(`dl_days_${d.key}`);
+    fd.delete(`dl_date_${d.key}`);
+    return {
+      key: d.key,
+      daysBeforeBuildStart: Number(days ?? d.daysBeforeBuildStart) || 0,
+      overrideDate: typeof date === "string" && date ? date : null,
+    };
+  });
+  if (rows.length) fd.set("deadlines", JSON.stringify(rows));
+}
 
 export function EditEditionDialog({
   edition,
@@ -386,6 +411,7 @@ export function EditEditionDialog({
             }
             const logo = fd.get("logo");
             fd.delete("logo");
+            if (!archived) packDeadlines(fd, edition.deadlines ?? []);
             setError(null);
             start(async () => {
               const res = await updateEdition({
@@ -499,6 +525,48 @@ export function EditEditionDialog({
                 />
               </div>
             </div>
+            {(edition.deadlines?.length ?? 0) > 0 && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Deadlines</p>
+                <p className="text-muted-foreground text-xs">
+                  Days before build start, or set a fixed date to pin one. Items with their own
+                  dates keep them.
+                </p>
+                <div className="grid gap-2">
+                  {edition.deadlines!.map((d) => (
+                    <div
+                      key={d.key}
+                      className="grid grid-cols-[1fr_5.5rem_9.5rem] items-center gap-2 text-sm"
+                    >
+                      <Label htmlFor={`dl_days_${d.key}-${edition.id}`} className="font-normal">
+                        {d.label}
+                      </Label>
+                      <div className="relative">
+                        <Input
+                          id={`dl_days_${d.key}-${edition.id}`}
+                          name={`dl_days_${d.key}`}
+                          type="number"
+                          min="0"
+                          max="730"
+                          defaultValue={d.daysBeforeBuildStart}
+                          aria-label={`${d.label}: days before build`}
+                          className="pr-9"
+                        />
+                        <span className="text-muted-foreground pointer-events-none absolute inset-y-0 right-2 flex items-center text-xs">
+                          days
+                        </span>
+                      </div>
+                      <Input
+                        name={`dl_date_${d.key}`}
+                        type="date"
+                        defaultValue={d.overrideDate ?? ""}
+                        aria-label={`${d.label}: fixed date`}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </fieldset>
           {/* Hidden copies so an archived show can still be un-archived. */}
           {archived && (

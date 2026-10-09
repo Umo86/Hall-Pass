@@ -133,6 +133,7 @@ describe("staff permission matrix (brief 3.3)", () => {
     expectRoles({ type: "signage.hold" }, ["admin", "ops"]);
     expectRoles({ type: "signage.resume" }, ["admin", "ops"]);
     expectRoles({ type: "signage.reopen" }, ["admin", "ops"]);
+    expectRoles({ type: "signage.close" }, ["admin", "ops"]);
   });
 
   it("change requests", () => {

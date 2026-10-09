@@ -164,6 +164,8 @@ export const approvalInstances = pgTable(
     /** Department sign-offs: anyone in it may decide unless a person is named. */
     assignedDepartmentId: uuid("assigned_department_id").references(() => departments.id),
     delegatedFromUserId: uuid("delegated_from_user_id").references(() => users.id),
+    /** The real-world date a confirmation happened (printed, delivered, installed). */
+    confirmedOn: date("confirmed_on"),
     decidedBy: uuid("decided_by").references(() => users.id),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
     decisionComment: text("decision_comment"),

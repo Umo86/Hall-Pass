@@ -11,11 +11,11 @@ import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
-import { submitForReview, softDeleteSignageItem } from "./signage";
+import { closeSignageItem, submitForReview, softDeleteSignageItem } from "./signage";
 
 const schema = z.object({
   ids: z.array(z.string().uuid()).min(1),
-  action: z.enum(["set_supplier", "set_install", "submit", "delete"]),
+  action: z.enum(["set_supplier", "set_install", "submit", "delete", "close"]),
   supplierId: z.string().uuid().optional().nullable(),
   installDate: z.string().date().optional().nullable(),
   installSlot: z.enum(["am", "pm", "overnight"]).optional().nullable(),
@@ -41,6 +41,20 @@ export async function bulkSignageAction(
     return success(
       { done, failed },
       `${done} submitted${failed ? `, ${failed} could not be` : ""}`,
+    );
+  }
+  if (action === "close") {
+    if (!can(session.actor, { type: "signage.close" })) return fail("You cannot close items");
+    let done = 0;
+    let failed = 0;
+    for (const id of ids) {
+      const res = await closeSignageItem({ id });
+      if (res.ok) done += 1;
+      else failed += 1;
+    }
+    return success(
+      { done, failed },
+      `${done} closed${failed ? `, ${failed} could not be (not installed, or snags still open)` : ""}`,
     );
   }
   if (action === "delete") {

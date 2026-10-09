@@ -179,6 +179,11 @@ export const reminderKind = pgEnum("reminder_kind", [
   "escalation",
   "chaser",
   "expiry",
+  // Item date chasers: print deadline, delivery, install, order-by.
+  "print_due",
+  "delivery_due",
+  "install_due",
+  "order_by_due",
 ]);
 
 export const changeRequestStatus = pgEnum("change_request_status", [

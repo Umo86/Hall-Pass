@@ -65,6 +65,10 @@ const LEGAL: Array<[SignageStatus, SignageEvent, SignageContext, SignageStatus]>
   ["installed", "close", {}, "closed"],
   ["snagged", "snags_cleared", {}, "installed"],
   ["rejected", "reopen", {}, "draft"],
+  // Reopen after install undoes the install only: back to Delivered.
+  ["installed", "reopen", {}, "delivered"],
+  ["snagged", "reopen", {}, "delivered"],
+  ["closed", "reopen", {}, "delivered"],
   // hold from every non-terminal status, resume returns to previous
   ...ALL_STATUSES.filter((s) => s !== "closed" && s !== "on_hold").map(
     (s): [SignageStatus, SignageEvent, SignageContext, SignageStatus] => [s, "hold", {}, "on_hold"],

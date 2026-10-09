@@ -18,10 +18,18 @@ type Props = {
   suppliers: { id: string; name: string }[];
   canEditCosts: boolean;
   canDelete: boolean;
+  canClose: boolean;
   onDone: () => void;
 };
 
-export function BulkActionsBar({ selectedIds, suppliers, canEditCosts, canDelete, onDone }: Props) {
+export function BulkActionsBar({
+  selectedIds,
+  suppliers,
+  canEditCosts,
+  canDelete,
+  canClose,
+  onDone,
+}: Props) {
   const [dialog, setDialog] = useState<"supplier" | "install" | "delete" | null>(null);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [pending, start] = useTransition();
@@ -59,6 +67,17 @@ export function BulkActionsBar({ selectedIds, suppliers, canEditCosts, canDelete
       >
         Submit for review
       </Button>
+      {canClose && (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={pending}
+          title="Installed items with no open snags"
+          onClick={() => run({ ids: selectedIds, action: "close" })}
+        >
+          Close
+        </Button>
+      )}
       {canDelete && (
         <Button size="sm" variant="destructive" onClick={() => setDialog("delete")}>
           Delete

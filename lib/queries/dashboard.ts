@@ -9,7 +9,7 @@ import {
   signageItems,
   standSubmissions,
 } from "@/lib/db/schema";
-import { effectiveDeadline, type DeadlineKey } from "@/lib/deadlines";
+import { DEADLINE_LABELS, effectiveDeadline, type DeadlineKey } from "@/lib/deadlines";
 import { todayInLondon } from "@/lib/today";
 import { editionForDeadlines } from "./editions";
 import { standsEnabled } from "@/lib/config";
@@ -17,15 +17,6 @@ import { SIGNAGE_KINDS, itemPath } from "@/lib/edition-path";
 import { roleLabel } from "@/lib/format";
 
 export type UpcomingDeadline = { id: string; label: string; date: string; href: string };
-
-const DEADLINE_LABELS: Record<string, string> = {
-  stand_design_due: "Stand designs due",
-  insurance_due: "Insurance documents due",
-  venue_rigging_submission: "Venue rigging submission",
-  artwork_due: "Artwork due",
-  print_deadline: "Print deadline",
-  delivery: "Delivery to venue",
-};
 
 export async function dashboardData(editionId: string) {
   const liveItems = and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt));

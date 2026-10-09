@@ -1,5 +1,5 @@
 import { StatusBadge } from "@/components/status-badge";
-import { formatDateTime, roleLabel, statusLabel } from "@/lib/format";
+import { formatDate, formatDateTime, roleLabel, statusLabel } from "@/lib/format";
 import { DecideButtons } from "./decide-buttons";
 import { DelegateButton } from "./delegate-button";
 
@@ -24,6 +24,8 @@ export type ChainInstance = {
   noSupplierFallback?: boolean;
   /** Name of the named person the step is assigned to, if any. */
   assigneeName?: string | null;
+  /** For confirmations: the date it actually happened (YYYY-MM-DD). */
+  confirmedOn?: string | null;
 };
 
 export function ApprovalChain({
@@ -80,7 +82,13 @@ export function ApprovalChain({
                           : inst.assignedRole
                             ? roleLabel(inst.assignedRole)
                             : ""}
-                      {inst.noSupplierFallback ? " (no supplier set — assigned to ops)" : ""}
+                      {inst.noSupplierFallback
+                        ? " (no supplier set — assigned to Operations)"
+                        : inst.stepKind === "confirmation" &&
+                            inst.assignedRole === "supplier" &&
+                            !inst.assignedUserId
+                          ? " · or Operations"
+                          : ""}
                     </span>
                     {inst.status === "pending" && inst.dueAt && (
                       <span
@@ -122,8 +130,9 @@ export function ApprovalChain({
                             </>
                           ) : (
                             <>
-                              Decided by {inst.deciderName ?? "—"} on{" "}
-                              {formatDateTime(inst.decidedAt)}
+                              {inst.stepKind === "confirmation" && inst.confirmedOn
+                                ? `Confirmed by ${inst.deciderName ?? "—"} — done ${formatDate(inst.confirmedOn)} (recorded ${formatDateTime(inst.decidedAt)})`
+                                : `Decided by ${inst.deciderName ?? "—"} on ${formatDateTime(inst.decidedAt)}`}
                               {inst.lockedVersionLabel ? ` against ${inst.lockedVersionLabel}` : ""}
                             </>
                           )}

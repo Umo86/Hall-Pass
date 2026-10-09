@@ -16,9 +16,9 @@ test.describe("mobile navigation", () => {
     const sheetNav = page.getByRole("navigation", { name: "Main navigation" });
     await expect(sheetNav).toBeVisible();
 
-    // Placeholder sections are gone; the new ones exist.
+    // Placeholder sections are gone; the real ones exist.
     await expect(sheetNav.getByRole("link", { name: "Floorplan" })).toHaveCount(0);
-    await expect(sheetNav.getByRole("link", { name: "Onsite" })).toHaveCount(0);
+    await expect(sheetNav.getByRole("link", { name: "Onsite" })).toBeVisible();
     await expect(sheetNav.getByRole("link", { name: "Sponsorship" })).toBeVisible();
     await expect(sheetNav.getByRole("link", { name: "My Work" })).toBeVisible();
 

@@ -332,7 +332,7 @@ export async function notifyPendingAssignees(
 ): Promise<void> {
   const item = bundle.item;
   for (const inst of instances.filter((x) => x.status === "pending")) {
-    const assignees = await resolveAssigneeUserIds(
+    let assignees = await resolveAssigneeUserIds(
       tx,
       bundle.organisation.id,
       bundle.edition.id,
@@ -340,6 +340,32 @@ export async function notifyPendingAssignees(
       item,
       inst,
     );
+    // A supplier with no portal login can't confirm anything: tell
+    // operations, who can confirm it themselves or invite the supplier.
+    if (
+      assignees.length === 0 &&
+      inst.stepKind === "confirmation" &&
+      inst.assignedRole === "supplier" &&
+      !inst.assignedUserId
+    ) {
+      const ops = await tx
+        .select({ userId: memberships.userId })
+        .from(memberships)
+        .where(
+          and(eq(memberships.organisationId, bundle.organisation.id), eq(memberships.role, "ops")),
+        );
+      assignees = ops.map((m) => m.userId);
+      await notify(tx, {
+        userIds: assignees,
+        kind: "approval_requested",
+        title: `To confirm — ${inst.stepName}: ${item.name} (${item.ref})`,
+        body: `The supplier has no Hall Pass access, so nobody there can confirm this. Confirm it yourself once it's done, or invite them under Settings → Team → External access.`,
+        link: `${itemPath(bundle.edition.code, item)}?tab=artwork`,
+        entityType: "signage_item",
+        entityId: item.id,
+      });
+      continue;
+    }
     await notify(tx, {
       userIds: assignees,
       kind: "approval_requested",

@@ -12,6 +12,25 @@ export type DeadlineKey =
   | "stand_design_due"
   | "insurance_due";
 
+/** The show-level deadlines, in the order they fall before build. */
+export const DEADLINE_KEYS: DeadlineKey[] = [
+  "stand_design_due",
+  "insurance_due",
+  "venue_rigging_submission",
+  "artwork_due",
+  "print_deadline",
+  "delivery",
+];
+
+export const DEADLINE_LABELS: Record<DeadlineKey, string> = {
+  stand_design_due: "Stand designs due",
+  insurance_due: "Insurance documents due",
+  venue_rigging_submission: "Venue rigging submission",
+  artwork_due: "Artwork due",
+  print_deadline: "Print deadline",
+  delivery: "Delivery to venue",
+};
+
 export type EditionDeadlineRow = {
   key: DeadlineKey;
   daysBeforeBuildStart: number;

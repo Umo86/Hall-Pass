@@ -55,6 +55,7 @@ type Props = {
   canEdit: boolean;
   canEditCosts: boolean;
   canDelete: boolean;
+  canClose: boolean;
 };
 
 // Shown by default; the rest stay one click away in the Columns menu.
@@ -78,6 +79,7 @@ export function ScheduleView({
   canEdit,
   canEditCosts,
   canDelete,
+  canClose,
 }: Props) {
   const [view, setView] = useQueryState("view", parseAsString.withDefault("table"));
   const [status, setStatus] = useQueryState("status", parseAsString.withDefault(""));
@@ -402,6 +404,7 @@ export function ScheduleView({
           suppliers={suppliers}
           canEditCosts={canEditCosts}
           canDelete={canDelete}
+          canClose={canClose}
           onDone={() => {
             setSelected({});
             startTransition(() => router.refresh());

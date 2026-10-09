@@ -12,8 +12,8 @@ describe("artwork rules", () => {
     expect(artworkTypeAllowed("application/x-msdownload", "setup.exe")).toBe(false);
   });
   it("blocks new artwork once an item is installed", () => {
-    expect(artworkBlockedReason("installed")).toMatch(/reopen/);
-    expect(artworkBlockedReason("closed")).toMatch(/reopen/);
+    expect(artworkBlockedReason("installed")).toMatch(/reopen/i);
+    expect(artworkBlockedReason("closed")).toMatch(/reopen/i);
     expect(artworkBlockedReason("in_review")).toBeNull();
   });
 });

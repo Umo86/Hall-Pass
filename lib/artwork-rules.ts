@@ -43,7 +43,7 @@ export function artworkBlockedReason(
   panel?: { parentStatus: string | null } | null,
 ): string | null {
   if (INSTALLED.includes(status)) {
-    return "This item is installed — an admin or ops user must reopen it before new artwork";
+    return "This item is installed — an admin or operations user can use Reopen on it to take new artwork";
   }
   if (panel && !(panel.parentStatus && DESIGN_APPROVED.includes(panel.parentStatus))) {
     return PANEL_BLOCKED_MESSAGE;

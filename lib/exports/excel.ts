@@ -147,6 +147,8 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
     { header: "Fixing", key: "fixing", width: 14 },
     { header: "Supplier", key: "supplier", width: 16 },
     { header: "Install", key: "install", width: 14 },
+    { header: "Sent to print", key: "sentToPrint", width: 14 },
+    { header: "Delivered", key: "delivered", width: 14 },
     ...(includeCosts
       ? [
           { header: "Estimate £", key: "estimate", width: 12 },
@@ -193,6 +195,8 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
         install: r.item.installDate
           ? `${formatDate(r.item.installDate)}${r.item.installSlot ? ` ${r.item.installSlot.toUpperCase()}` : ""}`
           : "",
+        sentToPrint: r.item.sentToPrintAt ? formatDate(r.item.sentToPrintAt) : "",
+        delivered: r.item.deliveredAt ? formatDate(r.item.deliveredAt) : "",
         ...(includeCosts
           ? {
               estimate: r.item.costEstimate ? Number(r.item.costEstimate) : "",

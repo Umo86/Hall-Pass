@@ -27,6 +27,7 @@ let jobs: typeof import("@/lib/cron/jobs");
 const TODAY = "2027-08-25";
 
 let opsUserId: string;
+let editionId: string;
 const EXHIBITOR_EMAIL = `exhibitor-${Date.now()}@cron.test`;
 let instanceId: string;
 let exhibitorId: string;
@@ -70,8 +71,14 @@ d("daily cron jobs", () => {
         breakdownEnd: "2027-10-08",
       })
       .returning();
+    editionId = edition.id;
     await db.insert(schema.editionDeadlines).values([
-      { editionId: edition.id, key: "stand_design_due", label: "Designs due", daysBeforeBuildStart: 42 },
+      {
+        editionId: edition.id,
+        key: "stand_design_due",
+        label: "Designs due",
+        daysBeforeBuildStart: 42,
+      },
       { editionId: edition.id, key: "artwork_due", label: "Artwork due", daysBeforeBuildStart: 21 },
     ]);
     // stand_design_due = 2027-08-20 → 5 days overdue on TODAY? diff = -5, not
@@ -221,6 +228,44 @@ d("daily cron jobs", () => {
   it("chases artwork a week and two days ahead, on the day, then weekly", () => {
     const days = Array.from({ length: 30 }, (_, i) => 10 - i).filter(jobs.artworkChaseDay);
     expect(days).toEqual([7, 2, 0, -7, -14]);
+  });
+
+  it("date reminders: install date today → owner and ops told once", async () => {
+    const [item] = await db
+      .insert(schema.signageItems)
+      .values({
+        editionId,
+        ref: `SIG-DATE-${Date.now() % 100000}`,
+        seq: 900,
+        name: "Install today",
+        ownerUserId: opsUserId,
+        status: "delivered",
+        installDate: TODAY,
+        createdBy: opsUserId,
+      })
+      .returning();
+    const first = await jobs.dateReminders(TODAY);
+    expect(first.sent).toBeGreaterThanOrEqual(1);
+    const logged = await db
+      .select()
+      .from(schema.reminderLog)
+      .where(
+        and(eq(schema.reminderLog.targetId, item.id), eq(schema.reminderLog.kind, "install_due")),
+      );
+    expect(logged).toHaveLength(1);
+    const notes = await db
+      .select()
+      .from(schema.notifications)
+      .where(
+        and(
+          eq(schema.notifications.entityId, item.id),
+          eq(schema.notifications.kind, "date_reminder"),
+        ),
+      );
+    expect(notes.length).toBeGreaterThanOrEqual(1);
+    expect(notes[0].title).toMatch(/^Install today: /);
+    const second = await jobs.dateReminders(TODAY);
+    expect(second.sent).toBe(0);
   });
 
   it("task reminders go out once per person per day", async () => {

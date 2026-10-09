@@ -1,5 +1,7 @@
 "use client";
 
+import { roleLabel } from "@/lib/format";
+
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -32,6 +34,8 @@ export type ItemFormOptions = {
   suppliers: { id: string; name: string; services?: string[] }[];
   contractors: { id: string; name: string }[];
   workflows: { id: string; name: string }[];
+  /** Team members who can own an item (viewers excluded). */
+  people?: { id: string; name: string; role: string }[];
   /** Department sign-offs the item can ask for, and who can sign each. */
   signoffSteps?: SignoffStepOption[];
 };
@@ -54,6 +58,7 @@ export type ItemFormValues = {
   locationId?: string | null;
   standNumber?: string | null;
   ownerRole?: string;
+  ownerUserId?: string | null;
   sponsorId?: string | null;
   sponsorEntitlementId?: string | null;
   widthMm?: number | null;
@@ -88,6 +93,7 @@ export type ItemFormValues = {
 const MORE_FIELDS = [
   "description",
   "ownerRole",
+  "ownerUserId",
   "depthMm",
   "sided",
   "weightKg",
@@ -618,17 +624,40 @@ export function ItemForm({
               </>
             ) : (
               <>
-                {field(
-                  "ownerRole",
-                  "Owner",
-                  <SelectNative
-                    id="ownerRole"
-                    name="ownerRole"
-                    defaultValue={values.ownerRole ?? "ops"}
-                  >
-                    <option value="ops">Operations</option>
-                    <option value="marketing">Marketing</option>
-                  </SelectNative>,
+                {options.people && options.people.length > 0 ? (
+                  <>
+                    <input type="hidden" name="ownerRole" value={values.ownerRole ?? "ops"} />
+                    {field(
+                      "ownerUserId",
+                      "Owner",
+                      <SelectNative
+                        id="ownerUserId"
+                        name="ownerUserId"
+                        defaultValue={values.ownerUserId ?? ""}
+                      >
+                        <option value="">{mode === "create" ? "Me" : "—"}</option>
+                        {options.people.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} ({roleLabel(p.role)})
+                          </option>
+                        ))}
+                      </SelectNative>,
+                      { hint: "Who is responsible; reminders go to them." },
+                    )}
+                  </>
+                ) : (
+                  field(
+                    "ownerRole",
+                    "Owner",
+                    <SelectNative
+                      id="ownerRole"
+                      name="ownerRole"
+                      defaultValue={values.ownerRole ?? "ops"}
+                    >
+                      <option value="ops">Operations</option>
+                      <option value="marketing">Marketing</option>
+                    </SelectNative>,
+                  )
                 )}
                 {field("depthMm", "Depth (mm)", numberInput("depthMm"))}
                 {field(

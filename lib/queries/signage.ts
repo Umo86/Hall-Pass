@@ -342,16 +342,181 @@ export async function getItemSnags(itemId: string) {
  * How many approvals a new version would invalidate — shown in the upload
  * dialog ("This will invalidate 3 approvals") before the user confirms.
  */
-export async function artworkInvalidationPreview(
-  itemId: string,
-): Promise<{ count: number; steps: string[] }> {
+export type InvalidationPreview = {
+  count: number;
+  steps: string[];
+  /** Stand designs: panels already approved or in production on this design. */
+  panels: { approved: number; inProduction: number } | null;
+};
+
+export async function artworkInvalidationPreview(itemId: string): Promise<InvalidationPreview> {
   const bundle = await loadItemBundle(db, itemId);
-  if (!bundle || bundle.item.currentRunNumber === 0) return { count: 0, steps: [] };
+  if (!bundle) return { count: 0, steps: [], panels: null };
+  const panels = bundle.item.kind === "stand_design" ? await standPanelCounts(itemId) : null;
+  if (bundle.item.currentRunNumber === 0) return { count: 0, steps: [], panels };
   const run = await loadRun(db, "signage_item", itemId, bundle.item.currentRunNumber);
   const decided = run.filter(
     (i) =>
       ["approved", "approved_with_conditions", "confirmed"].includes(i.status) &&
       i.invalidateOnNewVersion,
   );
-  return { count: decided.length, steps: decided.map((i) => i.stepName) };
+  return { count: decided.length, steps: decided.map((i) => i.stepName), panels };
+}
+
+/** How many of a stand's panels are signed off, and how many are already being made. */
+export async function standPanelCounts(
+  standId: string,
+): Promise<{ approved: number; inProduction: number }> {
+  const rows = await db
+    .select({ status: signageItems.status })
+    .from(signageItems)
+    .where(and(eq(signageItems.parentItemId, standId), isNull(signageItems.deletedAt)));
+  const inProduction = rows.filter((r) =>
+    ["in_production", "delivered", "installed", "snagged", "closed"].includes(r.status),
+  ).length;
+  const approved = rows.filter((r) =>
+    ["approved", "approved_with_conditions"].includes(r.status),
+  ).length;
+  return { approved, inProduction };
+}
+
+/** "3 panels are approved and 1 panel is in production — check they still fit the new design." */
+export function panelWarning(
+  panels: { approved: number; inProduction: number } | null,
+): string | null {
+  if (!panels || panels.approved + panels.inProduction === 0) return null;
+  const say = (n: number, state: string) => `${n} ${n === 1 ? "panel is" : "panels are"} ${state}`;
+  const parts: string[] = [];
+  if (panels.approved) parts.push(say(panels.approved, "approved"));
+  if (panels.inProduction) parts.push(say(panels.inProduction, "in production"));
+  return `${parts.join(" and ")} — check they still fit the new design.`;
+}
+
+export type OnsiteRow = {
+  id: string;
+  ref: string;
+  name: string;
+  kind: string;
+  status: string;
+  hallId: string | null;
+  hallName: string | null;
+  locationName: string | null;
+  standNumber: string | null;
+  installDate: string | null;
+  installSlot: string | null;
+  contractorName: string | null;
+  installedAt: string | null;
+  openSnags: number;
+  currentArtworkVersionId: string | null;
+  /** The pending Installed confirmation, if the item is waiting for one. */
+  installInstance: {
+    id: string;
+    assignedRole: string | null;
+    assignedUserId: string | null;
+    assignedDepartmentId: string | null;
+  } | null;
+  authz: {
+    ownerUserId: string | null;
+    sponsorId: string | null;
+    supplierId: string | null;
+    requiresVenueApproval: boolean;
+  };
+};
+
+/** Statuses that mean the thing exists physically and can be installed or checked. */
+const ONSITE_STATUSES = ["in_production", "delivered", "installed", "snagged", "closed"];
+
+/**
+ * The Onsite checklist: every sign, sponsorship item and stand panel that is
+ * printed or later, with what it needs next (install confirmation, snags,
+ * close). Ordered by install date and slot, then ref.
+ */
+export async function listOnsiteRows(editionId: string): Promise<OnsiteRow[]> {
+  const rows = await db
+    .select({
+      item: signageItems,
+      hallName: halls.name,
+      locationName: locations.name,
+      contractorName: contractors.name,
+    })
+    .from(signageItems)
+    .leftJoin(halls, eq(signageItems.hallId, halls.id))
+    .leftJoin(locations, eq(signageItems.locationId, locations.id))
+    .leftJoin(contractors, eq(signageItems.installContractorId, contractors.id))
+    .where(
+      and(
+        eq(signageItems.editionId, editionId),
+        isNull(signageItems.deletedAt),
+        inArray(signageItems.kind, ["signage", "sponsorship_item", "stand_panel"]),
+        inArray(
+          signageItems.status,
+          ONSITE_STATUSES as (typeof signageItems.$inferSelect)["status"][],
+        ),
+      ),
+    )
+    .orderBy(asc(signageItems.installDate), asc(signageItems.installSlot), asc(signageItems.seq));
+  const ids = rows.map((r) => r.item.id);
+  if (ids.length === 0) return [];
+  const [pendingInstalls, snagCounts] = await Promise.all([
+    db
+      .select({
+        id: approvalInstances.id,
+        entityId: approvalInstances.entityId,
+        runNumber: approvalInstances.runNumber,
+        assignedRole: approvalInstances.assignedRole,
+        assignedUserId: approvalInstances.assignedUserId,
+        assignedDepartmentId: approvalInstances.assignedDepartmentId,
+      })
+      .from(approvalInstances)
+      .where(
+        and(
+          eq(approvalInstances.entityType, "signage_item"),
+          inArray(approvalInstances.entityId, ids),
+          eq(approvalInstances.status, "pending"),
+          eq(approvalInstances.stepNameSnapshot, "Installed"),
+        ),
+      ),
+    db
+      .select({ itemId: snags.signageItemId, n: sql<number>`count(*)::int` })
+      .from(snags)
+      .where(and(inArray(snags.signageItemId, ids), inArray(snags.status, ["open", "in_progress"])))
+      .groupBy(snags.signageItemId),
+  ]);
+  const snagsByItem = new Map(snagCounts.map((s) => [s.itemId, Number(s.n)]));
+  return rows.map((r) => {
+    const inst = pendingInstalls.find(
+      (p) => p.entityId === r.item.id && p.runNumber === r.item.currentRunNumber,
+    );
+    return {
+      id: r.item.id,
+      ref: r.item.ref,
+      name: r.item.name,
+      kind: r.item.kind,
+      status: r.item.status,
+      hallId: r.item.hallId,
+      hallName: r.hallName,
+      locationName: r.locationName,
+      standNumber: r.item.standNumber,
+      installDate: r.item.installDate,
+      installSlot: r.item.installSlot,
+      contractorName: r.contractorName,
+      installedAt: r.item.installedAt?.toISOString() ?? null,
+      openSnags: snagsByItem.get(r.item.id) ?? 0,
+      currentArtworkVersionId: r.item.currentArtworkVersionId,
+      installInstance: inst
+        ? {
+            id: inst.id,
+            assignedRole: inst.assignedRole,
+            assignedUserId: inst.assignedUserId,
+            assignedDepartmentId: inst.assignedDepartmentId,
+          }
+        : null,
+      authz: {
+        ownerUserId: r.item.ownerUserId,
+        sponsorId: r.item.sponsorId,
+        supplierId: r.item.supplierId,
+        requiresVenueApproval: r.item.requiresVenueApproval,
+      },
+    };
+  });
 }

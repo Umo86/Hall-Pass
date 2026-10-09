@@ -16,6 +16,7 @@ import {
   Settings,
   Signpost,
   Truck,
+  Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { editionCodeFromPath } from "@/lib/edition-path";
@@ -57,6 +58,7 @@ export function AppNav({
         ...(options.showStands
           ? [{ label: "Stands", href: `/${edition}/stands`, icon: HardHat }]
           : []),
+        { label: "Onsite", href: `/${edition}/onsite`, icon: Wrench },
         { label: "Calendar", href: `/${edition}/calendar`, icon: CalendarDays },
         { label: "Reports", href: `/${edition}/reports`, icon: FileBarChart },
         ...(options.canSetup

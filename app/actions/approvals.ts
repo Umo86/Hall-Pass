@@ -35,6 +35,7 @@ import { loadStandBundle, standAuthzCtx, standEntityCtx } from "@/lib/domain/sta
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { buildStoragePath, putObject } from "@/lib/storage";
 import { itemPath } from "@/lib/edition-path";
+import { todayInLondon } from "@/lib/today";
 
 const decideSchema = z.object({
   instanceId: z.string().uuid(),
@@ -81,6 +82,7 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
       const stepCtx: ApprovalStepCtx = {
         assignedRole: row.assignedRole,
         assignedDepartmentId: row.assignedDepartmentId,
+        stepKind: row.stepKindSnapshot,
         assignedUserId: row.assignedUserId,
         entity: isSignage
           ? { type: "signage_item", item: itemAuthzCtx(bundle as never) }
@@ -106,6 +108,18 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
         )
       ) {
         throw new WorkflowError("That photo does not belong to this item — take it again");
+      }
+
+      // Nothing goes "to print" without a printer to send it to.
+      if (
+        data.decision === "confirm" &&
+        row.stepNameSnapshot === "Sent to print" &&
+        isSignage &&
+        !(bundle as { item: { supplierId: string | null } }).item.supplierId
+      ) {
+        throw new WorkflowError(
+          "Choose the supplier on the Details tab before confirming it has gone to print",
+        );
       }
 
       // Photo requirement for the Installed confirmation.
@@ -156,6 +170,16 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
           : null,
       });
       await persistRun(tx, row.entityType, row.entityId, res.instances);
+      // The real-world date of a confirmation (defaults to today).
+      const confirmedOn =
+        data.decision === "confirm" ? (data.confirmedDate ?? todayInLondon()) : null;
+      if (confirmedOn) {
+        await tx
+          .update(approvalInstances)
+          .set({ confirmedOn })
+          .where(eq(approvalInstances.id, data.instanceId));
+      }
+      const confirmedAt = confirmedOn ? new Date(`${confirmedOn}T12:00:00Z`) : new Date();
 
       // Entity status effects.
       let statusNote = "";
@@ -177,8 +201,10 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
         if (event) {
           const next = signageTransition(item.status, event);
           const set: Partial<typeof signageItems.$inferInsert> = { status: next };
+          if (event === "sent_to_print") set.sentToPrintAt = confirmedAt;
+          if (event === "delivered") set.deliveredAt = confirmedAt;
           if (event === "installed") {
-            set.installedAt = new Date();
+            set.installedAt = confirmedAt;
             set.installedBy = session.user.id;
             if (data.photoPath) set.installPhotoPath = data.photoPath;
           }
@@ -214,6 +240,7 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
             decision: data.decision,
             comment: data.comment,
             conditions: data.conditionsText,
+            confirmedOn,
             lockedVersionId: currentVersionId,
           },
           summary: decisionSummary(row.stepNameSnapshot, data),
@@ -345,6 +372,7 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
       const stepCtx: ApprovalStepCtx = {
         assignedRole: row.assignedRole,
         assignedDepartmentId: row.assignedDepartmentId,
+        stepKind: row.stepKindSnapshot,
         assignedUserId: row.assignedUserId,
         entity: isSignage
           ? { type: "signage_item", item: itemAuthzCtx(bundle as never) }
@@ -527,6 +555,7 @@ export async function uploadInstallPhoto(
     const stepCtx: ApprovalStepCtx = {
       assignedRole: row.assignedRole,
       assignedDepartmentId: row.assignedDepartmentId,
+      stepKind: row.stepKindSnapshot,
       assignedUserId: row.assignedUserId,
       entity: isSignage
         ? { type: "signage_item", item: itemAuthzCtx(bundle as never) }

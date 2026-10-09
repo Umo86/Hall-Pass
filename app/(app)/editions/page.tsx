@@ -1,10 +1,11 @@
 import Link from "next/link";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { events, venues } from "@/lib/db/schema";
+import { editionDeadlines, events, venues } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
 import { listEditions, showLogoUrl } from "@/lib/queries/editions";
+import { DEADLINE_KEYS, DEADLINE_LABELS } from "@/lib/deadlines";
 import { formatDate } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import {
@@ -14,6 +15,16 @@ import {
 } from "@/components/editions/edition-forms";
 
 export const metadata = { title: "Shows" };
+
+/** Standard offsets for a show that has no row for a deadline yet. */
+const DEFAULT_OFFSETS: Record<string, number> = {
+  stand_design_due: 42,
+  insurance_due: 28,
+  venue_rigging_submission: 28,
+  artwork_due: 21,
+  print_deadline: 14,
+  delivery: 3,
+};
 export const dynamic = "force-dynamic";
 
 export default async function ShowsPage() {
@@ -25,6 +36,28 @@ export default async function ShowsPage() {
     db.select().from(venues).where(eq(venues.organisationId, orgId)).orderBy(venues.name),
   ]);
   const logos = await Promise.all(rows.map((r) => showLogoUrl(r.edition.logoPath)));
+  const deadlineRows = rows.length
+    ? await db
+        .select()
+        .from(editionDeadlines)
+        .where(
+          inArray(
+            editionDeadlines.editionId,
+            rows.map((r) => r.edition.id),
+          ),
+        )
+    : [];
+  // Every show gets the full list; missing rows take the standard offsets.
+  const deadlinesFor = (editionId: string) =>
+    DEADLINE_KEYS.map((key) => {
+      const row = deadlineRows.find((d) => d.editionId === editionId && d.key === key);
+      return {
+        key,
+        label: DEADLINE_LABELS[key],
+        daysBeforeBuildStart: row?.daysBeforeBuildStart ?? DEFAULT_OFFSETS[key],
+        overrideDate: row?.overrideDate ?? null,
+      };
+    });
   const canManage = can(session.actor, { type: "settings.manage" });
   const canArchive = can(session.actor, { type: "users.manage" });
   const venueOptions = venueRows.map((v) => ({ id: v.id, name: v.name, address: v.address }));
@@ -135,6 +168,7 @@ export default async function ShowsPage() {
                         signageBudget: r.edition.signageBudget,
                         venueId: r.edition.venueId,
                         logoUrl: logos[i],
+                        deadlines: deadlinesFor(r.edition.id),
                       }}
                       venues={venueOptions}
                       canArchive={canArchive}

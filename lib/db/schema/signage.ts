@@ -127,6 +127,8 @@ export const signageItems = pgTable(
     signoffs: jsonb("signoffs").$type<SignoffPlan>(),
     // FK added in SQL migration (artwork_versions is declared after this table).
     currentArtworkVersionId: uuid("current_artwork_version_id"),
+    sentToPrintAt: timestamp("sent_to_print_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     installedAt: timestamp("installed_at", { withTimezone: true }),
     installedBy: uuid("installed_by").references(() => users.id),
     installPhotoPath: text("install_photo_path"),

@@ -34,6 +34,12 @@ async function downscale(file: File): Promise<Blob> {
   }
 }
 
+/** Today as YYYY-MM-DD in the browser's own time zone. */
+function localToday(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 type DecisionKind =
   "approve" | "approve_with_conditions" | "request_changes" | "reject" | "confirm";
 
@@ -45,6 +51,8 @@ type Props = {
   expectedLockedVersionId: string | null;
   requiresPhoto?: boolean;
   compact?: boolean;
+  /** Text for the confirm button (default "Confirm"), e.g. "Installed ✓" onsite. */
+  confirmLabel?: string;
 };
 
 const LABELS: Record<DecisionKind, string> = {
@@ -62,7 +70,7 @@ const CONSEQUENCE: Record<DecisionKind, string> = {
   request_changes:
     "The item returns to its owner for changes. Steps after yours reset when it is resubmitted.",
   reject: "The item is rejected. Only admin or ops can reopen it.",
-  confirm: "This confirmation is recorded against the current version.",
+  confirm: "Recorded against the current version, with the date it actually happened.",
 };
 
 export function DecideButtons(props: Props) {
@@ -70,6 +78,7 @@ export function DecideButtons(props: Props) {
   const [comment, setComment] = useState("");
   const [conditions, setConditions] = useState("");
   const [photoPath, setPhotoPath] = useState("");
+  const [confirmedDate, setConfirmedDate] = useState(() => localToday());
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -115,6 +124,7 @@ export function DecideButtons(props: Props) {
         comment: comment || undefined,
         conditionsText: conditions || undefined,
         photoPath: photoPath || undefined,
+        confirmedDate: kind === "confirm" && confirmedDate ? confirmedDate : undefined,
         expectedStatus: props.expectedStatus,
         expectedLockedVersionId: props.expectedLockedVersionId,
       });
@@ -150,7 +160,11 @@ export function DecideButtons(props: Props) {
           }
           onClick={() => setOpen(kind)}
         >
-          {props.compact && kind === "approve_with_conditions" ? "With conditions" : LABELS[kind]}
+          {props.compact && kind === "approve_with_conditions"
+            ? "With conditions"
+            : kind === "confirm" && props.confirmLabel
+              ? props.confirmLabel
+              : LABELS[kind]}
         </Button>
       ))}
       {error && <span className="text-destructive text-xs">{error}</span>}
@@ -186,6 +200,19 @@ export function DecideButtons(props: Props) {
                   onChange={(e) => setComment(e.target.value)}
                 />
               </div>
+              {open === "confirm" && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="confirmed-date">When did this happen?</Label>
+                  <input
+                    id="confirmed-date"
+                    type="date"
+                    className="border-input h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+                    value={confirmedDate}
+                    max={localToday()}
+                    onChange={(e) => setConfirmedDate(e.target.value)}
+                  />
+                </div>
+              )}
               {open === "confirm" && props.requiresPhoto && (
                 <div className="space-y-1.5">
                   <Label htmlFor="install-photo">Photo of the installed item (required)</Label>

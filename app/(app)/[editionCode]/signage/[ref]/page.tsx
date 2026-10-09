@@ -1,16 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { and, count, eq } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
-import { desc as descOrder } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import {
-  changeRequests,
-  comments as commentsTable,
-  memberships,
-  signageItems,
-  users,
-} from "@/lib/db/schema";
+import { comments as commentsTable, memberships, signageItems, users } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, type ApprovalStepCtx } from "@/lib/authz";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
@@ -23,6 +15,7 @@ import {
   getItemSnags,
   getItemVersions,
   artworkInvalidationPreview,
+  panelWarning,
 } from "@/lib/queries/signage";
 import { itemFormOptions } from "@/lib/queries/item-form-options";
 import { blobEnabled, getDownloadUrl, getInlineUrl } from "@/lib/storage";
@@ -38,7 +31,7 @@ import { PhotoUploader } from "@/components/sponsorship/photo-uploader";
 import { orderCountdown } from "@/lib/countdown";
 import { todayInLondon } from "@/lib/today";
 import { LifecycleButtons } from "@/components/signage/lifecycle-buttons";
-import { ChangesTab, type ChangeRequestRow } from "@/components/signage/changes-tab";
+import { SnagsPanel, type SnagView } from "@/components/signage/snags-panel";
 import { QuickComment } from "@/components/signage/quick-comment";
 import { ITEM_SECTION } from "@/lib/edition-path";
 import { PANEL_BLOCKED_MESSAGE, artworkBlockedReason } from "@/lib/artwork-rules";
@@ -59,13 +52,12 @@ export async function generateMetadata({
   return { title: item ? `${item.ref} · ${item.name}` : "Not found" };
 }
 
-type TabId = "details" | "artwork" | "panels" | "changes" | "comments" | "history";
+type TabId = "details" | "artwork" | "panels" | "comments" | "history";
 type Tab = { id: TabId; label: string };
 
 const TABS: Tab[] = [
   { id: "details", label: "Details" },
   { id: "artwork", label: "Artwork & sign-off" },
-  { id: "changes", label: "Change requests" },
   { id: "comments", label: "Comments" },
   { id: "history", label: "History" },
 ];
@@ -137,18 +129,6 @@ export default async function ItemDetailPage({
     ? `/${editionCode}/stand-designs/${parent.ref}?tab=panels`
     : `/${editionCode}/${listSegment}`;
 
-  const [openChanges] = await db
-    .select({ n: count() })
-    .from(changeRequests)
-    .where(
-      and(
-        eq(changeRequests.entityType, "signage_item"),
-        eq(changeRequests.entityId, item.id),
-        eq(changeRequests.status, "open"),
-      ),
-    );
-  const openChangeCount = Number(openChanges?.n ?? 0);
-
   const itemCtx = itemAuthzCtx(bundle);
   const canSeeCosts = can(session.actor, { type: "costs.view" });
   const canEditCosts = can(session.actor, { type: "costs.edit" });
@@ -191,6 +171,7 @@ export default async function ItemDetailPage({
             status={item.status}
             canSubmit={can(session.actor, { type: "signage.submit", item: itemCtx })}
             canHold={can(session.actor, { type: "signage.hold" })}
+            canClose={can(session.actor, { type: "signage.close" })}
             canDelete={can(session.actor, { type: "signage.delete" })}
             listHref={listHref}
           />
@@ -210,7 +191,6 @@ export default async function ItemDetailPage({
             aria-current={tab === t.id ? "page" : undefined}
           >
             {t.label}
-            {t.id === "changes" && openChangeCount > 0 ? ` (${openChangeCount} open)` : ""}
           </Link>
         ))}
       </nav>
@@ -227,6 +207,7 @@ export default async function ItemDetailPage({
           canSeeCosts={canSeeCosts}
           canEditCosts={canEditCosts}
           canCertificate={can(session.actor, { type: "export.run", kind: "certificate" })}
+          canManageSnags={can(session.actor, { type: "snag.manage" })}
         />
       )}
       {tab === "artwork" && (
@@ -250,7 +231,6 @@ export default async function ItemDetailPage({
           }
         />
       )}
-      {tab === "changes" && <ChangesSection item={item} session={session} />}
       {tab === "comments" && <CommentsSection itemId={item.id} session={session} />}
       {tab === "history" && <HistorySection itemId={item.id} />}
     </div>
@@ -269,6 +249,7 @@ async function DetailsTab({
   canSeeCosts,
   canEditCosts,
   canCertificate,
+  canManageSnags,
 }: {
   item: Item;
   bundle: Bundle;
@@ -277,6 +258,7 @@ async function DetailsTab({
   canSeeCosts: boolean;
   canEditCosts: boolean;
   canCertificate: boolean;
+  canManageSnags: boolean;
 }) {
   const isSponsorship = item.kind === "sponsorship_item";
   const [options, snags, photoUrl, productPhotoUrl] = await Promise.all([
@@ -293,6 +275,24 @@ async function DetailsTab({
       : null,
     item.photoPath ? getInlineUrl("photos", item.photoPath).catch(() => null) : null,
   ]);
+  const readOnly = editionIsReadOnly(bundle.edition.status);
+  const snagViews: SnagView[] = await Promise.all(
+    snags.map(async (snag) => ({
+      id: snag.id,
+      description: snag.description,
+      severity: snag.severity,
+      status: snag.status,
+      photoUrl: snag.photoPath
+        ? await getInlineUrl("photos", snag.photoPath).catch(() => null)
+        : null,
+      resolutionNote: snag.resolutionNote,
+      resolutionPhotoUrl: snag.resolutionPhotoPath
+        ? await getInlineUrl("photos", snag.resolutionPhotoPath).catch(() => null)
+        : null,
+      createdAt: snag.createdAt.toISOString(),
+      resolvedAt: snag.resolvedAt?.toISOString() ?? null,
+    })),
+  );
   const nameOf = (list: { id: string; name: string }[], id: string | null) =>
     (id && list.find((x) => x.id === id)?.name) || null;
   const sold = Boolean(item.sponsorId);
@@ -433,21 +433,14 @@ async function DetailsTab({
               ) : null}
             </p>
           )}
-          {snags.length > 0 && (
-            <div>
-              <p className="text-muted-foreground">Snags</p>
-              <ul className="mt-1 space-y-1">
-                {snags.map((snag) => (
-                  <li key={snag.id} className="flex flex-wrap items-center gap-2">
-                    <StatusBadge status={snag.status} />
-                    <span>{snag.description}</span>
-                    <span className="text-muted-foreground text-xs">
-                      {statusLabel(snag.severity)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+          {!isSponsorship && (
+            <SnagsPanel
+              itemId={item.id}
+              itemRef={item.ref}
+              snags={snagViews}
+              canManage={canManageSnags && !readOnly}
+              canRaise={["installed", "snagged"].includes(item.status)}
+            />
           )}
         </div>
       </section>
@@ -474,6 +467,7 @@ async function DetailsTab({
           locationId: item.locationId,
           standNumber: item.standNumber,
           ownerRole: item.ownerRole,
+          ownerUserId: item.ownerUserId,
           sponsorId: item.sponsorId,
           sponsorEntitlementId: item.sponsorEntitlementId,
           widthMm: item.widthMm,
@@ -557,6 +551,7 @@ async function ArtworkAndSignOff({
     const step: ApprovalStepCtx = {
       assignedRole: instance.assignedRole,
       assignedDepartmentId: instance.assignedDepartmentId,
+      stepKind: instance.stepKindSnapshot,
       assignedUserId: instance.assignedUserId,
       entity: { type: "signage_item", item: itemCtx },
     };
@@ -592,6 +587,7 @@ async function ArtworkAndSignOff({
     dueAt: instance.dueAt,
     noSupplierFallback: instance.noSupplierFallback,
     assigneeName: instance.assignedUserId ? (nameById.get(instance.assignedUserId) ?? null) : null,
+    confirmedOn: instance.confirmedOn,
   }));
 
   const versionRows: VersionRow[] = await Promise.all(
@@ -638,6 +634,7 @@ async function ArtworkAndSignOff({
         canUpload={can(session.actor, { type: "artwork.upload", item: itemCtx })}
         invalidationCount={invalidation.count}
         invalidationSteps={invalidation.steps}
+        panelWarning={panelWarning(invalidation.panels)}
         uploadBlocked={uploadBlocked}
         uploadPrefix={
           blobEnabled()
@@ -673,50 +670,6 @@ async function ArtworkAndSignOff({
         </section>
       )}
     </div>
-  );
-}
-
-async function ChangesSection({ item, session }: { item: Item; session: StaffSession }) {
-  const crRequester = alias(users, "cr_requester");
-  const crDecider = alias(users, "cr_decider");
-  const crRows = await db
-    .select({ cr: changeRequests, requester: crRequester, decider: crDecider })
-    .from(changeRequests)
-    .innerJoin(crRequester, eq(changeRequests.requestedBy, crRequester.id))
-    .leftJoin(crDecider, eq(changeRequests.decidedBy, crDecider.id))
-    .where(and(eq(changeRequests.entityType, "signage_item"), eq(changeRequests.entityId, item.id)))
-    .orderBy(descOrder(changeRequests.createdAt));
-  const rows: ChangeRequestRow[] = crRows.map(({ cr, requester, decider }) => ({
-    id: cr.id,
-    reason: cr.reason,
-    status: cr.status,
-    requesterName: requester.fullName || requester.email,
-    deciderName: decider ? decider.fullName || decider.email : null,
-    decidedAt: cr.decidedAt?.toISOString() ?? null,
-    createdAt: cr.createdAt.toISOString(),
-    reopenedCount: cr.reopenedInstanceIds?.length ?? 0,
-    fieldChanges: cr.fieldChanges,
-  }));
-  return (
-    <ChangesTab
-      itemId={item.id}
-      requests={rows}
-      canRaise={can(session.actor, { type: "change_request.raise" })}
-      canDecide={can(session.actor, { type: "change_request.approve" })}
-      status={item.status}
-      kind={formKind(item.kind)}
-      current={{
-        name: item.name,
-        widthMm: item.widthMm,
-        heightMm: item.heightMm,
-        depthMm: item.depthMm,
-        quantity: item.quantity,
-        material: item.material,
-        finish: item.finish,
-        installDate: item.installDate,
-        deliveryDate: item.deliveryDate,
-      }}
-    />
   );
 }
 
@@ -863,7 +816,18 @@ async function PanelsSection({
       {!designApproved && (
         <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
           {panels.length > 0
-            ? "The design has gone back for sign-off since panels were added — check the panels still fit."
+            ? `The design has gone back for sign-off since panels were added. ${
+                panelWarning({
+                  approved: panels.filter((p) =>
+                    ["approved", "approved_with_conditions"].includes(p.status),
+                  ).length,
+                  inProduction: panels.filter((p) =>
+                    ["in_production", "delivered", "installed", "snagged", "closed"].includes(
+                      p.status,
+                    ),
+                  ).length,
+                }) ?? "Check the panels still fit."
+              }`
             : "Panels can be added once the stand design is approved."}
         </p>
       )}

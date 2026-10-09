@@ -32,7 +32,7 @@ export type SignageEvent =
   | "snag_opened"
   | "snags_cleared"
   | "close"
-  | "reopen" // from rejected, admin/ops
+  | "reopen" // rejected → draft; installed/snagged/closed → delivered (undo the install)
   | "new_version_after_approval" // invalidation returns the item to review
   | "hold"
   | "resume";
@@ -123,14 +123,18 @@ export function signageTransition(
     case "installed":
       if (event === "snag_opened") return "snagged";
       if (event === "close") return "closed";
+      if (event === "reopen") return "delivered";
       break;
     case "snagged":
       if (event === "snags_cleared") return "installed";
+      if (event === "reopen") return "delivered";
       break;
     case "rejected":
       if (event === "reopen") return "draft";
       break;
     case "closed":
+      if (event === "reopen") return "delivered";
+      break;
     case "on_hold":
       break;
   }

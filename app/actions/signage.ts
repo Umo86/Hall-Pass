@@ -4,9 +4,17 @@ import { unstable_rethrow } from "next/navigation";
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { auditLog, locations, signageItems } from "@/lib/db/schema";
+import {
+  approvalInstances,
+  auditLog,
+  locations,
+  memberships,
+  signageItems,
+  snags,
+  users,
+} from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
@@ -59,6 +67,8 @@ const itemFields = z.object({
   locationId: z.string().uuid().optional().nullable(),
   standNumber: z.string().trim().max(50).optional().nullable(),
   ownerRole: z.enum(["ops", "marketing"]).default("ops"),
+  /** The person responsible; must be on the team (not a viewer). */
+  ownerUserId: z.string().uuid().optional().nullable(),
   sponsorId: z.string().uuid().optional().nullable(),
   sponsorEntitlementId: z.string().uuid().optional().nullable(),
   widthMm: z.coerce.number().int().positive().optional().nullable(),
@@ -107,6 +117,28 @@ const createSchema = itemFields
     }
   });
 
+/**
+ * Check a picked owner is on the team and can own things (not a viewer).
+ * Returns their role so the item's owning team can follow them.
+ */
+async function resolveOwner(
+  organisationId: string,
+  userId: string,
+): Promise<{ role: "ops" | "marketing" | null; name: string }> {
+  const [row] = await db
+    .select({ role: memberships.role, fullName: users.fullName, email: users.email })
+    .from(memberships)
+    .innerJoin(users, eq(memberships.userId, users.id))
+    .where(and(eq(memberships.organisationId, organisationId), eq(memberships.userId, userId)))
+    .limit(1);
+  if (!row) throw new Error("The owner must be someone on your team");
+  if (row.role === "viewer") throw new Error("A viewer can't own items — pick someone else");
+  return {
+    role: row.role === "ops" || row.role === "marketing" ? row.role : null,
+    name: row.fullName || row.email,
+  };
+}
+
 function num(v: number | null | undefined): string | null {
   return v == null ? null : String(v);
 }
@@ -136,6 +168,19 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
   // The show and everything linked must be this organisation's.
   if (!(await ownEdition(db, session.organisation.id, data.editionId))) {
     return fail("Show not found");
+  }
+  // Whoever is picked owns it (default: the person creating it); the owning
+  // team follows an ops or marketing owner.
+  let ownerUserId = session.user.id;
+  let ownerRole = data.ownerRole;
+  if (data.ownerUserId && data.ownerUserId !== session.user.id) {
+    try {
+      const owner = await resolveOwner(session.organisation.id, data.ownerUserId);
+      ownerUserId = data.ownerUserId;
+      ownerRole = owner.role ?? ownerRole;
+    } catch (err) {
+      return fail(errMessage(err), { ownerUserId: errMessage(err) });
+    }
   }
   try {
     await assertItemLinks(db, {
@@ -181,8 +226,8 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
           hallId: data.hallId ?? null,
           locationId: data.locationId ?? null,
           standNumber: data.standNumber || null,
-          ownerRole: data.ownerRole,
-          ownerUserId: session.user.id,
+          ownerRole,
+          ownerUserId,
           sponsorId: data.sponsorId ?? null,
           sponsorEntitlementId: data.sponsorEntitlementId ?? null,
           isSponsorDeliverable: Boolean(data.sponsorId),
@@ -228,9 +273,10 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
       const recipients = await resolveItemCreationRecipients(
         tx,
         session.organisation.id,
-        { kind: data.kind, category, ownerRole: data.ownerRole },
+        { kind: data.kind, category, ownerRole },
         session.user.id,
       );
+      if (ownerUserId !== session.user.id) recipients.push(ownerUserId);
       await notify(tx, {
         userIds: recipients,
         kind: "item_created",
@@ -266,6 +312,19 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
   const { id, ...patchRaw } = parsed.data;
   const patch = applyRiggedRule(patchRaw);
   if (patch.locationId) patch.hallId = (await hallOfLocation(patch.locationId)) ?? patch.hallId;
+  // A new owner must be on the team; the owning team follows them.
+  let newOwner: { id: string; name: string } | null = null;
+  if (patch.ownerUserId && patch.ownerUserId !== bundle.item.ownerUserId) {
+    try {
+      const owner = await resolveOwner(session.organisation.id, patch.ownerUserId);
+      newOwner = { id: patch.ownerUserId, name: owner.name };
+      if (owner.role) patch.ownerRole = owner.role;
+    } catch (err) {
+      return fail(errMessage(err), { ownerUserId: errMessage(err) });
+    }
+  } else {
+    delete patch.ownerUserId;
+  }
 
   try {
     await assertItemLinks(db, {
@@ -287,6 +346,7 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
       assign("locationId", "locationId");
       assign("standNumber", "standNumber");
       assign("ownerRole", "ownerRole");
+      assign("ownerUserId", "ownerUserId");
       assign("sponsorId", "sponsorId");
       assign("sponsorEntitlementId", "sponsorEntitlementId");
       assign("widthMm", "widthMm");
@@ -412,9 +472,19 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
         before: pickKeys(item, Object.keys(set)),
         after: set,
         summary: `Updated ${item.ref} (${Object.keys(set).join(", ")})${
-          restarted ? " — sign-off restarted" : ""
-        }`,
+          newOwner && set.ownerUserId ? ` — owner changed to ${newOwner.name}` : ""
+        }${restarted ? " — sign-off restarted" : ""}`,
       });
+      if (newOwner && set.ownerUserId && newOwner.id !== session.user.id) {
+        await notify(tx, {
+          userIds: [newOwner.id],
+          kind: "item_created",
+          title: `You now own ${item.ref} — ${item.name}`,
+          link: itemPath(bundle.edition.code, item),
+          entityType: "signage_item",
+          entityId: item.id,
+        });
+      }
       return restarted ? ("restarted" as const) : ("saved" as const);
     });
     revalidatePath("/", "layout");
@@ -705,8 +775,18 @@ export async function resumeSignageItem(input: unknown): Promise<ActionResult> {
   return success(undefined, "Item resumed");
 }
 
+/** Statuses where Reopen undoes the install and takes the item back to Delivered. */
+const INSTALLED_STATUSES: SignageStatus[] = ["installed", "snagged", "closed"];
+
+/**
+ * Reopen: a rejected item goes back to draft; an installed, snagged or closed
+ * one goes back to Delivered (the install is undone and its photo cleared),
+ * so the Installed confirmation can be ticked again. Admin and ops only.
+ */
 export async function reopenSignageItem(input: unknown): Promise<ActionResult> {
-  const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
+  const parsed = z
+    .object({ id: z.string().uuid(), reason: z.string().trim().max(2000).optional().nullable() })
+    .safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
   const bundle = await loadItemBundle(db, parsed.data.id, {
@@ -715,11 +795,100 @@ export async function reopenSignageItem(input: unknown): Promise<ActionResult> {
   if (!bundle) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.reopen" })) return fail("You cannot reopen items");
-  let next;
+  const undoInstall = INSTALLED_STATUSES.includes(bundle.item.status as SignageStatus);
+  const reason = parsed.data.reason?.trim() ?? "";
+  if (undoInstall && !reason) return fail("Say why the install is being undone");
+  let next: SignageStatus;
   try {
-    next = signageTransition(bundle.item.status, "reopen");
+    next = signageTransition(bundle.item.status as SignageStatus, "reopen");
   } catch (err) {
     return transitionFail(err);
+  }
+  await db.transaction(async (tx) => {
+    await tx
+      .update(signageItems)
+      .set(
+        undoInstall
+          ? { status: next, installedAt: null, installedBy: null, installPhotoPath: null }
+          : { status: next },
+      )
+      .where(eq(signageItems.id, bundle.item.id));
+    if (undoInstall && bundle.item.currentRunNumber > 0) {
+      // Put the Installed confirmation back on the list, due on the install date.
+      await tx
+        .update(approvalInstances)
+        .set({
+          status: "pending",
+          decidedBy: null,
+          decidedAt: null,
+          decisionComment: null,
+          confirmedOn: null,
+          lockedVersionType: null,
+          lockedVersionId: null,
+          lockedSha256: null,
+          pendingSince: new Date(),
+          dueAt: bundle.item.installDate ? new Date(`${bundle.item.installDate}T12:00:00Z`) : null,
+        })
+        .where(
+          and(
+            eq(approvalInstances.entityType, "signage_item"),
+            eq(approvalInstances.entityId, bundle.item.id),
+            eq(approvalInstances.runNumber, bundle.item.currentRunNumber),
+            eq(approvalInstances.stepNameSnapshot, "Installed"),
+            eq(approvalInstances.status, "confirmed"),
+          ),
+        );
+    }
+    await writeAudit(tx, {
+      organisationId: session.organisation.id,
+      editionId: bundle.edition.id,
+      actorUserId: session.user.id,
+      entityType: "signage_item",
+      entityId: bundle.item.id,
+      action: "status_change",
+      before: { status: bundle.item.status },
+      after: { status: next, ...(reason ? { reason } : {}) },
+      summary: undoInstall
+        ? `${bundle.item.ref} reopened — install undone: ${reason}`
+        : `${bundle.item.ref} reopened (previous run kept in history)`,
+    });
+  });
+  revalidatePath("/", "layout");
+  return success(
+    undefined,
+    undoInstall
+      ? "Back to Delivered — confirm Installed again once it is fixed"
+      : "Item reopened as draft — the previous run is kept in history",
+  );
+}
+
+/** Close: an installed item with no open snags is finished. Admin and ops only. */
+export async function closeSignageItem(input: unknown): Promise<ActionResult> {
+  const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await requireSession();
+  const bundle = await loadItemBundle(db, parsed.data.id, {
+    organisationId: session.organisation.id,
+  });
+  if (!bundle || bundle.item.deletedAt) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
+  if (!can(session.actor, { type: "signage.close" })) return fail("You cannot close items");
+  let next: SignageStatus;
+  try {
+    next = signageTransition(bundle.item.status as SignageStatus, "close");
+  } catch (err) {
+    return transitionFail(err);
+  }
+  const [{ open }] = await db
+    .select({ open: sql<number>`count(*)::int` })
+    .from(snags)
+    .where(
+      and(eq(snags.signageItemId, bundle.item.id), inArray(snags.status, ["open", "in_progress"])),
+    );
+  if (Number(open) > 0) {
+    return fail(
+      `${open} snag${Number(open) === 1 ? " is" : "s are"} still open — resolve them first`,
+    );
   }
   await db.transaction(async (tx) => {
     await tx.update(signageItems).set({ status: next }).where(eq(signageItems.id, bundle.item.id));
@@ -732,11 +901,11 @@ export async function reopenSignageItem(input: unknown): Promise<ActionResult> {
       action: "status_change",
       before: { status: bundle.item.status },
       after: { status: next },
-      summary: `${bundle.item.ref} reopened (previous run kept in history)`,
+      summary: `${bundle.item.ref} closed`,
     });
   });
   revalidatePath("/", "layout");
-  return success(undefined, "Item reopened as draft — the previous run is kept in history");
+  return success(undefined, "Item closed");
 }
 
 // ------------------------------------------------------------------ helpers

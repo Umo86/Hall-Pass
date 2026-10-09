@@ -64,6 +64,7 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
         step: {
           assignedRole: instance.assignedRole,
           assignedDepartmentId: instance.assignedDepartmentId,
+          stepKind: instance.stepKindSnapshot,
           assignedUserId: instance.assignedUserId,
           entity: { type: "signage_item", item: itemCtx },
         },

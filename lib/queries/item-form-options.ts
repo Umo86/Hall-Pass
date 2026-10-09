@@ -1,17 +1,19 @@
 import "server-only";
 import { listDepartments } from "@/lib/domain/departments";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, ne } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   contractors,
   halls,
   itemTypes,
   locations,
+  memberships,
   sponsorEntitlements,
   sponsors,
   supplierServiceLinks,
   supplierServices,
   suppliers,
+  users,
   workflows,
 } from "@/lib/db/schema";
 import { defaultSignageWorkflowId } from "@/lib/domain/signage";
@@ -34,82 +36,105 @@ export async function itemFormOptions(opts: {
   includeTypeId?: string | null;
 }): Promise<ItemFormOptions> {
   const isSignage = opts.kind === "signage";
-  const [typeRows, hallRows, locationRows, sponsorRows, entRows, supplierRows, contractorRows, wfRows] =
-    await Promise.all([
-      db
-        .select({
-          id: itemTypes.id,
-          name: itemTypes.name,
-          format: itemTypes.format,
-          isArchived: itemTypes.isArchived,
-        })
-        .from(itemTypes)
-        .where(and(eq(itemTypes.organisationId, opts.organisationId), eq(itemTypes.kind, opts.kind)))
-        .orderBy(asc(itemTypes.sortOrder), asc(itemTypes.name)),
-      isSignage
-        ? db
-            .select({ id: halls.id, name: halls.name })
-            .from(halls)
-            .where(eq(halls.editionId, opts.editionId))
-            .orderBy(asc(halls.sortOrder), asc(halls.name))
-        : [],
-      isSignage
-        ? db
-            .select({ id: locations.id, name: locations.name, hallId: locations.hallId })
-            .from(locations)
-            .innerJoin(halls, eq(locations.hallId, halls.id))
-            .where(eq(halls.editionId, opts.editionId))
-            .orderBy(asc(locations.name))
-        : [],
-      db
-        .select({ id: sponsors.id, name: sponsors.companyName })
-        .from(sponsors)
-        .where(eq(sponsors.editionId, opts.editionId))
-        .orderBy(asc(sponsors.companyName)),
-      db
-        .select({
-          id: sponsorEntitlements.id,
-          sponsorId: sponsorEntitlements.sponsorId,
-          description: sponsorEntitlements.description,
-        })
-        .from(sponsorEntitlements)
-        .innerJoin(sponsors, eq(sponsorEntitlements.sponsorId, sponsors.id))
-        .where(eq(sponsors.editionId, opts.editionId)),
-      db
-        .select({ id: suppliers.id, name: suppliers.name, service: supplierServices.name })
-        .from(suppliers)
-        .leftJoin(supplierServiceLinks, eq(supplierServiceLinks.supplierId, suppliers.id))
-        .leftJoin(
-          supplierServices,
-          and(
-            eq(supplierServiceLinks.serviceId, supplierServices.id),
-            eq(supplierServices.isArchived, false),
-          ),
-        )
-        .where(eq(suppliers.organisationId, opts.organisationId))
-        .orderBy(asc(suppliers.name), asc(supplierServices.sortOrder)),
-      isSignage
-        ? db
-            .select({ id: contractors.id, name: contractors.name })
-            .from(contractors)
-            .where(eq(contractors.organisationId, opts.organisationId))
-            .orderBy(asc(contractors.name))
-        : [],
-      opts.withWorkflows
-        ? db
-            .select({ id: workflows.id, name: workflows.name })
-            .from(workflows)
-            .where(
-              and(
-                eq(workflows.organisationId, opts.organisationId),
-                eq(workflows.appliesTo, "signage"),
-                eq(workflows.isArchived, false),
-                isNull(workflows.forKind),
-              ),
-            )
-            .orderBy(desc(workflows.isDefault), asc(workflows.name))
-        : [],
-    ]);
+  const [
+    typeRows,
+    hallRows,
+    locationRows,
+    sponsorRows,
+    entRows,
+    supplierRows,
+    contractorRows,
+    wfRows,
+    peopleRows,
+  ] = await Promise.all([
+    db
+      .select({
+        id: itemTypes.id,
+        name: itemTypes.name,
+        format: itemTypes.format,
+        isArchived: itemTypes.isArchived,
+      })
+      .from(itemTypes)
+      .where(and(eq(itemTypes.organisationId, opts.organisationId), eq(itemTypes.kind, opts.kind)))
+      .orderBy(asc(itemTypes.sortOrder), asc(itemTypes.name)),
+    isSignage
+      ? db
+          .select({ id: halls.id, name: halls.name })
+          .from(halls)
+          .where(eq(halls.editionId, opts.editionId))
+          .orderBy(asc(halls.sortOrder), asc(halls.name))
+      : [],
+    isSignage
+      ? db
+          .select({ id: locations.id, name: locations.name, hallId: locations.hallId })
+          .from(locations)
+          .innerJoin(halls, eq(locations.hallId, halls.id))
+          .where(eq(halls.editionId, opts.editionId))
+          .orderBy(asc(locations.name))
+      : [],
+    db
+      .select({ id: sponsors.id, name: sponsors.companyName })
+      .from(sponsors)
+      .where(eq(sponsors.editionId, opts.editionId))
+      .orderBy(asc(sponsors.companyName)),
+    db
+      .select({
+        id: sponsorEntitlements.id,
+        sponsorId: sponsorEntitlements.sponsorId,
+        description: sponsorEntitlements.description,
+      })
+      .from(sponsorEntitlements)
+      .innerJoin(sponsors, eq(sponsorEntitlements.sponsorId, sponsors.id))
+      .where(eq(sponsors.editionId, opts.editionId)),
+    db
+      .select({ id: suppliers.id, name: suppliers.name, service: supplierServices.name })
+      .from(suppliers)
+      .leftJoin(supplierServiceLinks, eq(supplierServiceLinks.supplierId, suppliers.id))
+      .leftJoin(
+        supplierServices,
+        and(
+          eq(supplierServiceLinks.serviceId, supplierServices.id),
+          eq(supplierServices.isArchived, false),
+        ),
+      )
+      .where(eq(suppliers.organisationId, opts.organisationId))
+      .orderBy(asc(suppliers.name), asc(supplierServices.sortOrder)),
+    isSignage
+      ? db
+          .select({ id: contractors.id, name: contractors.name })
+          .from(contractors)
+          .where(eq(contractors.organisationId, opts.organisationId))
+          .orderBy(asc(contractors.name))
+      : [],
+    opts.withWorkflows
+      ? db
+          .select({ id: workflows.id, name: workflows.name })
+          .from(workflows)
+          .where(
+            and(
+              eq(workflows.organisationId, opts.organisationId),
+              eq(workflows.appliesTo, "signage"),
+              eq(workflows.isArchived, false),
+              isNull(workflows.forKind),
+            ),
+          )
+          .orderBy(desc(workflows.isDefault), asc(workflows.name))
+      : [],
+    // Who can own an item: anyone on the team except viewers.
+    db
+      .select({
+        id: users.id,
+        fullName: users.fullName,
+        email: users.email,
+        role: memberships.role,
+      })
+      .from(memberships)
+      .innerJoin(users, eq(memberships.userId, users.id))
+      .where(
+        and(eq(memberships.organisationId, opts.organisationId), ne(memberships.role, "viewer")),
+      )
+      .orderBy(asc(users.fullName), asc(users.email)),
+  ]);
   // One entry per supplier, with what they do ("Big Print Co — Signage print, Installation").
   const supplierMap = new Map<string, { id: string; name: string; services: string[] }>();
   for (const r of supplierRows) {
@@ -138,6 +163,7 @@ export async function itemFormOptions(opts: {
     suppliers: [...supplierMap.values()],
     contractors: contractorRows,
     workflows: wfRows,
+    people: peopleRows.map((p) => ({ id: p.id, name: p.fullName || p.email, role: p.role })),
     signoffSteps: steps.filter(isDepartmentStep).map((s) => {
       const dept = s.departmentId ? deptById.get(s.departmentId) : undefined;
       return {

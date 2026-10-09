@@ -93,6 +93,7 @@ export function ArtworkTab({
   canUpload,
   invalidationCount,
   invalidationSteps,
+  panelWarning,
   uploadBlocked,
   uploadPrefix = null,
 }: {
@@ -101,6 +102,8 @@ export function ArtworkTab({
   canUpload: boolean;
   invalidationCount: number;
   invalidationSteps: string[];
+  /** Stand designs: panels that may no longer fit once the design changes. */
+  panelWarning?: string | null;
   uploadBlocked: string | null;
   /** Set when Vercel Blob is configured: enables direct browser uploads. */
   uploadPrefix?: string | null;
@@ -203,7 +206,9 @@ export function ArtworkTab({
               />
               <Button
                 disabled={!file || pending}
-                onClick={() => (invalidationCount > 0 ? setConfirmOpen(true) : doUpload())}
+                onClick={() =>
+                  invalidationCount > 0 || panelWarning ? setConfirmOpen(true) : doUpload()
+                }
               >
                 <Upload className="size-4" /> Upload
               </Button>
@@ -296,12 +301,19 @@ export function ArtworkTab({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              This will invalidate {invalidationCount} approval{invalidationCount === 1 ? "" : "s"}
+              {invalidationCount > 0
+                ? `This will invalidate ${invalidationCount} approval${invalidationCount === 1 ? "" : "s"}`
+                : "Upload a new version of the design?"}
             </DialogTitle>
             <DialogDescription>
-              Uploading a new version supersedes the decisions already made on:{" "}
-              {invalidationSteps.join(", ")}. Those steps return to pending and their approvers are
-              notified with a link to compare versions. This is never silent.
+              {invalidationCount > 0 && (
+                <>
+                  Uploading a new version supersedes the decisions already made on:{" "}
+                  {invalidationSteps.join(", ")}. Those steps return to pending and their approvers
+                  are notified with a link to compare versions. This is never silent.{" "}
+                </>
+              )}
+              {panelWarning && <span className="font-medium">{panelWarning}</span>}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -309,7 +321,7 @@ export function ArtworkTab({
               Cancel
             </Button>
             <Button disabled={pending} onClick={doUpload}>
-              Upload and invalidate
+              {invalidationCount > 0 ? "Upload and invalidate" : "Upload"}
             </Button>
           </DialogFooter>
         </DialogContent>

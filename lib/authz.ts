@@ -112,6 +112,8 @@ export type ApprovalStepCtx = {
   assignedUserId?: string | null;
   /** Department sign-off: anyone in the department may decide. */
   assignedDepartmentId?: string | null;
+  /** Confirmations (sent to print, delivered, installed) can also be done by operations. */
+  stepKind?: "approval" | "confirmation" | null;
   entity:
     { type: "signage_item"; item: SignageItemCtx } | { type: "stand"; sub: StandSubmissionCtx };
 };
@@ -136,6 +138,7 @@ export type Action =
   | { type: "signage.hold" }
   | { type: "signage.resume" }
   | { type: "signage.reopen" }
+  | { type: "signage.close" }
   | { type: "change_request.raise" }
   | { type: "change_request.approve" }
   | { type: "stand.view"; sub: StandSubmissionCtx }
@@ -272,6 +275,16 @@ function externalCanDecide(actor: ExternalActor, step: ApprovalStepCtx, now = ne
 
 function staffCanDecide(actor: StaffActor, step: ApprovalStepCtx): boolean {
   if (actor.role === "admin") return true;
+  // Operations run production: they can confirm a supplier's step themselves
+  // when the supplier hasn't (or has no portal access).
+  if (
+    step.stepKind === "confirmation" &&
+    step.assignedRole === "supplier" &&
+    !step.assignedUserId &&
+    actor.role === "ops"
+  ) {
+    return true;
+  }
   if (step.assignedUserId) return step.assignedUserId === actor.userId;
   if (step.assignedDepartmentId) {
     return actor.departmentIds?.includes(step.assignedDepartmentId) ?? false;
@@ -442,6 +455,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
     case "signage.hold":
     case "signage.resume":
     case "signage.reopen":
+    case "signage.close":
       return role === "admin" || role === "ops";
 
     case "change_request.raise":

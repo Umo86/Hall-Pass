@@ -26,6 +26,14 @@ function candidateFilter(session: Session, all: boolean): SQL | undefined {
     return or(
       me,
       and(isNull(approvalInstances.assignedUserId), eq(approvalInstances.assignedRole, actor.role)),
+      // Operations can confirm a supplier's print / delivery steps themselves.
+      actor.role === "ops"
+        ? and(
+            isNull(approvalInstances.assignedUserId),
+            eq(approvalInstances.assignedRole, "supplier"),
+            eq(approvalInstances.stepKindSnapshot, "confirmation"),
+          )
+        : undefined,
       depts.length > 0
         ? and(
             isNull(approvalInstances.assignedUserId),
@@ -84,6 +92,7 @@ export async function pendingInstancesForUser(existing?: Session, opts: { all?: 
     const stepCtx: ApprovalStepCtx = {
       assignedRole: row.assignedRole,
       assignedDepartmentId: row.assignedDepartmentId,
+      stepKind: row.stepKindSnapshot,
       assignedUserId: row.assignedUserId,
       entity: isSignage
         ? { type: "signage_item", item: itemAuthzCtx(bundle as never) }
