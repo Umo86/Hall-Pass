@@ -32,11 +32,13 @@ import { icalToken } from "@/lib/ical";
 import { appUrl } from "@/lib/app-url";
 import { NotificationPrefsForm } from "@/components/settings/notification-prefs";
 import { emailConfigured } from "@/lib/email/dispatch";
+import { blobEnabled, s3Enabled, s3Probe, storageBackend } from "@/lib/storage";
+import { StoragePanel } from "@/components/settings/storage-panel";
 
 export const metadata = { title: "Settings" };
 export const dynamic = "force-dynamic";
 
-type TabId = "general" | "team" | "types" | "services" | "venues" | "deleted";
+type TabId = "general" | "team" | "types" | "services" | "venues" | "deleted" | "storage";
 
 export default async function SettingsPage({
   searchParams,
@@ -57,6 +59,7 @@ export default async function SettingsPage({
           { id: "deleted", label: "Deleted items" },
         ] as { id: TabId; label: string }[])
       : []),
+    ...(canUsers ? [{ id: "storage" as const, label: "Storage" }] : []),
   ];
   const { tab: rawTab } = await searchParams;
   // Sign-off moved to Approvals → Approvers.
@@ -402,6 +405,23 @@ export default async function SettingsPage({
               riggingContactName: v.riggingContactName,
               riggingContactEmail: v.riggingContactEmail,
             }))}
+          />
+        </section>
+      )}
+
+      {tab === "storage" && canUsers && (
+        <section>
+          <h2 className="mb-2 text-sm font-semibold">File storage</h2>
+          <p className="text-muted-foreground mb-3 text-sm">
+            Artwork, panel graphics, photos, documents, exports and videos. Which store is used
+            comes from the hosting settings; this page checks it and moves files between stores.
+          </p>
+          <StoragePanel
+            backend={storageBackend()}
+            check={s3Enabled() ? await s3Probe() : null}
+            blobConfigured={blobEnabled()}
+            s3Configured={s3Enabled()}
+            bucket={process.env.S3_BUCKET ?? null}
           />
         </section>
       )}

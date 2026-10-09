@@ -187,6 +187,36 @@ export async function s3Stat(
   }
 }
 
+/**
+ * Does the bucket answer with these credentials? One cheap list call with a
+ * short timeout; the detail is for the Settings page and /api/health.
+ */
+export async function s3Probe(): Promise<{ ok: boolean; detail: string }> {
+  const cfg = s3Config();
+  if (!cfg) return { ok: false, detail: "not configured" };
+  try {
+    const { client, bucket: name } = await s3Client();
+    const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
+    await client.send(new ListObjectsV2Command({ Bucket: name, MaxKeys: 1 }), {
+      abortSignal: AbortSignal.timeout(8_000),
+    });
+    return { ok: true, detail: `bucket ${name} reachable` };
+  } catch (err) {
+    const e = err as { name?: string; message?: string; $metadata?: { httpStatusCode?: number } };
+    const code = e.name ?? "Error";
+    const status = e.$metadata?.httpStatusCode;
+    const hint =
+      code === "InvalidAccessKeyId" || code === "SignatureDoesNotMatch" || status === 403
+        ? "the access key or secret is wrong, or the token has no access to this bucket"
+        : code === "NoSuchBucket" || status === 404
+          ? "no bucket with this name at this endpoint (check S3_BUCKET and the EU/non-EU endpoint)"
+          : code === "TimeoutError" || code === "AbortError"
+            ? "no answer from the endpoint (check S3_ENDPOINT)"
+            : (e.message ?? code);
+    return { ok: false, detail: `${code}${status ? ` ${status}` : ""}: ${hint}` };
+  }
+}
+
 /** One page of objects under a prefix (the key includes the bucket segment). */
 export async function s3List(
   prefix: string,

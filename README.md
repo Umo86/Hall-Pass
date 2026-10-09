@@ -7,7 +7,7 @@ See `PLAN.md` for the build plan and current status, `CLAUDE.md` for conventions
 ## What the platform includes
 
 - **Signage schedule** — every item for a show in one list: organiser or sponsor signage (with the sponsor's name), print or digital, the supplier, and everything from the Sponsorship section. Full lifecycle (draft → sign-off → production → delivery → install → close, plus hold/reject/reopen), artwork versions with never-silent invalidation, table/Kanban/phone views, Excel import/export, spec labels and approval certificates.
-- **Approvals** — one place for artwork sign-off. *Waiting on me* lists what each person needs to decide; *All artwork* shows every item with a graphic, filterable by show and sign-off state, with who approved, rejected or asked for changes and their comments; *Approvers* is where admins add departments (any name) and the people in them (name, job title, email), star a main approver, and choose which departments sign off organiser and sponsor signage by default and which sign off last. On each item, whoever adds it can untick a department or pick a different person; the assignee is emailed. Every decision and comment is logged in History.
+- **Approvals** — one place for artwork sign-off. _Waiting on me_ lists what each person needs to decide; _All artwork_ shows every item with a graphic, filterable by show and sign-off state, with who approved, rejected or asked for changes and their comments; _Approvers_ is where admins add departments (any name) and the people in them (name, job title, email), star a main approver, and choose which departments sign off organiser and sponsor signage by default and which sign off last. On each item, whoever adds it can untick a department or pick a different person; the assignee is emailed. Every decision and comment is logged in History.
 - **Invite-only sign-in (Supabase)** — there is no sign-up. Admins invite people (team, approvers, partners); Supabase emails them a link that only works from their inbox, where they set their name and password. Sign-in is by email and password (or an emailed link); "Forgot password" and sign-in links only go to invited people, and the reply never reveals who has an account. Demo sign-in is always off on a Vercel deployment with Supabase configured.
 - **Shows** — one form for a new show: name, logo, series, venue and address, dates.
 - **Suppliers** — a directory of companies with what each does (signage print, screens, staffing…), filterable; new "what they do" entries can be typed straight into the supplier popup. The supplier column in the schedule shows who's making what.
@@ -92,12 +92,12 @@ sign-in). `database-setup.sql` runs unchanged in its SQL editor.
 
 The cheapest setup that still copes with large print-ready graphics:
 
-| Part | Service | Free allowance | What to know |
-| --- | --- | --- | --- |
-| Database + sign-in | Supabase **Free** | 500 MB database, 2 projects per organisation | Pauses after a quiet week; the daily cron's queries keep it awake. No automatic backups — the weekly GitHub Action below takes one. |
-| Database, alternative (see 3b) | Neon **Free** via Vercel | 1 GB, 6-hour restore window | Scales to zero and wakes by itself; Supabase then only handles sign-in. |
-| Files (artwork, photos, documents, exports) | Cloudflare **R2** | 10 GB storage, no egress fees, up to 5 GB per upload | Needs a Cloudflare account; R2 may ask for a payment method on first use but charges nothing inside the allowance. |
-| App | Vercel **Hobby** | Cron once a day, 1 GB Blob | Hobby is for non-commercial use; move to Pro when the tool runs a real show for a business. |
+| Part                                        | Service                  | Free allowance                                       | What to know                                                                                                                        |
+| ------------------------------------------- | ------------------------ | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Database + sign-in                          | Supabase **Free**        | 500 MB database, 2 projects per organisation         | Pauses after a quiet week; the daily cron's queries keep it awake. No automatic backups — the weekly GitHub Action below takes one. |
+| Database, alternative (see 3b)              | Neon **Free** via Vercel | 1 GB, 6-hour restore window                          | Scales to zero and wakes by itself; Supabase then only handles sign-in.                                                             |
+| Files (artwork, photos, documents, exports) | Cloudflare **R2**        | 10 GB storage, no egress fees, up to 5 GB per upload | Needs a Cloudflare account; R2 may ask for a payment method on first use but charges nothing inside the allowance.                  |
+| App                                         | Vercel **Hobby**         | Cron once a day, 1 GB Blob                           | Hobby is for non-commercial use; move to Pro when the tool runs a real show for a business.                                         |
 
 Supabase Storage on the Free plan caps every file at 50 MB. Vercel Blob is the simplest
 store (1a); R2 (1b) gives ten times the free space and no transfer fees.
@@ -126,7 +126,7 @@ screens adds up quickly, so prefer the R2 bucket below past a few hundred megaby
 
 1. Cloudflare dashboard → **R2 Object Storage** → **Create bucket** (name e.g. `hall-pass`,
    location hint Europe). Leave it private.
-2. **Manage R2 API Tokens** → **Create API token** → permission *Object Read & Write*,
+2. **Manage R2 API Tokens** → **Create API token** → permission _Object Read & Write_,
    scoped to that bucket. Copy the **Access Key ID**, **Secret Access Key** and the
    endpoint `https://<account id>.r2.cloudflarestorage.com`.
 3. Bucket → **Settings** → **CORS policy** — so the browser can upload straight to it:
@@ -149,18 +149,21 @@ screens adds up quickly, so prefer the R2 bucket below past a few hundred megaby
 ### 2. Move the existing files out of Vercel Blob
 
 Keep `BLOB_READ_WRITE_TOKEN` set while copying — files not yet in the bucket are still
-read from Blob. Then, with the `CRON_SECRET` from Vercel:
+read from Blob. Sign in as an admin, open **Settings → Storage**: it shows whether the
+bucket answers with your credentials, and a **Copy files now** button that copies every
+file across (safe to run more than once; files already in the bucket are skipped). When
+it reports done, delete `BLOB_READ_WRITE_TOKEN` from Vercel and the Blob store from the
+Storage tab, and redeploy.
+
+The same copy is available for scripts, with the `CRON_SECRET` from Vercel:
 
 ```bash
 curl -X POST -H "Authorization: Bearer $CRON_SECRET" \
   "https://hall-pass-alpha.vercel.app/api/admin/storage/migrate?limit=50"
 ```
 
-Repeat, passing `&cursor=<nextCursor>` whenever the response includes one, until it
-returns `"done": true`. A response with `"incomplete": true` hit the time limit part-way
-through a page: run it again with the same cursor. It is safe to re-run at any point;
-files already in the bucket are skipped. Only then delete `BLOB_READ_WRITE_TOKEN` from
-Vercel and the Blob store from the Storage tab.
+Repeat with `&cursor=<nextCursor>` while the reply includes one, until `"done": true`; a
+reply with `"incomplete": true` means run the same cursor again.
 
 ### 3. Supabase from Pro to Free (same project, same keys)
 
