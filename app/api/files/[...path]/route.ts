@@ -13,6 +13,10 @@ const INLINE_TYPES: Record<string, string> = {
   jpeg: "image/jpeg",
   webp: "image/webp",
   gif: "image/gif",
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
 };
 
 /**

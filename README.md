@@ -99,10 +99,30 @@ The cheapest setup that still copes with large print-ready graphics:
 | Files (artwork, photos, documents, exports) | Cloudflare **R2** | 10 GB storage, no egress fees, up to 5 GB per upload | Needs a Cloudflare account; R2 may ask for a payment method on first use but charges nothing inside the allowance. |
 | App | Vercel **Hobby** | Cron once a day, 1 GB Blob | Hobby is for non-commercial use; move to Pro when the tool runs a real show for a business. |
 
-Supabase Storage on the Free plan caps every file at 50 MB and Vercel Blob on Hobby at
-1 GB in total, which is why files live in R2.
+Supabase Storage on the Free plan caps every file at 50 MB. Vercel Blob is the simplest
+store (1a); R2 (1b) gives ten times the free space and no transfer fees.
 
-### 1. Cloudflare R2 bucket
+Accepted artwork: PDF, AI, EPS, SVG, PNG, JPG, TIFF, WebP, ZIP, and MP4, MOV or WebM video
+for screens and digital signage; videos play inline on the item page and in the partner
+portal.
+
+### 1a. Vercel Blob store (simplest: lives in the Vercel dashboard)
+
+Artwork, panel graphics, photos, documents, exports and videos for screens all go to the
+store; large files upload straight from the browser (up to 2 GB each).
+
+1. Vercel → project → **Storage** → **Create Database** → **Blob** → name it
+   (e.g. `hall-pass-files`), region Frankfurt, **Connect** it to the project for
+   Production and Preview. Vercel adds `BLOB_READ_WRITE_TOKEN` itself.
+2. Leave the `S3_*` variables unset (a bucket takes precedence when both are set).
+3. **Redeploy**. `/api/health` shows `"storage":"blob"`. Upload a file on any item's
+   Artwork tab to check.
+
+Hobby plan allowance: 1 GB stored and 10 GB transferred a month, as hard caps (uploads
+stop until the month rolls over). Pro includes 5 GB and 100 GB, then pay per GB. Video for
+screens adds up quickly, so prefer the R2 bucket below past a few hundred megabytes.
+
+### 1b. Or: Cloudflare R2 bucket (10 GB free)
 
 1. Cloudflare dashboard → **R2 Object Storage** → **Create bucket** (name e.g. `hall-pass`,
    location hint Europe). Leave it private.

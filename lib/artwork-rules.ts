@@ -8,15 +8,33 @@ export const ARTWORK_TYPES = [
   "image/png",
   "image/jpeg",
   "image/tiff",
+  "image/webp",
   "application/zip",
+  // Digital signage and screens: the artwork is a video.
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
 ];
 
-export const ARTWORK_TYPE_MESSAGE = "Unsupported file type — use PDF, AI, EPS, SVG, PNG, JPG, TIFF or ZIP";
+/** Video types, for the preview player and the content-type map. */
+export const VIDEO_TYPES = ["video/mp4", "video/quicktime", "video/webm"];
 
-/** Illustrator and EPS files often arrive with no (or a generic) type. */
+export const ARTWORK_EXTENSIONS =
+  ".pdf,.ai,.eps,.svg,.png,.jpg,.jpeg,.tif,.tiff,.webp,.zip,.mp4,.mov,.m4v,.webm";
+
+export const ARTWORK_TYPE_MESSAGE =
+  "Unsupported file type — use PDF, AI, EPS, SVG, PNG, JPG, TIFF, WebP or ZIP, or MP4, MOV or WebM video";
+
+/** Illustrator and EPS files often arrive with no (or a generic) type; so do videos from some phones. */
 export function artworkTypeAllowed(mimeType: string | null | undefined, fileName: string): boolean {
-  if (/\.(ai|eps)$/i.test(fileName)) return true;
+  if (/\.(ai|eps|mp4|mov|m4v|webm)$/i.test(fileName)) return true;
   return !mimeType || ARTWORK_TYPES.includes(mimeType);
+}
+
+export function isVideoArtwork(mimeType: string | null | undefined, fileName: string): boolean {
+  return (
+    (mimeType ? VIDEO_TYPES.includes(mimeType) : false) || /\.(mp4|mov|m4v|webm)$/i.test(fileName)
+  );
 }
 
 const INSTALLED = ["installed", "snagged", "closed"];

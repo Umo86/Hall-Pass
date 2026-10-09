@@ -114,6 +114,10 @@ const CONTENT_TYPES: Record<string, string> = {
   ics: "text/calendar",
   json: "application/json",
   txt: "text/plain",
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
 };
 
 /** The media type a stored file should be served with, from its name. */
@@ -130,6 +134,9 @@ const INLINE_SAFE = new Set([
   "image/jpeg",
   "image/webp",
   "image/gif",
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
 ]);
 
 async function s3Put(

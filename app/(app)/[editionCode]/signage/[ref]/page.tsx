@@ -34,7 +34,7 @@ import { LifecycleButtons } from "@/components/signage/lifecycle-buttons";
 import { SnagsPanel, type SnagView } from "@/components/signage/snags-panel";
 import { QuickComment } from "@/components/signage/quick-comment";
 import { ITEM_SECTION } from "@/lib/edition-path";
-import { PANEL_BLOCKED_MESSAGE, artworkBlockedReason } from "@/lib/artwork-rules";
+import { PANEL_BLOCKED_MESSAGE, artworkBlockedReason, isVideoArtwork } from "@/lib/artwork-rules";
 import { listStandPanels, standFormOptions } from "@/lib/queries/stand-designs";
 import { StandForm } from "@/components/stand-designs/stand-form";
 import { AddPanelButton } from "@/components/stand-designs/add-panel";
@@ -598,7 +598,9 @@ async function ArtworkAndSignOff({
         sample ? null : getDownloadUrl("artwork", version.filePath).catch(() => null),
         version.previewPath
           ? getInlineUrl("artwork", version.previewPath).catch(() => null)
-          : version.mimeType === "application/pdf" && !sample
+          : (version.mimeType === "application/pdf" ||
+                isVideoArtwork(version.mimeType, version.fileName)) &&
+              !sample
             ? getInlineUrl("artwork", version.filePath).catch(() => null)
             : null,
       ]);

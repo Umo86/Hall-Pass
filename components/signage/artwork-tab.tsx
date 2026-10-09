@@ -16,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status-badge";
 import { formatDateTime } from "@/lib/format";
 import { recordUploadedArtwork, uploadArtwork } from "@/app/actions/artwork";
+import { ARTWORK_EXTENSIONS, isVideoArtwork } from "@/lib/artwork-rules";
 
 /** Streaming SHA-256 so multi-gigabyte files hash without loading into memory. */
 async function sha256OfFile(file: File): Promise<string> {
@@ -111,6 +112,16 @@ function VersionPreview({ version, className }: { version: VersionRow; className
           src={version.previewUrl}
           title={`Preview of v${version.versionNumber} — ${version.fileName}`}
           className="h-[480px] w-full rounded-lg border"
+        />
+      ) : isVideoArtwork(version.mimeType, version.fileName) ? (
+        // Digital signage: play the video itself; no still is generated.
+        <video
+          src={version.previewUrl}
+          controls
+          preload="metadata"
+          playsInline
+          aria-label={`Preview of v${version.versionNumber} — ${version.fileName}`}
+          className="bg-muted/30 max-h-[480px] w-full rounded-lg border"
         />
       ) : (
         // eslint-disable-next-line @next/next/no-img-element -- artwork previews have unknown dimensions
@@ -248,7 +259,7 @@ export function ArtworkTab({
               <input
                 ref={fileRef}
                 type="file"
-                accept=".pdf,.ai,.eps,.svg,.png,.jpg,.jpeg,.tif,.tiff,.zip"
+                accept={ARTWORK_EXTENSIONS}
                 className="text-sm"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               />

@@ -14,6 +14,7 @@ import {
 import { statusLabel } from "@/lib/format";
 import { labelWhen, labelWhere, specLabelFields } from "@/lib/exports/label-fields";
 import { APPROVED_OR_LATER } from "@/lib/status/signage";
+import { isVideoArtwork } from "@/lib/artwork-rules";
 import { getDownloadUrl, getInlineUrl } from "@/lib/storage";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
@@ -61,6 +62,8 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
       : [null, null];
   const previewIsImage =
     Boolean(current?.previewPath) || /\.(png|jpe?g|webp|gif)$/i.test(current?.fileName ?? "");
+  const previewIsVideo =
+    !current?.previewPath && isVideoArtwork(current?.mimeType, current?.fileName ?? "");
 
   const run = instances
     .filter(({ instance }) => instance.runNumber === item.currentRunNumber)
@@ -152,6 +155,16 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
                 src={previewUrl}
                 alt={`Artwork v${current.versionNumber}`}
                 className="max-h-96 w-full rounded-md border object-contain"
+              />
+            )}
+            {previewUrl && previewIsVideo && (
+              <video
+                src={previewUrl}
+                controls
+                preload="metadata"
+                playsInline
+                aria-label={`Artwork v${current.versionNumber}`}
+                className="max-h-96 w-full rounded-md border"
               />
             )}
             <p className="text-sm">
