@@ -296,7 +296,7 @@ export function SnagsPanel({
                     </Button>
                   </>
                 )}
-                {(snag.status === "resolved" || snag.status === "wont_fix") && (
+                {(snag.status === "resolved" || snag.status === "wont_fix") && canRaise && (
                   <Button
                     size="sm"
                     variant="ghost"

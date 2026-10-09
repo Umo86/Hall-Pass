@@ -96,9 +96,10 @@ test.describe("lifecycle: print → install → snag → reopen → close", () =
     // Ops confirms the supplier steps with the real dates ("or Operations").
     await ops.goto(`${itemUrl}?tab=artwork`);
     await expect(ops.getByText("or Operations").first()).toBeVisible();
-    await decide(ops, baseURL!, ref, "Confirm", { date: "2027-09-20" }); // Sent to print
+    // A real-world date in the past (the server refuses future dates).
+    await decide(ops, baseURL!, ref, "Confirm", { date: "2026-09-20" }); // Sent to print
     await ops.goto(`${itemUrl}?tab=artwork`);
-    await expect(ops.getByText(/done 20 Sept 2027/)).toBeVisible();
+    await expect(ops.getByText(/done 20 Sept 2026/)).toBeVisible();
     await decide(ops, baseURL!, ref, "Confirm"); // Delivered
     await ops.goto(itemUrl);
     await expect(ops.getByText("Delivered", { exact: true }).first()).toBeVisible();

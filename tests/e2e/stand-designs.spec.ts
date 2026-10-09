@@ -25,12 +25,19 @@ async function decide(page: Page, baseURL: string, ref: string, button: string) 
 
 async function uploadAndSubmit(page: Page, url: string, fileName: string) {
   await page.goto(`${url}?tab=artwork`);
-  await page.setInputFiles('input[type="file"]', {
-    name: fileName,
-    mimeType: "application/pdf",
-    buffer: PDF,
-  });
-  await page.getByRole("button", { name: "Upload" }).click();
+  const upload = page.getByRole("button", { name: "Upload" });
+  // A file chosen before React has hydrated is lost; choose again until the
+  // Upload button wakes up.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await page.setInputFiles('input[type="file"]', {
+      name: fileName,
+      mimeType: "application/pdf",
+      buffer: PDF,
+    });
+    if (await upload.isEnabled({ timeout: 2_000 }).catch(() => false)) break;
+    await page.waitForTimeout(1_000);
+  }
+  await upload.click();
   await expect(page.getByText(`v1 — ${fileName}`)).toBeVisible();
   await page.goto(url);
   await page.getByRole("button", { name: "Submit for review" }).click();
@@ -42,6 +49,7 @@ test.describe("stand designs", () => {
     browser,
     baseURL,
   }) => {
+    test.setTimeout(180_000); // two full sign-off rounds on a dev server
     const name = `E2E feature stand ${Date.now()}`;
     const ops = await as(browser, "ops@media10.test", baseURL!);
 

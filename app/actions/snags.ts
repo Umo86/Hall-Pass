@@ -173,6 +173,15 @@ export async function updateSnag(formData: FormData): Promise<ActionResult> {
   if (!bundle || bundle.item.deletedAt) return fail("Snag not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   const closing = parsed.data.status === "resolved" || parsed.data.status === "wont_fix";
+  // An open snag belongs on an installed (or snagged) item: a closed or
+  // reopened item would otherwise carry an open snag nothing can act on.
+  if (!closing && !["installed", "snagged"].includes(bundle.item.status)) {
+    return fail(
+      bundle.item.status === "closed"
+        ? "This item is closed — use Reopen on it first"
+        : "Snags can only be open on an installed item",
+    );
+  }
   const photo = closing
     ? await savePhoto(formData, bundle, "snag-fixed").catch(() => ({
         error: "Could not save the photo — check your signal and try again",

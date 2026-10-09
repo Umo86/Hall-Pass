@@ -173,7 +173,12 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
   // team follows an ops or marketing owner.
   let ownerUserId = session.user.id;
   let ownerRole = data.ownerRole;
-  if (data.ownerUserId && data.ownerUserId !== session.user.id) {
+  if (!data.ownerUserId || data.ownerUserId === session.user.id) {
+    // "Me": the owning team is the creator's own team when it is one of the
+    // two that own items; admins and sales keep the form's default.
+    const own = session.actor.kind === "staff" ? session.actor.role : null;
+    if (own === "ops" || own === "marketing") ownerRole = own;
+  } else {
     try {
       const owner = await resolveOwner(session.organisation.id, data.ownerUserId);
       ownerUserId = data.ownerUserId;
@@ -890,20 +895,42 @@ export async function closeSignageItem(input: unknown): Promise<ActionResult> {
       `${open} snag${Number(open) === 1 ? " is" : "s are"} still open — resolve them first`,
     );
   }
-  await db.transaction(async (tx) => {
-    await tx.update(signageItems).set({ status: next }).where(eq(signageItems.id, bundle.item.id));
-    await writeAudit(tx, {
-      organisationId: session.organisation.id,
-      editionId: bundle.edition.id,
-      actorUserId: session.user.id,
-      entityType: "signage_item",
-      entityId: bundle.item.id,
-      action: "status_change",
-      before: { status: bundle.item.status },
-      after: { status: next },
-      summary: `${bundle.item.ref} closed`,
+  try {
+    await db.transaction(async (tx) => {
+      // Check and close in one statement, so a snag raised at the same
+      // moment cannot leave a closed item with an open snag.
+      const updated = await tx
+        .update(signageItems)
+        .set({ status: next })
+        .where(
+          and(
+            eq(signageItems.id, bundle.item.id),
+            eq(signageItems.status, "installed"),
+            sql`NOT EXISTS (
+              SELECT 1 FROM snags
+              WHERE signage_item_id = ${bundle.item.id} AND status IN ('open', 'in_progress')
+            )`,
+          ),
+        )
+        .returning({ id: signageItems.id });
+      if (updated.length === 0) {
+        throw new Error("Could not close — a snag was just raised or the item changed; refresh");
+      }
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        editionId: bundle.edition.id,
+        actorUserId: session.user.id,
+        entityType: "signage_item",
+        entityId: bundle.item.id,
+        action: "status_change",
+        before: { status: bundle.item.status },
+        after: { status: next },
+        summary: `${bundle.item.ref} closed`,
+      });
     });
-  });
+  } catch (err) {
+    return fail(errMessage(err));
+  }
   revalidatePath("/", "layout");
   return success(undefined, "Item closed");
 }

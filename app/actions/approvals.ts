@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { approvalInstances, memberships, signageItems, standSubmissions } from "@/lib/db/schema";
 import { can, type ApprovalStepCtx } from "@/lib/authz";
@@ -173,6 +173,9 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
       // The real-world date of a confirmation (defaults to today).
       const confirmedOn =
         data.decision === "confirm" ? (data.confirmedDate ?? todayInLondon()) : null;
+      if (confirmedOn && confirmedOn > todayInLondon()) {
+        throw new WorkflowError("The date cannot be in the future");
+      }
       if (confirmedOn) {
         await tx
           .update(approvalInstances)
@@ -199,7 +202,7 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
         // A mid-run confirmation (e.g. Sent to print while Installed remains)
         // moves the item even though the run is not finished.
         if (event) {
-          const next = signageTransition(item.status, event);
+          let next = signageTransition(item.status, event);
           const set: Partial<typeof signageItems.$inferInsert> = { status: next };
           if (event === "sent_to_print") set.sentToPrintAt = confirmedAt;
           if (event === "delivered") set.deliveredAt = confirmedAt;
@@ -207,6 +210,16 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
             set.installedAt = confirmedAt;
             set.installedBy = session.user.id;
             if (data.photoPath) set.installPhotoPath = data.photoPath;
+            // Installed again after a Reopen while snags are still open: it
+            // is installed but snagged, not cleanly installed.
+            const [openSnags] = await tx.execute<{ n: number }>(
+              sql`SELECT count(*)::int AS n FROM snags
+                  WHERE signage_item_id = ${item.id} AND status IN ('open', 'in_progress')`,
+            );
+            if (Number(openSnags?.n ?? 0) > 0) {
+              next = signageTransition(next, "snag_opened");
+              set.status = next;
+            }
           }
           await tx.update(signageItems).set(set).where(eq(signageItems.id, item.id));
           statusNote = ` — item now ${next.replace(/_/g, " ")}`;
