@@ -3,9 +3,41 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { copyBlobFilesToBucket } from "@/app/actions/storage";
+import {
+  copyBlobFilesToBucket,
+  finishStorageSelfTest,
+  startStorageSelfTest,
+} from "@/app/actions/storage";
 
 type Totals = { copied: number; skipped: number; failed: { pathname: string; error: string }[] };
+
+/** PUT a few bytes straight from the browser, the way artwork uploads go. */
+function putFromBrowser(url: string, contentType: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("Content-Type", contentType);
+    xhr.timeout = 20_000;
+    xhr.onload = () =>
+      xhr.status >= 200 && xhr.status < 300
+        ? resolve()
+        : reject(
+            new Error(
+              xhr.status === 403
+                ? "the bucket refused the signed upload (403) — the access key has no write permission, or the signed content type was changed"
+                : `the bucket answered ${xhr.status}`,
+            ),
+          );
+    xhr.onerror = () =>
+      reject(
+        new Error(
+          `the browser was blocked before the upload started — almost always the bucket's CORS policy: add ${window.location.origin} to AllowedOrigins with methods PUT and GET and header content-type (see the README)`,
+        ),
+      );
+    xhr.ontimeout = () => reject(new Error("no answer from the bucket within 20 seconds"));
+    xhr.send("hall-pass storage check");
+  });
+}
 
 /**
  * Settings → Storage: where files live, whether the bucket answers, and
@@ -29,7 +61,42 @@ export function StoragePanel({
   const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [message, setMessage] = useState<string | null>(null);
   const [pending, start] = useTransition();
+  const [selfTest, setSelfTest] = useState<{
+    state: "idle" | "running" | "ok" | "failed";
+    text?: string;
+  }>({
+    state: "idle",
+  });
   const router = useRouter();
+
+  function runSelfTest() {
+    setSelfTest({ state: "running" });
+    start(async () => {
+      const signed = await startStorageSelfTest();
+      if (!signed.ok) {
+        setSelfTest({ state: "failed", text: signed.error });
+        return;
+      }
+      try {
+        await putFromBrowser(signed.data!.url, signed.data!.contentType);
+      } catch (err) {
+        setSelfTest({
+          state: "failed",
+          text: `Upload failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        return;
+      }
+      const done = await finishStorageSelfTest({ storagePath: signed.data!.storagePath });
+      setSelfTest(
+        done.ok
+          ? {
+              state: "ok",
+              text: "Browser upload worked: credentials, endpoint and CORS are all right.",
+            }
+          : { state: "failed", text: done.error },
+      );
+    });
+  }
 
   function copyAll() {
     setStatus("running");
@@ -98,6 +165,37 @@ export function StoragePanel({
         <dt className="text-muted-foreground">Vercel Blob</dt>
         <dd>{blobConfigured ? "Configured (token present)" : "Not configured"}</dd>
       </dl>
+
+      {s3Configured && (
+        <div className="rounded-lg border p-4">
+          <h3 className="font-semibold">Test a browser upload</h3>
+          <p className="text-muted-foreground mt-1">
+            Sends a few bytes from this browser straight into the bucket, exactly as artwork and
+            video uploads go, then removes them. This is the check that catches a missing CORS
+            policy.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <Button
+              variant="outline"
+              onClick={runSelfTest}
+              disabled={pending || selfTest.state === "running"}
+            >
+              {selfTest.state === "running" ? "Testing…" : "Test a browser upload"}
+            </Button>
+            {selfTest.text && (
+              <span
+                className={
+                  selfTest.state === "ok"
+                    ? "text-emerald-700 dark:text-emerald-400"
+                    : "text-destructive"
+                }
+              >
+                {selfTest.text}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {s3Configured && blobConfigured && (
         <div className="rounded-lg border p-4">

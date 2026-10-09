@@ -79,7 +79,7 @@ export async function copyBlobBatch(opts: {
         error: err instanceof Error ? err.message : String(err),
       });
     }
-    if (Date.now() - started > budgetMs) {
+    if (Date.now() - started >= budgetMs) {
       stoppedEarly = true;
       break;
     }

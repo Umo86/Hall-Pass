@@ -150,10 +150,11 @@ screens adds up quickly, so prefer the R2 bucket below past a few hundred megaby
 
 Keep `BLOB_READ_WRITE_TOKEN` set while copying — files not yet in the bucket are still
 read from Blob. Sign in as an admin, open **Settings → Storage**: it shows whether the
-bucket answers with your credentials, and a **Copy files now** button that copies every
-file across (safe to run more than once; files already in the bucket are skipped). When
-it reports done, delete `BLOB_READ_WRITE_TOKEN` from Vercel and the Blob store from the
-Storage tab, and redeploy.
+bucket answers with your credentials, a **Test a browser upload** button that proves the
+CORS policy lets the app upload directly (the step most often got wrong), and a
+**Copy files now** button that copies every file across (safe to run more than once;
+files already in the bucket are skipped). When it reports done, delete
+`BLOB_READ_WRITE_TOKEN` from Vercel and the Blob store from the Storage tab, and redeploy.
 
 The same copy is available for scripts, with the `CRON_SECRET` from Vercel:
 
