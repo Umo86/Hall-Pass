@@ -8,6 +8,7 @@ import {
   supabaseProjectRef,
 } from "@/lib/auth/supabase-diagnostics";
 import { resolveSupabaseUrl } from "@/lib/auth/supabase-config";
+import { blobEnabled, s3Enabled, storageBackend } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -55,11 +56,9 @@ export async function GET() {
       supabaseKeyProject: keyProjectRef(supabasePublicKey()),
       databaseProject: databaseProjectRef(process.env.DATABASE_URL),
       authService: await checkAuthService(supabase.url ?? undefined, supabasePublicKey()),
-      storage: process.env.BLOB_READ_WRITE_TOKEN
-        ? "vercel-blob"
-        : Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY)
-          ? "supabase"
-          : "local",
+      storage: storageBackend(),
+      // Both set = files not yet copied to the bucket still read from Blob.
+      ...(s3Enabled() && blobEnabled() ? { storageNote: "migrating from vercel-blob" } : {}),
       email: process.env.RESEND_API_KEY ? "resend" : "logged-only",
       cron: Boolean(process.env.CRON_SECRET),
     },

@@ -13,7 +13,16 @@ import { INVALIDATABLE_STATUSES, signageTransition } from "@/lib/status/signage"
 import { invalidateOnNewVersion } from "@/lib/workflow";
 import { loadRun, persistRun } from "@/lib/workflow/persist";
 import { z } from "zod";
-import { buildStoragePath, getObject, putObject, sha256Hex } from "@/lib/storage";
+import {
+  MAX_DIRECT_UPLOAD_BYTES,
+  buildStoragePath,
+  getObject,
+  putObject,
+  s3Delete,
+  s3Enabled,
+  s3Stat,
+  sha256Hex,
+} from "@/lib/storage";
 import { notify } from "@/lib/notify";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import {
@@ -139,9 +148,22 @@ export async function recordUploadedArtwork(
   }
   if (!/^[0-9a-f]{64}$/.test(input.sha256)) return fail("Invalid file hash");
   const storagePath = input.pathname.slice("artwork/".length);
+  let fileSize = input.fileSize;
+  if (s3Enabled()) {
+    // The bucket is the source of truth for what actually arrived: a
+    // presigned PUT cannot cap the size up front, so an oversized object is
+    // removed here rather than recorded.
+    const stat = await s3Stat("artwork", storagePath).catch(() => null);
+    if (!stat) return fail("The uploaded file could not be found — try the upload again");
+    if (stat.size > MAX_DIRECT_UPLOAD_BYTES) {
+      await s3Delete("artwork", storagePath).catch(() => {});
+      return fail("Artwork files are limited to 2 GB");
+    }
+    fileSize = stat.size;
+  }
   let uploaded: Buffer | null = null;
   try {
-    uploaded = input.fileSize <= 32 * 1024 * 1024 ? await getObject("artwork", storagePath) : null;
+    uploaded = fileSize <= 32 * 1024 * 1024 ? await getObject("artwork", storagePath) : null;
   } catch {
     return fail("The uploaded file could not be found — try the upload again");
   }
@@ -157,7 +179,7 @@ export async function recordUploadedArtwork(
     filePath: storagePath,
     fileName: input.fileName,
     mimeType: input.mimeType || "application/octet-stream",
-    fileSize: input.fileSize,
+    fileSize,
     sha256: input.sha256,
     previewPath,
     notes: input.notes?.trim() ? input.notes.trim() : null,

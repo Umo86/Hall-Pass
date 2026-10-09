@@ -1,0 +1,54 @@
+name: Database backup
+
+# Supabase's Free plan keeps no backups, so this takes one every week and
+# puts it in the same S3/R2 bucket as the files, under backups/. Set these
+# repository secrets (Settings → Secrets and variables → Actions):
+#   DIRECT_DATABASE_URL  — the project's direct (non-pooled) Postgres URI
+#   S3_BUCKET, S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY — as in Vercel
+# Restore with:  pg_restore --clean --if-exists --no-owner -d "$DIRECT_DATABASE_URL" file.dump
+
+on:
+  schedule:
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Install the Postgres 17 client (matches the Supabase server)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo tee /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc >/dev/null
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+
+      - name: Dump the database
+        env:
+          DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
+        run: |
+          test -n "$DIRECT_DATABASE_URL" || { echo "DIRECT_DATABASE_URL secret is not set"; exit 1; }
+          STAMP=$(date -u +%Y-%m-%d)
+          /usr/lib/postgresql/17/bin/pg_dump "$DIRECT_DATABASE_URL" \
+            --format=custom --no-owner --no-privileges \
+            --schema=public --schema=drizzle \
+            --file="hallpass-$STAMP.dump"
+          ls -la hallpass-*.dump
+          echo "FILE=hallpass-$STAMP.dump" >> "$GITHUB_ENV"
+
+      - name: Upload to the bucket
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_EC2_METADATA_DISABLED: "true"
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
+        run: |
+          test -n "$S3_BUCKET" -a -n "$S3_ENDPOINT" || { echo "S3 secrets are not set"; exit 1; }
+          aws s3 cp "$FILE" "s3://$S3_BUCKET/backups/$FILE" --endpoint-url "$S3_ENDPOINT"
+          echo "Stored backups/$FILE"

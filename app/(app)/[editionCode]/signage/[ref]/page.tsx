@@ -18,7 +18,7 @@ import {
   panelWarning,
 } from "@/lib/queries/signage";
 import { itemFormOptions } from "@/lib/queries/item-form-options";
-import { blobEnabled, getDownloadUrl, getInlineUrl } from "@/lib/storage";
+import { blobEnabled, directUploadMode, getDownloadUrl, getInlineUrl } from "@/lib/storage";
 import { formatDate, formatDateTime, formatMoney, statusLabel } from "@/lib/format";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { APPROVED_OR_LATER } from "@/lib/status/signage";
@@ -636,6 +636,7 @@ async function ArtworkAndSignOff({
         invalidationSteps={invalidation.steps}
         panelWarning={panelWarning(invalidation.panels)}
         uploadBlocked={uploadBlocked}
+        directUpload={directUploadMode()}
         uploadPrefix={
           blobEnabled()
             ? `artwork/${bundle.organisation.id}/${bundle.edition.id}/signage_item/${item.id}/`

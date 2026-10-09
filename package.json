@@ -18,6 +18,9 @@
     "db:seed": "tsx lib/db/seed/index.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1148.0",
+    "@aws-sdk/lib-storage": "^3.1148.0",
+    "@aws-sdk/s3-request-presigner": "^3.1148.0",
     "@hookform/resolvers": "^5.9.1",
     "@radix-ui/react-dialog": "^1.1.23",
     "@radix-ui/react-dropdown-menu": "^2.1.24",

@@ -66,10 +66,12 @@ pnpm build
    `DATABASE_URL_UNPOOLED`, `POSTGRES_URL_NON_POOLING` and uses the first reachable one.
 3. **Schema + demo data** — open the database's SQL editor (Storage tab → Open in Neon →
    SQL Editor), paste the whole of `database-setup.sql` (repo root; re-runnable) and run it.
-4. **Files** — in the Storage tab, also create a **Blob** store. Its
-   `BLOB_READ_WRITE_TOKEN` is injected automatically; uploads then persist in Vercel Blob,
-   with large artwork going browser → Blob directly (up to 2 GB per file). Without it,
-   uploads fall back to the serverless filesystem, which does not persist.
+4. **Files** — an S3-compatible bucket (Cloudflare R2 recommended, see
+   [Running on free plans](#running-on-free-plans-supabase-free--cloudflare-r2)) via
+   `S3_BUCKET`, `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`. Large artwork goes
+   browser → bucket directly through a presigned upload (up to 2 GB per file). Vercel Blob
+   (`BLOB_READ_WRITE_TOKEN`, from the Storage tab) still works as an alternative; without
+   either, uploads fall back to the serverless filesystem, which does not persist.
 5. Remaining env vars (Settings → Environment Variables):
    - `DEV_AUTH=1` — demo sign-in (one-click seeded users; remove before real use)
    - `STANDS_ENABLED=1` — optional; shows stand approvals (hidden by default)
@@ -85,6 +87,81 @@ Supabase remains supported as an alternative (its pooler URIs in `DATABASE_URL`/
 `DIRECT_DATABASE_URL`, Storage private buckets named `artwork`, `documents`, `photos`,
 `floorplans`, `exports`, and `NEXT_PUBLIC_SUPABASE_URL` + publishable key for real email
 sign-in). `database-setup.sql` runs unchanged in its SQL editor.
+
+## Running on free plans (Supabase Free + Cloudflare R2)
+
+The cheapest setup that still copes with large print-ready graphics:
+
+| Part | Service | Free allowance | What to know |
+| --- | --- | --- | --- |
+| Database + sign-in | Supabase **Free** | 500 MB database, 2 projects per organisation | Pauses after a quiet week; the daily cron's queries keep it awake. No automatic backups — the weekly GitHub Action below takes one. |
+| Files (artwork, photos, documents, exports) | Cloudflare **R2** | 10 GB storage, no egress fees, up to 5 GB per upload | Needs a Cloudflare account; R2 may ask for a payment method on first use but charges nothing inside the allowance. |
+| App | Vercel **Hobby** | Cron once a day, 1 GB Blob | Hobby is for non-commercial use; move to Pro when the tool runs a real show for a business. |
+
+Supabase Storage on the Free plan caps every file at 50 MB and Vercel Blob on Hobby at
+1 GB in total, which is why files live in R2.
+
+### 1. Cloudflare R2 bucket
+
+1. Cloudflare dashboard → **R2 Object Storage** → **Create bucket** (name e.g. `hall-pass`,
+   location hint Europe). Leave it private.
+2. **Manage R2 API Tokens** → **Create API token** → permission *Object Read & Write*,
+   scoped to that bucket. Copy the **Access Key ID**, **Secret Access Key** and the
+   endpoint `https://<account id>.r2.cloudflarestorage.com`.
+3. Bucket → **Settings** → **CORS policy** — so the browser can upload straight to it:
+   ```json
+   [
+     {
+       "AllowedOrigins": ["https://hall-pass-alpha.vercel.app"],
+       "AllowedMethods": ["PUT", "GET"],
+       "AllowedHeaders": ["content-type"],
+       "ExposeHeaders": ["ETag"],
+       "MaxAgeSeconds": 3600
+     }
+   ]
+   ```
+   Add your own domain to `AllowedOrigins` when you have one.
+4. Vercel → project → **Settings → Environment Variables** (Production and Preview):
+   `S3_BUCKET`, `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`. Redeploy.
+   `/api/health` now reports `"storage":"s3"`.
+
+### 2. Move the existing files out of Vercel Blob
+
+Keep `BLOB_READ_WRITE_TOKEN` set while copying — files not yet in the bucket are still
+read from Blob. Then, with the `CRON_SECRET` from Vercel:
+
+```bash
+curl -X POST -H "Authorization: Bearer $CRON_SECRET" \
+  "https://hall-pass-alpha.vercel.app/api/admin/storage/migrate?limit=50"
+```
+
+Repeat (passing `?cursor=<nextCursor>` when the response includes one) until it returns
+`"done": true`. It is safe to re-run; copied files are skipped. Then delete
+`BLOB_READ_WRITE_TOKEN` from Vercel and the Blob store from the Storage tab.
+
+### 3. Supabase from Pro to Free (same project, same keys)
+
+A project transfer keeps the URL, keys, data and sign-ins, so nothing in Vercel changes:
+
+1. Sign in to the Supabase account that will own it and create an organisation on the
+   **Free** plan (Dashboard → New organisation). If that is a different login, invite the
+   current account's email into that organisation as a member.
+2. From the current account: project → **Settings → General → Transfer project** → choose
+   the Free organisation → confirm. Expect 1–2 minutes of downtime. Pre-requisites: no
+   GitHub integration or log drains on the project, and the target organisation must have a
+   free project slot.
+3. **Billing** on the old organisation → downgrade to Free / cancel so the Pro charge stops.
+4. Check `/api/health` and sign in once. The daily cron keeps the free project from pausing;
+   if it is ever paused, open it in the dashboard and click **Resume**.
+
+### 4. Weekly backup to the bucket
+
+The Free plan has no backups, so `.github/workflows/db-backup.yml` dumps the database
+every Monday into `backups/` in the bucket. Add the repository secrets
+`DIRECT_DATABASE_URL`, `S3_BUCKET`, `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`,
+`S3_SECRET_ACCESS_KEY` (GitHub → Settings → Secrets and variables → Actions) and run the
+workflow once by hand to check it. Restore with
+`pg_restore --clean --if-exists --no-owner -d "$DIRECT_DATABASE_URL" hallpass-<date>.dump`.
 
 ## Imagery
 

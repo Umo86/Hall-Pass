@@ -28,6 +28,52 @@ async function sha256OfFile(file: File): Promise<string> {
   return hasher.digest("hex");
 }
 
+/**
+ * Ask the server for a presigned PUT, then send the file straight to the
+ * bucket with progress. Resolves to the stored pathname ("artwork/…").
+ */
+async function putToBucket(
+  file: File,
+  itemId: string,
+  onProgress: (percentage: number) => void,
+): Promise<string> {
+  const res = await fetch("/api/uploads/sign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      itemId,
+      fileName: file.name,
+      contentType: file.type || undefined,
+      fileSize: file.size,
+    }),
+  });
+  const signed = (await res.json().catch(() => ({}))) as {
+    url?: string;
+    contentType?: string;
+    pathname?: string;
+    error?: string;
+  };
+  if (!res.ok || !signed.url || !signed.pathname || !signed.contentType) {
+    throw new Error(signed.error ?? "Upload refused");
+  }
+  await new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", signed.url!);
+    // Must match the signed request exactly.
+    xhr.setRequestHeader("Content-Type", signed.contentType!);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () =>
+      xhr.status >= 200 && xhr.status < 300
+        ? resolve()
+        : reject(new Error(`Upload failed (${xhr.status}) — check the bucket's CORS settings`));
+    xhr.onerror = () => reject(new Error("Upload failed — check your connection and try again"));
+    xhr.send(file);
+  });
+  return signed.pathname;
+}
+
 export type VersionRow = {
   id: string;
   versionNumber: number;
@@ -96,6 +142,7 @@ export function ArtworkTab({
   panelWarning,
   uploadBlocked,
   uploadPrefix = null,
+  directUpload = null,
 }: {
   itemId: string;
   versions: VersionRow[];
@@ -105,8 +152,10 @@ export function ArtworkTab({
   /** Stand designs: panels that may no longer fit once the design changes. */
   panelWarning?: string | null;
   uploadBlocked: string | null;
-  /** Set when Vercel Blob is configured: enables direct browser uploads. */
+  /** Vercel Blob only: the folder the browser may write to. */
   uploadPrefix?: string | null;
+  /** Browser → storage directly (S3/R2 presigned PUT, or Vercel Blob); null = via the server. */
+  directUpload?: "s3" | "blob" | null;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -137,21 +186,26 @@ export function ArtworkTab({
     if (!file) return;
     setError(null);
     start(async () => {
-      if (uploadPrefix) {
-        // Browser → Vercel Blob directly, so gigabyte files skip the server.
+      if (directUpload === "s3" || (directUpload === "blob" && uploadPrefix)) {
+        // Browser → storage directly, so gigabyte files skip the server.
         try {
           setProgress("Preparing…");
           const sha256 = await sha256OfFile(file);
-          const clean = file.name.replace(/[^\w.-]+/g, "_").slice(0, 120);
-          const pathname = `${uploadPrefix}${crypto.randomUUID()}-${clean}`;
-          const { upload } = await import("@vercel/blob/client");
-          await upload(pathname, file, {
-            access: "public",
-            handleUploadUrl: "/api/blob/upload",
-            clientPayload: JSON.stringify({ itemId }),
-            multipart: file.size > 50 * 1024 * 1024,
-            onUploadProgress: ({ percentage }) => setProgress(`Uploading ${percentage}%`),
-          });
+          let pathname: string;
+          if (directUpload === "s3") {
+            pathname = await putToBucket(file, itemId, (pct) => setProgress(`Uploading ${pct}%`));
+          } else {
+            const clean = file.name.replace(/[^\w.-]+/g, "_").slice(0, 120);
+            pathname = `${uploadPrefix}${crypto.randomUUID()}-${clean}`;
+            const { upload } = await import("@vercel/blob/client");
+            await upload(pathname, file, {
+              access: "public",
+              handleUploadUrl: "/api/blob/upload",
+              clientPayload: JSON.stringify({ itemId }),
+              multipart: file.size > 50 * 1024 * 1024,
+              onUploadProgress: ({ percentage }) => setProgress(`Uploading ${percentage}%`),
+            });
+          }
           setProgress("Recording version…");
           const res = await recordUploadedArtwork({
             itemId,
