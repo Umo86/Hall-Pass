@@ -139,8 +139,6 @@ export type Action =
   | { type: "signage.resume" }
   | { type: "signage.reopen" }
   | { type: "signage.close" }
-  | { type: "change_request.raise" }
-  | { type: "change_request.approve" }
   | { type: "stand.view"; sub: StandSubmissionCtx }
   | { type: "stand.review" }
   | { type: "stand.submit"; sub: StandSubmissionCtx }
@@ -149,7 +147,6 @@ export type Action =
   | { type: "comment.internal.write" }
   | { type: "comment.internal.read" }
   | { type: "comment.external.write"; entity: SignageItemCtx | StandSubmissionCtx }
-  | { type: "onsite.confirm_install" }
   | { type: "snag.manage" }
   | { type: "export.run"; kind: string }
   | { type: "settings.manage" }
@@ -458,11 +455,6 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
     case "signage.close":
       return role === "admin" || role === "ops";
 
-    case "change_request.raise":
-      return role === "admin" || role === "ops" || role === "marketing" || role === "sales";
-    case "change_request.approve":
-      return role === "admin" || role === "ops";
-
     case "stand.review":
       return role === "admin" || role === "ops";
     case "stand.submit":
@@ -481,7 +473,6 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
     case "comment.external.write":
       return role !== "viewer";
 
-    case "onsite.confirm_install":
     case "snag.manage":
       return role === "admin" || role === "ops" || role === "marketing";
 

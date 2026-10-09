@@ -180,6 +180,33 @@ export async function s3Stat(
   }
 }
 
+/** One page of objects under a prefix (the key includes the bucket segment). */
+export async function s3List(
+  prefix: string,
+  cursor?: string,
+): Promise<{ objects: { key: string; size: number; lastModified: Date }[]; nextCursor?: string }> {
+  const { client, bucket: name } = await s3Client();
+  const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
+  const res = await client.send(
+    new ListObjectsV2Command({
+      Bucket: name,
+      Prefix: prefix,
+      ContinuationToken: cursor,
+      MaxKeys: 1000,
+    }),
+  );
+  return {
+    objects: (res.Contents ?? [])
+      .filter((o) => o.Key)
+      .map((o) => ({
+        key: o.Key!,
+        size: Number(o.Size ?? 0),
+        lastModified: o.LastModified ?? new Date(0),
+      })),
+    nextCursor: res.IsTruncated ? res.NextContinuationToken : undefined,
+  };
+}
+
 export async function s3Delete(bucket: Bucket, storagePath: string): Promise<void> {
   const { client, bucket: name } = await s3Client();
   const { DeleteObjectCommand } = await import("@aws-sdk/client-s3");

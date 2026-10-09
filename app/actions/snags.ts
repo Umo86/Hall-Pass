@@ -12,7 +12,7 @@ import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { notify } from "@/lib/notify";
 import { itemPath, type ItemKind } from "@/lib/edition-path";
 import { buildStoragePath, putObject } from "@/lib/storage";
-import { loadItemBundle, type ItemBundle } from "@/lib/domain/signage";
+import { loadItemBundle, resolveAssigneeUserIds, type ItemBundle } from "@/lib/domain/signage";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { signageTransition, type SignageStatus } from "@/lib/status/signage";
 
@@ -150,6 +150,27 @@ export async function raiseSnag(formData: FormData): Promise<ActionResult> {
       entityType: "signage_item",
       entityId: item.id,
     });
+    // The supplier who made it hears too, if they have portal access — the
+    // snag shows on their item page.
+    if (item.supplierId) {
+      const supplierUsers = await resolveAssigneeUserIds(
+        tx,
+        session.organisation.id,
+        edition.id,
+        bundle.venue.id,
+        { supplierId: item.supplierId, sponsorId: item.sponsorId },
+        { assignedRole: "supplier", assignedUserId: null },
+      );
+      await notify(tx, {
+        userIds: supplierUsers.filter((id) => id !== session.user.id),
+        kind: "snag",
+        title: `Snag on ${item.ref} — ${item.name}`,
+        body: `${parsed.data.description} (${parsed.data.severity})`,
+        link: `/portal/items/${encodeURIComponent(item.ref)}`,
+        entityType: "signage_item",
+        entityId: item.id,
+      });
+    }
   });
   revalidatePath("/", "layout");
   return success(undefined, next ? "Snag raised — item marked Snagged" : "Snag raised");
@@ -173,6 +194,9 @@ export async function updateSnag(formData: FormData): Promise<ActionResult> {
   if (!bundle || bundle.item.deletedAt) return fail("Snag not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   const closing = parsed.data.status === "resolved" || parsed.data.status === "wont_fix";
+  // While on hold the item's status is frozen, so clearing its last snag
+  // could not move it back to Installed — resume first.
+  if (bundle.item.status === "on_hold") return fail("Resume the item first — it is on hold");
   // An open snag belongs on an installed (or snagged) item: a closed or
   // reopened item would otherwise carry an open snag nothing can act on.
   if (!closing && !["installed", "snagged"].includes(bundle.item.status)) {

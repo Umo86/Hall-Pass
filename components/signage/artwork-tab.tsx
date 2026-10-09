@@ -374,7 +374,14 @@ export function ArtworkTab({
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>
               Cancel
             </Button>
-            <Button disabled={pending} onClick={doUpload}>
+            <Button
+              disabled={pending}
+              onClick={() => {
+                // Close first so the progress and any error show on the page.
+                setConfirmOpen(false);
+                doUpload();
+              }}
+            >
               {invalidationCount > 0 ? "Upload and invalidate" : "Upload"}
             </Button>
           </DialogFooter>

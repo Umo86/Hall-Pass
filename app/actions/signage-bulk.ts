@@ -5,7 +5,7 @@ import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { signageItems, suppliers } from "@/lib/db/schema";
-import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
+import { itemAuthzCtx, loadItemBundle, syncConfirmationDueDates } from "@/lib/domain/signage";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
@@ -111,6 +111,7 @@ export async function bulkSignageAction(
       const item = bundle.item as unknown as Record<string, unknown>;
       await db.transaction(async (tx) => {
         await tx.update(signageItems).set(set).where(eq(signageItems.id, id));
+        if (action === "set_install") await syncConfirmationDueDates(tx, bundle.item, set);
         await writeAudit(tx, {
           organisationId: session.organisation.id,
           editionId: bundle.edition.id,

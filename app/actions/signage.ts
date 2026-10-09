@@ -41,6 +41,7 @@ import {
   ownEdition,
   resolveItemCreationRecipients,
   startItemRun,
+  syncConfirmationDueDates,
 } from "@/lib/domain/signage";
 import { diffDaysIso } from "@/lib/deadlines";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
@@ -55,7 +56,15 @@ const itemFields = z.object({
   // Sign-off choices arrive as JSON from the form's hidden field.
   signoffs: z
     .preprocess(
-      (v) => (typeof v === "string" ? (v ? JSON.parse(v) : null) : v),
+      (v) => {
+        if (typeof v !== "string") return v;
+        if (!v) return null;
+        try {
+          return JSON.parse(v);
+        } catch {
+          return v; // not an array → an ordinary validation issue, not a crash
+        }
+      },
       z
         .array(z.object({ stepId: z.string().uuid(), userId: z.string().uuid().nullable() }))
         .max(20)
@@ -462,6 +471,8 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
       }
 
       await tx.update(signageItems).set(set).where(eq(signageItems.id, id));
+      // A moved date moves the matching confirmation step's due date too.
+      await syncConfirmationDueDates(tx, item, set);
       if (restarted) {
         const updated = { ...bundle, item: { ...item, ...set } as typeof item };
         const instances = await startItemRun(tx, updated, new Date());

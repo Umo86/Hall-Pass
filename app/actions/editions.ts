@@ -488,10 +488,15 @@ const updateSchema = datesSchema
     id: z.string().uuid(),
     // Show deadlines: days before build, or a fixed date that wins. Arrives
     // as JSON from the dialog; leaving it out keeps them as they are.
-    deadlines: z.preprocess(
-      (v) => (typeof v === "string" ? (v ? JSON.parse(v) : undefined) : v),
-      z.array(deadlineRowSchema).max(20).optional(),
-    ),
+    deadlines: z.preprocess((v) => {
+      if (typeof v !== "string") return v;
+      if (!v) return undefined;
+      try {
+        return JSON.parse(v);
+      } catch {
+        return v; // not an array → an ordinary validation issue, not a crash
+      }
+    }, z.array(deadlineRowSchema).max(20).optional()),
     name: z.string().trim().min(1).max(200),
     status: z.enum(["planning", "live", "closed", "archived"]),
     signageBudget: z.preprocess(blankToNull, z.coerce.number().nonnegative().nullable().optional()),

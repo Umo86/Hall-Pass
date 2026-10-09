@@ -136,11 +136,6 @@ describe("staff permission matrix (brief 3.3)", () => {
     expectRoles({ type: "signage.close" }, ["admin", "ops"]);
   });
 
-  it("change requests", () => {
-    expectRoles({ type: "change_request.raise" }, ["admin", "ops", "marketing", "sales"]);
-    expectRoles({ type: "change_request.approve" }, ["admin", "ops"]);
-  });
-
   it("review stand submissions — admin and ops only", () => {
     expectRoles({ type: "stand.review" }, ["admin", "ops"]);
   });
@@ -168,8 +163,7 @@ describe("staff permission matrix (brief 3.3)", () => {
     expectRoles({ type: "comment.internal.read" }, allStaff);
   });
 
-  it("onsite: confirm install and snags", () => {
-    expectRoles({ type: "onsite.confirm_install" }, ["admin", "ops", "marketing"]);
+  it("snags: admin, ops and marketing", () => {
     expectRoles({ type: "snag.manage" }, ["admin", "ops", "marketing"]);
   });
 

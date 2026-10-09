@@ -90,10 +90,12 @@ stages A–G). Owner decisions and the choices made along the way:
   right is switched off can't be named and aren't sent sign-off requests.
 - **Signage comments are staff-only**; partners see the item page (artwork,
   spec, label, their sign-off buttons) instead.
-- **Item page has five tabs** — Details, Artwork & sign-off, Change requests,
-  Comments, History — and old tab links still resolve.
-- **Change requests are only for signed-off items**; before sign-off the item
-  is edited directly.
+- **Item page has four tabs** — Details, Artwork & sign-off, Comments, History
+  (stand designs add Panels) — and old tab links still resolve.
+- **There is no separate change-request flow**: editing a signed-off item is
+  the one way to change it, and saving a change to its spec or approvers
+  restarts sign-off (never silently). Installed items stay locked until an
+  admin or operations user reopens them.
 - **Exports are generated on demand, not stored**; the exports table is the
   history. PDFs embed Noto Sans (OFL, in `lib/exports/fonts/`) so every name
   prints.

@@ -81,7 +81,16 @@ export function RaiseSnagButton({
 
   return (
     <>
-      <Button size={size} variant={variant} onClick={() => setOpen(true)}>
+      <Button
+        size={size}
+        variant={variant}
+        onClick={() => {
+          // Nothing carries over from a cancelled attempt.
+          setError(null);
+          setFile(null);
+          setOpen(true);
+        }}
+      >
         Raise snag
       </Button>
       <Dialog open={open} onOpenChange={(o) => !o && setOpen(false)}>
@@ -161,6 +170,9 @@ export function SnagsPanel({
   const [closing, setClosing] = useState<{ id: string; status: "resolved" | "wont_fix" } | null>(
     null,
   );
+  // The wording the dialog was opened with — kept while it fades out, so
+  // "Resolved" does not flip to "Won't fix" mid-animation.
+  const [kind, setKind] = useState<"resolved" | "wont_fix">("resolved");
   const [note, setNote] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
@@ -190,6 +202,15 @@ export function SnagsPanel({
         router.refresh();
       }
     });
+  }
+
+  /** Every dialog starts clean: no note or photo from the last snag. */
+  function openClosing(id: string, status: "resolved" | "wont_fix") {
+    setNote("");
+    setFile(null);
+    setMessage(null);
+    setKind(status);
+    setClosing({ id, status });
   }
 
   const open = snags.filter((s) => s.status === "open" || s.status === "in_progress");
@@ -282,7 +303,7 @@ export function SnagsPanel({
                     <Button
                       size="sm"
                       disabled={pending}
-                      onClick={() => setClosing({ id: snag.id, status: "resolved" })}
+                      onClick={() => openClosing(snag.id, "resolved")}
                     >
                       Resolved
                     </Button>
@@ -290,7 +311,7 @@ export function SnagsPanel({
                       size="sm"
                       variant="outline"
                       disabled={pending}
-                      onClick={() => setClosing({ id: snag.id, status: "wont_fix" })}
+                      onClick={() => openClosing(snag.id, "wont_fix")}
                     >
                       Won&apos;t fix
                     </Button>
@@ -316,10 +337,10 @@ export function SnagsPanel({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {closing?.status === "resolved" ? "Mark this snag resolved" : "Mark as won't fix"}
+              {kind === "resolved" ? "Mark this snag resolved" : "Mark as won't fix"}
             </DialogTitle>
             <DialogDescription>
-              {closing?.status === "resolved"
+              {kind === "resolved"
                 ? "Say what was done and add a photo of the fix if you have one."
                 : "Say why it is being left as it is."}
             </DialogDescription>
@@ -328,7 +349,7 @@ export function SnagsPanel({
             <Textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder={closing?.status === "resolved" ? "What was done" : "Why it stays"}
+              placeholder={kind === "resolved" ? "What was done" : "Why it stays"}
               rows={3}
             />
             <Input
@@ -343,10 +364,10 @@ export function SnagsPanel({
               Cancel
             </Button>
             <Button
-              disabled={pending || (closing?.status === "wont_fix" && !note.trim())}
+              disabled={pending || (kind === "wont_fix" && !note.trim())}
               onClick={() => closing && move(closing.id, closing.status, true)}
             >
-              {closing?.status === "resolved" ? "Resolved" : "Won't fix"}
+              {kind === "resolved" ? "Resolved" : "Won't fix"}
             </Button>
           </DialogFooter>
         </DialogContent>

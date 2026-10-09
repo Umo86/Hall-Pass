@@ -158,7 +158,12 @@ export function DecideButtons(props: Props) {
                 ? "destructive"
                 : "outline"
           }
-          onClick={() => setOpen(kind)}
+          onClick={() => {
+            // A fresh dialog: no error from the last attempt, today's date for confirmations.
+            setError(null);
+            if (kind === "confirm") setConfirmedDate(localToday());
+            setOpen(kind);
+          }}
         >
           {props.compact && kind === "approve_with_conditions"
             ? "With conditions"
@@ -167,9 +172,17 @@ export function DecideButtons(props: Props) {
               : LABELS[kind]}
         </Button>
       ))}
-      {error && <span className="text-destructive text-xs">{error}</span>}
+      {error && open === null && <span className="text-destructive text-xs">{error}</span>}
 
-      <Dialog open={open !== null} onOpenChange={(o) => !o && setOpen(null)}>
+      <Dialog
+        open={open !== null}
+        onOpenChange={(o) => {
+          if (!o) {
+            setOpen(null);
+            setError(null);
+          }
+        }}
+      >
         <DialogContent>
           {open && (
             <>
@@ -237,7 +250,13 @@ export function DecideButtons(props: Props) {
               )}
               {error && <p className="text-destructive text-sm">{error}</p>}
               <DialogFooter>
-                <Button variant="outline" onClick={() => setOpen(null)}>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setOpen(null);
+                    setError(null);
+                  }}
+                >
                   Cancel
                 </Button>
                 <Button

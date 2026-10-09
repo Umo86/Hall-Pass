@@ -4,7 +4,14 @@ import { db } from "@/lib/db/client";
 import { requirePortalSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
-import { getItemByRef, getItemInstances, getItemVersions, getLabelRows } from "@/lib/queries/signage";
+import {
+  getItemByRef,
+  getItemInstances,
+  getItemSnags,
+  getItemVersions,
+  getLabelRows,
+} from "@/lib/queries/signage";
+import { statusLabel } from "@/lib/format";
 import { labelWhen, labelWhere, specLabelFields } from "@/lib/exports/label-fields";
 import { APPROVED_OR_LATER } from "@/lib/status/signage";
 import { getDownloadUrl, getInlineUrl } from "@/lib/storage";
@@ -30,11 +37,14 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
     notFound();
   }
 
-  const [[label], versions, instances] = await Promise.all([
+  const [[label], versions, instances, snags] = await Promise.all([
     getLabelRows({ itemIds: [item.id] }),
     getItemVersions(item.id),
     getItemInstances(item.id),
+    item.kind === "sponsorship_item" ? [] : getItemSnags(item.id),
   ]);
+  // Suppliers and contractors are told about snags; show them what is open.
+  const openSnags = snags.filter((s) => s.status === "open" || s.status === "in_progress");
 
   // Suppliers only get artwork once it is signed off (the locked version);
   // everyone else sees the version currently under review.
@@ -49,7 +59,8 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
           getInlineUrl("artwork", current.previewPath ?? current.filePath).catch(() => null),
         ])
       : [null, null];
-  const previewIsImage = Boolean(current?.previewPath) || /\.(png|jpe?g|webp|gif)$/i.test(current?.fileName ?? "");
+  const previewIsImage =
+    Boolean(current?.previewPath) || /\.(png|jpe?g|webp|gif)$/i.test(current?.fileName ?? "");
 
   const run = instances
     .filter(({ instance }) => instance.runNumber === item.currentRunNumber)
@@ -98,7 +109,10 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
               <p className="text-sm">
                 {instance.stepNameSnapshot}
                 {instance.dueAt ? (
-                  <span className="text-muted-foreground"> · due {formatDateTime(instance.dueAt)}</span>
+                  <span className="text-muted-foreground">
+                    {" "}
+                    · due {formatDateTime(instance.dueAt)}
+                  </span>
                 ) : null}
               </p>
               <DecideButtons
@@ -145,7 +159,12 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
               {artworkUrl && (
                 <>
                   {" · "}
-                  <a className="text-primary hover:underline" href={artworkUrl} target="_blank" rel="noreferrer">
+                  <a
+                    className="text-primary hover:underline"
+                    href={artworkUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     Open full size
                   </a>
                 </>
@@ -180,6 +199,25 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
         </p>
       </section>
 
+      {openSnags.length > 0 && (
+        <section className="space-y-2 rounded-lg border border-rose-300 bg-rose-50 p-4 dark:border-rose-900 dark:bg-rose-950/30">
+          <h2 className="text-sm font-semibold">Snags to fix</h2>
+          <ul className="space-y-1 text-sm">
+            {openSnags.map((snag) => (
+              <li key={snag.id} className="flex flex-wrap items-center gap-2">
+                <StatusBadge status={snag.status} />
+                <span>{snag.description}</span>
+                <span className="text-muted-foreground text-xs">{statusLabel(snag.severity)}</span>
+                <span className="text-muted-foreground text-xs">{formatDate(snag.createdAt)}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-muted-foreground text-xs">
+            Operations marks a snag resolved once it is fixed.
+          </p>
+        </section>
+      )}
+
       {run.length > 0 && (
         <section className="space-y-2">
           <h2 className="text-sm font-semibold">Sign-off progress</h2>
@@ -190,7 +228,8 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
                 <span>{instance.stepNameSnapshot}</span>
                 {instance.decidedAt && (
                   <span className="text-muted-foreground text-xs">
-                    {decider?.fullName || decider?.email || ""} · {formatDateTime(instance.decidedAt)}
+                    {decider?.fullName || decider?.email || ""} ·{" "}
+                    {formatDateTime(instance.decidedAt)}
                   </span>
                 )}
                 {instance.conditionsText && (

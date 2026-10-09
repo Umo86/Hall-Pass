@@ -536,7 +536,7 @@ export function EditEditionDialog({
                   {edition.deadlines!.map((d) => (
                     <div
                       key={d.key}
-                      className="grid grid-cols-[1fr_5.5rem_9.5rem] items-center gap-2 text-sm"
+                      className="grid grid-cols-1 items-center gap-2 text-sm sm:grid-cols-[minmax(0,1fr)_5.5rem_9.5rem]"
                     >
                       <Label htmlFor={`dl_days_${d.key}-${edition.id}`} className="font-normal">
                         {d.label}

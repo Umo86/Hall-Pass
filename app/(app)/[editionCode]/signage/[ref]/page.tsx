@@ -135,8 +135,9 @@ export default async function ItemDetailPage({
   const canEdit =
     can(session.actor, { type: "signage.edit", item: itemCtx }) &&
     !editionIsReadOnly(bundle.edition.status);
+  // Same rule as the server and the Onsite page: photos are for signs only.
   const requiresInstallPhoto =
-    !isSponsorship && !isStand && session.organisation.settings.install_photo_required;
+    item.kind === "signage" && session.organisation.settings.install_photo_required;
 
   return (
     <div className="flex flex-col gap-4 p-4 sm:p-6">

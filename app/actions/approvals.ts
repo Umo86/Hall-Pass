@@ -118,7 +118,7 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
         !(bundle as { item: { supplierId: string | null } }).item.supplierId
       ) {
         throw new WorkflowError(
-          "Choose the supplier on the Details tab before confirming it has gone to print",
+          "Set the supplier on the Details tab first (anyone who can edit costs can) before confirming it has gone to print",
         );
       }
 

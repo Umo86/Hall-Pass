@@ -51,6 +51,12 @@ export function LifecycleButtons({
   const [pending, start] = useTransition();
   const router = useRouter();
 
+  /** Each dialog starts with an empty reason — nothing carries over from the last one. */
+  function openDialog(d: "hold" | "reopen" | "delete") {
+    setReason("");
+    setDialog(d);
+  }
+
   function run(fn: () => Promise<{ ok: boolean; error?: string; message?: string }>) {
     setMessage(null);
     start(async () => {
@@ -63,7 +69,10 @@ export function LifecycleButtons({
           : { text: res.error ?? "Something went wrong", error: true },
       );
       setDialog(null);
-      if (res.ok) router.refresh();
+      if (res.ok) {
+        setReason("");
+        router.refresh();
+      }
     });
   }
 
@@ -107,7 +116,7 @@ export function LifecycleButtons({
         </Button>
       )}
       {canHold && INSTALLED.includes(status) && (
-        <Button size="sm" variant="outline" onClick={() => setDialog("reopen")}>
+        <Button size="sm" variant="outline" onClick={() => openDialog("reopen")}>
           Reopen
         </Button>
       )}
@@ -122,12 +131,12 @@ export function LifecycleButtons({
         </Button>
       )}
       {canHold && !["on_hold", "closed"].includes(status) && (
-        <Button size="sm" variant="outline" onClick={() => setDialog("hold")}>
+        <Button size="sm" variant="outline" onClick={() => openDialog("hold")}>
           Put on hold
         </Button>
       )}
       {canDelete && (
-        <Button size="sm" variant="destructive" onClick={() => setDialog("delete")}>
+        <Button size="sm" variant="destructive" onClick={() => openDialog("delete")}>
           Delete
         </Button>
       )}

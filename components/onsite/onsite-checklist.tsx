@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { parseAsString, useQueryState } from "nuqs";
@@ -72,11 +72,19 @@ export function OnsiteChecklist({
     return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]));
   }, [cards]);
 
+  // A hall filter left over from a link that no longer matches anything would
+  // show an empty list with no chip to clear it.
+  useEffect(() => {
+    if (hall && !hallOptions.some(([id]) => id === hall)) void setHall("");
+  }, [hall, hallOptions, setHall]);
+
   const visible = cards.filter((c) => {
     if (hall && c.hallId !== hall) return false;
     // "Today" is everything due by today, including anything overdue and
-    // anything with no date yet — nothing gets hidden by accident.
-    if (when === "today" && c.installDate && c.installDate > today) return false;
+    // anything with no date yet — nothing gets hidden by accident. Snagged
+    // items stay in view whatever their date: they need someone today.
+    const needsAttention = c.status === "snagged" || c.openSnags > 0;
+    if (when === "today" && c.installDate && c.installDate > today && !needsAttention) return false;
     if (show === "todo" && (c.status === "closed" || c.status === "installed")) return false;
     return true;
   });
@@ -253,9 +261,16 @@ export function OnsiteChecklist({
                       Confirm Delivered on the item first
                     </span>
                   )}
-                  {canSnag && ["installed", "snagged"].includes(c.status) && (
-                    <RaiseSnagButton itemId={c.id} itemRef={c.ref} />
+                  {!c.confirm && c.status === "delivered" && (
+                    <span className="text-muted-foreground text-xs">
+                      Waiting for Operations to confirm Installed
+                    </span>
                   )}
+                  {canSnag &&
+                    c.kind !== "sponsorship_item" &&
+                    ["installed", "snagged"].includes(c.status) && (
+                      <RaiseSnagButton itemId={c.id} itemRef={c.ref} />
+                    )}
                   {canClose && c.status === "installed" && (
                     <Button
                       size="sm"

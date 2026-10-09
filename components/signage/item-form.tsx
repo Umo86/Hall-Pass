@@ -635,7 +635,7 @@ export function ItemForm({
                         name="ownerUserId"
                         defaultValue={values.ownerUserId ?? ""}
                       >
-                        <option value="">{mode === "create" ? "Me" : "—"}</option>
+                        <option value="">{mode === "create" ? "Me" : "Keep current owner"}</option>
                         {options.people.map((p) => (
                           <option key={p.id} value={p.id}>
                             {p.name} ({roleLabel(p.role)})

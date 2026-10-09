@@ -5,6 +5,7 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db, Tx } from "@/lib/db/client";
 import {
+  approvalInstances,
   contractors,
   editions,
   events,
@@ -40,6 +41,45 @@ import { itemPath } from "@/lib/edition-path";
 
 export type ItemRow = typeof signageItems.$inferSelect;
 export type EditionRow = typeof editions.$inferSelect;
+
+/** The confirmation step each planned date drives. */
+const DATE_STEPS = [
+  ["printDeadline", "Sent to print"],
+  ["deliveryDate", "Delivered"],
+  ["installDate", "Installed"],
+] as const;
+
+/**
+ * Keep the pending confirmation steps' due dates in line with the item's
+ * planned dates after an edit (the engine snapshots them at activation).
+ */
+export async function syncConfirmationDueDates(
+  tx: Tx,
+  item: { id: string; currentRunNumber: number },
+  changes: {
+    printDeadline?: string | null;
+    deliveryDate?: string | null;
+    installDate?: string | null;
+  },
+): Promise<void> {
+  if (item.currentRunNumber <= 0) return;
+  for (const [key, step] of DATE_STEPS) {
+    const date = changes[key];
+    if (date === undefined) continue;
+    await tx
+      .update(approvalInstances)
+      .set({ dueAt: date ? new Date(`${date}T17:00:00Z`) : null })
+      .where(
+        and(
+          eq(approvalInstances.entityType, "signage_item"),
+          eq(approvalInstances.entityId, item.id),
+          eq(approvalInstances.runNumber, item.currentRunNumber),
+          eq(approvalInstances.stepNameSnapshot, step),
+          inArray(approvalInstances.status, ["pending", "waiting"]),
+        ),
+      );
+  }
+}
 
 export type ItemBundle = {
   item: ItemRow;

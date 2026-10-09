@@ -51,6 +51,7 @@ export async function POST(request: Request) {
   let skipped = 0;
   const failed: { pathname: string; error: string }[] = [];
   const started = Date.now();
+  let stoppedEarly = false;
 
   for (const blob of page.blobs) {
     const [bucket, ...rest] = blob.pathname.split("/");
@@ -81,17 +82,28 @@ export async function POST(request: Request) {
       });
     }
     // Leave time to return before the function limit.
-    if (Date.now() - started > (maxDuration - 30) * 1000) break;
+    if (Date.now() - started > (maxDuration - 30) * 1000) {
+      stoppedEarly = true;
+      break;
+    }
   }
 
+  // Stopped on the time budget: the rest of this page is untouched, so the
+  // caller must run the same page again (copied files are skipped).
   return NextResponse.json({
     ok: failed.length === 0,
     dryRun,
     inThisBatch: page.blobs.length,
+    processed: copied + skipped + failed.length,
     copied,
     skipped,
     failed,
-    done: !page.hasMore && failed.length === 0,
-    ...(page.hasMore ? { nextCursor: page.cursor } : {}),
+    incomplete: stoppedEarly,
+    done: !stoppedEarly && !page.hasMore && failed.length === 0,
+    ...(stoppedEarly
+      ? { nextCursor: cursor ?? null, note: "Time limit reached — run again with the same cursor" }
+      : page.hasMore
+        ? { nextCursor: page.cursor }
+        : {}),
   });
 }

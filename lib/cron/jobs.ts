@@ -1,7 +1,8 @@
 import { appUrl } from "@/lib/app-url";
 import "server-only";
-import { and, count, eq, gte, inArray, isNull, lte, ne, sql } from "drizzle-orm";
-import { db } from "@/lib/db/client";
+import { and, count, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { s3Delete, s3Enabled, s3List } from "@/lib/storage";
+import { db, type Db, type Tx } from "@/lib/db/client";
 import {
   approvalInstances,
   auditLog,
@@ -17,13 +18,7 @@ import {
   standSubmissions,
   tasks,
 } from "@/lib/db/schema";
-import {
-  artworkDue,
-  diffDaysIso,
-  effectiveDeadline,
-  printDeadline,
-  standDesignDue,
-} from "@/lib/deadlines";
+import { artworkDue, diffDaysIso, standDesignDue } from "@/lib/deadlines";
 import { editionForDeadlines } from "@/lib/queries/editions";
 import { notify } from "@/lib/notify";
 import { sendEmail } from "@/lib/email/send";
@@ -50,14 +45,18 @@ type ReminderKind =
   | "install_due"
   | "order_by_due";
 
-/** Record a send; returns false when it already happened (idempotency). */
+/**
+ * Record a send; returns false when it already happened (idempotency). Pass
+ * the transaction that writes the notification so both commit together.
+ */
 async function recordSend(
   targetType: ReminderTarget,
   targetId: string,
   kind: ReminderKind,
   today: string,
+  exec: Db | Tx = db,
 ): Promise<boolean> {
-  const rows = await db
+  const rows = await exec
     .insert(reminderLog)
     .values({ targetType, targetId, kind, sentOn: today })
     .onConflictDoNothing()
@@ -557,10 +556,24 @@ type DateReminder = {
   tab: string;
 };
 
+/** The confirmation step that already carries a date, so it is reminded by approvalReminders. */
+const STEP_FOR_KIND: Record<DateReminder["kind"], string | null> = {
+  print_due: "Sent to print",
+  delivery_due: "Delivered",
+  install_due: "Installed",
+  order_by_due: null,
+};
+
 /**
  * Job 8 — print, delivery, install and order-by dates: a week and two days
  * ahead, on the day, then weekly while overdue (same rhythm as artwork).
  * Owner always; Operations for delivery and install; Sales for order-by.
+ *
+ * Only an item's own dates are chased here. Show-level deadlines are on the
+ * dashboard and calendar; chasing them per item would send one message per
+ * item for the same date. And once the matching confirmation step is
+ * pending, approvalReminders already chases its due date, so this job
+ * steps back rather than doubling up.
  */
 export async function dateReminders(today: string): Promise<JobResult> {
   let sent = 0;
@@ -575,9 +588,34 @@ export async function dateReminders(today: string): Promise<JobResult> {
         isNull(signageItems.deletedAt),
         inArray(signageItems.kind, ["signage", "sponsorship_item", "stand_panel"]),
         sql`${signageItems.status} NOT IN ('on_hold', 'closed', 'rejected')`,
+        sql`${editions.status} NOT IN ('archived')`,
+        gte(editions.breakdownEnd, today),
       ),
     );
-  const deadlineCache = new Map<string, Awaited<ReturnType<typeof editionForDeadlines>>>();
+  if (items.length === 0) return { job: "date_reminders", sent, skipped };
+  // Pending confirmation steps in the current run: "<item>:<step>".
+  const pendingSteps = new Set(
+    (
+      await db
+        .select({
+          entityId: approvalInstances.entityId,
+          runNumber: approvalInstances.runNumber,
+          step: approvalInstances.stepNameSnapshot,
+        })
+        .from(approvalInstances)
+        .where(
+          and(
+            eq(approvalInstances.entityType, "signage_item"),
+            inArray(
+              approvalInstances.entityId,
+              items.map((r) => r.item.id),
+            ),
+            eq(approvalInstances.status, "pending"),
+            eq(approvalInstances.stepKindSnapshot, "confirmation"),
+          ),
+        )
+    ).map((p) => `${p.entityId}:${p.runNumber}:${p.step}`),
+  );
   const roleCache = new Map<string, string[]>();
   const usersFor = async (organisationId: string, roles: DateReminder["extraRoles"]) => {
     const key = `${organisationId}:${roles.join(",")}`;
@@ -587,12 +625,7 @@ export async function dateReminders(today: string): Promise<JobResult> {
     return roleCache.get(key)!;
   };
   for (const { item, edition, organisationId } of items) {
-    if (editionIsReadOnly(edition.status) || edition.breakdownEnd < today) continue;
-    if (!deadlineCache.has(item.editionId)) {
-      deadlineCache.set(item.editionId, await editionForDeadlines(item.editionId));
-    }
-    const ed = deadlineCache.get(item.editionId);
-    if (!ed) continue;
+    if (editionIsReadOnly(edition.status)) continue;
     const wanted: DateReminder[] = [];
     const sponsorship = item.kind === "sponsorship_item";
     if (sponsorship && !item.soldAt && item.orderByDate) {
@@ -604,28 +637,23 @@ export async function dateReminders(today: string): Promise<JobResult> {
         tab: "details",
       });
     }
-    if (BEFORE_PRINT.includes(item.status)) {
-      const due = printDeadline({ printDeadline: item.printDeadline }, ed);
-      if (due)
-        wanted.push({
-          kind: "print_due",
-          due,
-          what: "Print deadline",
-          extraRoles: [],
-          tab: "artwork",
-        });
+    if (BEFORE_PRINT.includes(item.status) && item.printDeadline) {
+      wanted.push({
+        kind: "print_due",
+        due: item.printDeadline,
+        what: "Print deadline",
+        extraRoles: [],
+        tab: "artwork",
+      });
     }
-    if (BEFORE_DELIVERY.includes(item.status)) {
-      const due = item.deliveryDate ?? effectiveDeadline(ed, "delivery");
-      if (due) {
-        wanted.push({
-          kind: "delivery_due",
-          due,
-          what: "Delivery",
-          extraRoles: ["ops"],
-          tab: "artwork",
-        });
-      }
+    if (BEFORE_DELIVERY.includes(item.status) && item.deliveryDate) {
+      wanted.push({
+        kind: "delivery_due",
+        due: item.deliveryDate,
+        what: "Delivery",
+        extraRoles: ["ops"],
+        tab: "artwork",
+      });
     }
     if (BEFORE_INSTALL.includes(item.status) && item.installDate) {
       wanted.push({
@@ -637,16 +665,14 @@ export async function dateReminders(today: string): Promise<JobResult> {
       });
     }
     for (const r of wanted) {
+      const step = STEP_FOR_KIND[r.kind];
+      if (step && pendingSteps.has(`${item.id}:${item.currentRunNumber}:${step}`)) continue;
       const diff = diffDaysIso(r.due, today);
       if (!artworkChaseDay(diff)) continue;
       const recipients = [
         ...new Set([item.ownerUserId, ...(await usersFor(organisationId, r.extraRoles))]),
       ].filter((id): id is string => Boolean(id));
       if (recipients.length === 0) continue;
-      if (!(await recordSend("signage_item", item.id, r.kind, today))) {
-        skipped++;
-        continue;
-      }
       const when =
         diff < 0
           ? `overdue (was ${formatDate(r.due)})`
@@ -657,7 +683,10 @@ export async function dateReminders(today: string): Promise<JobResult> {
         sponsorship && r.kind === "order_by_due"
           ? "not sold yet"
           : `status: ${item.status.replace(/_/g, " ")}`;
-      await db.transaction(async (tx) => {
+      // The log row and the notification commit together, so a failed send
+      // is tried again next run instead of being marked done.
+      const didSend = await db.transaction(async (tx) => {
+        if (!(await recordSend("signage_item", item.id, r.kind, today, tx))) return false;
         await notify(tx, {
           userIds: recipients,
           kind: "date_reminder",
@@ -667,11 +696,63 @@ export async function dateReminders(today: string): Promise<JobResult> {
           entityType: "signage_item",
           entityId: item.id,
         });
+        return true;
       });
-      sent++;
+      if (didSend) sent++;
+      else skipped++;
     }
   }
   return { job: "date_reminders", sent, skipped };
+}
+
+/**
+ * Job 9 — artwork objects nobody recorded (an upload that was signed but
+ * never completed, or a browser that closed before the version row was
+ * written) are removed from the bucket after a day, so they cannot eat the
+ * free allowance. Only the artwork/ prefix; everything else is written by
+ * the server and recorded in the same request.
+ */
+export async function orphanArtworkSweep(today: string): Promise<JobResult> {
+  let sent = 0; // objects removed
+  let skipped = 0; // objects kept
+  if (!s3Enabled()) return { job: "orphan_artwork_sweep", sent, skipped };
+  const cutoff = new Date(`${today}T00:00:00Z`).getTime() - 24 * 60 * 60 * 1000;
+  const { artworkVersions } = await import("@/lib/db/schema");
+  let cursor: string | undefined;
+  do {
+    const page = await s3List("artwork/", cursor);
+    const old = page.objects.filter((o) => o.lastModified.getTime() < cutoff);
+    if (old.length > 0) {
+      const paths = old.map((o) => o.key.slice("artwork/".length));
+      const referenced = new Set<string>();
+      const rows = await db
+        .select({ filePath: artworkVersions.filePath, previewPath: artworkVersions.previewPath })
+        .from(artworkVersions)
+        .where(
+          or(inArray(artworkVersions.filePath, paths), inArray(artworkVersions.previewPath, paths)),
+        );
+      for (const r of rows) {
+        referenced.add(r.filePath);
+        if (r.previewPath) referenced.add(r.previewPath);
+      }
+      for (const p of paths) {
+        if (referenced.has(p)) {
+          skipped++;
+          continue;
+        }
+        try {
+          await s3Delete("artwork", p);
+          sent++;
+        } catch (err) {
+          console.error("orphan sweep: could not delete", p, err);
+          skipped++;
+        }
+      }
+    }
+    skipped += page.objects.length - old.length;
+    cursor = page.nextCursor;
+  } while (cursor);
+  return { job: "orphan_artwork_sweep", sent, skipped };
 }
 
 export async function runDailyJobs(today: string): Promise<JobResult[]> {
@@ -687,5 +768,6 @@ export async function runDailyJobs(today: string): Promise<JobResult[]> {
   results.push(await dateReminders(today));
   results.push(await dailyDigest(today));
   results.push(await taskReminders(today));
+  results.push(await orphanArtworkSweep(today));
   return results;
 }

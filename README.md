@@ -135,9 +135,11 @@ curl -X POST -H "Authorization: Bearer $CRON_SECRET" \
   "https://hall-pass-alpha.vercel.app/api/admin/storage/migrate?limit=50"
 ```
 
-Repeat (passing `?cursor=<nextCursor>` when the response includes one) until it returns
-`"done": true`. It is safe to re-run; copied files are skipped. Then delete
-`BLOB_READ_WRITE_TOKEN` from Vercel and the Blob store from the Storage tab.
+Repeat, passing `&cursor=<nextCursor>` whenever the response includes one, until it
+returns `"done": true`. A response with `"incomplete": true` hit the time limit part-way
+through a page: run it again with the same cursor. It is safe to re-run at any point;
+files already in the bucket are skipped. Only then delete `BLOB_READ_WRITE_TOKEN` from
+Vercel and the Blob store from the Storage tab.
 
 ### 3. Supabase from Pro to Free (same project, same keys)
 
@@ -160,8 +162,11 @@ The Free plan has no backups, so `.github/workflows/db-backup.yml` dumps the dat
 every Monday into `backups/` in the bucket. Add the repository secrets
 `DIRECT_DATABASE_URL`, `S3_BUCKET`, `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`,
 `S3_SECRET_ACCESS_KEY` (GitHub → Settings → Secrets and variables → Actions) and run the
-workflow once by hand to check it. Restore with
-`pg_restore --clean --if-exists --no-owner -d "$DIRECT_DATABASE_URL" hallpass-<date>.dump`.
+workflow once by hand to check it. For `DIRECT_DATABASE_URL` use the **Session pooler**
+URI from Supabase's Connect dialog (port 5432, user `postgres.<ref>`), not the direct
+`db.<ref>.supabase.co` address, which is IPv6-only on the Free plan and unreachable from
+GitHub's runners. Restore with
+`pg_restore --clean --if-exists --no-owner -d "<session pooler URI>" hallpass-<date>.dump`.
 
 ## Imagery
 
