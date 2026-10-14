@@ -51,14 +51,56 @@ export const OVERRIDE_ROLE_DEFAULTS: Record<OverrideKey, readonly StaffRole[]> =
 };
 export type PermissionOverrides = Partial<Record<OverrideKey, boolean>>;
 
+/**
+ * App sections an admin can switch on or off per person (Users → Sections).
+ * A person with no list (null) has every section, which is how everyone
+ * worked before sections existed. Admins always have every section.
+ * Viewing a single record, deciding a sign-off assigned to you, tasks and
+ * comments are never gated, so links from emails and sign-offs keep working.
+ */
+export const FEATURES = [
+  "signage",
+  "sponsorship",
+  "stand_designs",
+  "stands",
+  "onsite",
+  "calendar",
+  "reports",
+  "suppliers",
+  "approvals",
+] as const;
+export type Feature = (typeof FEATURES)[number];
+
+export const FEATURE_LABELS: Record<Feature, string> = {
+  signage: "Signage",
+  sponsorship: "Sponsorship",
+  stand_designs: "Feature stands",
+  stands: "Exhibitor stands",
+  onsite: "Onsite",
+  calendar: "Calendar",
+  reports: "Reports",
+  suppliers: "Suppliers",
+  approvals: "Approvals",
+};
+
+/** Keep only known section keys (stored values may predate a rename). */
+export function parseFeatures(value: unknown): Feature[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.filter((v): v is Feature => (FEATURES as readonly string[]).includes(v));
+}
+
 export type StaffActor = {
   kind: "staff";
   userId: string;
   organisationId: string;
   role: StaffRole;
   overrides?: PermissionOverrides;
-  /** Sign-off departments this person approves for (Approvals → Approvers). */
-  departmentIds?: string[];
+  /** Sign-off departments this person approves for (Users → Departments). */
+  signoffDepartmentIds?: string[];
+  /** The department they belong to (display and grouping only). */
+  departmentId?: string | null;
+  /** Sections they can use; null or missing = every section. */
+  features?: Feature[] | null;
 };
 
 export type ExternalActor = {
@@ -284,7 +326,7 @@ function staffCanDecide(actor: StaffActor, step: ApprovalStepCtx): boolean {
   }
   if (step.assignedUserId) return step.assignedUserId === actor.userId;
   if (step.assignedDepartmentId) {
-    return actor.departmentIds?.includes(step.assignedDepartmentId) ?? false;
+    return actor.signoffDepartmentIds?.includes(step.assignedDepartmentId) ?? false;
   }
   return step.assignedRole === actor.role;
 }
@@ -327,6 +369,51 @@ function recordOrganisation(action: Action): string | undefined {
   return a.entity?.organisationId;
 }
 
+/** Can this person use the section? See FEATURES. */
+export function hasFeature(actor: Actor, feature: Feature): boolean {
+  if (actor.kind !== "staff") return false;
+  if (actor.role === "admin") return true;
+  // Approvers can always reach their sign-offs.
+  if (feature === "approvals" && (actor.signoffDepartmentIds?.length ?? 0) > 0) return true;
+  if (actor.features == null) return true;
+  return actor.features.includes(feature);
+}
+
+function itemFeature(item: SignageItemCtx): Feature {
+  if (item.kind === "sponsorship_item") return "sponsorship";
+  if (item.kind === "stand_design" || item.kind === "stand_panel") return "stand_designs";
+  return "signage";
+}
+
+/**
+ * The section an action belongs to, or null when it is never gated by
+ * sections (viewing one record, deciding, tasks, comments, settings, users).
+ */
+export function featureForAction(action: Action): Feature | null {
+  switch (action.type) {
+    case "signage.create":
+      return "signage";
+    case "sponsorship.create":
+      return "sponsorship";
+    case "stand_design.create":
+      return "stand_designs";
+    case "signage.edit":
+    case "artwork.upload":
+    case "signage.submit":
+      return itemFeature(action.item);
+    case "comment.external.write":
+      return "exhibitorId" in action.entity ? "stands" : itemFeature(action.entity);
+    case "stand.review":
+      return "stands";
+    case "export.run":
+      if (action.kind === "certificate") return null;
+      if (action.kind === "sponsor_report") return "sponsorship";
+      return "reports";
+    default:
+      return null;
+  }
+}
+
 export function can(actor: Actor, action: Action, now = new Date()): boolean {
   // Tenancy first: nobody — admins included — acts on another organisation's records.
   const recordOrg = recordOrganisation(action);
@@ -364,6 +451,17 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
   }
 
   const role = actor.role;
+
+  // Sections switched off for this person (admins are immune). Checked
+  // before overrides so a granted ability can never reopen a section.
+  if (role !== "admin") {
+    if (action.type === "export.run" && action.kind === "sponsor_report") {
+      if (!hasFeature(actor, "sponsorship") && !hasFeature(actor, "reports")) return false;
+    } else {
+      const feature = featureForAction(action);
+      if (feature && !hasFeature(actor, feature)) return false;
+    }
+  }
 
   // Per-user overrides (admins are immune, so an admin can never lock
   // themselves out). An explicit false always blocks; an explicit true

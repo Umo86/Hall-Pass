@@ -1,10 +1,11 @@
+import { SectionUnavailable } from "@/components/section-unavailable";
 import { notFound } from "next/navigation";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { suppliers } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { plural } from "@/lib/format";
-import { can } from "@/lib/authz";
+import { can, hasFeature } from "@/lib/authz";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { listScheduleRows } from "@/lib/queries/signage";
 import { ScheduleView } from "@/components/schedule/schedule-view";
@@ -19,6 +20,9 @@ export default async function SignagePage({
 }) {
   const session = await requireStaffSession();
   const { editionCode } = await params;
+  if (!hasFeature(session.actor, "signage")) {
+    return <SectionUnavailable feature="signage" backHref={`/${editionCode}/dashboard`} />;
+  }
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
   const canSeeCosts = can(session.actor, { type: "costs.view" });

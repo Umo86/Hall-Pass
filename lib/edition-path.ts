@@ -4,6 +4,11 @@
  */
 export const RESERVED_SEGMENTS = [
   "editions",
+  "events",
+  "start",
+  "users",
+  "account",
+  "notifications",
   "approvals",
   "my-work",
   "reset-password",

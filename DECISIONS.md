@@ -257,3 +257,40 @@ useful fields for every item.
   passed); show dates violet, deliveries blue, installs green.
 - **Suppliers.** New "what they do" entries typed in the supplier popup join
   the shared list (or tick an existing match).
+
+## Users, sections and the guided start (Oct 2026)
+
+- **Words.** The dated occurrence (`editions`) is an **Event** everywhere in
+  the UI; the recurring brand (`events`) is an **Event series**. Code and
+  table names stay. The list moved from `/editions` to `/events` (old link
+  redirects). Stand designs are shown as **Feature stands** and exhibitor
+  stand approvals as **Exhibitor stands**.
+- **One department per person.** `memberships.department_id` uses the
+  existing `departments` table. A department now has `signs_off`: off means
+  it is a team for grouping people only and has no sign-off step (handled in
+  `syncDepartmentSteps`, like an archived department). Which departments a
+  person signs off for is still the `approvers` table (`signoffDepartmentIds`
+  on the actor, renamed from `departmentIds` so the two can't be confused).
+  The migration gives existing approvers of exactly one live department that
+  department; everyone else starts with none. Nobody's access changes.
+- **Sections (features).** `memberships.features` lists the app sections a
+  person can use (`FEATURES` in `lib/authz.ts`); null means every section,
+  which is what everyone had before. `can()` refuses actions in a switched-off
+  section before overrides are looked at, so a granted ability can't reopen a
+  section; admins are never limited; viewing one record, deciding a sign-off
+  assigned to you, tasks and comments are never gated, so emailed links and
+  sign-offs keep working; anyone who signs off for a department always has
+  Approvals. Section pages show "isn't switched on for you" rather than 404.
+- **Invitations** carry name, job title, department and sections and expire
+  after 14 days (`STAFF_INVITE_DAYS`); older invitations without a date never
+  expire. Accepting copies department, sections and job title onto the
+  membership.
+- **New organisations** get the signage workflow (venue approval and the
+  print/delivery/install confirmations; department sign-offs come from the
+  departments) through `ensureSignageWorkflow`; before this, an organisation
+  set up without the demo seed could never send a sign for sign-off.
+- **Personal settings** moved to My account (`/account`, from the account
+  menu); `?tab=general` redirects there.
+- **Feedback** uses toasts (sonner) and `useConfirm()` instead of
+  `window.confirm`; pages share `PageHeader`, `EmptyState` and
+  `SegmentedLinks`.

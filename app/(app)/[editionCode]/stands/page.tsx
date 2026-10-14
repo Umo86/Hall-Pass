@@ -1,3 +1,5 @@
+import { SectionUnavailable } from "@/components/section-unavailable";
+import { hasFeature } from "@/lib/authz";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireStaffSession } from "@/lib/auth/actor";
@@ -19,6 +21,9 @@ export default async function StandsPage({
 }) {
   const session = await requireStaffSession();
   const { editionCode } = await params;
+  if (!hasFeature(session.actor, "stands")) {
+    return <SectionUnavailable feature="stands" backHref={`/${editionCode}/dashboard`} />;
+  }
   const { status } = await searchParams;
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();

@@ -1,6 +1,7 @@
+import { SectionUnavailable } from "@/components/section-unavailable";
 import { notFound, redirect } from "next/navigation";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, hasFeature } from "@/lib/authz";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { standFormOptions } from "@/lib/queries/stand-designs";
@@ -17,6 +18,9 @@ export default async function NewStandPage({
   const session = await requireStaffSession();
   if (!can(session.actor, { type: "stand_design.create" })) redirect("../stand-designs");
   const { editionCode } = await params;
+  if (!hasFeature(session.actor, "stand_designs")) {
+    return <SectionUnavailable feature="stand_designs" backHref={`/${editionCode}/dashboard`} />;
+  }
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
   if (editionIsReadOnly(ed.edition.status)) redirect("../stand-designs");

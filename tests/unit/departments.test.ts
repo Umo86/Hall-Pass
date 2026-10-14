@@ -50,7 +50,9 @@ describe("department sign-offs", () => {
 
   it("go to the main approver when the department has one", () => {
     const withMain = steps.map((s) =>
-      s.id === "sig-marketing" ? { ...s, approverType: "user" as const, approverUserId: "maya" } : s,
+      s.id === "sig-marketing"
+        ? { ...s, approverType: "user" as const, approverUserId: "maya" }
+        : s,
     );
     const marketing = run(organiser, withMain).find((i) => i.stepId === "sig-marketing")!;
     expect(marketing.assignedUserId).toBe("maya");
@@ -84,21 +86,24 @@ describe("department sign-offs", () => {
     };
     expect(isDepartmentStep(legal)).toBe(true);
     expect(defaultSignoffs([legal], "organiser")).toEqual([]);
-    const instances = run(
-      { ...organiser, signoffs: [{ stepId: "sig-legal", userId: null }] },
-      [...steps, legal],
-    );
+    const instances = run({ ...organiser, signoffs: [{ stepId: "sig-legal", userId: null }] }, [
+      ...steps,
+      legal,
+    ]);
     expect(instances.find((i) => i.stepId === "sig-legal")!.status).toBe("pending");
   });
 });
 
 describe("who can decide a department sign-off", () => {
-  const actor = (departmentIds: string[], role: StaffActor["role"] = "viewer"): StaffActor => ({
+  const actor = (
+    signoffDepartmentIds: string[],
+    role: StaffActor["role"] = "viewer",
+  ): StaffActor => ({
     kind: "staff",
     userId: "u-1",
     organisationId: "org-1",
     role,
-    departmentIds,
+    signoffDepartmentIds,
   });
   const step = (over: Partial<ApprovalStepCtx>): ApprovalStepCtx => ({
     assignedRole: null,
@@ -123,13 +128,21 @@ describe("who can decide a department sign-off", () => {
 
   it("switching off someone's sign-off right still wins", () => {
     const s = step({ assignedDepartmentId: "dept-marketing" });
-    const off: StaffActor = { ...actor(["dept-marketing"]), overrides: { "approval.decide": false } };
+    const off: StaffActor = {
+      ...actor(["dept-marketing"]),
+      overrides: { "approval.decide": false },
+    };
     expect(can(off, { type: "approval.decide", step: s })).toBe(false);
   });
 });
 
 describe("sign-off order", () => {
-  const step = (id: string, kind: "approval" | "confirmation", departmentId: string | null, sortOrder: number) => ({
+  const step = (
+    id: string,
+    kind: "approval" | "confirmation",
+    departmentId: string | null,
+    sortOrder: number,
+  ) => ({
     id,
     kind,
     departmentId,
@@ -137,7 +150,13 @@ describe("sign-off order", () => {
     parallelGroup: null,
     isArchived: false,
   });
-  const dept = (id: string, name: string, sortOrder: number, signsLast = false, isArchived = false) => ({
+  const dept = (
+    id: string,
+    name: string,
+    sortOrder: number,
+    signsLast = false,
+    isArchived = false,
+  ) => ({
     id,
     name,
     sortOrder,

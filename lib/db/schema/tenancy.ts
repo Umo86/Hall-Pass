@@ -1,6 +1,7 @@
 import {
   boolean,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -28,17 +29,41 @@ export const organisations = pgTable("organisations", {
   slug: text("slug").notNull().unique(),
   brandName: text("brand_name").notNull().default("Hall Pass"),
   logoPath: text("logo_path"),
-  settings: jsonb("settings")
-    .$type<OrganisationSettings>()
-    .notNull()
-    .default({
-      escalate_after_days: 2,
-      install_photo_required: true,
-      cost_threshold_for_director: 5000,
-      currency: "GBP",
-    }),
+  settings: jsonb("settings").$type<OrganisationSettings>().notNull().default({
+    escalate_after_days: 2,
+    install_photo_required: true,
+    cost_threshold_for_director: 5000,
+    currency: "GBP",
+  }),
   ...timestamps,
 });
+
+/**
+ * The organisation's departments (Operations, Marketing, Finance…). Every
+ * staff member can belong to one. A department with `signsOff` also gets one
+ * sign-off step in the signage workflow and a list of approvers; one without
+ * is only a team for grouping people.
+ */
+export const departments = pgTable(
+  "departments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organisationId: uuid("organisation_id")
+      .notNull()
+      .references(() => organisations.id),
+    name: text("name").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    /** Approves artwork: has a sign-off step and approvers. */
+    signsOff: boolean("signs_off").notNull().default(true),
+    /** Signs off after the other departments have (e.g. Senior management). */
+    signsLast: boolean("signs_last").notNull().default(false),
+    /** Signage that gets this department's sign-off by default: organiser, sponsor. */
+    defaultFor: text("default_for").array().notNull().default([]),
+    isArchived: boolean("is_archived").notNull().default(false),
+    ...timestamps,
+  },
+  (t) => [unique("departments_org_name_unique").on(t.organisationId, t.name)],
+);
 
 export type NotificationPrefs = Record<string, boolean>;
 
@@ -72,10 +97,21 @@ export const memberships = pgTable(
       .$type<Record<string, boolean>>()
       .notNull()
       .default({}),
+    /** The department they belong to (shown in Users); null = none yet. */
+    departmentId: uuid("department_id").references(() => departments.id, {
+      onDelete: "set null",
+    }),
+    /**
+     * App sections they can use (keys in lib/authz.ts FEATURES). Null means
+     * every section — what everyone had before sections existed.
+     */
+    features: text("features").array(),
+    jobTitle: text("job_title"),
     ...timestamps,
   },
   (t) => [
     unique("memberships_user_org_unique").on(t.userId, t.organisationId),
+    index("memberships_department_idx").on(t.departmentId),
     index("memberships_user_idx").on(t.userId),
     index("memberships_org_idx").on(t.organisationId),
   ],
@@ -124,11 +160,20 @@ export const staffInvites = pgTable(
       .notNull()
       .references(() => organisations.id),
     invitedEmail: text("invited_email").notNull(),
+    fullName: text("full_name").notNull().default(""),
+    jobTitle: text("job_title"),
     role: staffRole("role").notNull(),
     permissionOverrides: jsonb("permission_overrides")
       .$type<Record<string, boolean>>()
       .notNull()
       .default({}),
+    /** Copied onto the membership when the invitation is accepted. */
+    departmentId: uuid("department_id").references(() => departments.id, {
+      onDelete: "set null",
+    }),
+    features: text("features").array(),
+    /** Null on invitations sent before expiry existed: they never expire. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     invitedBy: uuid("invited_by").references(() => users.id),
     inviteTokenHash: text("invite_token_hash").notNull(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
@@ -140,6 +185,7 @@ export const staffInvites = pgTable(
     index("staff_invites_email_idx").on(t.invitedEmail),
     index("staff_invites_invited_by_idx").on(t.invitedBy),
     index("staff_invites_token_idx").on(t.inviteTokenHash),
+    index("staff_invites_department_idx").on(t.departmentId),
   ],
 );
 

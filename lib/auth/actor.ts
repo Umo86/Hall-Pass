@@ -11,7 +11,13 @@ import {
   users,
   type OrganisationSettings,
 } from "@/lib/db/schema";
-import type { Actor, ExternalActor, PermissionOverrides, StaffActor } from "@/lib/authz";
+import {
+  parseFeatures,
+  type Actor,
+  type ExternalActor,
+  type PermissionOverrides,
+  type StaffActor,
+} from "@/lib/authz";
 import { createSupabaseServerClient, supabaseConfigured } from "./supabase-server";
 import { claimStaffInvite, openStaffInviteFor } from "./claim-staff-invite";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
@@ -88,7 +94,9 @@ async function loadSessionForUser(user: typeof users.$inferSelect): Promise<Sess
       organisationId: org.id,
       role: membership.role,
       overrides: membership.permissionOverrides as PermissionOverrides,
-      departmentIds: await departmentIdsForUser(db, org.id, user.id),
+      signoffDepartmentIds: await departmentIdsForUser(db, org.id, user.id),
+      departmentId: membership.departmentId,
+      features: parseFeatures(membership.features),
     };
     return {
       actor,

@@ -28,17 +28,13 @@ import { standsEnabled } from "@/lib/config";
 import { ItemTypesEditor } from "@/components/settings/item-types-editor";
 import { ServicesEditor } from "@/components/settings/services-editor";
 import { RestoreItemButton } from "@/components/settings/restore-button";
-import { icalToken } from "@/lib/ical";
-import { appUrl } from "@/lib/app-url";
-import { NotificationPrefsForm } from "@/components/settings/notification-prefs";
-import { emailConfigured } from "@/lib/email/dispatch";
 import { blobEnabled, s3Enabled, s3Probe, storageBackend } from "@/lib/storage";
 import { StoragePanel } from "@/components/settings/storage-panel";
 
 export const metadata = { title: "Settings" };
 export const dynamic = "force-dynamic";
 
-type TabId = "general" | "team" | "types" | "services" | "venues" | "deleted" | "storage";
+type TabId = "team" | "types" | "services" | "venues" | "deleted" | "storage";
 
 export default async function SettingsPage({
   searchParams,
@@ -49,7 +45,6 @@ export default async function SettingsPage({
   const canManage = can(session.actor, { type: "settings.manage" });
   const canUsers = can(session.actor, { type: "users.manage" });
   const tabs: { id: TabId; label: string }[] = [
-    { id: "general", label: "My settings" },
     { id: "team", label: "Team" },
     ...(canManage || canUsers
       ? ([
@@ -64,9 +59,10 @@ export default async function SettingsPage({
   const { tab: rawTab } = await searchParams;
   // Sign-off moved to Approvals → Approvers.
   if (rawTab === "signoff") redirect("/approvals?tab=approvers");
-  const tab: TabId = tabs.some((t) => t.id === rawTab) ? (rawTab as TabId) : "general";
+  // Personal settings moved to My account.
+  if (rawTab === "general") redirect("/account");
+  const tab: TabId = tabs.some((t) => t.id === rawTab) ? (rawTab as TabId) : "team";
 
-  const [me] = await db.select().from(users).where(eq(users.id, session.user.id));
   const [
     staff,
     grants,
@@ -168,7 +164,7 @@ export default async function SettingsPage({
         {tabs.map((t) => (
           <Link
             key={t.id}
-            href={t.id === "general" ? "/settings" : `/settings?tab=${t.id}`}
+            href={t.id === "team" ? "/settings" : `/settings?tab=${t.id}`}
             className={`px-3 py-2 text-sm whitespace-nowrap ${
               tab === t.id
                 ? "border-primary text-foreground border-b-2 font-medium"
@@ -180,45 +176,6 @@ export default async function SettingsPage({
           </Link>
         ))}
       </nav>
-
-      {tab === "general" && (
-        <>
-          <section>
-            <h2 className="mb-2 text-sm font-semibold">Organisation</h2>
-            <p className="text-muted-foreground text-sm">
-              {session.organisation.brandName} · currency {session.organisation.settings.currency} ·
-              escalate after {session.organisation.settings.escalate_after_days} days overdue ·
-              install photo{" "}
-              {session.organisation.settings.install_photo_required ? "required" : "optional"}
-            </p>
-          </section>
-
-          <section>
-            <h2 className="mb-2 text-sm font-semibold">Calendar feed</h2>
-            <p className="text-muted-foreground mb-2 text-sm">
-              Subscribe to every deadline, install date and your pending sign-offs from your own
-              calendar (Google Calendar, Outlook or Apple Calendar — &ldquo;add calendar from
-              URL&rdquo;). The link is personal to you; treat it like a password.
-            </p>
-            <FeedLink userId={session.user.id} />
-          </section>
-
-          <section>
-            <h2 className="mb-2 text-sm font-semibold">My notifications</h2>
-            <p className="text-muted-foreground mb-2 text-sm">
-              Untick anything you don&rsquo;t want to be notified about. These apply to in-app
-              notifications and the emails that mirror them.
-            </p>
-            {!emailConfigured() && (
-              <p className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-                Email is off, so notifications only appear in the app (the bell). An admin can
-                switch email on by adding a Resend API key in the hosting settings.
-              </p>
-            )}
-            <NotificationPrefsForm initial={me?.notificationPrefs ?? {}} />
-          </section>
-        </>
-      )}
 
       {tab === "team" && (
         <>
@@ -454,29 +411,5 @@ export default async function SettingsPage({
         </section>
       )}
     </div>
-  );
-}
-
-function FeedLink({ userId }: { userId: string }) {
-  let url: string | null = null;
-  try {
-    const base = appUrl();
-    url = base ? `${base}/api/ical/${icalToken(userId)}` : null;
-  } catch {
-    url = null;
-  }
-  if (!url) {
-    return (
-      <p className="text-muted-foreground text-sm">
-        The calendar feed isn&apos;t switched on for this site yet — ask your administrator.
-      </p>
-    );
-  }
-  return (
-    <input
-      readOnly
-      value={url}
-      className="bg-muted/40 w-full max-w-xl rounded-md border px-3 py-2 font-mono text-xs"
-    />
   );
 }

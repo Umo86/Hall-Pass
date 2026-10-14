@@ -6,14 +6,14 @@ import { MobileNav } from "@/components/mobile-nav";
 import { SidebarToggle } from "@/components/sidebar-toggle";
 import { SIDEBAR_COOKIE } from "@/lib/sidebar";
 import { NotificationsBell } from "@/components/notifications-bell";
-import { SignOutButton } from "@/components/auth/sign-out-button";
+import { AccountMenu } from "@/components/account-menu";
 import { Wordmark } from "@/components/wordmark";
 import { db } from "@/lib/db/client";
-import { notifications } from "@/lib/db/schema";
+import { departments, notifications } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { DemoBanner } from "@/components/demo-banner";
 import { listEditions } from "@/lib/queries/editions";
-import { can } from "@/lib/authz";
+import { can, FEATURES, hasFeature } from "@/lib/authz";
 import { standsEnabled } from "@/lib/config";
 import { roleLabel } from "@/lib/format";
 
@@ -21,7 +21,8 @@ export const dynamic = "force-dynamic";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await requireStaffSession();
-  const [editions, recentNotifications, [unread]] = await Promise.all([
+  const actor = session.actor;
+  const [editions, recentNotifications, [unread], department] = await Promise.all([
     listEditions(session.organisation.id),
     db
       .select()
@@ -33,13 +34,33 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       .select({ n: count() })
       .from(notifications)
       .where(and(eq(notifications.userId, session.user.id), isNull(notifications.readAt))),
+    actor.departmentId
+      ? db.query.departments.findFirst({ where: eq(departments.id, actor.departmentId) })
+      : Promise.resolve(undefined),
   ]);
 
   const sidebarHidden = (await cookies()).get(SIDEBAR_COOKIE)?.value === "hidden";
-  const navEditions = editions.map((e) => ({ code: e.edition.code, status: e.edition.status }));
+  const navEditions = editions.map((e) => ({
+    code: e.edition.code,
+    name: e.edition.name,
+    status: e.edition.status,
+  }));
+  const canSetup = can(actor, { type: "settings.manage" });
   const navOptions = {
-    canSetup: can(session.actor, { type: "settings.manage" }),
+    canSetup,
+    canSettings: canSetup || can(actor, { type: "users.manage" }),
     showStands: standsEnabled,
+    // Null = every section; otherwise the sections this person can use.
+    features:
+      actor.role === "admin" || actor.features == null
+        ? null
+        : FEATURES.filter((f) => hasFeature(actor, f)),
+  };
+  const account = {
+    name: session.user.fullName,
+    email: session.user.email,
+    role: roleLabel(actor.role),
+    department: department?.name ?? null,
   };
 
   return (
@@ -53,6 +74,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           editions={navEditions}
           options={navOptions}
           brandName={session.organisation.brandName}
+          account={account}
         />
         <SidebarToggle initiallyHidden={sidebarHidden} />
         <Wordmark name={session.organisation.brandName} size="sm" />
@@ -74,17 +96,19 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               unread: !n.readAt,
             }))}
           />
-          <span className="text-muted-foreground hidden text-xs sm:inline">
-            {session.user.fullName || session.user.email} · {roleLabel(session.actor.role)}
+          <span className="text-muted-foreground hidden text-xs lg:inline">
+            {session.user.fullName || session.user.email}
           </span>
-          <SignOutButton />
+          <AccountMenu account={account} />
         </div>
       </header>
       <div className="flex flex-1">
         <aside className="bg-sidebar text-sidebar-foreground hidden w-56 shrink-0 border-r md:block md:group-data-[sidebar=hidden]/app:hidden">
           <AppNav editions={navEditions} options={navOptions} />
         </aside>
-        <main className="min-w-0 flex-1">{children}</main>
+        <main id="main" tabIndex={-1} className="min-w-0 flex-1 outline-none">
+          {children}
+        </main>
       </div>
     </div>
   );

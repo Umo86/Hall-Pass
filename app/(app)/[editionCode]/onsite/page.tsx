@@ -1,6 +1,7 @@
+import { SectionUnavailable } from "@/components/section-unavailable";
 import { notFound } from "next/navigation";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, hasFeature } from "@/lib/authz";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { listOnsiteRows } from "@/lib/queries/signage";
 import { editionIsReadOnly } from "@/lib/edition-lock";
@@ -17,6 +18,9 @@ export const dynamic = "force-dynamic";
 export default async function OnsitePage({ params }: { params: Promise<{ editionCode: string }> }) {
   const session = await requireStaffSession();
   const { editionCode } = await params;
+  if (!hasFeature(session.actor, "onsite")) {
+    return <SectionUnavailable feature="onsite" backHref={`/${editionCode}/dashboard`} />;
+  }
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
   const readOnly = editionIsReadOnly(ed.edition.status);

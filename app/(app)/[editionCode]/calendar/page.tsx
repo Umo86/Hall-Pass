@@ -1,3 +1,5 @@
+import { SectionUnavailable } from "@/components/section-unavailable";
+import { hasFeature } from "@/lib/authz";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
@@ -52,6 +54,9 @@ export default async function CalendarPage({
 }) {
   const session = await requireStaffSession();
   const { editionCode } = await params;
+  if (!hasFeature(session.actor, "calendar")) {
+    return <SectionUnavailable feature="calendar" backHref={`/${editionCode}/dashboard`} />;
+  }
   const { m } = await searchParams;
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();

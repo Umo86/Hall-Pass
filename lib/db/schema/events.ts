@@ -44,6 +44,8 @@ export const venues = pgTable(
     riggingContactEmail: text("rigging_contact_email"),
     requiresStandApproval: boolean("requires_stand_approval").notNull().default(false),
     notes: text("notes"),
+    /** Hidden from pickers; kept for the events that used it. */
+    isArchived: boolean("is_archived").notNull().default(false),
     ...timestamps,
   },
   (t) => [
@@ -114,8 +116,13 @@ export const editions = pgTable(
       .$type<ComplexStructureTrigger[]>()
       .notNull()
       .default([]),
-    /** Show logo (image in the documents bucket). */
+    /** Event logo (image in the documents bucket). */
     logoPath: text("logo_path"),
+    /**
+     * Setup steps someone has confirmed that can't be read from the data
+     * ("details", "deadlines", "dismissed") — see lib/queries/setup.ts.
+     */
+    setupChecked: text("setup_checked").array().notNull().default([]),
     ...timestamps,
   },
   (t) => [

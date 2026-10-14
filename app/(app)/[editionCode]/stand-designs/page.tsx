@@ -1,10 +1,11 @@
+import { SectionUnavailable } from "@/components/section-unavailable";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Box, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, hasFeature } from "@/lib/authz";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { listStandDesigns } from "@/lib/queries/stand-designs";
@@ -23,6 +24,9 @@ export default async function StandDesignsPage({
 }) {
   const session = await requireStaffSession();
   const { editionCode } = await params;
+  if (!hasFeature(session.actor, "stand_designs")) {
+    return <SectionUnavailable feature="stand_designs" backHref={`/${editionCode}/dashboard`} />;
+  }
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
   const stands = await listStandDesigns(ed.edition.id);

@@ -1,6 +1,7 @@
+import { SectionUnavailable } from "@/components/section-unavailable";
 import { notFound, redirect } from "next/navigation";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, hasFeature } from "@/lib/authz";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { itemFormOptions } from "@/lib/queries/item-form-options";
 import { ItemForm } from "@/components/signage/item-form";
@@ -16,6 +17,9 @@ export default async function NewItemPage({
   const session = await requireStaffSession();
   if (!can(session.actor, { type: "signage.create" })) redirect("../signage");
   const { editionCode } = await params;
+  if (!hasFeature(session.actor, "signage")) {
+    return <SectionUnavailable feature="signage" backHref={`/${editionCode}/dashboard`} />;
+  }
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
 

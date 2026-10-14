@@ -78,6 +78,13 @@
       "when": 1790765456233,
       "tag": "0010_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791996931045,
+      "tag": "0011_users_sections",
+      "breakpoints": true
     }
   ]
 }

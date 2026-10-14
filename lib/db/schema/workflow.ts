@@ -19,7 +19,7 @@ import {
   stepKind,
   workflowAppliesTo,
 } from "./enums";
-import { organisations, timestamps, users } from "./tenancy";
+import { departments, organisations, timestamps, users } from "./tenancy";
 
 export const workflowConditionValues = [
   "always",
@@ -33,29 +33,6 @@ export const workflowConditionValues = [
 ] as const;
 
 export type WorkflowCondition = (typeof workflowConditionValues)[number];
-
-/**
- * Sign-off departments the admin defines (Operations, Marketing, Legal…).
- * Each has one sign-off step in the signage workflow and a list of approvers.
- */
-export const departments = pgTable(
-  "departments",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    organisationId: uuid("organisation_id")
-      .notNull()
-      .references(() => organisations.id),
-    name: text("name").notNull(),
-    sortOrder: integer("sort_order").notNull().default(0),
-    /** Signs off after the other departments have (e.g. Senior management). */
-    signsLast: boolean("signs_last").notNull().default(false),
-    /** Signage that gets this department's sign-off by default: organiser, sponsor. */
-    defaultFor: text("default_for").array().notNull().default([]),
-    isArchived: boolean("is_archived").notNull().default(false),
-    ...timestamps,
-  },
-  (t) => [unique("departments_org_name_unique").on(t.organisationId, t.name)],
-);
 
 /**
  * People who sign off for a department. Everyone needs a Hall Pass account;

@@ -1,10 +1,11 @@
+import { SectionUnavailable } from "@/components/section-unavailable";
 import { notFound } from "next/navigation";
 import { asc, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { exports as exportsTable, halls, users } from "@/lib/db/schema";
 import { standsEnabled } from "@/lib/config";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, hasFeature } from "@/lib/authz";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { formatDateTime, statusLabel } from "@/lib/format";
 import { ImportPanel } from "@/components/reports/import-panel";
@@ -19,6 +20,9 @@ export default async function ReportsPage({
 }) {
   const session = await requireStaffSession();
   const { editionCode } = await params;
+  if (!hasFeature(session.actor, "reports")) {
+    return <SectionUnavailable feature="reports" backHref={`/${editionCode}/dashboard`} />;
+  }
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
 

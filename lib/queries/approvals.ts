@@ -22,7 +22,7 @@ function candidateFilter(session: Session, all: boolean): SQL | undefined {
     if (actor.role === "admin") {
       return all ? undefined : or(me, eq(approvalInstances.assignedRole, "admin"));
     }
-    const depts = actor.departmentIds ?? [];
+    const depts = actor.signoffDepartmentIds ?? [];
     return or(
       me,
       and(isNull(approvalInstances.assignedUserId), eq(approvalInstances.assignedRole, actor.role)),

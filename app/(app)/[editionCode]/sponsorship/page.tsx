@@ -1,9 +1,10 @@
+import { SectionUnavailable } from "@/components/section-unavailable";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Download, Gift, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, hasFeature } from "@/lib/authz";
 import { formatDate, formatMoney } from "@/lib/format";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
@@ -35,6 +36,9 @@ export default async function SponsorshipPage({
 }) {
   const session = await requireStaffSession();
   const { editionCode } = await params;
+  if (!hasFeature(session.actor, "sponsorship")) {
+    return <SectionUnavailable feature="sponsorship" backHref={`/${editionCode}/dashboard`} />;
+  }
   const { tab: rawTab } = await searchParams;
   const tab = rawTab === "sponsors" ? "sponsors" : "items";
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);

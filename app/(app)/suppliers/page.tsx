@@ -1,3 +1,4 @@
+import { SectionUnavailable } from "@/components/section-unavailable";
 import { and, asc, count, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
@@ -8,7 +9,7 @@ import {
   suppliers,
 } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, hasFeature } from "@/lib/authz";
 import { SuppliersView } from "@/components/suppliers/suppliers-view";
 import { DirectorySection } from "@/components/settings/directory-section";
 
@@ -17,6 +18,7 @@ export const dynamic = "force-dynamic";
 
 export default async function SuppliersPage() {
   const session = await requireStaffSession();
+  if (!hasFeature(session.actor, "suppliers")) return <SectionUnavailable feature="suppliers" />;
   const orgId = session.organisation.id;
   const canEdit = can(session.actor, { type: "settings.manage" });
 

@@ -1,5 +1,5 @@
 import "server-only";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { memberships, staffInvites, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
@@ -7,13 +7,14 @@ import { linkApproversToUser, syncDepartmentSteps } from "@/lib/domain/departmen
 
 export type StaffInvite = typeof staffInvites.$inferSelect;
 
-/** The newest invitation still open for this email, if any. */
+/** The newest invitation still open (not used, cancelled or expired) for this email. */
 export async function openStaffInviteFor(email: string): Promise<StaffInvite | null> {
   const invite = await db.query.staffInvites.findFirst({
     where: and(
       eq(staffInvites.invitedEmail, email.toLowerCase()),
       isNull(staffInvites.acceptedAt),
       isNull(staffInvites.revokedAt),
+      or(isNull(staffInvites.expiresAt), gt(staffInvites.expiresAt, new Date())),
     ),
     orderBy: desc(staffInvites.createdAt),
   });
@@ -46,6 +47,9 @@ export async function claimStaffInvite(invite: StaffInvite, userId: string, full
         organisationId: invite.organisationId,
         role: invite.role,
         permissionOverrides: invite.permissionOverrides,
+        departmentId: invite.departmentId,
+        features: invite.features,
+        jobTitle: invite.jobTitle,
       })
       .onConflictDoNothing();
     // Approver entries waiting for this person now point at their account.
@@ -54,7 +58,13 @@ export async function claimStaffInvite(invite: StaffInvite, userId: string, full
     }
     await tx
       .update(users)
-      .set(fullName?.trim() ? { fullName: fullName.trim(), isExternal: false } : { isExternal: false })
+      .set(
+        fullName?.trim()
+          ? { fullName: fullName.trim(), isExternal: false }
+          : invite.fullName.trim()
+            ? { fullName: invite.fullName.trim(), isExternal: false }
+            : { isExternal: false },
+      )
       .where(eq(users.id, userId));
     await writeAudit(tx, {
       organisationId: invite.organisationId,

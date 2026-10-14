@@ -29,6 +29,8 @@ export const suppliers = pgTable(
     email: text("email"),
     phone: text("phone"),
     notes: text("notes"),
+    /** Hidden from lists and pickers; kept for the items that used it. */
+    isArchived: boolean("is_archived").notNull().default(false),
     ...timestamps,
   },
   (t) => [index("suppliers_org_idx").on(t.organisationId)],

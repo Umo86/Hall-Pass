@@ -2,7 +2,7 @@ import "server-only";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Tx } from "@/lib/db/client";
 import { staffInvites } from "@/lib/db/schema";
-import type { PermissionOverrides, StaffRole } from "@/lib/authz";
+import type { Feature, PermissionOverrides, StaffRole } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { appUrl } from "@/lib/app-url";
 import { brandName } from "@/lib/config";
@@ -10,6 +10,14 @@ import { renderNotificationEmail } from "@/lib/email/template";
 import { sendEmail } from "@/lib/email/send";
 import { generateInviteToken, hashInviteToken } from "./invite-token";
 import { sendAccountEmail } from "./account-link";
+
+/** Staff invitation links stop working after this many days. */
+export const STAFF_INVITE_DAYS = 14;
+
+/** An invitation is usable until it expires (old ones without a date never do). */
+export function staffInviteExpired(invite: { expiresAt: Date | null }, now = new Date()): boolean {
+  return invite.expiresAt != null && invite.expiresAt.getTime() <= now.getTime();
+}
 
 /**
  * Create a staff invitation (replacing any older one still open for the
@@ -23,12 +31,18 @@ export async function createStaffInvite(
     email: string;
     role: StaffRole;
     overrides?: PermissionOverrides;
+    fullName?: string;
+    jobTitle?: string | null;
+    departmentId?: string | null;
+    /** Sections they will have; null or missing = every section. */
+    features?: Feature[] | null;
     invitedBy: string;
     summary: string;
   },
-): Promise<{ inviteId: string; inviteUrl: string }> {
+): Promise<{ inviteId: string; inviteUrl: string; expiresAt: Date }> {
   const email = opts.email.toLowerCase();
   const token = generateInviteToken();
+  const expiresAt = new Date(Date.now() + STAFF_INVITE_DAYS * 24 * 60 * 60 * 1000);
   await tx
     .update(staffInvites)
     .set({ revokedAt: new Date() })
@@ -47,6 +61,11 @@ export async function createStaffInvite(
       invitedEmail: email,
       role: opts.role,
       permissionOverrides: opts.overrides ?? {},
+      fullName: opts.fullName?.trim() ?? "",
+      jobTitle: opts.jobTitle?.trim() || null,
+      departmentId: opts.departmentId ?? null,
+      features: opts.features ?? null,
+      expiresAt,
       invitedBy: opts.invitedBy,
       inviteTokenHash: hashInviteToken(token),
     })
@@ -57,10 +76,15 @@ export async function createStaffInvite(
     entityType: "staff_invite",
     entityId: invite.id,
     action: "invite",
-    after: { email, role: opts.role },
+    after: {
+      email,
+      role: opts.role,
+      departmentId: opts.departmentId ?? null,
+      features: opts.features ?? null,
+    },
     summary: opts.summary,
   });
-  return { inviteId: invite.id, inviteUrl: `${appUrl()}/invite/${token}` };
+  return { inviteId: invite.id, inviteUrl: `${appUrl()}/invite/${token}`, expiresAt };
 }
 
 /** Email the invitation link. False when email isn't set up (share the link instead). */

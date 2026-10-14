@@ -1,6 +1,7 @@
 // No "server-only" marker: the seed script uses syncDepartmentSteps too.
 import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db, Tx } from "@/lib/db/client";
+import { defaultSignageSteps } from "@/lib/workflow/defaults";
 import { approvers, departments, memberships, workflowSteps, workflows } from "@/lib/db/schema";
 
 export type Department = typeof departments.$inferSelect;
@@ -20,7 +21,10 @@ type StepRow = typeof workflowSteps.$inferSelect;
  * Pure so the ordering can be unit tested.
  */
 export function orderSignageSteps(
-  steps: Pick<StepRow, "id" | "kind" | "departmentId" | "sortOrder" | "parallelGroup" | "isArchived">[],
+  steps: Pick<
+    StepRow,
+    "id" | "kind" | "departmentId" | "sortOrder" | "parallelGroup" | "isArchived"
+  >[],
   depts: Pick<Department, "id" | "sortOrder" | "name" | "signsLast" | "isArchived">[],
 ): { id: string; sortOrder: number; parallelGroup: number | null }[] {
   const deptOrder = [...depts].sort(
@@ -98,6 +102,8 @@ export async function syncDepartmentSteps(tx: Db | Tx, organisationId: string): 
       3;
     for (const d of depts) {
       const main = mainByDept.get(d.id) ?? null;
+      // A department that doesn't sign off has no live step (like an archived one).
+      const off = d.isArchived || !d.signsOff;
       const values = {
         name: signoffStepName(d.name),
         kind: "approval" as const,
@@ -105,13 +111,13 @@ export async function syncDepartmentSteps(tx: Db | Tx, organisationId: string): 
         approverRole: null,
         approverUserId: main,
         defaultFor: d.defaultFor,
-        isArchived: d.isArchived,
+        isArchived: off,
       };
       const existing = steps.find((s) => s.departmentId === d.id);
       if (existing) {
         await tx.update(workflowSteps).set(values).where(eq(workflowSteps.id, existing.id));
         Object.assign(existing, values);
-      } else if (!d.isArchived) {
+      } else if (!off) {
         const [row] = await tx
           .insert(workflowSteps)
           .values({
@@ -126,7 +132,8 @@ export async function syncDepartmentSteps(tx: Db | Tx, organisationId: string): 
         steps.push(row);
       }
     }
-    for (const o of orderSignageSteps(steps, depts)) {
+    const ordering = depts.map((d) => ({ ...d, isArchived: d.isArchived || !d.signsOff }));
+    for (const o of orderSignageSteps(steps, ordering)) {
       const s = steps.find((x) => x.id === o.id)!;
       if (s.sortOrder === o.sortOrder && s.parallelGroup === o.parallelGroup) continue;
       await tx
@@ -246,4 +253,54 @@ export async function listDepartments(db: Db | Tx, organisationId: string) {
           (p.overrides as Record<string, unknown> | null)?.["approval.decide"] !== false,
       })),
   }));
+}
+
+export const SIGNAGE_WORKFLOW_NAME = "Signage default";
+
+/**
+ * Make sure the organisation has a signage sign-off workflow. A brand-new
+ * organisation has none until this runs, and without it no sign can go for
+ * sign-off. It holds the venue approval and the print, delivery and install
+ * confirmations; the department sign-offs come from the departments.
+ */
+export async function ensureSignageWorkflow(tx: Db | Tx, organisationId: string): Promise<string> {
+  const [existing] = await tx
+    .select({ id: workflows.id })
+    .from(workflows)
+    .where(
+      and(
+        eq(workflows.organisationId, organisationId),
+        eq(workflows.appliesTo, "signage"),
+        isNull(workflows.forKind),
+        eq(workflows.isArchived, false),
+      ),
+    )
+    .limit(1);
+  if (existing) return existing.id;
+  const [flow] = await tx
+    .insert(workflows)
+    .values({ organisationId, name: SIGNAGE_WORKFLOW_NAME, appliesTo: "signage", isDefault: true })
+    .returning({ id: workflows.id });
+  const fixed = defaultSignageSteps.filter(
+    (st) => st.kind === "confirmation" || st.approverRole === "venue",
+  );
+  for (const st of fixed) {
+    await tx.insert(workflowSteps).values({
+      workflowId: flow.id,
+      sortOrder: st.sortOrder,
+      parallelGroup: st.parallelGroup,
+      name: st.name,
+      kind: st.kind,
+      approverType: st.approverType,
+      approverRole: st.approverRole,
+      approverUserId: null,
+      conditions: st.conditions,
+      slaDays: st.slaDays,
+      invalidateOnNewVersion: st.invalidateOnNewVersion,
+      restartFromHereOnChanges: st.restartFromHereOnChanges,
+      defaultFor: st.defaultFor ?? [],
+    });
+  }
+  await syncDepartmentSteps(tx, organisationId);
+  return flow.id;
 }
