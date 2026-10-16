@@ -58,6 +58,8 @@ export function InviteForm({
           value={fullName}
           onChange={(e) => setFullName(e.target.value)}
           autoComplete="name"
+          className="h-11 sm:h-9"
+          maxLength={200}
           required
         />
       </label>
@@ -85,11 +87,19 @@ export function InviteForm({
           </label>
         </>
       )}
-      <Button type="submit" className="w-full" disabled={pending}>
-        {needsPassword ? "Create my account" : "Accept invitation"}
+      <Button type="submit" className="h-11 w-full sm:h-9" disabled={pending}>
+        {pending ? "Setting up…" : needsPassword ? "Create my account" : "Accept invitation"}
       </Button>
-      {message && <p className="text-sm text-green-700 dark:text-green-400">{message}</p>}
-      {error && <p className="text-destructive text-sm">{error}</p>}
+      {message && (
+        <p role="status" className="text-sm text-green-700 dark:text-green-400">
+          {message}
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-destructive text-sm">
+          {error}
+        </p>
+      )}
       {needsPassword && (
         <p className="text-muted-foreground text-center text-xs">
           Already have an account?{" "}

@@ -21,7 +21,7 @@ test.describe("Approvals", () => {
     const person = `Lara Legal ${n}`;
     const email = `lara-${n}@approver.test`;
 
-    // 1. Admin: Approvals → Approvers — the seeded departments are there.
+    // 1. Admin: Approvals → Who signs off — the seeded departments are there.
     const admin = await as(browser, "admin@media10.test", baseURL!);
     await admin.goto(`${baseURL}/approvals?tab=approvers`);
     for (const name of ["Operations", "Marketing", "Sales", "Senior management"]) {
@@ -32,39 +32,49 @@ test.describe("Approvals", () => {
         .getByRole("region", { name: "Senior management approvers" })
         .getByRole("listitem")
         .filter({ hasText: "Dana Director" })
-        .getByText("Main approver"),
+        .getByRole("img", { name: "Main approver" }),
     ).toBeVisible();
+    // It's read-only here; departments are managed in Users.
+    await admin.getByRole("link", { name: "Manage in Users" }).click();
+    await admin.waitForURL("**/users?tab=departments");
 
-    // Add a department that only signs off when ticked on an item.
+    // Add a department that signs off, but only when ticked on an item.
     const addDept = admin.getByRole("form", { name: "Add a department" });
     await addDept.getByLabel("Department name").fill(dept);
-    await addDept.getByLabel("Organiser signage").uncheck();
-    await addDept.getByLabel("Sponsor signage").uncheck();
+    await addDept.getByRole("switch", { name: "New department signs off artwork" }).click();
     await addDept.getByRole("button", { name: "Add department" }).click();
-    const card = admin.getByRole("region", { name: `${dept} approvers` });
+    const card = admin.getByRole("region", { name: `${dept} department` });
     await expect(card).toBeVisible();
-    await expect(card.getByText("Only when ticked on an item")).toBeVisible();
+    await card.getByRole("button", { name: `Edit ${dept}` }).click();
+    await card.getByLabel("Organiser signage").uncheck();
+    await card.getByLabel("Sponsor signage").uncheck();
+    await card.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(card.getByText("Signs off only when ticked on an item")).toBeVisible();
 
-    // Add the approver: name, job title, email, main approver.
-    const addPerson = card.getByRole("form", { name: "Add an approver" });
-    await addPerson.getByLabel("Name").fill(person);
-    await addPerson.getByLabel("Job title").fill("Legal Counsel");
-    await addPerson.getByLabel("Email").fill(email);
-    await addPerson.getByLabel("Main approver").check();
-    await addPerson.getByRole("button", { name: "Add approver" }).click();
+    // Invite the approver from the department: sign-off comes ticked.
+    await card.getByRole("link", { name: "Invite someone new…" }).click();
+    await admin.waitForURL(/\/users\/new\?/);
+    await admin.getByLabel("Full name").fill(person);
+    await admin.getByLabel("Email").fill(email);
+    await admin.getByLabel("Job title").fill("Legal Counsel");
+    await admin.getByRole("radio", { name: /^Viewer/ }).check();
+    await expect(admin.getByRole("checkbox", { name: `Signs off ${dept} artwork` })).toBeChecked();
+    // Nobody is the main approver yet, so they are.
+    await expect(admin.getByRole("checkbox", { name: /^Main approver/ })).toBeChecked();
+    await admin.getByRole("button", { name: "Send invitation" }).click();
     // Email isn't set up locally, so the invitation link is shown to share.
     const link = admin.getByLabel("Invitation link");
     await expect(link).toBeVisible();
     const inviteUrl = await link.inputValue();
+    await admin.goto(`${baseURL}/users?tab=departments`);
     await expect(card.getByText(person)).toBeVisible();
-    await expect(card.getByText(`Legal Counsel · ${email}`)).toBeVisible();
-    await expect(card.getByText("Invite sent — not set up yet")).toBeVisible();
+    await expect(card.getByText(/Legal Counsel · .*Invited — not set up yet/)).toBeVisible();
 
     // 2. The approver opens the invitation and creates their account.
     const lctx = await browser.newContext();
     const lara = await lctx.newPage();
     await lara.goto(inviteUrl);
-    await expect(lara.getByText("You're invited to sign off signage artwork")).toBeVisible();
+    await expect(lara.getByText("You'll also sign off signage artwork")).toBeVisible();
     await expect(lara.getByLabel("Your name")).toHaveValue(person);
     await lara.getByLabel("Choose a password").fill("s3cure-pass");
     // The eye shows what's been typed, and hides it again.
@@ -79,9 +89,8 @@ test.describe("Approvals", () => {
     await lara.waitForURL("**/my-work");
 
     await admin.reload();
-    await expect(
-      admin.getByRole("region", { name: `${dept} approvers` }).getByText("Active"),
-    ).toBeVisible();
+    await expect(card.getByText(person)).toBeVisible();
+    await expect(card.getByText("Invited — not set up yet")).toHaveCount(0);
 
     // 3. Ops adds signage that only the new department signs off, naming Lara.
     const ops = await as(browser, "ops@media10.test", baseURL!);
@@ -144,14 +153,11 @@ test.describe("Approvals", () => {
     await ops.goto(`${baseURL}/BIRM27/signage/${ref}?tab=history`);
     await expect(ops.getByText(/sign-off: approved/i).first()).toBeVisible();
 
-    // Tidy up: remove the department from sign-off.
-    await admin.goto(`${baseURL}/approvals?tab=approvers`);
-    await admin
-      .getByRole("region", { name: `${dept} approvers` })
-      .getByRole("button", { name: "Remove", exact: true })
-      .first()
-      .click();
-    await expect(admin.getByRole("region", { name: `${dept} approvers` })).toHaveCount(0);
+    // Tidy up: archive the department.
+    await admin.goto(`${baseURL}/users?tab=departments`);
+    await card.getByRole("button", { name: `Archive ${dept}` }).click();
+    await admin.getByRole("dialog").getByRole("button", { name: "Archive" }).click();
+    await expect(card).toHaveCount(0);
   });
 
   test("non-admins see approvers read-only and My Work links to their sign-offs", async ({
@@ -161,8 +167,11 @@ test.describe("Approvals", () => {
     const mkt = await as(browser, "marketing@media10.test", baseURL!);
     await mkt.goto(`${baseURL}/approvals?tab=approvers`);
     await expect(mkt.getByRole("region", { name: "Marketing approvers" })).toBeVisible();
+    await expect(mkt.getByRole("link", { name: "Manage in Users" })).toHaveCount(0);
+    await mkt.goto(`${baseURL}/users?tab=departments`);
+    await expect(mkt.getByRole("region", { name: "Marketing department" })).toBeVisible();
     await expect(mkt.getByRole("form", { name: "Add a department" })).toHaveCount(0);
-    await expect(mkt.getByRole("button", { name: "Add approver" })).toHaveCount(0);
+    await expect(mkt.getByRole("switch")).toHaveCount(0);
     await mkt.goto(`${baseURL}/my-work`);
     await expect(mkt.getByRole("heading", { name: "Sign-offs" })).toBeVisible();
     // The old Settings tab now points here.

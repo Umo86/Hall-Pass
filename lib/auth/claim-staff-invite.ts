@@ -22,9 +22,11 @@ export async function openStaffInviteFor(email: string): Promise<StaffInvite | n
 }
 
 /**
- * Turn a staff invitation into a membership (role and permissions from the
- * invite), in one transaction with an audit record. A name is saved when
- * given (the invite form collects it; first sign-in may not have one).
+ * Turn a staff invitation into a membership (role, permissions, department,
+ * sections and job title from the invite), in one transaction with an audit
+ * record. A name is saved when given (the invite form collects it; first
+ * sign-in may not have one). Used, cancelled or expired invitations do
+ * nothing.
  */
 export async function claimStaffInvite(invite: StaffInvite, userId: string, fullName?: string) {
   await db.transaction(async (tx) => {
@@ -36,10 +38,11 @@ export async function claimStaffInvite(invite: StaffInvite, userId: string, full
           eq(staffInvites.id, invite.id),
           isNull(staffInvites.acceptedAt),
           isNull(staffInvites.revokedAt),
+          or(isNull(staffInvites.expiresAt), gt(staffInvites.expiresAt, new Date())),
         ),
       )
       .returning({ id: staffInvites.id });
-    if (claimed.length === 0) return; // already used or revoked
+    if (claimed.length === 0) return; // already used, cancelled or expired
     await tx
       .insert(memberships)
       .values({
@@ -53,9 +56,12 @@ export async function claimStaffInvite(invite: StaffInvite, userId: string, full
       })
       .onConflictDoNothing();
     // Approver entries waiting for this person now point at their account.
-    for (const orgId of await linkApproversToUser(tx, { id: userId, email: invite.invitedEmail })) {
-      await syncDepartmentSteps(tx, orgId);
-    }
+    const linked = await linkApproversToUser(
+      tx,
+      { id: userId, email: invite.invitedEmail },
+      invite.organisationId,
+    );
+    for (const orgId of linked) await syncDepartmentSteps(tx, orgId);
     await tx
       .update(users)
       .set(

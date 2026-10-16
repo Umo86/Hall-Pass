@@ -67,7 +67,9 @@ d("staff invitations", () => {
     const rows = await db
       .select()
       .from(schema.memberships)
-      .where(and(eq(schema.memberships.userId, userId), eq(schema.memberships.organisationId, orgId)));
+      .where(
+        and(eq(schema.memberships.userId, userId), eq(schema.memberships.organisationId, orgId)),
+      );
     expect(rows).toHaveLength(1);
     expect(rows[0].role).toBe("sales");
     expect(rows[0].permissionOverrides).toEqual({ "costs.edit": true });
@@ -78,8 +80,70 @@ d("staff invitations", () => {
     const audit = await db
       .select()
       .from(schema.auditLog)
-      .where(and(eq(schema.auditLog.entityType, "staff_invite"), eq(schema.auditLog.entityId, invite!.id)));
+      .where(
+        and(
+          eq(schema.auditLog.entityType, "staff_invite"),
+          eq(schema.auditLog.entityId, invite!.id),
+        ),
+      );
     expect(audit.length).toBe(1);
+  });
+
+  it("does not claim an expired invitation, and copies department and sections when valid", async () => {
+    const [dept] = await db
+      .insert(schema.departments)
+      .values({ organisationId: orgId, name: `Events ${suffix}`, signsOff: false })
+      .returning();
+    const expiredEmail = `expired-${suffix}@invite.test`;
+    const [expired] = await db
+      .insert(schema.staffInvites)
+      .values({
+        organisationId: orgId,
+        invitedEmail: expiredEmail,
+        role: "ops",
+        inviteTokenHash: `exp-${suffix}`,
+        expiresAt: new Date(Date.now() - 60_000),
+      })
+      .returning();
+    expect(await invites.openStaffInviteFor(expiredEmail)).toBeNull();
+    const expiredUser = randomUUID();
+    await db.insert(schema.users).values({ id: expiredUser, email: expiredEmail });
+    await invites.claimStaffInvite(expired, expiredUser);
+    expect(
+      await db.select().from(schema.memberships).where(eq(schema.memberships.userId, expiredUser)),
+    ).toHaveLength(0);
+
+    const okEmail = `fresh-${suffix}@invite.test`;
+    const [fresh] = await db
+      .insert(schema.staffInvites)
+      .values({
+        organisationId: orgId,
+        invitedEmail: okEmail,
+        role: "marketing",
+        fullName: "Fran Fresh",
+        jobTitle: "Designer",
+        departmentId: dept.id,
+        features: ["signage", "calendar"],
+        inviteTokenHash: `fresh-${suffix}`,
+        expiresAt: new Date(Date.now() + 60_000),
+      })
+      .returning();
+    const freshUser = randomUUID();
+    await db.insert(schema.users).values({ id: freshUser, email: okEmail });
+    await invites.claimStaffInvite(fresh, freshUser);
+    const [m] = await db
+      .select()
+      .from(schema.memberships)
+      .where(eq(schema.memberships.userId, freshUser));
+    expect(m).toMatchObject({
+      role: "marketing",
+      departmentId: dept.id,
+      features: ["signage", "calendar"],
+      jobTitle: "Designer",
+    });
+    // The name from the invitation is used when none is typed.
+    const [u] = await db.select().from(schema.users).where(eq(schema.users.id, freshUser));
+    expect(u.fullName).toBe("Fran Fresh");
   });
 
   it("does not claim a revoked invitation", async () => {

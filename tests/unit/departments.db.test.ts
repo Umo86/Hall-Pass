@@ -70,9 +70,20 @@ d("departments and approvers", () => {
 
   it("adds a step per department, in order, named after it", async () => {
     await db.insert(schema.departments).values([
-      { organisationId: orgId, name: "Marketing", sortOrder: 1, defaultFor: ["organiser", "sponsor"] },
+      {
+        organisationId: orgId,
+        name: "Marketing",
+        sortOrder: 1,
+        defaultFor: ["organiser", "sponsor"],
+      },
       { organisationId: orgId, name: "Legal", sortOrder: 2, defaultFor: [] },
-      { organisationId: orgId, name: "Directors", sortOrder: 3, signsLast: true, defaultFor: ["sponsor"] },
+      {
+        organisationId: orgId,
+        name: "Directors",
+        sortOrder: 3,
+        signsLast: true,
+        defaultFor: ["sponsor"],
+      },
     ]);
     await db.transaction((tx) => departments.syncDepartmentSteps(tx, orgId));
 
@@ -97,7 +108,9 @@ d("departments and approvers", () => {
     const [mkt] = await db
       .select()
       .from(schema.departments)
-      .where(and(eq(schema.departments.organisationId, orgId), eq(schema.departments.name, "Marketing")));
+      .where(
+        and(eq(schema.departments.organisationId, orgId), eq(schema.departments.name, "Marketing")),
+      );
     const email = `maya-${suffix}@dept.test`;
     await db.insert(schema.approvers).values({
       organisationId: orgId,
@@ -136,11 +149,39 @@ d("departments and approvers", () => {
     expect(await departments.departmentSignerIds(db, orgId, mkt.id)).toEqual([userId]);
   });
 
+  it("joining one organisation doesn't link approver entries in another", async () => {
+    const [other] = await db
+      .insert(schema.organisations)
+      .values({ name: "Other Org", slug: `dept-other-${suffix}` })
+      .returning();
+    const [otherDept] = await db
+      .insert(schema.departments)
+      .values({ organisationId: other.id, name: "Legal" })
+      .returning();
+    const email = `shared-${suffix}@dept.test`;
+    await db.insert(schema.approvers).values({
+      organisationId: other.id,
+      departmentId: otherDept.id,
+      fullName: "Shared Person",
+      email,
+    });
+    const userId = randomUUID();
+    await db.insert(schema.users).values({ id: userId, email });
+    const linked = await db.transaction((tx) =>
+      departments.linkApproversToUser(tx, { id: userId, email }, orgId),
+    );
+    expect(linked).toEqual([]);
+    const [row] = await db.select().from(schema.approvers).where(eq(schema.approvers.email, email));
+    expect(row.userId).toBeNull();
+  });
+
   it("removing a department archives its step", async () => {
     const [legal] = await db
       .update(schema.departments)
       .set({ isArchived: true })
-      .where(and(eq(schema.departments.organisationId, orgId), eq(schema.departments.name, "Legal")))
+      .where(
+        and(eq(schema.departments.organisationId, orgId), eq(schema.departments.name, "Legal")),
+      )
       .returning();
     await db.transaction((tx) => departments.syncDepartmentSteps(tx, orgId));
     const all = await signageSteps();

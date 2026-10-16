@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { and, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { editions, events, staffInvites } from "@/lib/db/schema";
+import { editions, events } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
 import { pendingInstancesForUser } from "@/lib/queries/approvals";
@@ -10,11 +10,11 @@ import {
   listArtworkApprovals,
   type ArtworkFilter,
 } from "@/lib/queries/artwork-approvals";
-import { listDepartments } from "@/lib/domain/departments";
+import { listDepartmentCards } from "@/lib/users/queries";
 import { formatDate, formatDateTime, statusLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import { DecideButtons } from "@/components/approvals/decide-buttons";
-import { ApproversEditor, type DepartmentRow } from "@/components/approvals/approvers-editor";
+import { WhoSignsOff } from "@/components/approvals/approvers-editor";
 import { Scene } from "@/components/scene";
 import { brandImage } from "@/lib/brand-images";
 import { Input } from "@/components/ui/input";
@@ -48,7 +48,7 @@ export default async function ApprovalsPage({
   const tabs: { id: Tab; label: string }[] = [
     { id: "mine", label: "Waiting on me" },
     { id: "artwork", label: "All artwork" },
-    { id: "approvers", label: "Approvers" },
+    { id: "approvers", label: "Who signs off" },
   ];
 
   return (
@@ -80,7 +80,7 @@ export default async function ApprovalsPage({
       {tab === "mine" && <WaitingOnMe session={session} params={params} />}
       {tab === "artwork" && <AllArtwork organisationId={session.organisation.id} params={params} />}
       {tab === "approvers" && (
-        <ApproversTab organisationId={session.organisation.id} canEdit={canManage} />
+        <ApproversTab organisationId={session.organisation.id} canManage={canManage} />
       )}
     </div>
   );
@@ -398,59 +398,31 @@ async function AllArtwork({
 
 async function ApproversTab({
   organisationId,
-  canEdit,
+  canManage,
 }: {
   organisationId: string;
-  canEdit: boolean;
+  canManage: boolean;
 }) {
-  const depts = await listDepartments(db, organisationId);
-  const emails = [...new Set(depts.flatMap((d) => d.approvers.map((a) => a.email)))];
-  const invites = emails.length
-    ? await db
-        .select({ email: staffInvites.invitedEmail })
-        .from(staffInvites)
-        .where(
-          and(
-            eq(staffInvites.organisationId, organisationId),
-            inArray(staffInvites.invitedEmail, emails),
-            isNull(staffInvites.acceptedAt),
-            isNull(staffInvites.revokedAt),
-          ),
-        )
-    : [];
-  const invited = new Set(invites.map((i) => i.email));
-  const rows: DepartmentRow[] = depts.map((d) => ({
-    id: d.id,
-    name: d.name,
-    defaultFor: d.defaultFor,
-    signsLast: d.signsLast,
-    isArchived: d.isArchived,
-    approvers: d.approvers.map((a) => ({
-      id: a.id,
-      fullName: a.fullName,
-      jobTitle: a.jobTitle,
-      email: a.email,
-      isMain: a.isMain,
-      state: a.active ? "active" : invited.has(a.email) ? "invited" : "none",
-    })),
-  }));
-
+  // Read-only here: departments and approvers are managed in Users → Departments.
+  const depts = await listDepartmentCards(db, organisationId);
   return (
-    <section className="space-y-3">
-      <div className="text-muted-foreground max-w-3xl space-y-1 text-sm">
-        <p>
-          Each department signs off the artwork for the signage it&apos;s set up for. The{" "}
-          <span className="text-foreground font-medium">main approver</span> gets every item unless
-          someone else in the department is picked when the signage is added. Departments that
-          sign off after the others wait until everyone before them has approved.
-        </p>
-        <p>
-          New approvers get an email to set up their account with a password. They&apos;re
-          emailed again whenever artwork needs their sign-off.
-          {canEdit ? "" : " Only admins can change approvers."}
-        </p>
-      </div>
-      <ApproversEditor departments={rows} canEdit={canEdit} />
-    </section>
+    <WhoSignsOff
+      canManage={canManage}
+      departments={depts
+        .filter((d) => d.signsOff && !d.isArchived)
+        .map((d) => ({
+          id: d.id,
+          name: d.name,
+          defaultFor: d.defaultFor,
+          signsLast: d.signsLast,
+          approvers: d.approvers.map((a) => ({
+            id: a.id,
+            name: a.name,
+            jobTitle: a.jobTitle,
+            isMain: a.isMain,
+            state: a.state,
+          })),
+        }))}
+    />
   );
 }

@@ -1,30 +1,20 @@
-import { and, asc, count, desc, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   editions,
   events,
-  exhibitors,
-  externalGrants,
   itemTypes,
-  memberships,
   signageItems,
-  sponsors,
-  staffInvites,
   supplierServiceLinks,
   supplierServices,
-  suppliers,
-  users,
   venues,
 } from "@/lib/db/schema";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can, type PermissionOverrides } from "@/lib/authz";
-import { formatDate, formatDateTime, roleLabel } from "@/lib/format";
-import { InviteExternalForm, RevokeGrantButton } from "@/components/settings/invite-form";
-import { TeamTable } from "@/components/settings/team-table";
+import { can } from "@/lib/authz";
+import { formatDateTime } from "@/lib/format";
 import { DirectorySection } from "@/components/settings/directory-section";
-import { standsEnabled } from "@/lib/config";
 import { ItemTypesEditor } from "@/components/settings/item-types-editor";
 import { ServicesEditor } from "@/components/settings/services-editor";
 import { RestoreItemButton } from "@/components/settings/restore-button";
@@ -34,7 +24,7 @@ import { StoragePanel } from "@/components/settings/storage-panel";
 export const metadata = { title: "Settings" };
 export const dynamic = "force-dynamic";
 
-type TabId = "team" | "types" | "services" | "venues" | "deleted" | "storage";
+type TabId = "types" | "services" | "venues" | "deleted" | "storage";
 
 export default async function SettingsPage({
   searchParams,
@@ -45,7 +35,6 @@ export default async function SettingsPage({
   const canManage = can(session.actor, { type: "settings.manage" });
   const canUsers = can(session.actor, { type: "users.manage" });
   const tabs: { id: TabId; label: string }[] = [
-    { id: "team", label: "Team" },
     ...(canManage || canUsers
       ? ([
           { id: "types", label: "Signage types" },
@@ -61,33 +50,30 @@ export default async function SettingsPage({
   if (rawTab === "signoff") redirect("/approvals?tab=approvers");
   // Personal settings moved to My account.
   if (rawTab === "general") redirect("/account");
-  const tab: TabId = tabs.some((t) => t.id === rawTab) ? (rawTab as TabId) : "team";
+  // The team, invitations and external access moved to Users.
+  if (rawTab === "team") redirect("/users");
+  if (tabs.length === 0) {
+    return (
+      <div className="flex max-w-5xl flex-col gap-3 p-4 sm:p-6">
+        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+        <p className="text-muted-foreground text-sm">
+          Settings are looked after by admins and operations. Your own details and notifications are
+          in{" "}
+          <Link href="/account" className="link">
+            My account
+          </Link>
+          ; the team is in{" "}
+          <Link href="/users" className="link">
+            Users
+          </Link>
+          .
+        </p>
+      </div>
+    );
+  }
+  const tab: TabId = tabs.some((t) => t.id === rawTab) ? (rawTab as TabId) : tabs[0].id;
 
-  const [
-    staff,
-    grants,
-    types,
-    deleted,
-    editionRows,
-    venueRows,
-    supplierRows,
-    exhibitorRows,
-    sponsorRows,
-    pendingInvites,
-    eventRows,
-    serviceRows,
-  ] = await Promise.all([
-    db
-      .select({ m: memberships, u: users })
-      .from(memberships)
-      .innerJoin(users, eq(memberships.userId, users.id))
-      .where(eq(memberships.organisationId, session.organisation.id)),
-    db
-      .select({ g: externalGrants, u: users })
-      .from(externalGrants)
-      .leftJoin(users, eq(externalGrants.userId, users.id))
-      .where(eq(externalGrants.organisationId, session.organisation.id))
-      .orderBy(desc(externalGrants.createdAt)),
+  const [types, deleted, venueRows, eventRows, serviceRows] = await Promise.all([
     db
       .select()
       .from(itemTypes)
@@ -104,40 +90,7 @@ export default async function SettingsPage({
       .orderBy(desc(signageItems.deletedAt))
       .limit(50)
       .then((rows) => rows.map((r) => r.item)),
-    db
-      .select({ edition: editions })
-      .from(editions)
-      .innerJoin(events, eq(editions.eventId, events.id))
-      .where(eq(events.organisationId, session.organisation.id))
-      .then((rows) => rows.map((r) => r.edition)),
     db.select().from(venues).where(eq(venues.organisationId, session.organisation.id)),
-    db.select().from(suppliers).where(eq(suppliers.organisationId, session.organisation.id)),
-    // Only this organisation's shows' exhibitors and sponsors.
-    db
-      .select({ exhibitor: exhibitors })
-      .from(exhibitors)
-      .innerJoin(editions, eq(exhibitors.editionId, editions.id))
-      .innerJoin(events, eq(editions.eventId, events.id))
-      .where(eq(events.organisationId, session.organisation.id))
-      .then((rows) => rows.map((r) => r.exhibitor)),
-    db
-      .select({ sponsor: sponsors })
-      .from(sponsors)
-      .innerJoin(editions, eq(sponsors.editionId, editions.id))
-      .innerJoin(events, eq(editions.eventId, events.id))
-      .where(eq(events.organisationId, session.organisation.id))
-      .then((rows) => rows.map((r) => r.sponsor)),
-    db
-      .select()
-      .from(staffInvites)
-      .where(
-        and(
-          eq(staffInvites.organisationId, session.organisation.id),
-          isNull(staffInvites.acceptedAt),
-          isNull(staffInvites.revokedAt),
-        ),
-      )
-      .orderBy(desc(staffInvites.createdAt)),
     db
       .select()
       .from(events)
@@ -164,7 +117,7 @@ export default async function SettingsPage({
         {tabs.map((t) => (
           <Link
             key={t.id}
-            href={t.id === "team" ? "/settings" : `/settings?tab=${t.id}`}
+            href={t.id === tabs[0].id ? "/settings" : `/settings?tab=${t.id}`}
             className={`px-3 py-2 text-sm whitespace-nowrap ${
               tab === t.id
                 ? "border-primary text-foreground border-b-2 font-medium"
@@ -176,86 +129,6 @@ export default async function SettingsPage({
           </Link>
         ))}
       </nav>
-
-      {tab === "team" && (
-        <>
-          <section>
-            <h2 className="mb-2 text-sm font-semibold">Team</h2>
-            {canUsers && (
-              <p className="text-muted-foreground mb-2 text-sm">
-                Set each person&rsquo;s role, fine-tune what they can do under Permissions, and
-                invite new staff. Approving stays tied to sign-off assignment — the checkbox can
-                only take it away.
-              </p>
-            )}
-            <TeamTable
-              members={staff.map(({ m, u }) => ({
-                membershipId: m.id,
-                userId: u.id,
-                name: u.fullName,
-                email: u.email,
-                role: m.role,
-                overrides: m.permissionOverrides as PermissionOverrides,
-              }))}
-              invites={pendingInvites.map((inv) => ({
-                id: inv.id,
-                email: inv.invitedEmail,
-                role: inv.role,
-              }))}
-              currentUserId={session.user.id}
-              canManage={canUsers}
-            />
-          </section>
-
-          {canUsers && (
-            <section>
-              <h2 className="mb-2 text-sm font-semibold">External access</h2>
-              <div className="mb-4 rounded-lg border p-4">
-                <h3 className="mb-3 text-sm font-medium">Invite an external party</h3>
-                <InviteExternalForm
-                  editions={editionRows.map((e) => ({ id: e.id, label: `${e.code} — ${e.name}` }))}
-                  venues={venueRows.map((v) => ({ id: v.id, label: v.name }))}
-                  suppliers={supplierRows.map((sp) => ({ id: sp.id, label: sp.name }))}
-                  exhibitors={exhibitorRows.map((x) => ({
-                    id: x.id,
-                    label: `${x.companyName} (${x.standNumber})`,
-                    editionId: x.editionId,
-                  }))}
-                  sponsors={sponsorRows.map((sp) => ({
-                    id: sp.id,
-                    label: sp.companyName,
-                    editionId: sp.editionId,
-                  }))}
-                  showStandRoles={standsEnabled}
-                />
-              </div>
-              <div className="overflow-x-auto rounded-lg border">
-                <table className="w-full text-sm">
-                  <tbody>
-                    {grants.map(({ g, u }) => (
-                      <tr key={g.id} className="border-b last:border-0">
-                        <td className="px-3 py-2 font-medium">{u?.fullName || g.invitedEmail}</td>
-                        <td className="px-3 py-2">{roleLabel(g.role)}</td>
-                        <td className="text-muted-foreground px-3 py-2">
-                          {g.revokedAt
-                            ? `Revoked ${formatDateTime(g.revokedAt)}`
-                            : g.acceptedAt
-                              ? `Accepted ${formatDateTime(g.acceptedAt)}`
-                              : "Invited"}
-                          {g.expiresAt ? ` · expires ${formatDate(g.expiresAt)}` : ""}
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          {!g.revokedAt && <RevokeGrantButton grantId={g.id} />}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          )}
-        </>
-      )}
 
       {tab === "types" && (
         <section className="space-y-3">

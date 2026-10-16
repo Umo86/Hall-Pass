@@ -146,17 +146,25 @@ export async function syncDepartmentSteps(tx: Db | Tx, organisationId: string): 
 
 /**
  * Connect approver entries to a person's account by email — when they join,
- * or when an admin adds someone who is already on the team. Returns the
+ * or when an admin adds someone who is already on the team. Only the
+ * organisation they joined counts when one is given. Returns the
  * organisations whose steps may need a new main approver.
  */
 export async function linkApproversToUser(
   tx: Tx,
   user: { id: string; email: string },
+  organisationId?: string,
 ): Promise<string[]> {
   const linked = await tx
     .update(approvers)
     .set({ userId: user.id })
-    .where(and(isNull(approvers.userId), eq(approvers.email, user.email.toLowerCase())))
+    .where(
+      and(
+        isNull(approvers.userId),
+        eq(approvers.email, user.email.toLowerCase()),
+        organisationId ? eq(approvers.organisationId, organisationId) : undefined,
+      ),
+    )
     .returning({ organisationId: approvers.organisationId });
   return [...new Set(linked.map((l) => l.organisationId))];
 }

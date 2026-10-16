@@ -11,8 +11,8 @@ import { externalGrants, staffInvites, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
 import { DEV_COOKIE, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
-import { hashInviteToken } from "@/lib/auth/invite-token";
 import { claimStaffInvite } from "@/lib/auth/claim-staff-invite";
+import { findValidGrant, findValidStaffInvite } from "@/lib/users/invite-lookup";
 import { STAFF_HOME } from "@/lib/edition-path";
 import { supabaseAdmin } from "@/lib/auth/supabase-admin";
 
@@ -77,58 +77,6 @@ async function createAccount(
   return { userId: data.user.id };
 }
 
-type Grant = typeof externalGrants.$inferSelect;
-
-async function findValidGrant(
-  token: string,
-): Promise<{ grant: Grant; error?: never } | { grant?: never; error: string }> {
-  const grant = await db.query.externalGrants.findFirst({
-    where: eq(externalGrants.inviteTokenHash, hashInviteToken(token)),
-  });
-  if (!grant) return { error: "This invitation link is not valid." };
-  if (grant.revokedAt) return { error: "This invitation has been revoked." };
-  if (grant.expiresAt && grant.expiresAt.getTime() < Date.now()) {
-    return { error: "This invitation has expired." };
-  }
-  return { grant };
-}
-
-type StaffInvite = typeof staffInvites.$inferSelect;
-
-async function findValidStaffInvite(
-  token: string,
-): Promise<{ invite: StaffInvite; error?: never } | { invite?: never; error: string }> {
-  const invite = await db.query.staffInvites.findFirst({
-    where: eq(staffInvites.inviteTokenHash, hashInviteToken(token)),
-  });
-  if (!invite) return { error: "This invitation link is not valid." };
-  if (invite.revokedAt) return { error: "This invitation has been revoked." };
-  if (invite.acceptedAt) return { error: "This invitation has already been used — sign in instead." };
-  return { invite };
-}
-
-export async function inviteDetails(token: string) {
-  const res = await findValidGrant(token);
-  if (res.error === undefined) {
-    return {
-      ok: true as const,
-      kind: "external" as const,
-      invitedEmail: res.grant.invitedEmail,
-      role: res.grant.role,
-      accepted: Boolean(res.grant.acceptedAt),
-    };
-  }
-  const staffRes = await findValidStaffInvite(token);
-  if (staffRes.error !== undefined) return { ok: false as const, error: res.error };
-  return {
-    ok: true as const,
-    kind: "staff" as const,
-    invitedEmail: staffRes.invite.invitedEmail,
-    role: staffRes.invite.role,
-    accepted: Boolean(staffRes.invite.acceptedAt),
-  };
-}
-
 /** Accept an invitation (external grant or staff) and land in the right place. */
 export async function acceptInvite(input: unknown): Promise<InviteResult> {
   const parsed = acceptSchema.safeParse(input);
@@ -136,9 +84,12 @@ export async function acceptInvite(input: unknown): Promise<InviteResult> {
   const { token, fullName } = parsed.data;
   const account: NewAccount = { password: parsed.data.password };
   const res = await findValidGrant(token);
-  if (res.error !== undefined) {
+  if (!res.grant) {
     const staffRes = await findValidStaffInvite(token);
-    if (staffRes.error !== undefined) return { ok: false, error: res.error };
+    if (!staffRes.invite) {
+      const problem = res.problem ?? staffRes.problem;
+      return { ok: false, error: problem?.error ?? "This invitation link is not valid." };
+    }
     return acceptStaffInvite(staffRes.invite, token, fullName, account);
   }
   const grant = res.grant;

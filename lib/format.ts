@@ -84,6 +84,28 @@ export function roleLabel(role: string | null | undefined): string {
   return ROLE_LABELS[role] ?? statusLabel(role);
 }
 
+/** One line per staff role, shown under each choice when adding or editing a user. */
+export const ROLE_DESCRIPTIONS: Record<string, string> = {
+  admin: "Everything, including users and settings",
+  ops: "Runs events: signage, stands, onsite, costs and setup",
+  marketing: "Adds signage and uploads artwork",
+  sales: "Sponsorship items and sponsor signage",
+  event_director: "Sees everything and signs off when asked",
+  viewer: "Can look but not change anything",
+};
+
+/** "3 Oct" — a short date for lists where the year is obvious. */
+export function formatDayMonth(value: Date | string | null | undefined): string {
+  if (!value) return "—";
+  const date = typeof value === "string" ? new Date(value) : value;
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    timeZone: appTimezone,
+  }).format(date);
+}
+
 export function daysUntil(date: Date | string | null | undefined): number | null {
   if (!date) return null;
   const target = typeof date === "string" ? new Date(`${date}T12:00:00Z`) : date;
