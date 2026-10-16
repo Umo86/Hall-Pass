@@ -177,6 +177,8 @@ export type Action =
   | { type: "signage.submit"; item: SignageItemCtx }
   | { type: "approval.decide"; step: ApprovalStepCtx }
   | { type: "approval.delegate"; step: ApprovalStepCtx }
+  /** Chase someone else's sign-off (Remind on Approvals → Everyone's). */
+  | { type: "approval.remind"; step: ApprovalStepCtx }
   | { type: "signage.hold" }
   | { type: "signage.resume" }
   | { type: "signage.reopen" }
@@ -405,6 +407,10 @@ export function featureForAction(action: Action): Feature | null {
       return "exhibitorId" in action.entity ? "stands" : itemFeature(action.entity);
     case "stand.review":
       return "stands";
+    case "approval.remind":
+      return action.step.entity.type === "signage_item"
+        ? itemFeature(action.step.entity.item)
+        : "stands";
     case "export.run":
       if (action.kind === "certificate") return null;
       if (action.kind === "sponsor_report") return "sponsorship";
@@ -546,6 +552,16 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       if (role === "viewer") return false;
       if (role === "admin") return true;
       return staffCanDecide(actor, action.step);
+
+    case "approval.remind": {
+      // Whoever can send the item for sign-off can chase it (stands: whoever
+      // reviews them). Deciding a step doesn't make you its chaser.
+      if (role === "admin" || role === "ops") return true;
+      const entity = action.step.entity;
+      return entity.type === "signage_item"
+        ? can(actor, { type: "signage.submit", item: entity.item }, now)
+        : can(actor, { type: "stand.review" }, now);
+    }
 
     case "signage.hold":
     case "signage.resume":

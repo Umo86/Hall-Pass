@@ -76,7 +76,7 @@ export async function saveSponsor(input: unknown): Promise<ActionResult<{ id: st
     .innerJoin(events, eq(editions.eventId, events.id))
     .where(and(eq(editions.id, data.editionId), eq(events.organisationId, session.organisation.id)))
     .limit(1);
-  if (!row) return fail("Edition not found");
+  if (!row) return fail("Event not found");
   if (editionIsReadOnly(row.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
 
   const values = {

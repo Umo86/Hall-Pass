@@ -253,7 +253,7 @@ d("onsite on a real database", () => {
     }
   });
 
-  it("tells Operations about a supplier step only when there is a supplier to invite", async () => {
+  it("tells Operations about a supplier step only when there is a supplier without access", async () => {
     const run = async (withSupplier: boolean) => {
       const item = await addItem({
         status: "approved",
@@ -283,11 +283,11 @@ d("onsite on a real database", () => {
     };
     // No supplier at all: nothing here (the approval already said so).
     expect(await run(false)).toHaveLength(0);
-    // A supplier with nobody on the portal: Operations hear, with the invite.
+    // A supplier with nobody on the portal: Operations hear, pointed at the
+    // item to confirm it themselves (only admins can invite the supplier).
     const [note] = await run(true);
     expect(note.body).toContain(`Nobody at Print Shop ${n} has Hall Pass access yet`);
-    expect(note.link).toBe(
-      `/users?tab=external&invite=1&role=supplier&scopeId=${supplierId}&edition=${editionId}`,
-    );
+    expect(note.body).toContain("or ask an admin to invite them.");
+    expect(note.link).toMatch(new RegExp(`^/ONS${n}/signage/SIG-ONS${n}-\\d{3}$`));
   });
 });

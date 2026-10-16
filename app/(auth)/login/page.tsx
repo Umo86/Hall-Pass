@@ -14,13 +14,16 @@ export const dynamic = "force-dynamic";
 async function devUserList(): Promise<DevUser[]> {
   if (!devAuthEnabled()) return [];
   try {
-    const { eq } = await import("drizzle-orm");
+    const { asc, eq } = await import("drizzle-orm");
     const { db } = await import("@/lib/db/client");
     const { externalGrants, memberships, users } = await import("@/lib/db/schema");
+    // Oldest first, so the seeded accounts are always on the list however many
+    // people later runs have added (without an order the 30 were arbitrary).
     const rows = await db
       .select({ user: users, membership: memberships })
       .from(users)
       .leftJoin(memberships, eq(memberships.userId, users.id))
+      .orderBy(asc(users.createdAt), asc(users.email))
       .limit(30);
     const grants = await db.select().from(externalGrants);
     return rows

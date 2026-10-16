@@ -334,3 +334,134 @@ useful fields for every item.
   name equals the event name without its year, or a new one is created.
 - **Halls.** Removing a hall also removes its unused locations after a
   confirm; it is refused while any sign, live or deleted, uses them.
+- **Signage rules live on the server.** Stages, chips, Mine, overdue, the
+  readiness checklist, next step, stepper, bulk skip reasons, spec lock and the
+  stale-confirmation filter are in `lib/domain/signage.ts` (it imports the
+  schema, so it can't be bundled for the browser) and reach pages as data.
+- **Signage chips.** "Needs artwork" is a draft or needs-artwork item with no
+  artwork; "Not sent yet" catches drafts that have artwork, so every row is in
+  a chip. Empty chips are hidden except All, Mine and the active one.
+- **Mine** is: I own it, or a waiting step names me, my sign-off department or
+  my role (Operations also count supplier confirmations). An admin's power to
+  decide anything doesn't make every row theirs. `stepIsMine` also chooses
+  "Your decision" and the dashboard's "Sign-offs waiting on you"; a paused
+  sign-off counts as none.
+- **Stale confirmations.** A confirmation left pending after its item moved
+  past it (older data) isn't shown as what the item waits on (`stepStillDue`);
+  the status machine and the instances are unchanged.
+- **Upload and send.** "Send for sign-off after upload" is ticked by default
+  for ready drafts and changes requested, needs signage.submit as well as
+  artwork.upload, and runs in a savepoint so a refusal keeps the upload.
+- **Sending back.** Sending back without new artwork asks first, checked on the
+  server (`resubmitItem`). `resubmitItemInTx` does the work for the item page,
+  upload-and-send and now `resubmitSignageItem` too, so there is one copy.
+- **Item page.** The header holds only More; the stage's main action is only in
+  the next-step card. Read-only "At a glance" details for every kind (stand
+  designs keep their form); a sticky Save bar only while editing. Recently
+  deleted lists every kind for the event, for people who can restore.
+  List dates show day and month (full date on hover); Stand no. is optional.
+- **Bulk confirmations** call `decideApproval` per item or step, so authz, audit
+  and status effects stay in one place; skip reasons (e.g. needs a photo) are
+  checked first and named.
+- **Remind** is its own permission, `approval.remind`: admins and Operations
+  always; otherwise whoever could send that item for sign-off (signage.submit)
+  or review that stand (stand.review); never portal users; in the item's
+  section like signage.submit. Deciding a step doesn't make you its chaser.
+  Once a day per step (reminder log), audited as `escalate`.
+- **Settling requests.** `settleApprovalNotifications` marks "Please sign off",
+  reminders and delegations read for everyone except holders of a step that
+  was already running, before the people whose turn starts are told; the daily
+  job settles against every open step. The bell shows a request as Done
+  (muted, under Earlier) when the viewer holds no pending step on that record.
+- **Overdue digest.** One message a day per person, only when one of their
+  steps was logged that day (no per-step cap; mutable). Due dates are read as
+  London dates. The daily digest loads open sign-offs once.
+- **Everyone's sign-offs** is for admins and Operations; your own steps show
+  Decide; groups are by the waiting-on name, so a department's sign-offs and
+  its role's confirmations share a group. `?who=` takes one or more group keys
+  (`user:<id>`, `dept:<id>`, `role:<role>`, comma-separated); the dashboard's
+  "Sitting with" lines carry the keys behind each name.
+- **Overdue artwork.** `?tab=artwork&overdue=1` lists artwork whose sign-off in
+  the current round is past due (print, delivery and install confirmations are
+  not sign-offs), most overdue first; the status filter and search still
+  apply. The dashboard's overdue link uses it for people without the team view.
+- **Words.** Toasts name the item, not its ref (toasts are list items and specs
+  find rows by ref). "Notifications" stays the noun for the bell and page.
+  Step states have one set of words, `stepStatusLabel` in `lib/format.ts`;
+  `stepStateLabel` re-exports it. "Show" left messages ("Event not found").
+- **Sponsorship stages** are a reading of the status machine plus sponsor and
+  artwork; no transitions changed. On hold reads as the stage it was held at;
+  unsold drafts are For sale; an unsold item further along keeps its next step
+  with Mark as sold beside it. "Overdue to order" is past order-by and not
+  ordered, sold or not; "Under a month" is not ordered with under a month to
+  go; `?filter=urgent` is both. Sold leaves out "In package" sponsor signage.
+  The dashboard card uses the same functions, so its numbers match.
+- **Phones.** Sponsorship opens as a list on phones unless `?view=` is set;
+  both layouts render and CSS picks, so nothing flashes.
+- **Undo Mark complete** (`undoMarkComplete`) chains the existing reopen
+  (closed → delivered) and installed steps in one transaction, keeps the
+  install date and photo, and needs signage.close and signage.reopen.
+- **Damage at delivery** doesn't change the item's status; installing with an
+  open snag still makes it Snagged. Snags can be open at Delivered.
+- **Panels follow their stand.** Hall, location and stand no. go to every panel
+  not yet installed; category, sponsor and sign-off plan only to panels still
+  in draft, so nothing in sign-off restarts. If the panel update fails the
+  stand is still saved and the message says so. The slim panel form has an
+  install date (Onsite's Today needs one).
+- **Removing a sponsor or entitlement** is a hard delete, offered only when
+  nothing points at it (items, deleted items, live portal access), after a
+  confirm; the audit row keeps the full record.
+- **Onsite** uses its own full-width 44px confirm button on the shared
+  decision dialog; the stand's "Your decision" uses DecideButtons against the
+  submission version; snag dialogs keep "Resolved" on the item page and say
+  "Fixed" on Onsite.
+- **Dashboard links.** Artwork-due and print-deadline links use the Signage
+  chips (`?show=needs_artwork`, `?show=ready_to_print`), which count the work
+  left. Onsite counts only what Onsite lists. A link to a section the person
+  doesn't have is plain text. The budget forecast is the larger of estimate
+  and actual (noted when it is actuals). Pure rules sit in
+  `components/dashboard/rules.ts`, `components/reports/report-rules.ts` and
+  `lib/calendar.ts`.
+- **Calendar.** Item deadlines show only while their work is open, so the
+  Overdue strip is the real backlog; the event's own passed deadlines stay on
+  their day but out of the strip.
+- **Reports and import.** Download buttons' accessible names start with their
+  visible text. Import from the dashboard and Setup opens the Signage import
+  sheet; the dry run is a flag on the same action (same authz and lock).
+- **Settings** has five sections, each its own route (Organisation, Item types,
+  Venues, Recycle bin, System); old `?tab=` links redirect.
+- **Codes.** Venue and event series codes are made from the name on the server.
+- **Suppliers.** A supplier can be deleted only when nothing live or deleted
+  refers to it; otherwise it is archived. Archived suppliers are left out of
+  the item form, new-item and bulk "Set supplier" pickers, and choosing one
+  anew is refused in plain words; an item keeps the archived supplier it
+  already has (shown "(archived)"). An edit form that doesn't name the item's
+  supplier keeps archived suppliers still used on that event.
+- **Portal access on suppliers and venues** is read-only for Operations; only
+  admins invite or revoke.
+- **Archived suppliers are refused in one place.** `assertItemLinks` refuses
+  an archived supplier unless it is the item's current one
+  (`currentSupplierId`), so new panels and every later caller get the rule;
+  the import refuses one for a new row or a row whose item doesn't already
+  have it, and a live supplier wins over an archived one of the same name.
+  A `?supplier=` link to an archived supplier is named from its rows.
+- **Venues.** Archived venues are left out of the create-event and event
+  details pickers; the event's own venue stays in its details. Creating an
+  event at one, or moving an event (or a copy) to one, is refused on the
+  server too; a copy may keep its source's venue.
+- **Reports** is left out of the navigation when the person can download no
+  report.
+- **Partner invitations** are for admins (`users.manage`). Someone else who
+  follows a link to Users → External lands on Team (`/users?from=external`)
+  with a note naming the admins to ask. Operations told that a supplier has
+  no portal access are pointed at the item to confirm it themselves, or to
+  ask an admin to invite the supplier.
+- **Overdue on the dashboard** counts what its link lists: every overdue step
+  in the team view, else overdue artwork sign-offs, one per item
+  (`overdueArtworkSignoffs`).
+- **Demo sign-in** lists accounts oldest first, so the seeded ones stay on the
+  list however many people test runs add.
+- **Demo seed.** An approved round carries on into its confirmations, so signs
+  the demo puts at Sent to print or later have those steps confirmed. Re-seeding
+  confirms them on demo items still as seeded (same status, first round) and
+  leaves anything that has moved since alone.

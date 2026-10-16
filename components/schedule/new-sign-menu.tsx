@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { parseAsString, useQueryState } from "nuqs";
 import { ChevronDown, FileSpreadsheet, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,7 +37,11 @@ export function ImportSignsSheet({
   );
 }
 
-/** The Signage page's main button: add one sign, or import a spreadsheet. */
+/**
+ * The Signage page's main button: add one sign, or import a spreadsheet.
+ * `?import=1` (linked from Reports) opens the import panel straight away;
+ * the parameter is then taken out of the address so a reload doesn't reopen it.
+ */
 export function NewSignMenu({
   editionCode,
   editionId,
@@ -46,7 +51,11 @@ export function NewSignMenu({
   editionId: string;
   canImport: boolean;
 }) {
-  const [importOpen, setImportOpen] = useState(false);
+  const [importParam, setImportParam] = useQueryState("import", parseAsString);
+  const [importOpen, setImportOpen] = useState(() => canImport && importParam === "1");
+  useEffect(() => {
+    if (importParam != null) void setImportParam(null);
+  }, [importParam, setImportParam]);
   if (!canImport) {
     return (
       <Button size="sm" asChild>

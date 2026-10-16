@@ -6,6 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { approvalInstances, signageItems, suppliers } from "@/lib/db/schema";
 import {
+  archivedSupplierMessage,
   bulkConfirmSkipReason,
   itemAuthzCtx,
   loadItemBundle,
@@ -192,7 +193,7 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<Bu
   }
   if (action === "set_supplier" && parsed.data.supplierId) {
     const [own] = await db
-      .select({ id: suppliers.id })
+      .select({ id: suppliers.id, name: suppliers.name, isArchived: suppliers.isArchived })
       .from(suppliers)
       .where(
         and(
@@ -201,6 +202,7 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<Bu
         ),
       );
     if (!own) return fail("Supplier not found");
+    if (own.isArchived) return fail(archivedSupplierMessage(own.name));
   }
   const set: Partial<typeof signageItems.$inferInsert> = {};
   if (action === "set_supplier") set.supplierId = parsed.data.supplierId ?? null;

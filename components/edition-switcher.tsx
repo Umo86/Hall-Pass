@@ -112,7 +112,7 @@ export function EditionSwitcher({
         <Button
           variant="outline"
           size="sm"
-          className="max-w-[10rem] min-w-0 gap-2 sm:max-w-none"
+          className="max-w-[10rem] min-w-0 shrink gap-2 sm:max-w-none"
           aria-label={
             current ? `Event: ${current.name} (${current.code}). Choose another` : "Choose event"
           }

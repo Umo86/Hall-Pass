@@ -44,10 +44,13 @@ test.describe("exports and the external item page", () => {
     const history = main.locator("details").filter({ hasText: "Download history" });
     await expect(history.getByRole("listitem")).toHaveCount(10);
     await expect(history.getByRole("listitem").first()).toContainText("Olivia Ops");
-    // Import now lives on the Signage page.
-    await expect(
-      main.getByRole("link", { name: "Import a schedule from the Signage page" }),
-    ).toHaveAttribute("href", "/BIRM27/signage?import=1");
+    // Import now lives on the Signage page; the link opens it there.
+    const importLink = main.getByRole("link", { name: "Import a schedule from the Signage page" });
+    await expect(importLink).toHaveAttribute("href", "/BIRM27/signage?import=1");
+    await importLink.click();
+    await expect(page.getByRole("dialog", { name: "Import signs from Excel" })).toBeVisible();
+    // The address loses ?import=1, so a reload doesn't open it again.
+    await expect(page).toHaveURL(/\/BIRM27\/signage$/);
     await ctx.close();
   });
 
@@ -79,6 +82,10 @@ test.describe("exports and the external item page", () => {
     await expect(main.getByText("Downloads are limited to editors")).toBeVisible();
     await expect(main.getByText(/Ask an admin if you need the signage schedule/)).toBeVisible();
     await expect(main.getByRole("button", { name: /^Download/ })).toHaveCount(0);
+    // With nothing to download, Reports isn't in their menu.
+    const nav = page.getByRole("navigation", { name: "Main navigation" });
+    await expect(nav.getByRole("link", { name: "Dashboard" })).toBeVisible();
+    await expect(nav.getByRole("link", { name: "Reports" })).toHaveCount(0);
     await ctx.close();
   });
 

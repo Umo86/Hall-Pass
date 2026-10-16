@@ -44,6 +44,8 @@ export type NavOptions = {
   canSettings: boolean;
   /** Exhibitor stand approvals are hidden unless switched on. */
   showStands: boolean;
+  /** May download at least one report; Reports is hidden when false (default shown). */
+  canExport?: boolean;
   /** Sections this person can use; null = every section. */
   features: Feature[] | null;
   /** Waiting work, shown as pills. */
@@ -114,7 +116,7 @@ export function AppNav({
         ...(allowed(options, "calendar")
           ? [{ label: "Calendar", href: `/${code}/calendar`, icon: CalendarDays }]
           : []),
-        ...(allowed(options, "reports")
+        ...(allowed(options, "reports") && options.canExport !== false
           ? [{ label: "Reports", href: `/${code}/reports`, icon: FileBarChart }]
           : []),
         ...(options.canSetup

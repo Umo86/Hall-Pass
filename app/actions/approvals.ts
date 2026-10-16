@@ -21,7 +21,6 @@ import {
   applyDecision,
   applyDelegation,
   ConflictError,
-  resubmitAfterChanges,
   WorkflowError,
   type Decision,
   type EntityCtx,
@@ -35,7 +34,7 @@ import {
   newlyPending,
   notifyPendingAssignees,
   resolveAssigneeUserIds,
-  startItemRun,
+  resubmitItemInTx,
 } from "@/lib/domain/signage";
 import { loadStandBundle, standAuthzCtx, standEntityCtx } from "@/lib/domain/stand";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
@@ -544,7 +543,11 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
   }
 }
 
-/** Resubmit a signage item after changes were requested (brief 6.3). */
+/**
+ * Resubmit a signage item after changes were requested (brief 6.3). The
+ * work is resubmitItemInTx (lib/domain/signage.ts), shared with the item
+ * page's "Send back for sign-off" and upload-and-send.
+ */
 export async function resubmitSignageItem(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
@@ -557,39 +560,13 @@ export async function resubmitSignageItem(input: unknown): Promise<ActionResult>
   if (!can(session.actor, { type: "signage.submit", item: itemAuthzCtx(bundle) })) {
     return fail("You cannot resubmit this item");
   }
-  let next;
-  try {
-    next = signageTransition(bundle.item.status, "resubmit");
-  } catch {
+  if (bundle.item.status !== "changes_requested") {
     return fail("Only items with changes requested can be resubmitted");
   }
   try {
-    await db.transaction(async (tx) => {
-      const run = await loadRun(tx, "signage_item", bundle.item.id, bundle.item.currentRunNumber);
-      const res = resubmitAfterChanges(run, { entity: itemEntityCtx(bundle), now: new Date() });
-      if (res.mode === "restart_from_step") {
-        const persisted = await persistRun(tx, "signage_item", bundle.item.id, res.instances);
-        await notifyPendingAssignees(tx, bundle, newlyPending(run, persisted));
-      } else {
-        // Whole run restarts as a new run; the old one stays in history.
-        const instances = await startItemRun(tx, bundle, new Date());
-        await notifyPendingAssignees(tx, bundle, instances);
-      }
-      await tx
-        .update(signageItems)
-        .set({ status: next })
-        .where(eq(signageItems.id, bundle.item.id));
-      await writeAudit(tx, {
-        organisationId: session.organisation.id,
-        editionId: bundle.edition.id,
-        actorUserId: session.user.id,
-        entityType: "signage_item",
-        entityId: bundle.item.id,
-        action: "submit",
-        after: { status: next, mode: res.mode },
-        summary: `${bundle.item.ref} resubmitted`,
-      });
-    });
+    await db.transaction((tx) =>
+      resubmitItemInTx(tx, bundle, { actorUserId: session.user.id, now: new Date() }),
+    );
     revalidatePath("/", "layout");
     return success(undefined, "Resubmitted for review");
   } catch (err) {
@@ -713,9 +690,9 @@ export type RemindResult = { reminded: number; alreadyToday: number; nobody: num
 /**
  * Chase sign-offs by hand ("Remind" / "Remind all" on Approvals →
  * Everyone's): tells whoever each step is waiting on, at most once a day per
- * step (the reminder log), and records it in the item's History. Whoever can
- * send an item for sign-off can chase it (signage.submit; stands:
- * stand.review).
+ * step (the reminder log), and records it in the item's History. Who may
+ * chase is approval.remind in lib/authz.ts (whoever can send the item for
+ * sign-off; stands: whoever reviews them).
  */
 export async function remindApproval(input: unknown): Promise<ActionResult<RemindResult>> {
   const parsed = remindSchema.safeParse(input);
@@ -749,13 +726,18 @@ export async function remindApproval(input: unknown): Promise<ActionResult<Remin
         if (editionIsReadOnly(bundle.edition.status))
           throw new WorkflowError(EDITION_LOCKED_MESSAGE);
         assertItemOpen(bundle);
-        const allowed = isSignage
-          ? can(session.actor, {
-              type: "signage.submit",
-              item: itemAuthzCtx(bundle as NonNullable<Awaited<ReturnType<typeof loadItemBundle>>>),
-            })
-          : can(session.actor, { type: "stand.review" });
-        if (!allowed) throw new WorkflowError("You cannot chase this sign-off");
+        const step: ApprovalStepCtx = {
+          assignedRole: row.assignedRole,
+          assignedDepartmentId: row.assignedDepartmentId,
+          stepKind: row.stepKindSnapshot,
+          assignedUserId: row.assignedUserId,
+          entity: isSignage
+            ? { type: "signage_item", item: itemAuthzCtx(bundle as never) }
+            : { type: "stand", sub: standAuthzCtx(bundle as never) },
+        };
+        if (!can(session.actor, { type: "approval.remind", step })) {
+          throw new WorkflowError("You cannot chase this sign-off");
+        }
         const item = isSignage ? (bundle as { item: typeof signageItems.$inferSelect }).item : null;
         const ref = item ? item.ref : (bundle as { sub: { ref: string } }).sub.ref;
         const holders = (

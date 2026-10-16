@@ -65,7 +65,7 @@ export async function updateNotificationPrefs(input: unknown): Promise<ActionRes
       .update(users)
       .set({ notificationPrefs: { ...user.notificationPrefs, ...parsed.data } })
       .where(eq(users.id, session.user.id));
-    revalidatePath("/settings");
+    revalidatePath("/account");
     return success(undefined, "Notification preferences saved");
   } catch (err) {
     unstable_rethrow(err);

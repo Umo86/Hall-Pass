@@ -28,6 +28,7 @@ export default async function NewStandPage({
   const options = await standFormOptions({
     organisationId: session.organisation.id,
     editionId: ed.edition.id,
+    includeSupplierId: null,
   });
 
   return (

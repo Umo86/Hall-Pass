@@ -15,10 +15,7 @@ import {
 } from "@/lib/exports/serve";
 
 /** All spec labels for a show (or one hall, ?hall=<id>) in one PDF, A6 per page. */
-export async function GET(
-  req: Request,
-  { params }: { params: Promise<{ editionCode: string }> },
-) {
+export async function GET(req: Request, { params }: { params: Promise<{ editionCode: string }> }) {
   const auth = await exportSession(req);
   if (auth.response) return auth.response;
   const { session } = auth;
@@ -27,7 +24,7 @@ export async function GET(
   }
   const { editionCode } = await params;
   const edition = await exportEdition(session, editionCode);
-  if (!edition) return exportError(404, "That show could not be found.");
+  if (!edition) return exportError(404, "That event could not be found.");
 
   const hallId = new URL(req.url).searchParams.get("hall");
   let hallName: string | null = null;

@@ -13,6 +13,7 @@ import {
   memberships,
   signageItems,
   snags,
+  suppliers,
   users,
 } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
@@ -31,6 +32,7 @@ import { nextSignageRef } from "@/lib/refs";
 import { notify } from "@/lib/notify";
 import {
   askedSummary,
+  archivedSupplierMessage,
   assertItemLinks,
   changedSpecKeys,
   defaultSignageWorkflowId,
@@ -150,6 +152,24 @@ async function resolveOwner(
   };
 }
 
+/**
+ * Archived suppliers stay on the items that already have them but can't be
+ * picked again. Null when the choice is fine (none, unchanged, or live).
+ */
+async function archivedSupplierError(
+  organisationId: string,
+  supplierId: string | null | undefined,
+  current: string | null = null,
+): Promise<string | null> {
+  if (!supplierId || supplierId === current) return null;
+  const [row] = await db
+    .select({ name: suppliers.name, isArchived: suppliers.isArchived })
+    .from(suppliers)
+    .where(and(eq(suppliers.id, supplierId), eq(suppliers.organisationId, organisationId)))
+    .limit(1);
+  return row?.isArchived ? archivedSupplierMessage(row.name) : null;
+}
+
 function num(v: number | null | undefined): string | null {
   return v == null ? null : String(v);
 }
@@ -178,8 +198,10 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
   const category = data.kind === "sponsorship_item" ? "sponsor" : (data.category ?? "organiser");
   // The show and everything linked must be this organisation's.
   if (!(await ownEdition(db, session.organisation.id, data.editionId))) {
-    return fail("Show not found");
+    return fail("Event not found");
   }
+  const supplierError = await archivedSupplierError(session.organisation.id, data.supplierId);
+  if (supplierError) return fail(supplierError, { supplierId: supplierError });
   // Whoever is picked owns it (default: the person creating it); the owning
   // team follows an ops or marketing owner.
   let ownerUserId = session.user.id;
@@ -224,7 +246,7 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
       const [edition] = await tx.execute<{ code: string; status: string }>(
         sql`SELECT code, status FROM editions WHERE id = ${data.editionId}`,
       );
-      if (!edition) throw new Error("Edition not found");
+      if (!edition) throw new Error("Event not found");
       if (editionIsReadOnly(edition.status)) throw new Error(EDITION_LOCKED_MESSAGE);
       const { ref, seq } = await nextSignageRef(tx, data.editionId, edition.code);
       const [item] = await tx
@@ -355,11 +377,21 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
     delete patch.ownerUserId;
   }
 
+  if (canEditCosts || bundle.item.kind === "sponsorship_item") {
+    const supplierError = await archivedSupplierError(
+      session.organisation.id,
+      patch.supplierId,
+      bundle.item.supplierId,
+    );
+    if (supplierError) return fail(supplierError, { supplierId: supplierError });
+  }
+
   try {
     await assertItemLinks(db, {
       organisationId: session.organisation.id,
       editionId: bundle.edition.id,
       links: patch,
+      currentSupplierId: bundle.item.supplierId,
     });
     const outcome = await db.transaction(async (tx) => {
       const set: Partial<typeof signageItems.$inferInsert> = {};

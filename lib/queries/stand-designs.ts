@@ -207,6 +207,8 @@ export async function standFormOptions(opts: {
   organisationId: string;
   editionId: string;
   workflowId?: string | null;
+  /** As for itemFormOptions: the supplier to keep listed even if archived (null: none). */
+  includeSupplierId?: string | null;
 }): Promise<StandFormOptions & { suppliers: { id: string; name: string }[] }> {
   const workflowId = opts.workflowId ?? (await ensureStandDesignWorkflow(db, opts.organisationId));
   const o = await itemFormOptions({
@@ -214,6 +216,7 @@ export async function standFormOptions(opts: {
     editionId: opts.editionId,
     kind: "signage",
     workflowId,
+    includeSupplierId: opts.includeSupplierId,
   });
   return {
     halls: o.halls,

@@ -200,6 +200,15 @@ const createSchema = z
   });
 
 /**
+ * Archived venues stay on the events that have them but aren't picked for a
+ * new one or moved to; the pickers leave them out, and this says why if a
+ * request names one anyway.
+ */
+function archivedVenueMessage(name: string): string {
+  return `${name} is archived — restore it in Settings → Venues, or choose another venue`;
+}
+
+/**
  * Create an event from the basics. Build-up and breakdown default to the
  * days around the open dates, the series to one named like the event, and
  * the deadlines to the standard offsets; the organisation gets its signage
@@ -241,6 +250,10 @@ export async function createEdition(
   ]);
   if (data.eventId && !event) return fail("That event series wasn't found");
   if (data.venueId && !venue) return fail("That venue wasn't found");
+  if (venue?.isArchived) {
+    const message = archivedVenueMessage(venue.name);
+    return fail(message, { venueId: message });
+  }
   if (await codeInUse(code)) return codeTaken(code);
   let editionId = "";
   try {
@@ -387,6 +400,11 @@ export async function cloneEdition(
       where: and(eq(venues.id, venueId), eq(venues.organisationId, orgId)),
     });
     if (!venue) return fail("That venue wasn't found");
+    // The source's own venue comes across even if archived since.
+    if (venue.isArchived) {
+      const message = archivedVenueMessage(venue.name);
+      return fail(message, { venueId: message });
+    }
   }
   if (await codeInUse(code)) return codeTaken(code);
   // Partner access is given by admins only, so only an admin's copy brings it across.
@@ -753,6 +771,10 @@ export async function saveEventDetails(input: unknown): Promise<ActionResult> {
       : null,
   ]);
   if (data.venueId && !venue) return fail("That venue wasn't found");
+  if (venue?.isArchived && venue.id !== current.venueId) {
+    const message = archivedVenueMessage(venue.name);
+    return fail(message, { venueId: message });
+  }
   if (data.eventId && !series) return fail("That event series wasn't found");
   try {
     await db.transaction(async (tx) => {
@@ -1050,6 +1072,8 @@ export async function updateEdition(input: unknown): Promise<ActionResult> {
       where: and(eq(venues.id, data.venueId), eq(venues.organisationId, session.organisation.id)),
     });
     if (!venue) return fail("That venue wasn't found");
+    if (venue.isArchived && venue.id !== current.venueId)
+      return fail(archivedVenueMessage(venue.name));
   }
   try {
     await db.transaction(async (tx) => {

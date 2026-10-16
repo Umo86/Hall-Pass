@@ -666,6 +666,7 @@ async function DetailsTab({
       kind: formKind(item.kind),
       workflowId: item.workflowId,
       includeTypeId: item.itemTypeId,
+      includeSupplierId: item.supplierId,
     }),
     isSponsorship ? [] : getItemSnags(item.id),
     !isSponsorship && item.installPhotoPath?.includes("/")
@@ -1378,6 +1379,7 @@ async function StandDetails({
     organisationId: bundle.organisation.id,
     editionId: bundle.edition.id,
     workflowId: item.workflowId,
+    includeSupplierId: item.supplierId,
   });
   return (
     <div className="grid gap-4">
@@ -1427,10 +1429,12 @@ async function PanelsSection({
 }) {
   const [panels, options] = await Promise.all([
     listStandPanels(item.id),
+    // A new panel: archived suppliers aren't offered.
     standFormOptions({
       organisationId: bundle.organisation.id,
       editionId: bundle.edition.id,
       workflowId: item.workflowId,
+      includeSupplierId: null,
     }),
   ]);
   const designApproved = APPROVED_OR_LATER.includes(item.status);

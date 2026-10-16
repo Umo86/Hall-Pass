@@ -158,6 +158,7 @@ test.describe("Users", () => {
     await ops.getByLabel("Width (mm)").fill("600");
     await ops.getByLabel("Height (mm)").fill("400");
     await ops.getByLabel("Fixing method").selectOption("wall_mounted");
+    await ops.getByRole("button", { name: "Change who signs off" }).click();
     for (const step of [
       "Operations sign-off",
       "Marketing sign-off",
@@ -175,16 +176,22 @@ test.describe("Users", () => {
     await ops.waitForURL("**/signage/SIG-BIRM27-*");
     const ref = new URL(ops.url()).pathname.split("/").pop()!;
     await ops.goto(`${baseURL}/BIRM27/signage/${ref}?tab=artwork`);
-    await ops.setInputFiles('input[type="file"]', {
-      name: "notice.pdf",
-      mimeType: "application/pdf",
-      buffer: PDF,
-    });
-    await ops.getByRole("button", { name: "Upload" }).click();
+    // Uploading the first artwork on a draft sends it for sign-off too.
+    const upload = ops.getByRole("button", { name: "Upload", exact: true });
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await ops.setInputFiles('input[type="file"]', {
+        name: "notice.pdf",
+        mimeType: "application/pdf",
+        buffer: PDF,
+      });
+      if (await upload.isEnabled({ timeout: 2_000 }).catch(() => false)) break;
+      await ops.waitForTimeout(1_000);
+    }
+    await upload.click();
+    await expect(ops.getByText(/^v1 uploaded and sent for sign-off — /).first()).toBeVisible();
     await expect(ops.getByText("v1 — notice.pdf")).toBeVisible();
     await ops.goto(`${baseURL}/BIRM27/signage/${ref}`);
-    await ops.getByRole("button", { name: "Submit for review" }).click();
-    await expect(ops.getByText("In review", { exact: true })).toBeVisible();
+    await expect(ops.getByText("In sign-off", { exact: true }).first()).toBeVisible();
 
     // Remove Sam: the dialog asks who takes the waiting sign-off.
     await admin.goto(`${baseURL}/users/${samId}`);
@@ -221,6 +228,7 @@ test.describe("Users", () => {
     await expect(ops.getByRole("heading", { name: "Users", exact: true })).toBeVisible();
     await expect(ops.getByRole("link", { name: "Add user" })).toHaveCount(0);
     await expect(ops.getByRole("link", { name: "External" })).toHaveCount(0);
+    await expect(ops.getByText("Only admins can invite partners.")).toHaveCount(0);
     await expect(ops.getByRole("columnheader", { name: "Email" })).toBeVisible();
     const dana = ops.getByRole("row").filter({ hasText: "director@media10.test" });
     await expect(dana.getByRole("link", { name: "director@media10.test" })).toHaveAttribute(
@@ -236,8 +244,17 @@ test.describe("Users", () => {
     await ops.goto(`${baseURL}/users/new`);
     await expect(ops.getByRole("heading", { name: "Not found" })).toBeVisible();
     await expect(ops.getByLabel("Full name")).toHaveCount(0);
-    await ops.goto(`${baseURL}/users?tab=external`);
+    // A link to invite a partner says who can, instead of quietly showing Team.
+    await ops.goto(`${baseURL}/users?tab=external&invite=1&role=supplier`);
+    await ops.waitForURL(/\/users\?from=external$/);
+    await expect(ops.getByRole("note")).toHaveText(/^Only admins can invite partners\. Ask .+\.$/);
+    await expect(ops.getByRole("note").getByRole("link", { name: "Alex Admin" })).toHaveAttribute(
+      "href",
+      "mailto:admin@media10.test",
+    );
     await expect(ops.getByRole("region", { name: "Team" })).toBeVisible();
+    // The link's ?role=supplier isn't taken as a Team filter.
+    await expect(ops.getByRole("row").filter({ hasText: "director@media10.test" })).toBeVisible();
     // Settings → Team moved here.
     const admin = await as(browser, "admin@media10.test", baseURL!);
     await admin.goto(`${baseURL}/settings?tab=team`);

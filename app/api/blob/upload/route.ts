@@ -28,7 +28,7 @@ export async function POST(request: Request) {
         if (!payload.itemId) throw new Error("Missing itemId");
         const bundle = await loadItemBundle(db, payload.itemId);
         if (!bundle || bundle.item.deletedAt) throw new Error("Item not found");
-        if (editionIsReadOnly(bundle.edition.status)) throw new Error("Edition is read-only");
+        if (editionIsReadOnly(bundle.edition.status)) throw new Error("This event is read-only");
         const blocked = artworkBlockedReason(bundle.item.status);
         if (blocked) throw new Error(blocked);
         if (!can(session.actor, { type: "artwork.upload", item: itemAuthzCtx(bundle) })) {

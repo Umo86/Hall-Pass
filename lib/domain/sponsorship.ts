@@ -522,7 +522,7 @@ export function sponsorshipNextStep(
           step: {
             ...base,
             title: "Delivered. Next: confirm it is in place",
-            detail: base.detail ?? "Handed out or set up at the show.",
+            detail: base.detail ?? "Handed out or set up at the event.",
             action: confirmAction("Confirm in place"),
           },
           sell: false,

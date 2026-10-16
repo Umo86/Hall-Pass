@@ -384,6 +384,33 @@ export function waitingOnLabel(step: {
   return step.assignedRole ? roleLabel(step.assignedRole) : "Nobody yet";
 }
 
+/**
+ * Overdue artwork sign-offs, one per item, keeping the order given (most
+ * overdue first): what Approvals → All artwork lists with
+ * ?filter=waiting&overdue=1. Print, delivery and install confirmations,
+ * stands, earlier rounds and items without artwork aren't counted.
+ */
+export function overdueArtworkSignoffs<
+  T extends {
+    entityType: string;
+    stepKind: string;
+    ref: string;
+    runNumber: number;
+    currentRunNumber: number | null;
+    itemHasArtwork: boolean | null;
+    itemStatus: string | null;
+  },
+>(overdue: T[]): T[] {
+  const seen = new Set<string>();
+  return overdue.filter((p) => {
+    if (p.entityType !== "signage_item" || p.stepKind !== "approval") return false;
+    if (p.runNumber !== p.currentRunNumber || !p.itemHasArtwork) return false;
+    if (p.itemStatus !== "in_review" || seen.has(p.ref)) return false;
+    seen.add(p.ref);
+    return true;
+  });
+}
+
 /** "23 days late", "1 day late", "due today". */
 export function lateLabel(days: number): string {
   if (days <= 0) return "due today";

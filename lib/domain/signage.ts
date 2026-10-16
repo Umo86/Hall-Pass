@@ -398,7 +398,7 @@ export async function notifyPendingAssignees(
       // approved without one (decideApproval), so say nothing misleading here.
       if (!item.supplierId) continue;
       // A supplier with no portal login: tell Operations, who can confirm it
-      // themselves or invite the supplier.
+      // themselves on the item (only admins invite partners, users.manage).
       const [ops, [supplier]] = await Promise.all([
         tx
           .select({ userId: memberships.userId })
@@ -421,8 +421,8 @@ export async function notifyPendingAssignees(
         userIds: assignees,
         kind: "approval_requested",
         title: `To confirm — ${inst.stepName}: ${item.name} (${item.ref})`,
-        body: `Nobody at ${who} has Hall Pass access yet, so they can't confirm this. Invite them, or confirm it on ${item.ref} yourself once it's done.`,
-        link: `/users?tab=external&invite=1&role=supplier&scopeId=${item.supplierId}&edition=${bundle.edition.id}`,
+        body: `Nobody at ${who} has ${bundle.organisation.brandName} access yet, so they can't confirm this. Confirm it on ${item.ref} yourself once it's done, or ask an admin to invite them.`,
+        link: itemPath(bundle.edition.code, item),
         entityType: "signage_item",
         entityId: item.id,
       });
@@ -434,7 +434,7 @@ export async function notifyPendingAssignees(
       ...(inst.stepKind === "confirmation"
         ? {
             title: `To confirm — ${inst.stepName}: ${item.name} (${item.ref})`,
-            body: `${bundle.edition.name}. Confirm it in Hall Pass once it's done.`,
+            body: `${bundle.edition.name}. Confirm it in ${bundle.organisation.brandName} once it's done.`,
           }
         : {
             title: `Please sign off: ${item.name} (${item.ref})`,
@@ -698,19 +698,31 @@ export type ItemLinks = {
   workflowId?: string | null;
 };
 
+/** Archived suppliers stay on the items that have them but can't be picked anew. */
+export function archivedSupplierMessage(name: string): string {
+  return `${name} is archived — restore it in Suppliers, or choose another supplier`;
+}
+
 /**
  * Every id linked to an item must belong to the same organisation — and,
- * for halls, locations, sponsors and entitlements, to the item's own show.
- * Throws a plain-language error otherwise (nothing is linked across shows
- * or organisations, whatever a request says).
+ * for halls, locations, sponsors and entitlements, to the item's own event.
+ * Throws a plain-language error otherwise (nothing is linked across events
+ * or organisations, whatever a request says). An archived supplier is
+ * refused unless it is the item's current one (`currentSupplierId`).
  */
 export async function assertItemLinks(
   db: Db | Tx,
-  opts: { organisationId: string; editionId: string; links: ItemLinks },
+  opts: {
+    organisationId: string;
+    editionId: string;
+    links: ItemLinks;
+    /** The item's supplier now (edits): kept even if archived since. */
+    currentSupplierId?: string | null;
+  },
 ): Promise<void> {
   const l = opts.links;
   const bad = (what: string) => {
-    throw new Error(`That ${what} isn't part of this show — reload the page and try again`);
+    throw new Error(`That ${what} isn't part of this event — reload the page and try again`);
   };
   const one = async <T>(q: Promise<T[]>) => (await q).length > 0;
   if (l.itemTypeId) {
@@ -768,15 +780,15 @@ export async function assertItemLinks(
     if (!ok) bad("sponsor entitlement");
   }
   if (l.supplierId) {
-    const ok = await one(
-      db
-        .select({ id: suppliers.id })
-        .from(suppliers)
-        .where(
-          and(eq(suppliers.id, l.supplierId), eq(suppliers.organisationId, opts.organisationId)),
-        ),
-    );
-    if (!ok) bad("supplier");
+    const [row] = await db
+      .select({ name: suppliers.name, isArchived: suppliers.isArchived })
+      .from(suppliers)
+      .where(and(eq(suppliers.id, l.supplierId), eq(suppliers.organisationId, opts.organisationId)))
+      .limit(1);
+    if (!row) bad("supplier");
+    else if (row.isArchived && l.supplierId !== opts.currentSupplierId) {
+      throw new Error(archivedSupplierMessage(row.name));
+    }
   }
   if (l.installContractorId) {
     const ok = await one(

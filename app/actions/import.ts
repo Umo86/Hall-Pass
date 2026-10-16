@@ -1,6 +1,6 @@
 "use server";
 
-import { ownEdition } from "@/lib/domain/signage";
+import { archivedSupplierMessage, ownEdition } from "@/lib/domain/signage";
 
 import { revalidatePath } from "next/cache";
 import ExcelJS from "exceljs";
@@ -123,7 +123,7 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
 
   // Only into this organisation's own shows.
   const edition = await ownEdition(db, session.organisation.id, editionId);
-  if (!edition) return fail("Edition not found");
+  if (!edition) return fail("Event not found");
   if (editionIsReadOnly(edition.status)) return fail(EDITION_LOCKED_MESSAGE);
 
   const [typeRows, hallRows, locationRows, sponsorRows, supplierRows, itemRows] = await Promise.all(
@@ -149,6 +149,7 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
           kind: signageItems.kind,
           status: signageItems.status,
           deletedAt: signageItems.deletedAt,
+          supplierId: signageItems.supplierId,
         })
         .from(signageItems)
         .where(
@@ -172,6 +173,12 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
   };
   const byName = <T extends { name?: string; companyName?: string }>(rows: T[], name: string) =>
     rows.find((r) => (r.name ?? r.companyName ?? "").toLowerCase() === name.toLowerCase().trim());
+  // A live supplier wins over an archived one of the same name.
+  const supplierByName = (name: string) =>
+    byName(
+      supplierRows.filter((r) => !r.isArchived),
+      name,
+    ) ?? byName(supplierRows, name);
 
   const parsed: Array<{ rowNumber: number; data: z.infer<typeof rowSchema> }> = [];
   const errors: { row: number; message: string }[] = [];
@@ -240,7 +247,7 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
       if (d.ref) {
         const existing = itemByRef.get(d.ref.toUpperCase());
         if (!existing)
-          return rowError(`No item ${d.ref} in this show — leave Ref blank to add a new one`);
+          return rowError(`No item ${d.ref} in this event — leave Ref blank to add a new one`);
         if (existing.deletedAt) return rowError(`${d.ref} was deleted — restore it first`);
         if (existing.kind !== "signage")
           return rowError(`${d.ref} is a sponsorship item, not signage`);
@@ -266,8 +273,14 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
         if (!loc && !createMissing) return rowError(`Unknown location “${d.location}”`);
         if (!loc && !d.hall) return rowError(`Location “${d.location}” needs a hall`);
       }
-      if (!createMissing && d.supplier && !byName(supplierRows, d.supplier)) {
+      const supplier = d.supplier ? supplierByName(d.supplier) : undefined;
+      if (!createMissing && d.supplier && !supplier) {
         return rowError(`Unknown supplier “${d.supplier}”`);
+      }
+      // An archived supplier stays on an item that has it, but isn't picked anew.
+      const current = d.ref ? itemByRef.get(d.ref.toUpperCase()) : undefined;
+      if (supplier?.isArchived && supplier.id !== current?.supplierId) {
+        return rowError(archivedSupplierMessage(supplier.name));
       }
       parsed.push({ rowNumber, data: d });
     }
@@ -288,7 +301,7 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
     const newHalls = new Set<string>();
     const newLocations = new Set<string>();
     for (const { data } of parsed) {
-      if (data.supplier && !byName(supplierRows, data.supplier)) {
+      if (data.supplier && !supplierByName(data.supplier)) {
         newSuppliers.add(data.supplier.toLowerCase());
       }
       const hall = data.hall ? byName(hallRows, data.hall) : undefined;
@@ -327,7 +340,7 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
       for (const { data } of parsed) {
         let supplierId: string | null | undefined;
         if (data.supplier) {
-          const existing = byName(supplierRows, data.supplier);
+          const existing = supplierByName(data.supplier);
           if (existing) supplierId = existing.id;
           else {
             const [ns] = await tx

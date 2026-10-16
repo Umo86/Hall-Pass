@@ -67,6 +67,8 @@ export default async function SponsorshipPage({
   const canExport = can(session.actor, { type: "export.run", kind: "sponsor_report" });
   const canAdd =
     can(session.actor, { type: "sponsorship.create" }) && !editionIsReadOnly(ed.edition.status);
+  // What can be sold (lanyards, bags…) is a list kept in Settings → Item types.
+  const canManageTypes = can(session.actor, { type: "settings.manage" });
 
   const today = todayInLondon();
   const totals = sponsorshipTotals(rows);
@@ -150,6 +152,13 @@ export default async function SponsorshipPage({
       <PageHeader
         title="Sponsorship"
         description="What's for sale to sponsors, what's sold, and when each item must be ordered."
+        meta={
+          tab === "items" && canManageTypes ? (
+            <Link href="/settings/item-types#sponsorship" className="link">
+              Manage item types
+            </Link>
+          ) : undefined
+        }
         actions={
           tab === "items" ? (
             <>
@@ -235,7 +244,7 @@ export default async function SponsorshipPage({
             <EmptyState
               icon={Gift}
               title="Nothing for sale yet"
-              description="Add what sponsors can buy — show bags, lanyards, branding — with its cost and the date it must be ordered by."
+              description="Add what sponsors can buy — bags, lanyards, branding — with its cost and the date it must be ordered by."
               action={
                 canAdd && (
                   <Button size="sm" asChild>

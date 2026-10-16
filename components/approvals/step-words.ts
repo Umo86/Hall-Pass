@@ -6,31 +6,11 @@
 import { diffDaysIso } from "@/lib/deadlines";
 import { todayInLondon } from "@/lib/today";
 
-/** What a step's state is called; "pending" depends on who it is with. */
-export function stepStateLabel(status: string, who?: string | null): string {
-  switch (status) {
-    case "pending":
-      return who ? `Waiting on ${who}` : "Their turn";
-    case "waiting":
-      return "Not started";
-    case "approved":
-      return "Approved";
-    case "approved_with_conditions":
-      return "Approved (conditions)";
-    case "changes_requested":
-      return "Changes requested";
-    case "rejected":
-      return "Rejected";
-    case "confirmed":
-      return "Confirmed";
-    case "invalidated":
-      return "Superseded";
-    case "skipped":
-      return "Skipped";
-    default:
-      return status.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
-  }
-}
+/**
+ * What a step's state is called; "pending" depends on who it is with. The
+ * words themselves live once in lib/format.ts (stepStatusLabel).
+ */
+export { stepStatusLabel as stepStateLabel } from "@/lib/format";
 
 /** One colour per step state, always shown with its words. */
 export const STEP_STATE_CLASSES: Record<string, string> = {

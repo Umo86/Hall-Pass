@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Trash2 } from "lucide-react";
-import { eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { suppliers } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
@@ -58,10 +58,14 @@ export default async function SignagePage({
     listScheduleRows(ed.edition.id, {
       viewer: session.actor.kind === "staff" ? session.actor : undefined,
     }),
+    // The bulk "Set supplier" picker: archived suppliers can't be chosen.
     db
       .select({ id: suppliers.id, name: suppliers.name })
       .from(suppliers)
-      .where(eq(suppliers.organisationId, session.organisation.id)),
+      .where(
+        and(eq(suppliers.organisationId, session.organisation.id), eq(suppliers.isArchived, false)),
+      )
+      .orderBy(asc(suppliers.name)),
     canRestore ? countDeletedItems(ed.edition.id) : 0,
   ]);
   // Cost figures never leave the server for people who can't see costs.

@@ -7,6 +7,7 @@ import {
   lateLabel,
   nextStepRows,
   onsiteSoon,
+  overdueArtworkSignoffs,
   signageProgress,
   sponsorshipSummary,
   waitingOnLabel,
@@ -366,5 +367,39 @@ describe("waitingOnLabel and lateLabel", () => {
     expect(lateLabel(0)).toBe("due today");
     expect(lateLabel(1)).toBe("1 day late");
     expect(lateLabel(23)).toBe("23 days late");
+  });
+});
+
+describe("overdueArtworkSignoffs", () => {
+  const step = (over: Partial<Parameters<typeof overdueArtworkSignoffs>[0][number]> = {}) => ({
+    entityType: "signage_item",
+    stepKind: "approval",
+    ref: "SIG-1",
+    runNumber: 2,
+    currentRunNumber: 2,
+    itemHasArtwork: true,
+    itemStatus: "in_review",
+    ...over,
+  });
+
+  it("counts overdue artwork sign-offs once per item, most overdue first", () => {
+    const rows = [
+      step({ ref: "SIG-1" }),
+      step({ ref: "SIG-2" }),
+      step({ ref: "SIG-1", stepKind: "approval" }),
+    ];
+    expect(overdueArtworkSignoffs(rows).map((r) => r.ref)).toEqual(["SIG-1", "SIG-2"]);
+  });
+
+  it("leaves out confirmations, stands, earlier rounds and items not waiting with artwork", () => {
+    const rows = [
+      step({ ref: "C", stepKind: "confirmation" }),
+      step({ ref: "S", entityType: "stand_submission" }),
+      step({ ref: "R", runNumber: 1 }),
+      step({ ref: "A", itemHasArtwork: false }),
+      step({ ref: "P", itemStatus: "approved" }),
+      step({ ref: "OK" }),
+    ];
+    expect(overdueArtworkSignoffs(rows).map((r) => r.ref)).toEqual(["OK"]);
   });
 });

@@ -1,10 +1,13 @@
 import Link from "next/link";
 import { cookies } from "next/headers";
-import { UserPlus } from "lucide-react";
+import { redirect } from "next/navigation";
+import { Lock, UserPlus } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
 import { listDepartmentCards, memberOptions } from "@/lib/users/queries";
+import { setupContacts } from "@/lib/queries/setup";
+import { AskContacts } from "@/components/setup/no-events-state";
 import { Page, PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { TeamTab } from "@/components/users/team-tab";
@@ -41,6 +44,14 @@ export default async function UsersPage({
     { id: "departments", label: "Departments" },
   ];
   const orgId = session.organisation.id;
+  // A link to External (e.g. "invite this supplier" from a notification)
+  // opened by someone who isn't an admin: Team, saying why. Its ?role= and
+  // ?invite= are dropped so they aren't read as Team filters.
+  if (raw === "external" && !isAdmin) redirect("/users?from=external");
+  const externalRefused = !isAdmin && one(params.from) === "external";
+  const admins = externalRefused
+    ? (await setupContacts(orgId)).filter((c) => c.role === "admin")
+    : [];
   // Adding a team member is the main action, except on External (inviting outsiders).
   const showAdd = isAdmin && tab !== "external";
 
@@ -77,6 +88,18 @@ export default async function UsersPage({
           </Link>
         ))}
       </nav>
+
+      {externalRefused && (
+        <p
+          role="note"
+          className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+        >
+          <Lock className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>
+            Only admins can invite partners. <AskContacts contacts={admins} />
+          </span>
+        </p>
+      )}
 
       {tab === "team" && (
         <TeamTab

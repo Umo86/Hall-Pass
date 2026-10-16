@@ -159,7 +159,7 @@ export function DocumentsPanel({
             <div className="flex flex-wrap items-center gap-2">
               {d.expiryFlag && (
                 <span className="text-destructive text-xs font-medium">
-                  Expires before the show closes
+                  Expires before the event closes
                 </span>
               )}
               <StatusBadge status={d.status} />

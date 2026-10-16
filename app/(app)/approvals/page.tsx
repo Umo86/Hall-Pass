@@ -7,7 +7,9 @@ import { requireStaffSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
 import {
   countPendingForUser,
+  listOverdueArtwork,
   openSignoffsForTeam,
+  parseWhoParam,
   pendingInstancesForUser,
 } from "@/lib/queries/approvals";
 import {
@@ -47,6 +49,8 @@ type Params = {
   filter?: string;
   q?: string;
   review?: string;
+  /** Everyone's: only the sign-offs with these people or teams (group keys). */
+  who?: string;
 };
 type Session = Awaited<ReturnType<typeof requireStaffSession>>;
 type Show = { id: string; code: string; name: string };
@@ -164,7 +168,13 @@ function ScopeBar({
   all: boolean;
   counts: { total: number; overdue: number };
 }) {
-  const keep = { tab: "mine", event: show?.code, q: params.q, all: all ? "1" : undefined };
+  const keep = {
+    tab: "mine",
+    event: show?.code,
+    q: params.q,
+    all: all ? "1" : undefined,
+    who: all ? params.who : undefined,
+  };
   return (
     <div className="flex flex-wrap items-center gap-2">
       <SegmentedLinks
@@ -190,7 +200,7 @@ function ScopeBar({
           items={[
             {
               label: "Waiting on me",
-              href: hrefWith({ ...keep, all: undefined, overdue: params.overdue }),
+              href: hrefWith({ ...keep, all: undefined, who: undefined, overdue: params.overdue }),
               active: !all,
             },
             {
@@ -369,12 +379,15 @@ async function Everyone({
   shows: Show[];
   show: Show | null;
 }) {
+  const who = parseWhoParam(params.who);
   const rows = await openSignoffsForTeam(session, {
     editionId: show?.id ?? null,
     search: params.q,
+    who,
   });
   const counts = { total: rows.length, overdue: rows.filter((r) => r.isOverdue).length };
   const shown = params.overdue === "1" ? rows.filter((r) => r.isOverdue) : rows;
+  const whoNames = [...new Set(rows.map((r) => r.waitingOn))];
   return (
     <section className="space-y-4" aria-label="Everyone's sign-offs">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -383,18 +396,47 @@ async function Everyone({
           events={shows}
           eventCode={show?.code ?? null}
           search={params.q ?? ""}
-          keep={{ tab: "mine", all: "1", overdue: params.overdue }}
+          keep={{
+            tab: "mine",
+            all: "1",
+            overdue: params.overdue,
+            who: who.length ? who.join(",") : undefined,
+          }}
         />
       </div>
-      <p className="text-muted-foreground text-sm">
-        Every open sign-off, by who it is waiting on. Remind tells them now (once a day per
-        sign-off); the nightly reminders carry on as usual.
-      </p>
+      {who.length > 0 ? (
+        <p className="text-muted-foreground text-sm">
+          {whoNames.length > 0
+            ? `Only the sign-offs waiting on ${whoNames.join(", ")}.`
+            : "Only the sign-offs waiting on one person or team."}{" "}
+          <Link
+            href={hrefWith({
+              tab: "mine",
+              all: "1",
+              event: show?.code,
+              q: params.q,
+              overdue: params.overdue,
+            })}
+            className="link"
+          >
+            Show everyone&apos;s
+          </Link>
+        </p>
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          Every open sign-off, by who it is waiting on. Remind tells them now (once a day per
+          sign-off); the nightly reminders carry on as usual.
+        </p>
+      )}
       {shown.length === 0 ? (
         <EmptyState
           icon={CheckCircle2}
           title={params.overdue === "1" ? "Nothing is overdue" : "No sign-offs are open"}
-          description="Nobody is waiting to decide anything here."
+          description={
+            who.length > 0
+              ? "Nothing is waiting on them here."
+              : "Nobody is waiting to decide anything here."
+          }
         />
       ) : (
         <TeamView
@@ -439,12 +481,24 @@ async function AllArtwork({
     params.filter && (params.filter === "all" || params.filter in ARTWORK_FILTERS)
       ? (params.filter as ArtworkFilter)
       : "waiting";
-  const { rows, counts, truncated } = await listArtworkApprovals({
-    organisationId,
-    editionId: show?.id ?? null,
-    filter,
-    search: params.q,
-  });
+  // ?overdue=1 (the dashboard's overdue link): only artwork whose sign-off is late.
+  const overdue = params.overdue === "1";
+  const { rows, counts, truncated } = overdue
+    ? {
+        ...(await listOverdueArtwork({
+          organisationId,
+          editionId: show?.id ?? null,
+          filter,
+          search: params.q,
+        })),
+        counts: {} as Record<string, number>,
+      }
+    : await listArtworkApprovals({
+        organisationId,
+        editionId: show?.id ?? null,
+        filter,
+        search: params.q,
+      });
   const filters: [string, string][] = [
     ...Object.entries(ARTWORK_FILTERS).map(([k, v]) => [k, v.label] as [string, string]),
     ["all", "Everything"],
@@ -457,30 +511,57 @@ async function AllArtwork({
           events={shows}
           eventCode={show?.code ?? null}
           search={params.q ?? ""}
-          keep={{ tab: "artwork", filter }}
+          keep={{ tab: "artwork", filter, overdue: overdue ? "1" : undefined }}
         />
-        <SegmentedLinks
-          label="Filter by sign-off"
-          className="w-fit"
-          items={filters.map(([key, label]) => ({
-            label,
-            href: hrefWith({ tab: "artwork", filter: key, event: show?.code, q: params.q }),
-            active: filter === key,
-            count: counts[key] ?? 0,
-          }))}
-        />
+        {overdue ? (
+          <p className="text-muted-foreground text-sm">
+            Only artwork whose sign-off is overdue, most overdue first.{" "}
+            <Link
+              href={hrefWith({ tab: "artwork", filter, event: show?.code, q: params.q })}
+              className="link"
+            >
+              Show all artwork
+            </Link>
+          </p>
+        ) : (
+          <SegmentedLinks
+            label="Filter by sign-off"
+            className="w-fit"
+            items={filters.map(([key, label]) => ({
+              label,
+              href: hrefWith({ tab: "artwork", filter: key, event: show?.code, q: params.q }),
+              active: filter === key,
+              count: counts[key] ?? 0,
+            }))}
+          />
+        )}
       </div>
 
       {rows.length === 0 ? (
-        <EmptyState
-          icon={ImageOff}
-          title="No artwork here"
-          description={
-            show || params.q
-              ? "Nothing matches — try another event, filter or search."
-              : "Artwork appears once it's uploaded to a signage item."
-          }
-        />
+        overdue ? (
+          <EmptyState
+            icon={CheckCircle2}
+            title="No sign-offs are overdue"
+            description="All artwork in sign-off is within its due dates."
+            action={
+              <Button asChild variant="outline">
+                <Link href={hrefWith({ tab: "artwork", filter, event: show?.code })}>
+                  See all artwork
+                </Link>
+              </Button>
+            }
+          />
+        ) : (
+          <EmptyState
+            icon={ImageOff}
+            title="No artwork here"
+            description={
+              show || params.q
+                ? "Nothing matches — try another event, filter or search."
+                : "Artwork appears once it's uploaded to a signage item."
+            }
+          />
+        )
       ) : (
         <ul className="grid gap-3 md:grid-cols-2" aria-label="Artwork">
           {rows.map((r) => (
@@ -538,7 +619,9 @@ async function AllArtwork({
       )}
       {truncated && (
         <p className="text-muted-foreground text-xs">
-          Showing the newest 150 — pick an event or search to narrow it down.
+          {overdue
+            ? "Showing the 150 most overdue — pick an event or search to narrow it down."
+            : "Showing the newest 150 — pick an event or search to narrow it down."}
         </p>
       )}
     </section>

@@ -120,7 +120,7 @@ export async function createStandDesign(input: unknown): Promise<ActionResult<{ 
   }
   const data = parsed.data;
   if (!(await ownEdition(db, session.organisation.id, data.editionId))) {
-    return fail("Show not found");
+    return fail("Event not found");
   }
   try {
     await assertItemLinks(db, {
@@ -144,7 +144,7 @@ export async function createStandDesign(input: unknown): Promise<ActionResult<{ 
       const [edition] = await tx.execute<{ code: string; status: string }>(
         sql`SELECT code, status FROM editions WHERE id = ${data.editionId}`,
       );
-      if (!edition) throw new Error("Show not found");
+      if (!edition) throw new Error("Event not found");
       if (editionIsReadOnly(edition.status)) throw new Error(EDITION_LOCKED_MESSAGE);
       const workflowId = await ensureStandDesignWorkflow(tx, session.organisation.id);
       // Keep the chosen plan even when it matches the defaults: stands have

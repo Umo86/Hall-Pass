@@ -32,4 +32,21 @@ test.describe("mobile navigation", () => {
     await expect(page.getByRole("columnheader", { name: "Ref" })).toBeHidden();
     await ctx.close();
   });
+
+  test("the top bar fits a 390px phone, bell and account menu included", async ({
+    browser,
+    baseURL,
+  }) => {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    await signInAs(ctx, "ops@media10.test", baseURL!);
+    const page = await ctx.newPage();
+    for (const path of ["/my-work", "/BIRM27/signage", "/users"]) {
+      await page.goto(`${baseURL}${path}`);
+      const header = page.locator("header").first();
+      await expect(header.getByRole("button", { name: /^Notifications/ })).toBeVisible();
+      await expect(header.getByRole("button", { name: /^Account: / })).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth), path).toBe(390);
+    }
+    await ctx.close();
+  });
 });

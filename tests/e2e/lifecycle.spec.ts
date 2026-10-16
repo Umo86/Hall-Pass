@@ -120,10 +120,10 @@ test.describe("lifecycle: print → install → snag → reopen → close", () =
     await expect(installDialog.getByAltText("Install photo preview")).toBeVisible();
     await installDialog.getByRole("button", { name: "Confirm", exact: true }).click();
     await expect(installDialog).toHaveCount(0);
-    // Installed items leave the to-do list; "Everything" still shows them.
-    await expect(card).toHaveCount(0);
-    await ops.getByRole("button", { name: "Everything" }).click();
-    await expect(card).toBeVisible();
+    // Installed and snag-free, it waits under Ready to close.
+    await expect(
+      ops.getByRole("region", { name: "Ready to close" }).locator("article", { hasText: ref }),
+    ).toBeVisible();
     await expect(card.getByText("Installed", { exact: true })).toBeVisible();
 
     // A snag raised on the spot marks it Snagged.

@@ -20,10 +20,12 @@ import { orderByKind } from "@/lib/calendar";
 import { stepIsMine } from "@/lib/domain/signage";
 import type { Feature, StaffActor } from "@/lib/authz";
 import { daysOverdue } from "@/components/approvals/step-words";
+import { signoffGroupKey } from "@/lib/queries/approvals";
 import {
   DEADLINE_FEATURE,
   deadlineWorkLabel,
   onsiteSoon,
+  overdueArtworkSignoffs,
   sponsorshipSummary,
   waitingOnLabel,
   type DeadlineWork,
@@ -135,6 +137,10 @@ export async function dashboardData(opts: {
         itemRef: signageItems.ref,
         itemName: signageItems.name,
         itemKind: signageItems.kind,
+        itemStatus: signageItems.status,
+        itemHasArtwork: sql<boolean>`${signageItems.currentArtworkVersionId} is not null`,
+        runNumber: approvalInstances.runNumber,
+        currentRunNumber: signageItems.currentRunNumber,
         subRef: standSubmissions.ref,
         company: exhibitors.companyName,
       })
@@ -242,14 +248,30 @@ export async function dashboardData(opts: {
     })
     .filter((p) => p.ref);
 
-  const sittingWith = new Map<string, { count: number; overdue: number }>();
+  // By who it's with in words; `who` keeps the Approvals groups (?who=) behind each line.
+  const sittingWith = new Map<string, { count: number; overdue: number; who: Set<string> }>();
   for (const p of signoffs) {
-    const entry = sittingWith.get(p.waitingOn) ?? { count: 0, overdue: 0 };
+    const entry = sittingWith.get(p.waitingOn) ?? { count: 0, overdue: 0, who: new Set() };
     entry.count++;
     if (p.isOverdue) entry.overdue++;
+    entry.who.add(signoffGroupKey(p));
     sittingWith.set(p.waitingOn, entry);
   }
   const overdue = signoffs.filter((p) => p.isOverdue);
+  // Artwork past its sign-off date, one line per item (most overdue first):
+  // what Approvals → All artwork lists with ?filter=waiting&overdue=1, for
+  // people without the team view. Print, delivery and install confirmations
+  // and stands aren't artwork sign-offs.
+  const overdueArtwork = overdueArtworkSignoffs(overdue);
+  const overdueLine = (p: (typeof overdue)[number]): OverdueSignoff => ({
+    id: p.id,
+    ref: p.ref,
+    name: p.name,
+    href: p.href,
+    stepName: p.stepName,
+    waitingOn: p.waitingOn,
+    daysLate: p.dueAt ? daysOverdue(p.dueAt, today) : 0,
+  });
 
   // Mine as the assignee, as the navigation count and Approvals "Waiting on
   // me" count them; someone whose sign-off is paused decides nothing.
@@ -342,19 +364,14 @@ export async function dashboardData(opts: {
     budget: { budget: edition.signageBudget, estimate, actual },
     sponsorship,
     sittingWith: [...sittingWith.entries()]
-      .map(([label, v]) => ({ label, ...v }))
+      .map(([label, v]) => ({ label, count: v.count, overdue: v.overdue, who: [...v.who].sort() }))
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)),
     pendingTotal: signoffs.length,
     overdueCount: overdue.length,
-    overdue: overdue.slice(0, 6).map((p): OverdueSignoff => ({
-      id: p.id,
-      ref: p.ref,
-      name: p.name,
-      href: p.href,
-      stepName: p.stepName,
-      waitingOn: p.waitingOn,
-      daysLate: p.dueAt ? daysOverdue(p.dueAt, today) : 0,
-    })),
+    overdue: overdue.slice(0, 6).map(overdueLine),
+    /** Overdue artwork sign-offs, one per item (the non-team card). */
+    overdueArtworkCount: overdueArtwork.length,
+    overdueArtwork: overdueArtwork.slice(0, 6).map(overdueLine),
     upcomingDeadlines: upcoming.slice(0, 8),
     upcomingCount: upcoming.length,
     /** For "Your next steps" (the page decides which rows this person gets). */

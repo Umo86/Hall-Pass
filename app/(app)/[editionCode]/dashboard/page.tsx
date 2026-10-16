@@ -99,14 +99,23 @@ export default async function DashboardPage({
     onsite: has("onsite") && can(actor, { type: "snag.manage" }) ? data.next.onsite : null,
   });
 
-  // Admins and Operations chase from the team view; everyone else sees the artwork.
+  // Admins and Operations chase from the team view (each line opens that
+  // person's or team's sign-offs); everyone else sees the artwork.
   const team = actor.role === "admin" || actor.role === "ops";
   const sittingHref = team
     ? `/approvals?tab=mine&all=1&event=${code}`
     : `/approvals?tab=artwork&event=${code}&filter=waiting`;
+  const sittingRows = data.sittingWith.map((row) => ({
+    ...row,
+    href: team
+      ? `/approvals?${new URLSearchParams({ tab: "mine", all: "1", event: code, who: row.who.join(",") })}`
+      : sittingHref,
+  }));
+  // The overdue card counts what its link lists: every overdue step for the
+  // team view, else overdue artwork sign-offs (one per item).
   const overdueHref = team
     ? `/approvals?tab=mine&all=1&overdue=1&event=${code}`
-    : `/approvals?tab=artwork&event=${code}&filter=waiting`;
+    : `/approvals?tab=artwork&event=${code}&filter=waiting&overdue=1`;
 
   const venue = `${ed.venue.name}${ed.venue.address ? `, ${ed.venue.address}` : ""}`;
   const showSignage = has("signage");
@@ -253,8 +262,12 @@ export default async function DashboardPage({
       )}
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <SittingWithCard rows={data.sittingWith} total={data.pendingTotal} href={sittingHref} />
-        <OverdueCard rows={data.overdue} total={data.overdueCount} seeAllHref={overdueHref} />
+        <SittingWithCard rows={sittingRows} total={data.pendingTotal} href={sittingHref} />
+        <OverdueCard
+          rows={team ? data.overdue : data.overdueArtwork}
+          total={team ? data.overdueCount : data.overdueArtworkCount}
+          seeAllHref={overdueHref}
+        />
         <UpcomingCard
           rows={data.upcomingDeadlines}
           total={data.upcomingCount}

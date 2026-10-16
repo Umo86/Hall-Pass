@@ -29,7 +29,7 @@ import {
   type EntityCtx,
   type StepDef,
 } from "@/lib/workflow";
-import { persistRun } from "@/lib/workflow/persist";
+import { loadRun, persistRun } from "@/lib/workflow/persist";
 import { ensureSignageWorkflow, syncDepartmentSteps } from "@/lib/domain/departments";
 import { formatSignageRef, formatStandDesignRef, formatStandRef, STAND_SEQ_BASE } from "@/lib/refs";
 import { ensureStandDesignWorkflow } from "@/lib/domain/stand-designs";
@@ -1461,10 +1461,110 @@ async function main() {
   const categoryFor = (plan: ItemPlan): "organiser" | "sponsor" =>
     plan.kind === "sponsorship_item" || plan.sponsor ? "sponsor" : "organiser";
 
+  // Who decides each step in the demo.
+  const decider: Record<string, string> = {
+    "Marketing sign-off": byRole.marketing,
+    "Sales sign-off": byRole.sales,
+    "Operations sign-off": byRole.ops,
+    "Venue approval": uid(11),
+    "Senior management sign-off": byRole.event_director,
+    "Sent to print": uid(14),
+    Delivered: uid(14),
+    Installed: byRole.ops,
+  };
+
+  /** The item's own dates for the confirmations its run has (only those not set yet). */
+  const confirmationDates = (
+    item: Pick<
+      typeof s.signageItems.$inferSelect,
+      "sentToPrintAt" | "deliveredAt" | "installedAt" | "installedBy"
+    >,
+    run: Array<{
+      stepName: string;
+      status: string;
+      decidedAt: Date | null;
+      decidedBy: string | null;
+    }>,
+  ): Partial<typeof s.signageItems.$inferInsert> => {
+    const at = (name: string) =>
+      run.find((i) => i.stepName === name && i.status === "confirmed" && i.decidedAt);
+    const set: Partial<typeof s.signageItems.$inferInsert> = {};
+    const print = at("Sent to print");
+    const delivered = at("Delivered");
+    const installed = at("Installed");
+    if (print && !item.sentToPrintAt) set.sentToPrintAt = print.decidedAt;
+    if (delivered && !item.deliveredAt) set.deliveredAt = delivered.decidedAt;
+    if (installed && !item.installedAt) {
+      set.installedAt = installed.decidedAt;
+      if (!item.installedBy) set.installedBy = installed.decidedBy;
+    }
+    return set;
+  };
+
+  /**
+   * Earlier seeds stopped advancing a run at its approval, so a sign the
+   * demo puts at Sent to print, Delivered, Installed or Complete still
+   * waited on "Sent to print". Confirm those steps on the demo items that
+   * are still as seeded (same status, first round); anything a person or a
+   * test has moved since is left alone. Safe to run again: it only acts on
+   * steps still waiting.
+   */
+  const tidyConfirmations = async (
+    item: typeof s.signageItems.$inferSelect,
+    plan: ItemPlan,
+  ): Promise<void> => {
+    const confirms = (plan.advance ?? []).filter(([, d]) => d === "confirm").map(([n]) => n);
+    if (confirms.length === 0) return;
+    if (item.deletedAt || item.status !== plan.status || item.currentRunNumber !== 1) return;
+    let run = await loadRun(db, "signage_item", item.id, 1);
+    if (run.some((i) => i.stepKind === "approval" && i.status === "pending")) return;
+    const entity: EntityCtx = {
+      kind: "signage",
+      sponsorId: item.sponsorId,
+      requiresVenueApproval: item.requiresVenueApproval,
+      requiresEventDirector: item.requiresEventDirector,
+      costEstimate: item.costEstimate != null ? Number(item.costEstimate) : null,
+      fixingMethod: item.fixingMethod,
+      supplierId: item.supplierId,
+      category: item.category ?? "organiser",
+      signoffs: item.signoffs ?? null,
+    };
+    let changed = false;
+    for (const stepName of confirms) {
+      const inst = run.find((i) => i.stepName === stepName && i.status === "pending");
+      if (!inst) continue;
+      run = applyDecision(run, {
+        instanceId: inst.id,
+        decision: { type: "confirm" },
+        decidedBy: decider[stepName] ?? byRole.ops,
+        now: daysAgo(plan.overdue ? 10 : 3),
+        entity,
+        expectedStatus: "pending",
+        expectedLockedVersionId: null,
+        lockedVersionType: item.currentArtworkVersionId ? "artwork_version" : null,
+        lockedVersionId: null,
+        lockedSha256: null,
+      }).instances;
+      changed = true;
+    }
+    const dates = confirmationDates(item, run);
+    if (changed || Object.keys(dates).length > 0) {
+      await db.transaction(async (tx) => {
+        if (changed) await persistRun(tx, "signage_item", item.id, run);
+        if (Object.keys(dates).length > 0) {
+          await tx.update(s.signageItems).set(dates).where(eq(s.signageItems.id, item.id));
+        }
+      });
+    }
+  };
+
   for (const plan of plans) {
     const ref = formatSignageRef("BIRM27", plan.seq);
     const exists = await db.query.signageItems.findFirst({ where: eq(s.signageItems.ref, ref) });
-    if (exists) continue;
+    if (exists) {
+      await tidyConfirmations(exists, plan);
+      continue;
+    }
 
     const itemType = itemTypeRows[plan.type];
     const fixing = itemType.defaultFixingMethod ?? "freestanding";
@@ -1568,16 +1668,6 @@ async function main() {
         runNumber: 1,
         now: daysAgo(plan.overdue ? 12 : 5),
       });
-      const decider: Record<string, string> = {
-        "Marketing sign-off": byRole.marketing,
-        "Sales sign-off": byRole.sales,
-        "Operations sign-off": byRole.ops,
-        "Venue approval": uid(11),
-        "Senior management sign-off": byRole.event_director,
-        "Sent to print": uid(14),
-        Delivered: uid(14),
-        Installed: byRole.ops,
-      };
       for (const [stepName, decisionType] of plan.advance) {
         const inst = run.find((i) => i.stepName === stepName && i.status === "pending");
         if (!inst) continue;
@@ -1606,7 +1696,11 @@ async function main() {
           lockedSha256: null,
         });
         run = res.instances;
-        if (res.entityEvent.type !== "none") break;
+        // Changes asked for or rejected ends the round. An approved round
+        // carries on: Sent to print, Delivered and Installed follow it.
+        if (res.entityEvent.type === "changes_requested" || res.entityEvent.type === "rejected") {
+          break;
+        }
       }
       if (plan.superseded) {
         const inv = invalidateOnNewVersion(run, { entity, now: daysAgo(1) });
@@ -1615,8 +1709,12 @@ async function main() {
       if (plan.overdue) {
         run = run.map((i) => (i.status === "pending" ? { ...i, dueAt: daysAgo(4) } : i));
       }
+      const dates = confirmationDates(item, run);
       await db.transaction(async (tx) => {
         await persistRun(tx, "signage_item", item.id, run);
+        if (Object.keys(dates).length > 0) {
+          await tx.update(s.signageItems).set(dates).where(eq(s.signageItems.id, item.id));
+        }
       });
     }
 

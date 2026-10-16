@@ -23,6 +23,7 @@ import {
   exhibitors,
   memberships,
   signageItems,
+  sponsors,
   standSubmissions,
   users,
   approvers,
@@ -38,6 +39,12 @@ import { rowToInstance } from "@/lib/workflow/persist";
 import { roleLabel } from "@/lib/format";
 import { itemPath } from "@/lib/edition-path";
 import { todayInLondon } from "@/lib/today";
+import {
+  ARTWORK_FILTERS,
+  reviewArtworkForItems,
+  type ArtworkFilter,
+  type ArtworkRow,
+} from "@/lib/queries/artwork-approvals";
 
 /**
  * Which pending steps could be this person's, narrowed in SQL so My Work
@@ -302,6 +309,68 @@ export async function pendingEntityIdsForUser(
   return new Set(rows.map((r) => r.id));
 }
 
+/**
+ * The group a step belongs to in Approvals → Everyone's (and the ?who= key
+ * that opens it): the named person, else the department, else the role.
+ */
+export function signoffGroupKey(step: {
+  assignedUserId: string | null;
+  assignedDepartmentId: string | null;
+  assignedRole: string | null;
+}): string {
+  if (step.assignedUserId) return `user:${step.assignedUserId}`;
+  if (step.assignedDepartmentId) return `dept:${step.assignedDepartmentId}`;
+  return `role:${step.assignedRole ?? "none"}`;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * ?who= on Approvals → Everyone's: one or more group keys, comma-separated
+ * ("dept:<id>", "user:<id>", "role:<role>"). Anything else is dropped.
+ */
+export function parseWhoParam(value: string | string[] | undefined | null): string[] {
+  const raw = Array.isArray(value) ? value.join(",") : (value ?? "");
+  const keys = raw
+    .split(",")
+    .map((k) => k.trim())
+    .filter((k) => {
+      const at = k.indexOf(":");
+      const kind = k.slice(0, at);
+      const id = k.slice(at + 1);
+      if (at < 0) return false;
+      if (kind === "user" || kind === "dept") return UUID.test(id);
+      return kind === "role" && /^[a-z_]{1,40}$/.test(id);
+    });
+  return [...new Set(keys)].slice(0, 20);
+}
+
+/** SQL for the steps in these groups (exactly as signoffGroupKey groups them). */
+function whoFilter(keys: string[]): SQL | undefined {
+  if (keys.length === 0) return undefined;
+  return or(
+    ...keys.map((key) => {
+      const at = key.indexOf(":");
+      const kind = key.slice(0, at);
+      const id = key.slice(at + 1);
+      if (kind === "user") return eq(approvalInstances.assignedUserId, id);
+      if (kind === "dept") {
+        return and(
+          isNull(approvalInstances.assignedUserId),
+          eq(approvalInstances.assignedDepartmentId, id),
+        );
+      }
+      return and(
+        isNull(approvalInstances.assignedUserId),
+        isNull(approvalInstances.assignedDepartmentId),
+        id === "none"
+          ? isNull(approvalInstances.assignedRole)
+          : eq(approvalInstances.assignedRole, id),
+      );
+    }),
+  );
+}
+
 export type TeamSignoff = {
   instanceId: string;
   entityType: "signage_item" | "stand_submission";
@@ -337,7 +406,13 @@ export type TeamSignoff = {
  */
 export async function openSignoffsForTeam(
   session: Session,
-  opts: { editionId?: string | null; search?: string; overdueOnly?: boolean } = {},
+  opts: {
+    editionId?: string | null;
+    search?: string;
+    overdueOnly?: boolean;
+    /** Only these groups (?who=, see signoffGroupKey). */
+    who?: string[];
+  } = {},
 ): Promise<TeamSignoff[]> {
   const search = opts.search?.trim();
   const assignee = alias(users, "assignee");
@@ -388,6 +463,7 @@ export async function openSignoffsForTeam(
         liveOpen(session.organisation.id),
         opts.editionId ? eq(editions.id, opts.editionId) : undefined,
         opts.overdueOnly ? lt(approvalInstances.dueAt, new Date()) : undefined,
+        whoFilter(opts.who ?? []),
         search
           ? or(
               ilike(signageItems.name, `%${search}%`),
@@ -523,10 +599,7 @@ export async function openSignoffsForTeam(
             },
           },
     };
-    const canRemind =
-      stepCtx.entity.type === "signage_item"
-        ? can(session.actor, { type: "signage.submit", item: stepCtx.entity.item })
-        : can(session.actor, { type: "stand.review" });
+    const canRemind = can(session.actor, { type: "approval.remind", step: stepCtx });
     return {
       instanceId: inst.id,
       entityType: inst.entityType,
@@ -542,11 +615,7 @@ export async function openSignoffsForTeam(
       dueAt: inst.dueAt,
       isOverdue: Boolean(inst.dueAt && inst.dueAt.getTime() < now),
       waitingOn,
-      groupKey: inst.assignedUserId
-        ? `user:${inst.assignedUserId}`
-        : inst.assignedDepartmentId
-          ? `dept:${inst.assignedDepartmentId}`
-          : `role:${inst.assignedRole ?? "none"}`,
+      groupKey: signoffGroupKey(inst),
       people,
       expectedLockedVersionId: isItem
         ? (r.item!.currentArtworkVersionId ?? null)
@@ -560,4 +629,114 @@ export async function openSignoffsForTeam(
       ),
     };
   });
+}
+
+const OVERDUE_ARTWORK_LIMIT = 150;
+
+/**
+ * Approvals → All artwork with ?overdue=1: artwork whose sign-off in the
+ * current round is past its due date (print, delivery and install
+ * confirmations are not sign-offs), most overdue first. Live, not held,
+ * not archived; optionally one event, a search and one of the status filters.
+ */
+export async function listOverdueArtwork(opts: {
+  organisationId: string;
+  editionId?: string | null;
+  search?: string;
+  filter?: ArtworkFilter;
+}): Promise<{ rows: ArtworkRow[]; truncated: boolean }> {
+  const search = opts.search?.trim();
+  const statuses =
+    opts.filter && opts.filter !== "all"
+      ? (ARTWORK_FILTERS[opts.filter].statuses as readonly string[])
+      : null;
+  const late = await db
+    .select({ id: signageItems.id })
+    .from(approvalInstances)
+    .innerJoin(signageItems, itemJoin)
+    .innerJoin(editions, eq(editions.id, signageItems.editionId))
+    .innerJoin(events, eq(editions.eventId, events.id))
+    .where(
+      and(
+        eq(approvalInstances.status, "pending"),
+        eq(approvalInstances.stepKindSnapshot, "approval"),
+        lt(approvalInstances.dueAt, new Date()),
+        eq(approvalInstances.runNumber, signageItems.currentRunNumber),
+        eq(events.organisationId, opts.organisationId),
+        ne(editions.status, "archived"),
+        isNull(signageItems.deletedAt),
+        ne(signageItems.status, "on_hold"),
+        isNotNull(signageItems.currentArtworkVersionId),
+        opts.editionId ? eq(signageItems.editionId, opts.editionId) : undefined,
+        statuses
+          ? inArray(signageItems.status, statuses as (typeof signageItems.$inferSelect)["status"][])
+          : undefined,
+        search
+          ? or(ilike(signageItems.name, `%${search}%`), ilike(signageItems.ref, `%${search}%`))
+          : undefined,
+      ),
+    )
+    .groupBy(signageItems.id)
+    .orderBy(sql`min(${approvalInstances.dueAt}) ASC`, asc(signageItems.ref))
+    .limit(OVERDUE_ARTWORK_LIMIT + 1);
+  const truncated = late.length > OVERDUE_ARTWORK_LIMIT;
+  const ids = late.slice(0, OVERDUE_ARTWORK_LIMIT).map((r) => r.id);
+  if (ids.length === 0) return { rows: [], truncated: false };
+
+  const [artwork, items] = await Promise.all([
+    reviewArtworkForItems(opts.organisationId, ids),
+    db
+      .select({
+        item: {
+          id: signageItems.id,
+          ref: signageItems.ref,
+          name: signageItems.name,
+          kind: signageItems.kind,
+          status: signageItems.status,
+          category: signageItems.category,
+        },
+        showCode: editions.code,
+        showName: editions.name,
+        sponsorName: sponsors.companyName,
+      })
+      .from(signageItems)
+      .innerJoin(editions, eq(editions.id, signageItems.editionId))
+      .leftJoin(sponsors, eq(sponsors.id, signageItems.sponsorId))
+      .where(inArray(signageItems.id, ids)),
+  ]);
+  const byId = new Map(items.map((r) => [r.item.id, r]));
+  const rows: ArtworkRow[] = [];
+  for (const id of ids) {
+    const found = byId.get(id);
+    const art = artwork.get(id);
+    if (!found || !art) continue;
+    const { item, showCode, showName, sponsorName } = found;
+    rows.push({
+      id: item.id,
+      ref: item.ref,
+      name: item.name,
+      kind: item.kind,
+      status: item.status,
+      category: item.category,
+      sponsorName,
+      showCode,
+      showName,
+      version: art.current.versionNumber,
+      uploadedAt: new Date(art.current.uploadedAt),
+      previewUrl: art.current.thumbUrl,
+      href: `${itemPath(showCode, item)}?tab=artwork`,
+      signoffs: art.signoffs
+        .filter((st) => st.stepKind === "approval")
+        .map((st) => ({
+          id: st.id,
+          stepName: st.stepName,
+          status: st.status,
+          who: st.who,
+          deciderName: st.deciderName,
+          decidedAt: st.decidedAt,
+          comment: st.comment,
+        })),
+    });
+  }
+  return { rows, truncated };
 }

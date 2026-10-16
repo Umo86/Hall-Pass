@@ -13,7 +13,7 @@ import { fail, success, type ActionResult } from "@/lib/actions/result";
 
 /**
  * The pick-lists admins (and Operations) manage in Settings, which everyone
- * else chooses from: signage types and supplier services.
+ * else chooses from: item types (signage and sponsorship) and supplier services.
  */
 
 const FIXINGS = [
@@ -69,7 +69,7 @@ export async function saveItemType(input: unknown): Promise<ActionResult<{ id: s
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
   if (!can(session.actor, { type: "settings.manage" }))
-    return fail("Only admins and Operations manage signage types");
+    return fail("Only admins and Operations manage item types");
   const orgId = session.organisation.id;
   const data = parsed.data;
   const values = {
@@ -100,7 +100,7 @@ export async function saveItemType(input: unknown): Promise<ActionResult<{ id: s
           entityId: row.id,
           action: "settings_change",
           after: values,
-          summary: `Signage type updated: ${row.name}`,
+          summary: `Item type updated: ${row.name}`,
         });
         return row.id;
       }
@@ -135,7 +135,7 @@ export async function saveItemType(input: unknown): Promise<ActionResult<{ id: s
         entityId: row.id,
         action: "create",
         after: values,
-        summary: `Signage type added: ${row.name}`,
+        summary: `Item type added: ${row.name}`,
       });
       return row.id;
     });
@@ -154,7 +154,7 @@ export async function setItemTypeArchived(input: unknown): Promise<ActionResult>
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
   if (!can(session.actor, { type: "settings.manage" }))
-    return fail("Only admins and Operations manage signage types");
+    return fail("Only admins and Operations manage item types");
   try {
     await db.transaction(async (tx) => {
       const [row] = await tx
@@ -175,7 +175,7 @@ export async function setItemTypeArchived(input: unknown): Promise<ActionResult>
         entityId: row.id,
         action: "settings_change",
         after: { archived: parsed.data.archived },
-        summary: `Signage type ${parsed.data.archived ? "hidden" : "restored"}: ${row.name}`,
+        summary: `Item type ${parsed.data.archived ? "hidden" : "restored"}: ${row.name}`,
       });
     });
     revalidatePath("/", "layout");
@@ -282,11 +282,11 @@ export async function setSupplierServiceArchived(input: unknown): Promise<Action
         entityId: row.id,
         action: "settings_change",
         after: { archived: parsed.data.archived },
-        summary: `Supplier service ${parsed.data.archived ? "removed" : "restored"}: ${row.name}`,
+        summary: `Supplier service ${parsed.data.archived ? "archived" : "restored"}: ${row.name}`,
       });
     });
     revalidatePath("/", "layout");
-    return success(undefined, parsed.data.archived ? "Removed from the list" : "Restored");
+    return success(undefined, parsed.data.archived ? "Archived" : "Restored");
   } catch (err) {
     return fail(err instanceof Error ? err.message : "Could not update the service");
   }

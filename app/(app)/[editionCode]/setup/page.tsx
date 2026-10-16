@@ -271,7 +271,7 @@ export default async function SetupPage({ params }: { params: Promise<{ editionC
     types: stepByKey.types.canAct ? (
       <Actions>
         <Button asChild variant="outline">
-          <Link href="/settings?tab=types">Edit sign types</Link>
+          <Link href="/settings/item-types">Edit sign types</Link>
         </Button>
       </Actions>
     ) : (

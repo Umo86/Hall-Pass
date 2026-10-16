@@ -285,7 +285,7 @@ export function buildSetupSteps(
       required: true,
       state: state(org.signTypeCount >= 1, "essential"),
       detail: org.signTypeCount > 0 ? plural(org.signTypeCount, "sign type") : "No sign types yet",
-      href: "/settings?tab=types",
+      href: "/settings/item-types",
       canAct: perms.canSetup,
       shared: true,
     },

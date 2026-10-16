@@ -223,8 +223,11 @@ export function ScheduleView({
       ? "No location"
       : (rows.find((r) => r.locationId === location)?.locationName ?? "Chosen location")
     : null;
+  // The picker lists live suppliers only; an archived one is named from its rows.
   const supplierName = supplier
-    ? (suppliers.find((s) => s.id === supplier)?.name ?? "Chosen supplier")
+    ? (suppliers.find((s) => s.id === supplier)?.name ??
+      rows.find((r) => r.supplierId === supplier)?.supplierName ??
+      "Chosen supplier")
     : null;
 
   // Everything but the status chip, so each chip can show its own count.

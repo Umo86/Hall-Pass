@@ -17,20 +17,36 @@ async function as(browser: Browser, email: string, baseURL: string): Promise<Pag
   return page;
 }
 
-/** Decide the waiting step for `ref` from My Work, with an optional comment. */
-async function decide(page: Page, baseURL: string, ref: string, button: string, comment?: string) {
+/**
+ * Decide the waiting step for `ref` from Approvals, with an optional comment.
+ * Approve is on the row; Reject is in the row's "More decisions" menu.
+ */
+async function decide(
+  page: Page,
+  baseURL: string,
+  ref: string,
+  button: "Approve" | "Reject",
+  comment?: string,
+) {
   await page.goto(`${baseURL}/approvals`);
-  const row = page.locator("li", { hasText: ref });
-  await row.getByRole("button", { name: button, exact: true }).click();
+  const row = page.getByRole("main").locator("li", { hasText: ref });
+  if (button === "Reject") {
+    await row.getByRole("button", { name: `More decisions on ${ref}` }).click();
+    await page.getByRole("menuitem", { name: "Reject…" }).click();
+  } else {
+    await row.getByRole("button", { name: button, exact: true }).click();
+  }
   const dialog = page.getByRole("dialog");
   if (comment) await dialog.getByLabel(/Comment/).fill(comment);
   await dialog.getByRole("button", { name: button, exact: true }).click();
   await expect(dialog).toHaveCount(0);
 }
 
+/** The new-sign form with everything filled in, and who signs off opened up. */
 async function newSignage(page: Page, baseURL: string, name: string) {
   await page.goto(`${baseURL}/BIRM27/signage/new`);
   await page.getByLabel("Name", { exact: true }).fill(name);
+  await page.getByRole("button", { name: "Change who signs off" }).click();
   await page.getByLabel("Item type").selectOption({ label: "Foamex board" });
   // Everything a sign needs before it can go for sign-off.
   await page.getByLabel("Hall", { exact: true }).selectOption({ label: "Hall 1" });
@@ -40,21 +56,31 @@ async function newSignage(page: Page, baseURL: string, name: string) {
   await page.getByLabel("Fixing method").selectOption("wall_mounted");
 }
 
+/** Create the sign, then upload its artwork, which sends it for sign-off. */
 async function createAndSubmit(page: Page, baseURL: string): Promise<string> {
   await page.getByRole("button", { name: "Create item" }).click();
   await page.waitForURL("**/signage/SIG-BIRM27-*");
   const ref = new URL(page.url()).pathname.split("/").pop()!;
   await page.goto(`${baseURL}/BIRM27/signage/${ref}?tab=artwork`);
-  await page.setInputFiles('input[type="file"]', {
-    name: "art.pdf",
-    mimeType: "application/pdf",
-    buffer: PDF,
-  });
-  await page.getByRole("button", { name: "Upload" }).click();
+  // "Send for sign-off after upload" is ticked by default on a draft.
+  await expect(page.getByLabel("Send for sign-off after upload")).toBeChecked();
+  const upload = page.getByRole("button", { name: "Upload", exact: true });
+  // A file chosen before React has hydrated is lost; choose again until the
+  // Upload button wakes up.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await page.setInputFiles('input[type="file"]', {
+      name: "art.pdf",
+      mimeType: "application/pdf",
+      buffer: PDF,
+    });
+    if (await upload.isEnabled({ timeout: 2_000 }).catch(() => false)) break;
+    await page.waitForTimeout(1_000);
+  }
+  await upload.click();
+  await expect(page.getByText(/^v1 uploaded and sent for sign-off — /).first()).toBeVisible();
   await expect(page.getByText("v1 — art.pdf")).toBeVisible();
   await page.goto(`${baseURL}/BIRM27/signage/${ref}`);
-  await page.getByRole("button", { name: "Submit for review" }).click();
-  await expect(page.getByText("In review", { exact: true })).toBeVisible();
+  await expect(page.getByText("In sign-off", { exact: true }).first()).toBeVisible();
   return ref;
 }
 
@@ -62,15 +88,16 @@ test.describe("signage set-up and sign-off", () => {
   test("admin adds a digital signage type and a supplier service", async ({ browser, baseURL }) => {
     const page = await as(browser, "admin@media10.test", baseURL!);
     const typeName = `E2E Totem ${stamp()}`;
-    await page.goto(`${baseURL}/settings?tab=types`);
-    await page.getByRole("button", { name: "Add a type" }).click();
-    const dialog = page.getByRole("dialog");
+    await page.goto(`${baseURL}/settings/item-types`);
+    const signage = page.getByRole("region", { name: "Signage" });
+    await signage.getByRole("button", { name: "Add signage type" }).click();
+    const dialog = page.getByRole("dialog", { name: "Add a signage type" });
     await dialog.getByLabel("Name").fill(typeName);
     await dialog.getByLabel("Digital").check();
     await dialog.getByRole("button", { name: "Save" }).click();
     await expect(dialog).toHaveCount(0);
-    const row = page.locator("li", { hasText: typeName });
-    await expect(row.getByText("Digital signage")).toBeVisible();
+    const row = signage.getByRole("listitem").filter({ hasText: typeName });
+    await expect(row.getByText(/^Digital · 0 items$/)).toBeVisible();
 
     // It is offered under Digital on the new-item form.
     await page.goto(`${baseURL}/BIRM27/signage/new`);
@@ -78,22 +105,33 @@ test.describe("signage set-up and sign-off", () => {
       page.locator('optgroup[label="Digital"] option', { hasText: typeName }),
     ).toHaveCount(1);
 
-    // Hide it again so the list stays tidy.
-    await page.goto(`${baseURL}/settings?tab=types`);
-    await page.locator("li", { hasText: typeName }).getByRole("button", { name: "Hide" }).click();
-    await expect(page.getByText(/Hidden types/)).toBeVisible();
+    // Archive it again so the list stays tidy.
+    await page.goto(`${baseURL}/settings/item-types`);
+    await signage.getByRole("button", { name: `Archive ${typeName}` }).click();
+    await page
+      .getByRole("dialog", { name: `Archive ${typeName}?` })
+      .getByRole("button", { name: "Archive" })
+      .click();
+    await expect(signage.getByRole("button", { name: `Archive ${typeName}` })).toHaveCount(0);
+    await expect(signage.getByText(/^Archived \(\d+\)$/)).toBeVisible();
 
+    // What suppliers do is managed from Suppliers.
     const service = `E2E Cleaning ${stamp()}`;
-    await page.goto(`${baseURL}/settings?tab=services`);
-    await page.getByLabel("New service").fill(service);
-    await page.getByRole("button", { name: "Add service" }).click();
-    await expect(page.locator("li", { hasText: service })).toBeVisible();
-    await page.locator("li", { hasText: service }).getByRole("button", { name: "Remove" }).click();
-    await expect(page.getByText(/Removed services/)).toBeVisible();
-    await expect(page.getByRole("button", { name: "Rename" }).first()).toBeVisible();
-    await expect(
-      page.locator("li", { hasText: service }).getByRole("button", { name: "Rename" }),
-    ).toHaveCount(0);
+    await page.goto(`${baseURL}/suppliers?manage=services`);
+    const manage = page.getByRole("dialog", { name: "What suppliers do" });
+    await manage.getByLabel("New service").fill(service);
+    await manage.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(manage.getByText(service, { exact: true })).toBeVisible();
+    await manage.getByRole("button", { name: `Archive ${service}` }).click();
+    await page
+      .getByRole("dialog", { name: `Archive ${service}?` })
+      .getByRole("button", { name: "Archive" })
+      .click();
+    // Archived services can't be renamed until they're restored.
+    await expect(manage.getByRole("button", { name: /^Rename / }).first()).toBeVisible();
+    await expect(manage.getByRole("button", { name: `Rename ${service}` })).toHaveCount(0);
+    await manage.getByText(/^Archived \(\d+\)$/).click();
+    await expect(manage.getByRole("button", { name: `Restore ${service}` })).toBeVisible();
     await page.context().close();
   });
 
@@ -101,25 +139,26 @@ test.describe("signage set-up and sign-off", () => {
     const page = await as(browser, "ops@media10.test", baseURL!);
     const name = `E2E Supplies ${stamp()}`;
     await page.goto(`${baseURL}/suppliers`);
-    await page.getByRole("button", { name: "Add supplier" }).click();
+    await page.getByRole("button", { name: "Add supplier" }).first().click();
     const dialog = page.getByRole("dialog");
     await dialog.getByLabel("Company name").fill(name);
-    await dialog.getByLabel("Staffing").check();
-    await dialog.getByLabel("Signage print").check();
+    await dialog.getByLabel("Staffing", { exact: true }).check();
+    await dialog.getByLabel("Signage print", { exact: true }).check();
     await dialog.getByLabel("Email").fill("hello@e2e-supplies.test");
     await dialog.getByRole("button", { name: "Save" }).click();
     await expect(dialog).toHaveCount(0);
-    const card = page.locator("li", { hasText: name });
-    await expect(card.getByText("Staffing")).toBeVisible();
-    await expect(card.getByText("Signage print")).toBeVisible();
+    const row = page.getByRole("main").getByRole("row", { name: new RegExp(name) });
+    await expect(row.getByText("Staffing")).toBeVisible();
+    await expect(row.getByText("Signage print")).toBeVisible();
 
-    // Filter by service.
-    await page
-      .getByRole("group", { name: "Filter by service" })
-      .getByRole("button", { name: "Staffing" })
-      .click();
-    await expect(card).toBeVisible();
-    await expect(page.locator("li", { hasText: "Big Print Co" })).toHaveCount(0);
+    // Filter by what they do.
+    const whatTheyDo = page.getByLabel("What they do");
+    const staffing = await whatTheyDo
+      .locator("option", { hasText: /^Staffing \(\d+\)$/ })
+      .getAttribute("value");
+    await whatTheyDo.selectOption(staffing!);
+    await expect(row).toBeVisible();
+    await expect(page.getByRole("main").getByRole("row", { name: /Big Print Co/ })).toHaveCount(0);
 
     // Offered on the item form with its services.
     await page.goto(`${baseURL}/BIRM27/signage/new`);
@@ -127,11 +166,22 @@ test.describe("signage set-up and sign-off", () => {
       page.locator("option", { hasText: `${name} — Signage print, Staffing` }),
     ).toHaveCount(1);
 
-    // Clean up.
+    // Clean up: archive the unused supplier, then delete it from the archived list.
     await page.goto(`${baseURL}/suppliers`);
-    await page.locator("li", { hasText: name }).getByRole("button", { name: "Edit" }).click();
-    await page.getByRole("dialog").getByRole("button", { name: "Remove" }).click();
-    await expect(page.locator("li", { hasText: name })).toHaveCount(0);
+    await row.getByRole("button", { name: `Edit ${name}` }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Archive" }).click();
+    await page
+      .getByRole("dialog", { name: `Archive ${name}?` })
+      .getByRole("button", { name: "Archive" })
+      .click();
+    await expect(row).toHaveCount(0);
+    await page.getByText(/^Archived \(\d+\)$/).click();
+    await page.getByRole("button", { name: `Delete ${name}` }).click();
+    await page
+      .getByRole("dialog", { name: `Delete ${name} for good?` })
+      .getByRole("button", { name: "Delete" })
+      .click();
+    await expect(page.getByRole("button", { name: `Restore ${name}` })).toHaveCount(0);
     await page.context().close();
   });
 
@@ -256,11 +306,18 @@ test.describe("signage set-up and sign-off", () => {
     const ref = new URL(ops.url()).pathname.split("/").pop()!;
     // Listed under Sponsorship with the sponsor, and in the schedule.
     await ops.goto(`${baseURL}/BIRM27/sponsorship`);
-    const card = ops.getByRole("listitem", { name });
-    await expect(card.getByText("BuildCo")).toBeVisible();
-    await expect(card.getByText("Sold", { exact: true })).toBeVisible();
+    const card = ops.getByRole("main").getByRole("listitem", { name });
+    await expect(card.getByText("BuildCo", { exact: true })).toBeVisible();
+    // Sponsor signage comes with the package rather than being sold on its own.
+    await expect(card.getByText("In package", { exact: true })).toBeVisible();
     await ops.goto(`${baseURL}/BIRM27/signage?q=${ref}`);
-    await expect(ops.locator("tr", { hasText: ref }).getByText("BuildCo")).toBeVisible();
+    // The Sponsor column is one click away in Columns.
+    await ops.getByRole("button", { name: "Columns" }).click();
+    await ops.getByRole("menuitemcheckbox", { name: "Sponsor" }).click();
+    await ops.keyboard.press("Escape");
+    await expect(
+      ops.getByRole("main").locator("tr", { hasText: ref }).getByText("BuildCo", { exact: true }),
+    ).toBeVisible();
     await ops.context().close();
   });
 });

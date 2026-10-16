@@ -6,8 +6,9 @@ import type { OverdueSignoff } from "@/lib/queries/dashboard";
 
 /**
  * Who the event's open sign-offs are sitting with. Each line opens the
- * Approvals list where they can be chased: everyone's sign-offs for the
- * team view (admins, Operations), else the artwork waiting for sign-off.
+ * Approvals list where they can be chased: that person's or team's
+ * sign-offs for the team view (admins, Operations; `row.href`), else the
+ * artwork waiting for sign-off (`href`).
  */
 const SITTING_ROWS = 8;
 
@@ -16,7 +17,7 @@ export function SittingWithCard({
   total,
   href,
 }: {
-  rows: { label: string; count: number; overdue: number }[];
+  rows: { label: string; count: number; overdue: number; href?: string }[];
   total: number;
   href: string;
 }) {
@@ -40,7 +41,7 @@ export function SittingWithCard({
           {rows.slice(0, SITTING_ROWS).map((row) => (
             <li key={row.label}>
               <Link
-                href={href}
+                href={row.href ?? href}
                 className="hover:bg-muted/50 flex min-h-9 items-center justify-between gap-3 rounded-md px-2 py-1"
               >
                 <span className="min-w-0 truncate">{row.label}</span>

@@ -179,6 +179,16 @@ test.describe("sponsorship items", () => {
     await expect(lanyards.getByText("Cost price")).toBeVisible();
     await expect(lanyards.getByText("£4,500").first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Mark as sold" })).toHaveCount(0);
+    // Only people who manage settings are pointed at the list of item types.
+    await expect(page.getByRole("link", { name: "Manage item types" })).toHaveCount(0);
+    const ops = await browser.newContext();
+    await signInAs(ops, "ops@media10.test", baseURL!);
+    const opsPage = await ops.newPage();
+    await opsPage.goto(`${baseURL}/BIRM27/sponsorship`);
+    await opsPage.getByRole("link", { name: "Manage item types" }).click();
+    await opsPage.waitForURL(/\/settings\/item-types#sponsorship$/);
+    await expect(opsPage.getByRole("region", { name: "Sponsorship items" })).toBeVisible();
+    await ops.close();
     await ctx.close();
   });
 

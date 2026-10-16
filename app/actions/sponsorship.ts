@@ -77,7 +77,7 @@ export async function markSold(input: unknown): Promise<ActionResult> {
           .select()
           .from(sponsors)
           .where(and(eq(sponsors.id, sponsorId), eq(sponsors.editionId, bundle.edition.id)));
-        if (!sp) throw new Error("That sponsor isn't on this show — reload the page");
+        if (!sp) throw new Error("That sponsor isn't on this event — reload the page");
         name = sp.companyName;
       } else {
         const [sp] = await tx

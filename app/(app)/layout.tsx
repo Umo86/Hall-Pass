@@ -29,6 +29,7 @@ import { roleLabel } from "@/lib/format";
 import { countPendingForUser, pendingEntityIdsForUser } from "@/lib/queries/approvals";
 import { myTaskSummary } from "@/lib/queries/tasks";
 import { isApprovalRequestKind } from "@/lib/notification-kinds";
+import { REPORT_GROUPS } from "@/components/reports/report-rules";
 
 export const dynamic = "force-dynamic";
 
@@ -140,6 +141,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       myWork: myTasks.overdue + myTasks.dueToday,
     },
     showStands: standsEnabled,
+    // Reports only for people who may download at least one of them.
+    canExport: REPORT_GROUPS.flatMap((g) => g.kinds).some(
+      (kind) =>
+        (kind !== "stand_register" || standsEnabled) && can(actor, { type: "export.run", kind }),
+    ),
     // Null = every section; otherwise the sections this person can use.
     features:
       actor.role === "admin" || actor.features == null
@@ -174,7 +180,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           navCode={current?.edition.code ?? null}
           canSetup={canSetup}
         />
-        <div className="ml-auto flex items-center gap-2">
+        {/* Never squeezed: on a phone the event switcher gives way instead. */}
+        <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
           <NotificationsBell
             unreadCount={Number(unread?.n ?? 0)}
             notifications={recentNotifications.map((n) => ({

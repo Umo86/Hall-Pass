@@ -9,10 +9,7 @@ import {
 } from "@/lib/exports/serve";
 import { standsEnabled } from "@/lib/config";
 
-export async function GET(
-  req: Request,
-  { params }: { params: Promise<{ editionCode: string }> },
-) {
+export async function GET(req: Request, { params }: { params: Promise<{ editionCode: string }> }) {
   const auth = await exportSession(req);
   if (auth.response) return auth.response;
   const { session } = auth;
@@ -22,7 +19,7 @@ export async function GET(
   }
   const { editionCode } = await params;
   const edition = await exportEdition(session, editionCode);
-  if (!edition) return exportError(404, "That show could not be found.");
+  if (!edition) return exportError(404, "That event could not be found.");
   return serveOrError(async () => {
     const { workbook } = await buildStandRegister(edition.id);
     const data = Buffer.from(await workbook.xlsx.writeBuffer());

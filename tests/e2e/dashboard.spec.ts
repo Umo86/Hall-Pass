@@ -66,11 +66,14 @@ test.describe("event dashboard", () => {
     );
 
     // Sign-offs: who they sit with and what is overdue click through.
+    // Each "Sitting with" line opens that person's or team's sign-offs.
     const sitting = main.getByRole("region", { name: "Sitting with" });
-    await expect(sitting.getByRole("link").first()).toHaveAttribute(
+    const line = sitting.getByRole("link").first();
+    await expect(line).toHaveAttribute(
       "href",
-      "/approvals?tab=mine&all=1&event=BIRM27",
+      /^\/approvals\?tab=mine&all=1&event=BIRM27&who=(user|dept|role)%3A[^&]+$/,
     );
+    const sittingHref = (await line.getAttribute("href"))!;
     const overdue = main.getByRole("region", { name: "Overdue sign-offs" });
     const first = overdue.getByRole("listitem").first();
     await expect(first).toContainText(/SIG-BIRM27-\d+ · with .+ · (\d+ days? late|due today)/);
@@ -81,6 +84,9 @@ test.describe("event dashboard", () => {
         "/approvals?tab=mine&all=1&overdue=1&event=BIRM27",
       );
     }
+    const sittingLabel = (await line.locator("span").first().innerText()).trim();
+    await page.goto(sittingHref);
+    await expect(main.getByRole("region", { name: `Waiting on ${sittingLabel}` })).toBeVisible();
     await ctx.close();
   });
 
@@ -98,6 +104,18 @@ test.describe("event dashboard", () => {
     await expect(
       main.getByRole("region", { name: "Sitting with" }).getByRole("link").first(),
     ).toHaveAttribute("href", "/approvals?tab=artwork&event=BIRM27&filter=waiting");
+    // Their overdue number is what the overdue artwork list shows: artwork
+    // sign-offs, one per item (not print, delivery or install confirmations).
+    const overdueCard = main.getByRole("region", { name: "Overdue sign-offs" });
+    const seeAll = overdueCard.getByRole("link", { name: /^See all \d+ overdue$/ });
+    const total = (await seeAll.count())
+      ? Number((await seeAll.innerText()).match(/\d+/)![0])
+      : await overdueCard.getByRole("listitem").count();
+    const overdueHref = "/approvals?tab=artwork&event=BIRM27&filter=waiting&overdue=1";
+    if (await seeAll.count()) await expect(seeAll).toHaveAttribute("href", overdueHref);
+    await page.goto(`${baseURL}${overdueHref}`);
+    const artwork = main.getByRole("list", { name: "Artwork" }).locator(":scope > li");
+    await expect(artwork).toHaveCount(total);
     await ctx.close();
   });
 

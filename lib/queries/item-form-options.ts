@@ -1,6 +1,6 @@
 import "server-only";
 import { listDepartments } from "@/lib/domain/departments";
-import { and, asc, desc, eq, isNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   contractors,
@@ -8,6 +8,7 @@ import {
   itemTypes,
   locations,
   memberships,
+  signageItems,
   sponsorEntitlements,
   sponsors,
   supplierServiceLinks,
@@ -34,6 +35,13 @@ export async function itemFormOptions(opts: {
   workflowId?: string | null;
   /** Keep a type that's been hidden since the item chose it. */
   includeTypeId?: string | null;
+  /**
+   * The item's current supplier, kept even if it has been archived since
+   * (null: the item has none). Left out, an edit form (no workflows) keeps
+   * every archived supplier still set on one of this event's items, so
+   * saving never drops a supplier the picker didn't list.
+   */
+  includeSupplierId?: string | null;
 }): Promise<ItemFormOptions> {
   const isSignage = opts.kind === "signage";
   const [
@@ -87,7 +95,12 @@ export async function itemFormOptions(opts: {
       .innerJoin(sponsors, eq(sponsorEntitlements.sponsorId, sponsors.id))
       .where(eq(sponsors.editionId, opts.editionId)),
     db
-      .select({ id: suppliers.id, name: suppliers.name, service: supplierServices.name })
+      .select({
+        id: suppliers.id,
+        name: suppliers.name,
+        isArchived: suppliers.isArchived,
+        service: supplierServices.name,
+      })
       .from(suppliers)
       .leftJoin(supplierServiceLinks, eq(supplierServiceLinks.supplierId, suppliers.id))
       .leftJoin(
@@ -135,10 +148,31 @@ export async function itemFormOptions(opts: {
       )
       .orderBy(asc(users.fullName), asc(users.email)),
   ]);
+  // Archived suppliers are left out of pickers, except one the item still uses.
+  const keepArchived = new Set<string>();
+  if (opts.includeSupplierId) keepArchived.add(opts.includeSupplierId);
+  if (opts.includeSupplierId === undefined && !opts.withWorkflows) {
+    const archivedIds = [...new Set(supplierRows.filter((r) => r.isArchived).map((r) => r.id))];
+    if (archivedIds.length > 0) {
+      const used = await db
+        .selectDistinct({ id: signageItems.supplierId })
+        .from(signageItems)
+        .where(
+          and(
+            eq(signageItems.editionId, opts.editionId),
+            isNull(signageItems.deletedAt),
+            inArray(signageItems.supplierId, archivedIds),
+          ),
+        );
+      for (const u of used) if (u.id) keepArchived.add(u.id);
+    }
+  }
   // One entry per supplier, with what they do ("Big Print Co — Signage print, Installation").
   const supplierMap = new Map<string, { id: string; name: string; services: string[] }>();
   for (const r of supplierRows) {
-    const entry = supplierMap.get(r.id) ?? { id: r.id, name: r.name, services: [] };
+    if (r.isArchived && !keepArchived.has(r.id)) continue;
+    const name = r.isArchived ? `${r.name} (archived)` : r.name;
+    const entry = supplierMap.get(r.id) ?? { id: r.id, name, services: [] };
     if (r.service && !entry.services.includes(r.service)) entry.services.push(r.service);
     supplierMap.set(r.id, entry);
   }

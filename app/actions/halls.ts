@@ -269,7 +269,7 @@ async function itemsUsing(where: SQL | undefined) {
 }
 
 const RESTORE_HINT =
-  "Restore them from Settings → Deleted items and move them first, or keep it — it does no harm.";
+  "Restore them from Settings → Recycle bin and move them first, or keep it — it does no harm.";
 
 /**
  * Remove a hall with its locations. Refused while signs use it — including
