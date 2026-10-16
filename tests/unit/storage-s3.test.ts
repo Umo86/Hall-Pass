@@ -41,6 +41,30 @@ describe("S3 / R2 storage backend", () => {
       secretAccessKey: "secret",
     });
     expect(s3Config({ ...ENV, S3_REGION: "eu-west-2" })?.region).toBe("eu-west-2");
+  });
+
+  it("forgives how the settings were pasted", () => {
+    const pasted = s3Config({
+      ...ENV,
+      S3_BUCKET: " hall-pass\n",
+      S3_ENDPOINT: "https://abc123.r2.cloudflarestorage.com/hall-pass/",
+      S3_ACCESS_KEY_ID: ' "key-id" ',
+      S3_SECRET_ACCESS_KEY: "secret \n",
+    });
+    expect(pasted).toMatchObject({
+      bucket: "hall-pass",
+      endpoint: "https://abc123.r2.cloudflarestorage.com",
+      accessKeyId: "key-id",
+      secretAccessKey: "secret",
+    });
+    // The whole "S3 API" URL pasted into the bucket setting.
+    expect(
+      s3Config({ ...ENV, S3_BUCKET: "https://abc123.r2.cloudflarestorage.com/hall-pass" })?.bucket,
+    ).toBe("hall-pass");
+    // An endpoint without https:// still works.
+    expect(s3Config({ ...ENV, S3_ENDPOINT: "abc123.eu.r2.cloudflarestorage.com" })?.endpoint).toBe(
+      "https://abc123.eu.r2.cloudflarestorage.com",
+    );
     Object.assign(process.env, ENV);
     expect(s3Enabled()).toBe(true);
   });

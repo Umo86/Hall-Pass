@@ -1,5 +1,29 @@
 import type { NextConfig } from "next";
 
+/**
+ * File storage the browser talks to directly (uploads, previews, video):
+ * Supabase, Vercel Blob, Cloudflare R2, and whatever S3 endpoint is set.
+ */
+function storageOrigins(): string {
+  const origins = [
+    "https://*.supabase.co",
+    "https://*.blob.vercel-storage.com",
+    "https://*.r2.cloudflarestorage.com",
+  ];
+  const endpoint = (process.env.S3_ENDPOINT ?? "").trim();
+  if (endpoint) {
+    try {
+      const url = new URL(endpoint.includes("://") ? endpoint : `https://${endpoint}`);
+      origins.push(url.origin, `${url.protocol}//*.${url.host}`);
+    } catch {
+      // Not a URL: the storage check on Settings → System reports it.
+    }
+  }
+  return [...new Set(origins)].join(" ");
+}
+
+const STORAGE = storageOrigins();
+
 const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   // SAMEORIGIN so the app can show its own PDF proofs (/api/files) in a frame.
@@ -15,11 +39,13 @@ const securityHeaders = [
       "script-src 'self' 'unsafe-inline'",
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "font-src 'self' https://fonts.gstatic.com data:",
-      "img-src 'self' data: blob: https://*.supabase.co https://*.blob.vercel-storage.com",
-      // Browser → Vercel Blob direct uploads talk to the Blob API.
-      "connect-src 'self' https://*.supabase.co https://vercel.com https://*.blob.vercel-storage.com",
+      `img-src 'self' data: blob: ${STORAGE}`,
+      // Video artwork plays straight from storage.
+      `media-src 'self' blob: ${STORAGE}`,
+      // Browser → storage direct uploads (Vercel Blob API, presigned R2/S3 PUTs).
+      `connect-src 'self' https://vercel.com ${STORAGE}`,
       // Artwork proofs are previewed in a frame from storage or /api/files.
-      "frame-src 'self' https://*.supabase.co https://*.blob.vercel-storage.com",
+      `frame-src 'self' ${STORAGE}`,
       "frame-ancestors 'self'",
       "object-src 'none'",
       "base-uri 'self'",

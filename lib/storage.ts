@@ -50,15 +50,46 @@ export type S3Config = {
   secretAccessKey: string;
 };
 
-/** The S3 settings from the environment, or null when any is missing. */
+/** A pasted setting without surrounding spaces, line breaks or quotes. */
+function clean(value: string | undefined): string {
+  return (value ?? "")
+    .trim()
+    .replace(/^["']+|["']+$/g, "")
+    .trim();
+}
+
+/**
+ * The S3 settings from the environment, or null when any is missing.
+ * Forgiving about how they were pasted: spaces and quotes are dropped, the
+ * endpoint keeps only its origin (the dashboard's "S3 API" value ends in
+ * "/<bucket>"), and a bucket pasted as that full URL becomes its name.
+ */
 export function s3Config(env: Record<string, string | undefined> = process.env): S3Config | null {
-  const bucket = env.S3_BUCKET;
-  const endpoint = env.S3_ENDPOINT;
-  const accessKeyId = env.S3_ACCESS_KEY_ID;
-  const secretAccessKey = env.S3_SECRET_ACCESS_KEY;
+  let bucket = clean(env.S3_BUCKET);
+  let endpoint = clean(env.S3_ENDPOINT);
+  const accessKeyId = clean(env.S3_ACCESS_KEY_ID);
+  const secretAccessKey = clean(env.S3_SECRET_ACCESS_KEY);
   if (!bucket || !endpoint || !accessKeyId || !secretAccessKey) return null;
+  try {
+    const url = new URL(endpoint.includes("://") ? endpoint : `https://${endpoint}`);
+    const firstSegment = url.pathname.split("/").filter(Boolean)[0];
+    if (/^https?:\/\//i.test(bucket)) {
+      const fromUrl = new URL(bucket).pathname.split("/").filter(Boolean)[0];
+      if (fromUrl) bucket = fromUrl;
+    }
+    if (!bucket && firstSegment) bucket = firstSegment;
+    endpoint = url.origin;
+  } catch {
+    // Leave an unparseable endpoint as typed; the bucket check reports it.
+  }
   // Cloudflare R2 wants "auto"; AWS wants the bucket's region.
-  return { bucket, endpoint, region: env.S3_REGION || "auto", accessKeyId, secretAccessKey };
+  return {
+    bucket,
+    endpoint,
+    region: clean(env.S3_REGION) || "auto",
+    accessKeyId,
+    secretAccessKey,
+  };
 }
 
 export function s3Enabled(): boolean {
@@ -210,9 +241,11 @@ export async function s3Probe(): Promise<{ ok: boolean; detail: string }> {
         ? "the access key or secret is wrong, or the token has no access to this bucket"
         : code === "NoSuchBucket" || status === 404
           ? "no bucket with this name at this endpoint (check S3_BUCKET and the EU/non-EU endpoint)"
-          : code === "TimeoutError" || code === "AbortError"
-            ? "no answer from the endpoint (check S3_ENDPOINT)"
-            : (e.message ?? code);
+          : code === "InvalidBucketName"
+            ? `"${name}" isn't a valid bucket name — S3_BUCKET must be just the name, e.g. hall-pass (lower case, no spaces)`
+            : code === "TimeoutError" || code === "AbortError"
+              ? "no answer from the endpoint (check S3_ENDPOINT)"
+              : (e.message ?? code);
     return { ok: false, detail: `${code}${status ? ` ${status}` : ""}: ${hint}` };
   }
 }
