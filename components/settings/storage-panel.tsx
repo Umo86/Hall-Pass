@@ -40,8 +40,9 @@ function putFromBrowser(url: string, contentType: string): Promise<void> {
 }
 
 /**
- * Settings → Storage: where files live, whether the bucket answers, and
- * the one-click copy from Vercel Blob while both are configured.
+ * Settings → System → Technical details: where files live, whether the
+ * bucket answers, the browser upload self-test, and the one-click copy from
+ * Vercel Blob while both are configured.
  */
 export function StoragePanel({
   backend,
@@ -141,7 +142,7 @@ export function StoragePanel({
 
   return (
     <div className="space-y-4 text-sm">
-      <dl className="grid grid-cols-[9rem_1fr] gap-x-4 gap-y-1.5">
+      <dl className="grid gap-x-4 gap-y-1.5 sm:grid-cols-[9rem_1fr]">
         <dt className="text-muted-foreground">New files go to</dt>
         <dd className="font-medium">
           {backend === "s3"
@@ -150,13 +151,14 @@ export function StoragePanel({
               ? "Vercel Blob"
               : backend === "supabase"
                 ? "Supabase Storage"
-                : "This server's disk (does not persist on Vercel)"}
+                : "This server's own disk (wiped on every deploy when hosted)"}
         </dd>
         {check && (
           <>
             <dt className="text-muted-foreground">Bucket check</dt>
             <dd
               className={check.ok ? "text-emerald-700 dark:text-emerald-400" : "text-destructive"}
+              role={check.ok ? undefined : "alert"}
             >
               {check.ok ? "Reachable — credentials accepted" : `Not working: ${check.detail}`}
             </dd>
@@ -184,6 +186,7 @@ export function StoragePanel({
             </Button>
             {selfTest.text && (
               <span
+                role={selfTest.state === "failed" ? "alert" : "status"}
                 className={
                   selfTest.state === "ok"
                     ? "text-emerald-700 dark:text-emerald-400"

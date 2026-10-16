@@ -1,5 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
+import postgres from "postgres";
 import { signInAs } from "./helpers";
+
+const DB = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/hallpass";
 
 const STAFF_PAGES = [
   "/my-work",
@@ -14,11 +18,18 @@ const STAFF_PAGES = [
   "/events?view=archived",
   "/start",
   "/suppliers",
+  "/suppliers?tab=contractors",
+  "/suppliers?manage=services",
   "/settings",
-  "/users",
+  "/settings/organisation",
+  "/settings/item-types",
+  "/settings/venues",
+  "/settings/recycle-bin",
+  "/settings/system",
+  // An old link: sent on to its new home.
   "/settings?tab=types",
-  "/settings?tab=services",
-  "/settings?tab=venues",
+  "/account",
+  "/users",
   "/BIRM27/dashboard",
   "/BIRM27/setup",
   "/BIRM27/signage",
@@ -43,6 +54,8 @@ test.describe("every page, every role", () => {
     "viewer@media10.test",
   ]) {
     test(`staff pages load for ${email}`, async ({ browser, baseURL }) => {
+      // Around thirty pages, each compiled on first visit in development.
+      test.setTimeout(600_000);
       const ctx = await browser.newContext();
       await signInAs(ctx, email, baseURL!);
       const page = await ctx.newPage();
@@ -110,7 +123,7 @@ test.describe("every page, every role", () => {
     await expect(page.getByRole("listitem", { name: nasty })).toBeVisible();
     // Search boxes take it too.
     await page.goto(`${baseURL}/BIRM27/signage?q=${encodeURIComponent("' OR 1=1 --")}`);
-    await expect(page.getByRole("heading", { name: /Signage schedule/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Signage", exact: true })).toBeVisible();
     await page.goto(`${baseURL}/approvals?tab=artwork&q=${encodeURIComponent("%' OR '1'='1")}`);
     await expect(page.getByRole("heading", { name: "Approvals" })).toBeVisible();
     expect(alerted).toBe(false);
@@ -120,22 +133,49 @@ test.describe("every page, every role", () => {
 
 test.describe("calendar and suppliers", () => {
   test("the calendar shows deadlines in red and has a key", async ({ browser, baseURL }) => {
-    const ctx = await browser.newContext();
-    await signInAs(ctx, "ops@media10.test", baseURL!);
-    const page = await ctx.newPage();
-    // The month of the seeded Water bottles order-by date (18 days ahead).
-    const target = new Date(Date.now() + 18 * 86_400_000);
-    const m = `${target.getUTCFullYear()}-${String(target.getUTCMonth() + 1).padStart(2, "0")}`;
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await page.goto(`${baseURL}/BIRM27/calendar?m=${m}`);
-    const key = page.getByLabel("Key");
-    for (const label of ["Deadline", "Deadline passed", "Show dates", "Delivery", "Install"]) {
-      await expect(key.getByText(label, { exact: true })).toBeVisible();
+    // Two of ops's own tasks on BIRM27, dated from today so the test never
+    // goes stale: one due in ten days (red), one three days ago (passed).
+    const sql = postgres(DB, { max: 1, onnotice: () => {} });
+    const n = String(Date.now()).slice(-6);
+    const iso = (offsetDays: number) =>
+      new Date(Date.now() + offsetDays * 86_400_000).toISOString().slice(0, 10);
+    const [ed] = await sql`
+      select e.id, s.organisation_id from editions e join events s on s.id = e.event_id
+      where e.code = 'BIRM27'`;
+    const [ops] = await sql`select id from users where email = 'ops@media10.test'`;
+    const soon = { id: randomUUID(), title: `E2E calendar soon ${n}`, due: iso(10) };
+    const passed = { id: randomUUID(), title: `E2E calendar passed ${n}`, due: iso(-3) };
+    for (const t of [soon, passed]) {
+      await sql`
+        insert into tasks (id, organisation_id, edition_id, title, due_date,
+          assigned_to_user_id, created_by_user_id)
+        values (${t.id}, ${ed.organisation_id}, ${ed.id}, ${t.title}, ${t.due}, ${ops.id}, ${ops.id})`;
     }
-    const chip = page.getByRole("link", { name: "Sell & order by: Water bottles" }).first();
-    await expect(chip).toBeVisible();
-    await expect(chip).toHaveClass(/bg-red/);
-    await ctx.close();
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      await signInAs(ctx, "ops@media10.test", baseURL!);
+      const page = await ctx.newPage();
+      await page.goto(`${baseURL}/BIRM27/calendar?m=${soon.due.slice(0, 7)}`);
+      const key = page.getByLabel("Key");
+      for (const label of ["Deadline", "Deadline passed"]) {
+        await expect(key.getByText(label, { exact: true })).toBeVisible();
+      }
+      const chip = page.getByRole("link", { name: new RegExp(`Task due: ${soon.title}`) }).first();
+      await expect(chip).toBeVisible();
+      await expect(chip).toHaveClass(/bg-red-600/);
+
+      // Once passed, the same kind of deadline turns dark red.
+      await page.goto(`${baseURL}/BIRM27/calendar?m=${passed.due.slice(0, 7)}`);
+      const late = page
+        .getByRole("link", { name: new RegExp(`Task due: ${passed.title}`) })
+        .first();
+      await expect(late).toBeVisible();
+      await expect(late).toHaveClass(/bg-red-900/);
+    } finally {
+      await sql`delete from tasks where id in (${soon.id}, ${passed.id})`;
+      await sql.end();
+      await ctx.close();
+    }
   });
 
   test("a new 'what they do' can be added from the supplier popup", async ({
@@ -145,11 +185,11 @@ test.describe("calendar and suppliers", () => {
     const n = String(Date.now()).slice(-6);
     const name = `E2E Crew ${n}`;
     const service = `Cloakroom staff ${n}`;
-    const ctx = await browser.newContext();
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     await signInAs(ctx, "ops@media10.test", baseURL!);
     const page = await ctx.newPage();
     await page.goto(`${baseURL}/suppliers`);
-    await page.getByRole("button", { name: "Add supplier" }).click();
+    await page.getByRole("button", { name: "Add supplier" }).first().click();
     const dialog = page.getByRole("dialog");
     await dialog.getByLabel("Company name").fill(name);
     await dialog.getByLabel("Add something they do").fill(service);
@@ -161,12 +201,36 @@ test.describe("calendar and suppliers", () => {
     await expect(dialog.getByLabel("Staffing", { exact: true })).toBeChecked();
     await dialog.getByRole("button", { name: "Save" }).click();
     await expect(dialog).toHaveCount(0);
-    const card = page.locator("li", { hasText: name });
-    await expect(card.getByText(service)).toBeVisible();
-    await expect(card.getByText("Staffing")).toBeVisible();
-    // It's now on the shared list for everyone.
+    const row = page.getByRole("main").getByRole("row", { name: new RegExp(name) });
+    await expect(row.getByText(service)).toBeVisible();
+    await expect(row.getByText("Staffing")).toBeVisible();
+    // It's now on the shared list for everyone (the old Settings link opens it).
     await page.goto(`${baseURL}/settings?tab=services`);
-    await expect(page.getByText(service)).toBeVisible();
+    await expect(page).toHaveURL(/\/suppliers\?manage=services/);
+    const manage = page.getByRole("dialog", { name: "What suppliers do" });
+    await expect(manage.getByText(service, { exact: true })).toBeVisible();
+    // Tidy up: archive the service, then archive and delete the unused supplier.
+    await manage.getByRole("button", { name: `Archive ${service}` }).click();
+    await page
+      .getByRole("dialog", { name: `Archive ${service}?` })
+      .getByRole("button", { name: "Archive" })
+      .click();
+    await expect(manage.getByText(/Archived \(\d+\)/)).toBeVisible();
+    await page.keyboard.press("Escape");
+    await row.getByRole("button", { name: `Edit ${name}` }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Archive" }).click();
+    await page
+      .getByRole("dialog", { name: `Archive ${name}?` })
+      .getByRole("button", { name: "Archive" })
+      .click();
+    await expect(row).toHaveCount(0);
+    await page.getByText(/^Archived \(\d+\)$/).click();
+    await page.getByRole("button", { name: `Delete ${name}` }).click();
+    await page
+      .getByRole("dialog", { name: `Delete ${name} for good?` })
+      .getByRole("button", { name: "Delete" })
+      .click();
+    await expect(page.getByRole("button", { name: `Restore ${name}` })).toHaveCount(0);
     await ctx.close();
   });
 });

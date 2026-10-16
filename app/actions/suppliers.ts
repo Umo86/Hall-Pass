@@ -1,12 +1,14 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { unstable_rethrow } from "next/navigation";
 import { z } from "zod";
-import { and, count, eq, inArray } from "drizzle-orm";
-import { db } from "@/lib/db/client";
+import { and, count, eq, inArray, sql } from "drizzle-orm";
+import { db, type Tx } from "@/lib/db/client";
 import {
   externalGrants,
   signageItems,
+  snags,
   supplierServiceLinks,
   supplierServices,
   suppliers,
@@ -15,6 +17,16 @@ import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
+import { supplierRemoval, type SupplierUsage } from "@/components/suppliers/rules";
+
+/** A refusal worded for the person; anything else is logged and replaced with a generic message. */
+class Refusal extends Error {}
+
+function failure(err: unknown, fallback: string, where: string): ActionResult<never> {
+  if (err instanceof Refusal) return fail(err.message);
+  console.error(where, err);
+  return fail(fallback);
+}
 
 const opt = (max = 200) =>
   z
@@ -65,7 +77,7 @@ export async function saveSupplier(input: unknown): Promise<ActionResult<{ id: s
             )
         : [];
       if (services.length !== new Set(serviceIds).size)
-        throw new Error("Unknown service — reload the page");
+        throw new Refusal("Unknown service — reload the page");
       // New "what they do" entries join the shared list (or reuse a match).
       if (newServices.length) {
         const existing = await tx
@@ -111,7 +123,7 @@ export async function saveSupplier(input: unknown): Promise<ActionResult<{ id: s
         const existing = await tx.query.suppliers.findFirst({
           where: and(eq(suppliers.id, id), eq(suppliers.organisationId, orgId)),
         });
-        if (!existing) throw new Error("Supplier not found");
+        if (!existing) throw new Refusal("Supplier not found — reload the page");
         const oldLinks = await tx
           .select({ name: supplierServices.name })
           .from(supplierServiceLinks)
@@ -146,13 +158,91 @@ export async function saveSupplier(input: unknown): Promise<ActionResult<{ id: s
       return row.id;
     });
     revalidatePath("/", "layout");
-    return success({ id: supplierId }, "Supplier saved");
+    return success({ id: supplierId }, `${values.name} saved`);
   } catch (err) {
-    return fail(err instanceof Error ? err.message : "Could not save the supplier");
+    unstable_rethrow(err);
+    return failure(err, "Could not save the supplier — please try again", "saveSupplier");
   }
 }
 
-/** Remove a supplier nobody depends on (no items, no portal access). */
+/** Everything that refers to a supplier, live or deleted (see supplierRemoval). */
+async function supplierUsage(tx: Tx, supplierId: string): Promise<SupplierUsage> {
+  // One after another: they share the transaction's connection.
+  const [items] = await tx
+    .select({
+      live: sql<number>`count(*) filter (where ${signageItems.deletedAt} is null)`,
+      deleted: sql<number>`count(*) filter (where ${signageItems.deletedAt} is not null)`,
+    })
+    .from(signageItems)
+    .where(eq(signageItems.supplierId, supplierId));
+  const [snagRows] = await tx
+    .select({ n: count() })
+    .from(snags)
+    .where(eq(snags.assignedSupplierId, supplierId));
+  const [grants] = await tx
+    .select({
+      live: sql<number>`count(*) filter (where ${externalGrants.revokedAt} is null and (${externalGrants.expiresAt} is null or ${externalGrants.expiresAt} > now()))`,
+      all: count(),
+    })
+    .from(externalGrants)
+    .where(and(eq(externalGrants.scopeType, "supplier"), eq(externalGrants.scopeId, supplierId)));
+  const liveGrants = Number(grants.live);
+  return {
+    liveItems: Number(items.live),
+    deletedItems: Number(items.deleted),
+    snags: Number(snagRows.n),
+    liveGrants,
+    pastGrants: Number(grants.all) - liveGrants,
+  };
+}
+
+/**
+ * Archive a supplier (hidden from the list and the item pickers; items keep
+ * it) or put it back.
+ */
+export async function setSupplierArchived(input: unknown): Promise<ActionResult> {
+  const parsed = z.object({ id: z.string().uuid(), archived: z.boolean() }).safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await requireSession();
+  if (!can(session.actor, { type: "settings.manage" })) {
+    return fail("Only admins and Operations can change suppliers");
+  }
+  const { id, archived } = parsed.data;
+  try {
+    const name = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(suppliers)
+        .set({ isArchived: archived, updatedAt: new Date() })
+        .where(and(eq(suppliers.id, id), eq(suppliers.organisationId, session.organisation.id)))
+        .returning({ id: suppliers.id, name: suppliers.name });
+      if (!row) throw new Refusal("Supplier not found — reload the page");
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        actorUserId: session.user.id,
+        entityType: "supplier",
+        entityId: row.id,
+        action: "update",
+        before: { archived: !archived },
+        after: { archived },
+        summary: `${archived ? "Archived" : "Restored"} supplier ${row.name}`,
+      });
+      return row.name;
+    });
+    revalidatePath("/", "layout");
+    return success(
+      undefined,
+      archived ? `${name} archived — hidden from lists and pickers` : `${name} restored`,
+    );
+  } catch (err) {
+    unstable_rethrow(err);
+    return failure(err, "Could not update the supplier — please try again", "setSupplierArchived");
+  }
+}
+
+/**
+ * Delete a supplier for good. Only when nothing uses it — not a live item, a
+ * deleted one, a snag or portal access; otherwise it can be archived.
+ */
 export async function deleteSupplier(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
@@ -161,34 +251,16 @@ export async function deleteSupplier(input: unknown): Promise<ActionResult> {
     return fail("Only admins and Operations can change suppliers");
   }
   try {
-    await db.transaction(async (tx) => {
+    const name = await db.transaction(async (tx) => {
       const existing = await tx.query.suppliers.findFirst({
         where: and(
           eq(suppliers.id, parsed.data.id),
           eq(suppliers.organisationId, session.organisation.id),
         ),
       });
-      if (!existing) throw new Error("Supplier not found");
-      const [items] = await tx
-        .select({ n: count() })
-        .from(signageItems)
-        .where(eq(signageItems.supplierId, existing.id));
-      if (Number(items.n) > 0) {
-        throw new Error(
-          `${existing.name} is the supplier on ${items.n} item(s) — change those first`,
-        );
-      }
-      const [grants] = await tx
-        .select({ n: count() })
-        .from(externalGrants)
-        .where(
-          and(eq(externalGrants.scopeType, "supplier"), eq(externalGrants.scopeId, existing.id)),
-        );
-      if (Number(grants.n) > 0) {
-        throw new Error(
-          `${existing.name} has portal access — revoke it under Users → External first`,
-        );
-      }
+      if (!existing) throw new Refusal("Supplier not found — reload the page");
+      const removal = supplierRemoval(existing.name, await supplierUsage(tx, existing.id));
+      if (!removal.canDelete) throw new Refusal(removal.reason);
       await tx.delete(suppliers).where(eq(suppliers.id, existing.id));
       await writeAudit(tx, {
         organisationId: session.organisation.id,
@@ -196,13 +268,15 @@ export async function deleteSupplier(input: unknown): Promise<ActionResult> {
         entityType: "supplier",
         entityId: existing.id,
         action: "soft_delete",
-        before: { name: existing.name },
-        summary: `Removed supplier ${existing.name}`,
+        before: { name: existing.name, archived: existing.isArchived },
+        summary: `Deleted supplier ${existing.name} (unused)`,
       });
+      return existing.name;
     });
     revalidatePath("/", "layout");
-    return success(undefined, "Supplier removed");
+    return success(undefined, `${name} deleted`);
   } catch (err) {
-    return fail(err instanceof Error ? err.message : "Could not remove the supplier");
+    unstable_rethrow(err);
+    return failure(err, "Could not delete the supplier — please try again", "deleteSupplier");
   }
 }

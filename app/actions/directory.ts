@@ -1,14 +1,19 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { unstable_rethrow } from "next/navigation";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { contractors, events, suppliers, venues } from "@/lib/db/schema";
+import type { Tx } from "@/lib/db/client";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
+
+/** A refusal worded for the person; anything else is logged and replaced with a generic message. */
+class Refusal extends Error {}
 
 const opt = (max = 200) =>
   z
@@ -25,13 +30,18 @@ const email = z
   .nullable()
   .transform((v) => (v ? v : null))
   .refine((v) => v === null || z.string().email().safeParse(v).success, "Enter a valid email");
+/**
+ * Venue and series codes are internal (nobody types or reads them), so the
+ * forms no longer ask: a code is made from the name when one isn't given.
+ */
 const code = z
   .string()
   .trim()
-  .min(2, "Code needs at least 2 characters")
   .max(20)
-  .regex(/^[A-Z0-9-]+$/i, "Use letters and numbers only")
-  .transform((v) => v.toUpperCase());
+  .optional()
+  .nullable()
+  .transform((v) => (v ? v.toUpperCase() : null))
+  .refine((v) => v === null || /^[A-Z0-9-]{2,20}$/.test(v), "Use letters and numbers only");
 const name = z.string().trim().min(1, "Give it a name").max(200);
 
 const schema = z.discriminatedUnion("type", [
@@ -81,9 +91,38 @@ const schema = z.discriminatedUnion("type", [
 ]);
 
 const TABLES = { event: events, venue: venues, supplier: suppliers, contractor: contractors };
-const LABELS = { event: "Event", venue: "Venue", supplier: "Supplier", contractor: "Contractor" };
+const LABELS = {
+  event: "Event series",
+  venue: "Venue",
+  supplier: "Supplier",
+  contractor: "Install contractor",
+};
 
-/** Add or edit an event, venue, supplier or contractor (admin & ops). */
+/** A short unique code from a name ("NEC Birmingham" → "NECBIRMINGHAM", then -2…). */
+async function uniqueCode(
+  tx: Tx,
+  table: typeof events | typeof venues,
+  organisationId: string,
+  name: string,
+) {
+  const base =
+    name
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, "")
+      .slice(0, 16) || "VENUE";
+  let candidate = base;
+  for (let n = 2; ; n++) {
+    const clash = await tx
+      .select({ id: table.id })
+      .from(table)
+      .where(and(eq(table.organisationId, organisationId), eq(table.code, candidate)))
+      .limit(1);
+    if (clash.length === 0) return candidate;
+    candidate = `${base.slice(0, 16)}-${n}`;
+  }
+}
+
+/** Add or edit an event series, venue, supplier or install contractor (admin & ops). */
 export async function saveDirectoryEntry(input: unknown): Promise<ActionResult> {
   const parsed = schema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
@@ -91,20 +130,31 @@ export async function saveDirectoryEntry(input: unknown): Promise<ActionResult> 
   if (!can(session.actor, { type: "settings.manage" })) {
     return fail("Only admin and ops can change this list");
   }
-  const { type, id, values } = parsed.data;
+  const { type, id } = parsed.data;
   const table = TABLES[type];
   const orgId = session.organisation.id;
+  // A code left out keeps the one it has (edit) or is made from the name (add).
+  const values: Record<string, unknown> & { name: string } = { ...parsed.data.values };
+  if ("code" in values && !values.code) delete values.code;
   try {
     await db.transaction(async (tx) => {
       let entityId = id;
       if (id) {
         const updated = await tx
           .update(table)
-          .set(values)
+          .set({ ...values, updatedAt: new Date() } as never)
           .where(and(eq(table.id, id), eq(table.organisationId, orgId)))
           .returning({ id: table.id });
-        if (updated.length === 0) throw new Error(`${LABELS[type]} not found`);
+        if (updated.length === 0) throw new Refusal(`${LABELS[type]} not found — reload the page`);
       } else {
+        if ((type === "venue" || type === "event") && !values.code) {
+          values.code = await uniqueCode(
+            tx,
+            type === "venue" ? venues : events,
+            orgId,
+            values.name,
+          );
+        }
         const [row] = await tx
           .insert(table)
           .values({ ...values, organisationId: orgId } as never)
@@ -122,10 +172,61 @@ export async function saveDirectoryEntry(input: unknown): Promise<ActionResult> 
       });
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Something went wrong";
-    if (/unique|duplicate/i.test(message)) return fail("That code is already in use");
-    return fail(message);
+    unstable_rethrow(err);
+    if (err instanceof Refusal) return fail(err.message);
+    const message = err instanceof Error ? err.message : "";
+    if (/unique|duplicate/i.test(message)) {
+      return fail("Something with that code already exists — reload the page and try again");
+    }
+    console.error("saveDirectoryEntry", err);
+    return fail("Could not save — please try again");
   }
   revalidatePath("/", "layout");
-  return success(undefined, `${LABELS[type]} saved`);
+  return success(undefined, `${parsed.data.values.name} saved`);
+}
+
+/**
+ * Archive a venue (no longer offered when creating an event; its events keep
+ * it) or put it back.
+ */
+export async function setVenueArchived(input: unknown): Promise<ActionResult> {
+  const parsed = z.object({ id: z.string().uuid(), archived: z.boolean() }).safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await requireSession();
+  if (!can(session.actor, { type: "settings.manage" })) {
+    return fail("Only admin and ops can change this list");
+  }
+  const { id, archived } = parsed.data;
+  const orgId = session.organisation.id;
+  try {
+    const name = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(venues)
+        .set({ isArchived: archived, updatedAt: new Date() })
+        .where(and(eq(venues.id, id), eq(venues.organisationId, orgId)))
+        .returning({ id: venues.id, name: venues.name });
+      if (!row) throw new Refusal("Venue not found — reload the page");
+      await writeAudit(tx, {
+        organisationId: orgId,
+        actorUserId: session.user.id,
+        entityType: "venue",
+        entityId: row.id,
+        action: "update",
+        before: { archived: !archived },
+        after: { archived },
+        summary: `${archived ? "Archived" : "Restored"} venue ${row.name}`,
+      });
+      return row.name;
+    });
+    revalidatePath("/", "layout");
+    return success(
+      undefined,
+      archived ? `${name} archived — it won't be offered for new events` : `${name} restored`,
+    );
+  } catch (err) {
+    unstable_rethrow(err);
+    if (err instanceof Refusal) return fail(err.message);
+    console.error("setVenueArchived", err);
+    return fail("Could not update the venue — please try again");
+  }
 }
