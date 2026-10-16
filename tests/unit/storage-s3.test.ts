@@ -61,6 +61,14 @@ describe("S3 / R2 storage backend", () => {
     expect(
       s3Config({ ...ENV, S3_BUCKET: "https://abc123.r2.cloudflarestorage.com/hall-pass" })?.bucket,
     ).toBe("hall-pass");
+    // The two pasted the wrong way round.
+    expect(
+      s3Config({
+        ...ENV,
+        S3_BUCKET: "https://abc123.r2.cloudflarestorage.com",
+        S3_ENDPOINT: "hall-pass",
+      }),
+    ).toMatchObject({ bucket: "hall-pass", endpoint: "https://abc123.r2.cloudflarestorage.com" });
     // An endpoint without https:// still works.
     expect(s3Config({ ...ENV, S3_ENDPOINT: "abc123.eu.r2.cloudflarestorage.com" })?.endpoint).toBe(
       "https://abc123.eu.r2.cloudflarestorage.com",

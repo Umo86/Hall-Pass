@@ -70,6 +70,11 @@ export function s3Config(env: Record<string, string | undefined> = process.env):
   const accessKeyId = clean(env.S3_ACCESS_KEY_ID);
   const secretAccessKey = clean(env.S3_SECRET_ACCESS_KEY);
   if (!bucket || !endpoint || !accessKeyId || !secretAccessKey) return null;
+  // The two pasted the wrong way round: the address in S3_BUCKET, the name in S3_ENDPOINT.
+  const looksLikeAddress = (v: string) => v.includes("://") || v.includes(".");
+  if (looksLikeAddress(bucket) && !looksLikeAddress(endpoint)) {
+    [bucket, endpoint] = [endpoint, bucket];
+  }
   try {
     const url = new URL(endpoint.includes("://") ? endpoint : `https://${endpoint}`);
     const firstSegment = url.pathname.split("/").filter(Boolean)[0];
