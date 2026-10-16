@@ -13,7 +13,12 @@ import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { notify } from "@/lib/notify";
 import { itemPath, type ItemKind } from "@/lib/edition-path";
 import { buildStoragePath, putObject } from "@/lib/storage";
-import { loadItemBundle, resolveAssigneeUserIds, type ItemBundle } from "@/lib/domain/signage";
+import {
+  loadItemBundle,
+  resolveAssigneeUserIds,
+  snagClosedRecipients,
+  type ItemBundle,
+} from "@/lib/domain/signage";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { signageTransition, type SignageStatus } from "@/lib/status/signage";
 
@@ -128,7 +133,9 @@ export async function raiseSnag(formData: FormData): Promise<ActionResult> {
         description: parsed.data.description,
         severity: parsed.data.severity,
         photoPath: photo.path,
-        assignedUserId: item.ownerUserId,
+        // Who a snag is with is always the item's owner, read live — so
+        // assigned_user_id is no longer written (it went stale on every
+        // owner change).
         raisedByUserId: session.user.id,
         assignedSupplierId: item.supplierId,
         assignedContractorId: item.installContractorId,
@@ -283,13 +290,17 @@ export async function updateSnag(formData: FormData): Promise<ActionResult> {
       }`,
     });
     if (closing) {
+      // Whoever reported it and the item's owner hear — never the person
+      // who fixed it (notify() also drops anyone without access).
       await notify(tx, {
-        userIds: [item.ownerUserId].filter(
-          (id): id is string => Boolean(id) && id !== session.user.id,
-        ),
+        userIds: snagClosedRecipients({
+          raisedByUserId: snag.raisedByUserId,
+          ownerUserId: item.ownerUserId,
+          actorUserId: session.user.id,
+        }),
         kind: "snag",
         title: `Snag ${label} on ${item.ref} — ${item.name}`,
-        body: parsed.data.note || snag.description,
+        body: `${parsed.data.status === "resolved" ? "Fixed" : "Won't be fixed"} by ${session.user.fullName || session.user.email}: ${parsed.data.note || snag.description}`,
         link: itemPath(edition.code, { kind: item.kind as ItemKind, ref: item.ref }),
         entityType: "signage_item",
         entityId: item.id,

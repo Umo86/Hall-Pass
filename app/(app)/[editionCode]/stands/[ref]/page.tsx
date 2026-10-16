@@ -26,6 +26,8 @@ import { CommentThread } from "@/components/comments/thread";
 import { DocumentsPanel, type DocRow } from "@/components/stands/documents-panel";
 import { QuestionnaireAnswers } from "@/components/stands/questionnaire-form";
 import { RulesChecklist } from "@/components/stands/checklist";
+import { AddTaskDialog } from "@/components/tasks/add-task-dialog";
+import { loadTeam, personOptions } from "@/lib/people";
 
 export const dynamic = "force-dynamic";
 
@@ -69,13 +71,30 @@ export default async function StandDetailPage({
   const bundle = await loadStandBundle(db, sub.id, { organisationId: session.organisation.id });
   if (!bundle || bundle.edition.code !== editionCode.toUpperCase()) notFound();
 
-  const [docs, instanceRows, comments, audit, rules] = await Promise.all([
+  const [docs, instanceRows, comments, audit, rules, team] = await Promise.all([
     getStandDocuments(sub.id),
     getStandInstances(sub.id),
     getEntityComments("stand_submission", sub.id, true),
     getEntityAudit("stand_submission", sub.id),
     getVenueRulesById(bundle.venue.id),
+    loadTeam(db, session.organisation.id),
   ]);
+  // Who a stand sign-off can be handed to, and who can be given a task
+  // about it (lib/people.ts): active people only.
+  const delegatableUsers = personOptions(
+    team,
+    { type: "signoff" },
+    {
+      organisationId: session.organisation.id,
+    },
+  );
+  const taskAssignees = personOptions(
+    team,
+    { type: "task" },
+    {
+      organisationId: session.organisation.id,
+    },
+  );
 
   const readOnly = editionIsReadOnly(bundle.edition.status);
   const ctx = standAuthzCtx(bundle);
@@ -206,6 +225,24 @@ export default async function StandDetailPage({
             <span className="text-sm font-medium text-orange-700 dark:text-orange-400">
               Complex structure
             </span>
+          )}
+          {!readOnly && (
+            <div className="sm:ml-auto">
+              <AddTaskDialog
+                currentUserId={session.user.id}
+                currentDepartmentId={
+                  session.actor.kind === "staff" ? (session.actor.departmentId ?? null) : null
+                }
+                assignees={taskAssignees}
+                canAssign={can(session.actor, { type: "task.assign" })}
+                entity={{
+                  type: "stand_submission",
+                  id: sub.id,
+                  editionId: bundle.edition.id,
+                  label: sub.ref,
+                }}
+              />
+            </div>
           )}
         </div>
         <p className="text-muted-foreground text-sm">
@@ -365,7 +402,7 @@ export default async function StandDetailPage({
             canDelegateIds={canDelegateIds}
             currentVersionId={String(sub.submissionVersion)}
             requiresInstallPhoto={false}
-            delegatableUsers={[]}
+            delegatableUsers={delegatableUsers}
           />
         ))}
 

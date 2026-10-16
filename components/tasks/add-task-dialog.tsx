@@ -15,7 +15,7 @@ import {
 import { TaskForm, type Assignee } from "./task-form";
 
 /**
- * "Add task" for an item's page: a task about this item (and its event),
+ * "Add task" for an item's or stand's page: a task about it (and its event),
  * for you or someone on the team. It shows on My Work with a link back here.
  *
  *   <AddTaskDialog currentUserId={…} assignees={…} canAssign={…}
@@ -23,12 +23,14 @@ import { TaskForm, type Assignee } from "./task-form";
  */
 export function AddTaskDialog({
   currentUserId,
+  currentDepartmentId = null,
   assignees,
   canAssign,
   entity,
   triggerLabel = "Add task",
 }: {
   currentUserId: string;
+  currentDepartmentId?: string | null;
   assignees: Assignee[];
   canAssign: boolean;
   entity: {
@@ -61,6 +63,7 @@ export function AddTaskDialog({
         </DialogHeader>
         <TaskForm
           currentUserId={currentUserId}
+          currentDepartmentId={currentDepartmentId}
           assignees={assignees}
           canAssign={canAssign}
           entity={entity}

@@ -20,6 +20,8 @@ import { createStandDesign, updateStandDesign } from "@/app/actions/stand-design
 import { saveSponsor } from "@/app/actions/sponsors";
 import type { SignoffChoice, SignoffStepOption } from "@/components/signage/item-form";
 import { SignoffPicker, updatePlan } from "@/components/signage/signoff-picker";
+import { PersonPicker, UnavailableNote } from "@/components/people/person-picker";
+import type { PersonOption } from "@/components/people/groups";
 
 export type StandFormOptions = {
   halls: { id: string; name: string }[];
@@ -41,6 +43,7 @@ export type StandFormValues = {
   sponsorId?: string | null;
   description?: string | null;
   signoffs?: SignoffChoice[] | null;
+  ownerUserId?: string | null;
 };
 
 /**
@@ -56,6 +59,8 @@ export function StandForm({
   options,
   status,
   readOnly = false,
+  owners = [],
+  viewerId,
 }: {
   mode: "create" | "edit";
   editionId?: string;
@@ -64,6 +69,10 @@ export function StandForm({
   options: StandFormOptions;
   status?: string;
   readOnly?: boolean;
+  /** Who can run a feature stand (lib/people.ts); its panels follow the stand's owner. */
+  owners?: PersonOption[];
+  /** The person filling it in ("Me"). */
+  viewerId?: string;
 }) {
   const steps = options.signoffSteps;
   const [category, setCategory] = useState(values.category ?? "organiser");
@@ -82,6 +91,10 @@ export function StandForm({
   const [sponsorError, setSponsorError] = useState<string | null>(null);
   const [newSponsorName, setNewSponsorName] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const meListed = Boolean(viewerId && owners.some((p) => p.id === viewerId));
+  const [ownerId, setOwnerId] = useState(
+    values.ownerUserId ?? (mode === "create" && meListed ? viewerId! : ""),
+  );
   const [pending, start] = useTransition();
   const router = useRouter();
   const locations = options.locations.filter((l) => !hallId || l.hallId === hallId);
@@ -277,6 +290,34 @@ export function StandForm({
           {field("depthMm", "Depth", mmInput("depthMm"))}
           {field("heightMm", "Height", mmInput("heightMm"))}
         </section>
+
+        {owners.length > 0 && (
+          <div className="grid gap-1.5 sm:max-w-sm">
+            <Label htmlFor="ownerUserId">Owner</Label>
+            <PersonPicker
+              id="ownerUserId"
+              name="ownerUserId"
+              people={owners}
+              meId={viewerId}
+              value={ownerId}
+              onChange={setOwnerId}
+              blankLabel={
+                mode === "create"
+                  ? meListed
+                    ? undefined
+                    : "Me"
+                  : !ownerId
+                    ? "Nobody yet"
+                    : undefined
+              }
+            />
+            <UnavailableNote people={owners} userId={ownerId} what="run this stand" />
+            <p className="text-muted-foreground text-xs">
+              Who runs the stand; its panels go with it, and reminders go to them.
+            </p>
+            {errors.ownerUserId && <p className="text-destructive text-xs">{errors.ownerUserId}</p>}
+          </div>
+        )}
 
         {field(
           "description",

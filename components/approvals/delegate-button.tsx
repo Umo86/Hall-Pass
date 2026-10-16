@@ -13,21 +13,32 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { SelectNative } from "@/components/ui/select-native";
+import { PersonPicker } from "@/components/people/person-picker";
+import { nameOf, type PersonOption } from "@/components/people/groups";
 import { delegateApproval } from "@/app/actions/approvals";
 
+/**
+ * Hand a sign-off to someone else. Offers only people who can sign now
+ * (peopleFor(…, { type: "signoff" }) in lib/people.ts), grouped by
+ * department; not shown at all when there is nobody to hand it to.
+ */
 export function DelegateButton({
   instanceId,
   users,
+  currentUserId,
 }: {
   instanceId: string;
-  users: { id: string; name: string }[];
+  users: PersonOption[];
+  /** Who the step is with now: left out of the list. */
+  currentUserId?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [toUserId, setToUserId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
+  const choices = users.filter((u) => u.id !== currentUserId && !u.unavailable);
+  if (choices.length === 0) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -44,18 +55,13 @@ export function DelegateButton({
             recorded.
           </DialogDescription>
         </DialogHeader>
-        <SelectNative
+        <PersonPicker
           aria-label="Delegate to"
+          people={choices}
           value={toUserId}
-          onChange={(e) => setToUserId(e.target.value)}
-        >
-          <option value="">— Choose a person —</option>
-          {users.map((u) => (
-            <option key={u.id} value={u.id}>
-              {u.name}
-            </option>
-          ))}
-        </SelectNative>
+          onChange={setToUserId}
+          blankLabel="— Choose a person —"
+        />
         {error && <p className="text-destructive text-sm">{error}</p>}
         <DialogFooter>
           <Button
@@ -67,10 +73,9 @@ export function DelegateButton({
                 if (!res.ok) setError(res.error);
                 else {
                   setOpen(false);
-                  toast.success(
-                    `Delegated to ${users.find((u) => u.id === toUserId)?.name ?? "them"}`,
-                    { description: "You are both notified." },
-                  );
+                  toast.success(`Delegated to ${nameOf(choices, toUserId)}`, {
+                    description: "You are both notified.",
+                  });
                   router.refresh();
                 }
               });

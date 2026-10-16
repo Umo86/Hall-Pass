@@ -4,16 +4,16 @@ import { unstable_rethrow } from "next/navigation";
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { memberships, taskAttachments, tasks } from "@/lib/db/schema";
+import { taskAttachments, tasks } from "@/lib/db/schema";
 import { buildStoragePath, putObject, sanitiseFilename } from "@/lib/storage";
 import { can } from "@/lib/authz";
 import { canWorkOnTask } from "@/lib/domain/tasks";
 import { loadItemBundle, ownEdition } from "@/lib/domain/signage";
 import { loadStandBundle } from "@/lib/domain/stand";
 import { writeAudit } from "@/lib/audit";
-import { activeMembership } from "@/lib/users/active";
+import { checkPick } from "@/lib/people";
 import { requireSession } from "@/lib/auth/actor";
 import { notify } from "@/lib/notify";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -85,8 +85,9 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
   ) {
     return fail("You cannot assign tasks to other people");
   }
-  if (!(await isTeamMember(assignee, session.organisation.id))) {
-    return fail("That person isn't on the team");
+  if (assignee !== session.user.id) {
+    const pick = await checkPick(db, session.organisation.id, assignee, { type: "task" });
+    if (!pick.ok) return fail(pick.error);
   }
 
   try {
@@ -134,18 +135,6 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
   } catch (err) {
     return fail(err instanceof Error ? err.message : "Could not add the task");
   }
-}
-
-/** On the team with access now (suspended or ended people can't be given tasks). */
-async function isTeamMember(userId: string, organisationId: string) {
-  const row = await db.query.memberships.findFirst({
-    where: and(
-      eq(memberships.userId, userId),
-      eq(memberships.organisationId, organisationId),
-      activeMembership(),
-    ),
-  });
-  return Boolean(row);
 }
 
 async function loadOwnTask(id: string, organisationId: string) {
@@ -231,32 +220,49 @@ export async function updateTask(input: unknown): Promise<ActionResult> {
     const task = await loadOwnTask(parsed.data.id, session.organisation.id);
     if (!task) return fail("Task not found");
     if (!(await canWorkOn(session, task))) return fail("This task is not yours to update");
-    const reassigned =
-      parsed.data.assignedToUserId !== undefined &&
-      parsed.data.assignedToUserId !== task.assignedToUserId;
+    const toUserId = parsed.data.assignedToUserId;
+    const reassigned = toUserId !== undefined && toUserId !== task.assignedToUserId;
     if (reassigned && !can(session.actor, { type: "task.assign" })) {
       return fail("You cannot assign tasks to other people");
     }
-    if (
-      reassigned &&
-      !(await isTeamMember(parsed.data.assignedToUserId!, session.organisation.id))
-    ) {
-      return fail("That person isn't on the team");
+    // Only people with access can be given it; keeping the current assignee is always fine.
+    let toName: string | null = null;
+    if (reassigned) {
+      const pick = await checkPick(db, session.organisation.id, toUserId!, { type: "task" });
+      if (!pick.ok) return fail(pick.error);
+      toName = pick.member.name;
     }
-    await db.transaction(async (tx) => {
-      await tx
-        .update(tasks)
-        .set({
-          ...(parsed.data.title !== undefined ? { title: parsed.data.title } : {}),
-          ...(parsed.data.notes !== undefined
-            ? { notes: parsed.data.notes?.trim() ? parsed.data.notes.trim() : null }
-            : {}),
-          ...(parsed.data.dueDate !== undefined ? { dueDate: parsed.data.dueDate } : {}),
-          ...(parsed.data.assignedToUserId !== undefined
-            ? { assignedToUserId: parsed.data.assignedToUserId }
-            : {}),
-        })
-        .where(eq(tasks.id, task.id));
+    const set: Partial<typeof tasks.$inferInsert> = {};
+    if (parsed.data.title !== undefined && parsed.data.title !== task.title) {
+      set.title = parsed.data.title;
+    }
+    if (parsed.data.notes !== undefined) {
+      const notes = parsed.data.notes?.trim() ? parsed.data.notes.trim() : null;
+      if (notes !== task.notes) set.notes = notes;
+    }
+    if (parsed.data.dueDate !== undefined && parsed.data.dueDate !== task.dueDate) {
+      set.dueDate = parsed.data.dueDate;
+    }
+    if (reassigned) set.assignedToUserId = toUserId;
+    if (Object.keys(set).length === 0) return success(undefined, "No changes to save");
+    const title = set.title ?? task.title;
+    const followers = await db.transaction(async (tx) => {
+      await tx.update(tasks).set(set).where(eq(tasks.id, task.id));
+      // Open subtasks that were with the old assignee go with the task.
+      const moved = reassigned
+        ? await tx
+            .update(tasks)
+            .set({ assignedToUserId: toUserId })
+            .where(
+              and(
+                eq(tasks.parentTaskId, task.id),
+                eq(tasks.assignedToUserId, task.assignedToUserId),
+                ne(tasks.status, "done"),
+              ),
+            )
+            .returning({ id: tasks.id, title: tasks.title })
+        : [];
+      const keys = Object.keys(set) as (keyof typeof set)[];
       await writeAudit(tx, {
         organisationId: session.organisation.id,
         editionId: task.editionId ?? undefined,
@@ -264,19 +270,56 @@ export async function updateTask(input: unknown): Promise<ActionResult> {
         entityType: "task",
         entityId: task.id,
         action: "update",
-        summary: `Task updated: ${parsed.data.title ?? task.title}`,
+        before: Object.fromEntries(keys.map((k) => [k, task[k as keyof Task] ?? null])),
+        after: { ...set, ...(moved.length ? { subtasksMoved: moved.length } : {}) },
+        summary: reassigned
+          ? `Task “${title}” moved to ${toName}${moved.length ? ` with ${moved.length} subtask${moved.length === 1 ? "" : "s"}` : ""}`
+          : `Task updated: ${title} (${keys.join(", ")})`,
+        // A reassignment is about the person it was taken from.
+        ...(reassigned ? { subjectUserId: task.assignedToUserId } : {}),
       });
-      if (reassigned && parsed.data.assignedToUserId !== session.user.id) {
+      for (const sub of moved) {
+        await writeAudit(tx, {
+          organisationId: session.organisation.id,
+          editionId: task.editionId ?? undefined,
+          actorUserId: session.user.id,
+          entityType: "task",
+          entityId: sub.id,
+          action: "update",
+          before: { assignedToUserId: task.assignedToUserId },
+          after: { assignedToUserId: toUserId },
+          summary: `Subtask “${sub.title}” moved to ${toName} with its task`,
+          subjectUserId: task.assignedToUserId,
+        });
+      }
+      if (reassigned && toUserId !== session.user.id) {
         await notify(tx, {
-          userIds: [parsed.data.assignedToUserId!],
+          userIds: [toUserId!],
           kind: "task_assigned",
-          title: `Task assigned: ${parsed.data.title ?? task.title}`,
+          title: `Task assigned: ${title}`,
+          body: `${session.user.fullName || session.user.email} gave it to you${moved.length ? `, with ${moved.length} subtask${moved.length === 1 ? "" : "s"}` : ""}.`,
           link: "/my-work",
         });
       }
+      // The person it was taken from hears where it went (not when they moved it).
+      if (reassigned && task.assignedToUserId !== session.user.id) {
+        await notify(tx, {
+          userIds: [task.assignedToUserId],
+          kind: "task_assigned",
+          title: `Task moved to ${toName}: ${title}`,
+          body: `${session.user.fullName || session.user.email} gave it to ${toName}.`,
+          link: "/my-work",
+        });
+      }
+      return moved.length;
     });
     revalidatePath("/my-work");
-    return success(undefined, "Task saved");
+    return success(
+      undefined,
+      reassigned
+        ? `Task moved to ${toName}${followers ? ` with ${followers} subtask${followers === 1 ? "" : "s"}` : ""}`
+        : "Task saved",
+    );
   } catch (err) {
     unstable_rethrow(err);
     console.error("updateTask", err);

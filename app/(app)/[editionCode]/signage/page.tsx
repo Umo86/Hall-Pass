@@ -20,6 +20,7 @@ import { editionIsReadOnly } from "@/lib/edition-lock";
 import { Page, PageHeader } from "@/components/page-header";
 import { SectionUnavailable } from "@/components/section-unavailable";
 import { ScheduleView } from "@/components/schedule/schedule-view";
+import { loadTeam, personOptionsForAny } from "@/lib/people";
 import { NewSignMenu } from "@/components/schedule/new-sign-menu";
 
 export const dynamic = "force-dynamic";
@@ -70,6 +71,18 @@ export default async function SignagePage({
       .orderBy(asc(suppliers.name)),
     canRestore ? countDeletedItems(ed.edition.id) : 0,
   ]);
+  // Bulk "Change owner": people who can own organiser or sponsor signage
+  // (each item is checked again on the server).
+  const owners = canBulk
+    ? personOptionsForAny(
+        await loadTeam(db, session.organisation.id),
+        [
+          { type: "owner", item: { kind: "signage", sponsored: false } },
+          { type: "owner", item: { kind: "signage", sponsored: true } },
+        ],
+        { organisationId: session.organisation.id },
+      )
+    : [];
   // Cost figures never leave the server for people who can't see costs.
   const rows = allRows.map((r) =>
     canSeeCosts ? r : { ...r, costEstimate: null, costActual: null, poNumber: null },
@@ -104,6 +117,8 @@ export default async function SignagePage({
         canEditCosts={can(session.actor, { type: "costs.edit" })}
         canDelete={can(session.actor, { type: "signage.delete" })}
         canClose={can(session.actor, { type: "signage.close" })}
+        owners={owners}
+        meId={session.user.id}
       />
       {canRestore && deletedCount > 0 && (
         <p className="text-sm">

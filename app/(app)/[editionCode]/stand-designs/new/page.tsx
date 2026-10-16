@@ -7,6 +7,8 @@ import { getEditionByCode } from "@/lib/queries/editions";
 import { standFormOptions } from "@/lib/queries/stand-designs";
 import { StandForm } from "@/components/stand-designs/stand-form";
 import { Page, PageHeader } from "@/components/page-header";
+import { db } from "@/lib/db/client";
+import { peopleFor } from "@/lib/people";
 
 export const metadata = { title: "New feature stand" };
 export const dynamic = "force-dynamic";
@@ -25,11 +27,18 @@ export default async function NewStandPage({
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
   if (editionIsReadOnly(ed.edition.status)) redirect("../stand-designs");
-  const options = await standFormOptions({
-    organisationId: session.organisation.id,
-    editionId: ed.edition.id,
-    includeSupplierId: null,
-  });
+  const [options, owners] = await Promise.all([
+    standFormOptions({
+      organisationId: session.organisation.id,
+      editionId: ed.edition.id,
+      includeSupplierId: null,
+    }),
+    // Who can run a feature stand (its panels follow the stand's owner).
+    peopleFor(db, session.organisation.id, {
+      type: "owner",
+      item: { kind: "stand_design", sponsored: false },
+    }),
+  ]);
 
   return (
     <Page width="narrow" className="gap-4">
@@ -44,6 +53,8 @@ export default async function NewStandPage({
         editionCode={editionCode}
         values={{}}
         options={options}
+        owners={owners}
+        viewerId={session.user.id}
       />
     </Page>
   );

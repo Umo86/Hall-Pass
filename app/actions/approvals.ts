@@ -3,18 +3,19 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { db } from "@/lib/db/client";
+import { db, type Tx } from "@/lib/db/client";
 import {
   approvalInstances,
   memberships,
   reminderLog,
   signageItems,
   standSubmissions,
+  users,
 } from "@/lib/db/schema";
-import { can, type ApprovalStepCtx, type PermissionOverrides } from "@/lib/authz";
+import { abilityOn, can, type ApprovalStepCtx, type PermissionOverrides } from "@/lib/authz";
+import { loadTeam, taskRefusal } from "@/lib/people";
 import { canReceiveSignoff } from "@/lib/access";
 import { writeAudit } from "@/lib/audit";
-import { activeMembership } from "@/lib/users/active";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { signageTransition } from "@/lib/status/signage";
@@ -267,18 +268,18 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
           !item.supplierId &&
           needsPrint
         ) {
-          const ops = await tx
-            .select({ userId: memberships.userId })
-            .from(memberships)
-            .where(
-              and(
-                eq(memberships.organisationId, session.organisation.id),
-                eq(memberships.role, "ops"),
-                activeMembership(),
-              ),
-            );
+          // Whoever can set the supplier (costs.edit; Operations by default),
+          // with access — super admins can, but aren't chased for it.
+          const team = await loadTeam(tx, session.organisation.id);
+          const setters = team.filter(
+            (m) =>
+              m.role !== "admin" &&
+              !taskRefusal(m) &&
+              abilityOn(m, "costs.edit") &&
+              (m.features === null || m.features.includes("signage")),
+          );
           await notify(tx, {
-            userIds: ops.map((o) => o.userId),
+            userIds: setters.map((o) => o.userId),
             kind: "supplier_needed",
             title: `${item.ref} is approved but has no supplier — set one before it can go to print`,
             body: `${item.name}, ${edition.code}. Choose the supplier on the item's Details tab.`,
@@ -335,8 +336,10 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
             conditions: data.conditionsText,
             confirmedOn,
             lockedVersionId: currentVersionId,
+            ...(onBehalf ? { onBehalfOf: holdersBefore } : {}),
           },
-          summary: decisionSummary(row.stepNameSnapshot, data),
+          summary: `${decisionSummary(row.stepNameSnapshot, data)}${onBehalf ? ` — for ${await namesOf(tx, holdersBefore)}` : ""}`,
+          ...(onBehalf ? { subjectUserId: subjectOf(row.assignedUserId, holdersBefore) } : {}),
         });
       } else {
         const b = bundle as Awaited<ReturnType<typeof loadStandBundle>> & object;
@@ -437,8 +440,10 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
             comment: data.comment,
             conditions: data.conditionsText,
             lockedVersion: currentVersionId,
+            ...(onBehalf ? { onBehalfOf: holdersBefore } : {}),
           },
-          summary: decisionSummary(row.stepNameSnapshot, data),
+          summary: `${decisionSummary(row.stepNameSnapshot, data)}${onBehalf ? ` — for ${await namesOf(tx, holdersBefore)}` : ""}`,
+          ...(onBehalf ? { subjectUserId: subjectOf(row.assignedUserId, holdersBefore) } : {}),
         });
       }
       return statusNote;
@@ -510,9 +515,21 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
       ) {
         throw new WorkflowError("Pick a team member who can sign off");
       }
-      if (parsed.data.toUserId === (row.assignedUserId ?? session.user.id)) {
+      // A department-wide step can be taken by anyone; only refuse a no-op.
+      if (row.assignedUserId && parsed.data.toUserId === row.assignedUserId) {
         throw new WorkflowError("This step is already with that person");
       }
+      // Who it was waiting on before, to record and tell them.
+      const holdersBefore = await stepHolderIds(
+        tx,
+        {
+          organisationId: bundle.organisation.id,
+          editionId: bundle.edition.id,
+          venueId: bundle.venue.id,
+          item: isSignage ? (bundle as { item: typeof signageItems.$inferSelect }).item : null,
+        },
+        row,
+      );
       const run = await loadRun(tx, row.entityType, row.entityId, row.runNumber);
       const updated = applyDelegation(run, {
         instanceId: parsed.data.instanceId,
@@ -526,25 +543,54 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
       const ref = isSignage
         ? (bundle as { item: { ref: string } }).item.ref
         : (bundle as { sub: { ref: string } }).sub.ref;
+      const link = isSignage
+        ? `${itemPath(bundle.edition.code, (bundle as { item: { kind: string; ref: string } }).item)}?tab=artwork`
+        : `/${bundle.edition.code}/stands/${ref}`;
+      const actorName = session.user.fullName || session.user.email;
+      const toName = await namesOf(tx, [parsed.data.toUserId]);
       await notify(tx, {
         userIds: [parsed.data.toUserId, session.user.id],
         kind: "delegation",
         title: `Step delegated: ${row.stepNameSnapshot} on ${ref}`,
-        body: `Delegated by ${session.user.fullName || session.user.email}`,
-        link: isSignage
-          ? `${itemPath(bundle.edition.code, (bundle as { item: { kind: string; ref: string } }).item)}?tab=artwork`
-          : `/${bundle.edition.code}/stands/${ref}`,
+        body: `Delegated by ${actorName}`,
+        link,
         entityType: row.entityType,
         entityId: row.entityId,
       });
+      // The people it was waiting on hear it has moved (unless they moved it).
+      const others = holdersBefore.filter(
+        (id) => id !== session.user.id && id !== parsed.data.toUserId,
+      );
+      if (others.length > 0) {
+        await notify(tx, {
+          userIds: others,
+          kind: "delegation",
+          title: `${row.stepNameSnapshot} on ${ref} is now with ${toName}`,
+          body: `${actorName} handed it to ${toName}; you don't need to do anything.`,
+          link,
+          entityType: row.entityType,
+          entityId: row.entityId,
+        });
+      }
       await writeAudit(tx, {
         organisationId: session.organisation.id,
+        editionId: bundle.edition.id,
         actorUserId: session.user.id,
         entityType: row.entityType,
         entityId: row.entityId,
         action: "delegate",
-        after: { step: row.stepNameSnapshot, toUserId: parsed.data.toUserId },
-        summary: `${row.stepNameSnapshot} delegated`,
+        before: {
+          step: row.stepNameSnapshot,
+          assignedUserId: row.assignedUserId,
+          holders: holdersBefore,
+        },
+        after: {
+          step: row.stepNameSnapshot,
+          toUserId: parsed.data.toUserId,
+          fromUserId: row.assignedUserId,
+        },
+        summary: `${row.stepNameSnapshot} delegated to ${toName}${holdersBefore.length ? ` (was with ${await namesOf(tx, holdersBefore)})` : ""}`,
+        subjectUserId: subjectOf(row.assignedUserId, holdersBefore),
       });
     });
     revalidatePath("/", "layout");
@@ -833,4 +879,29 @@ export async function remindApproval(input: unknown): Promise<ActionResult<Remin
     console.error("remindApproval", err);
     return fail("Could not send the reminder — please try again");
   }
+}
+
+/**
+ * The person an on-behalf decision or a delegation is about: the named
+ * person on the step, or its only holder (none when several could act).
+ */
+function subjectOf(assignedUserId: string | null, holders: readonly string[]): string | null {
+  if (assignedUserId) return assignedUserId;
+  return holders.length === 1 ? holders[0] : null;
+}
+
+/** "Mia Marketing", "Mia Marketing and Olivia Ops", "3 people". */
+async function namesOf(tx: Tx, ids: readonly string[]): Promise<string> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return "nobody";
+  if (unique.length > 3) return `${unique.length} people`;
+  const rows = await tx
+    .select({ id: users.id, fullName: users.fullName, email: users.email })
+    .from(users)
+    .where(inArray(users.id, unique));
+  const names = unique.map((id) => {
+    const r = rows.find((x) => x.id === id);
+    return r?.fullName || r?.email || "someone";
+  });
+  return names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }

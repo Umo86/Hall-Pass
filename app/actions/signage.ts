@@ -10,15 +10,13 @@ import {
   approvalInstances,
   auditLog,
   locations,
-  memberships,
   signageItems,
   snags,
   suppliers,
-  users,
 } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
-import { accessLive } from "@/lib/access";
+import { checkPick, ownerRoleOf, type OwnableItem } from "@/lib/people";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import {
@@ -41,6 +39,7 @@ import {
   loadItemBundle,
   newArtworkSinceChanges,
   normaliseSignoffs,
+  notifyOwnerChange,
   notifyPendingAssignees,
   ownEdition,
   resolveItemCreationRecipients,
@@ -132,36 +131,20 @@ const createSchema = itemFields
   });
 
 /**
- * Check a picked owner is on the team and can own things (not a viewer).
- * Returns their role so the item's owning team can follow them.
+ * Check a picked owner can work on this kind of item (lib/people.ts
+ * ownerRefusal: access active, the section, and able to edit, upload
+ * artwork and send it for sign-off). Returns their name and the owning
+ * team that follows them. Anyone who can edit an item may give it to
+ * someone who can own it.
  */
 async function resolveOwner(
   organisationId: string,
   userId: string,
+  item: OwnableItem,
 ): Promise<{ role: "ops" | "marketing" | null; name: string }> {
-  const [row] = await db
-    .select({
-      role: memberships.role,
-      fullName: users.fullName,
-      email: users.email,
-      suspendedAt: memberships.suspendedAt,
-      accessEndsAt: memberships.accessEndsAt,
-    })
-    .from(memberships)
-    .innerJoin(users, eq(memberships.userId, users.id))
-    .where(and(eq(memberships.organisationId, organisationId), eq(memberships.userId, userId)))
-    .limit(1);
-  if (!row) throw new Error("The owner must be someone on your team");
-  if (row.role === "viewer") throw new Error("A viewer can't own items — pick someone else");
-  if (!accessLive(row)) {
-    throw new Error(
-      `${row.fullName || row.email}'s access is paused or has ended — pick someone else`,
-    );
-  }
-  return {
-    role: row.role === "ops" || row.role === "marketing" ? row.role : null,
-    name: row.fullName || row.email,
-  };
+  const res = await checkPick(db, organisationId, userId, { type: "owner", item });
+  if (!res.ok) throw new Error(res.error);
+  return { role: ownerRoleOf(res.member), name: res.member.name };
 }
 
 /**
@@ -217,6 +200,7 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
   // Whoever is picked owns it (default: the person creating it); the owning
   // team follows an ops or marketing owner.
   let ownerUserId = session.user.id;
+  let ownerName: string | null = null;
   let ownerRole = data.ownerRole;
   if (!data.ownerUserId || data.ownerUserId === session.user.id) {
     // "Me": the owning team is the creator's own team when it is one of the
@@ -225,8 +209,12 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
     if (own === "ops" || own === "marketing") ownerRole = own;
   } else {
     try {
-      const owner = await resolveOwner(session.organisation.id, data.ownerUserId);
+      const owner = await resolveOwner(session.organisation.id, data.ownerUserId, {
+        kind: data.kind,
+        sponsored: Boolean(data.sponsorId) || category === "sponsor",
+      });
       ownerUserId = data.ownerUserId;
+      ownerName = owner.name;
       ownerRole = owner.role ?? ownerRole;
     } catch (err) {
       return fail(errMessage(err), { ownerUserId: errMessage(err) });
@@ -315,18 +303,17 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
         entityType: "signage_item",
         entityId: item.id,
         action: "create",
-        after: { ref, name: data.name },
-        summary: `Created ${ref} — ${data.name}`,
+        after: { ref, name: data.name, ownerUserId },
+        summary: `Created ${ref} — ${data.name}${ownerName ? ` (owner ${ownerName})` : ""}`,
       });
-      // The owning team (and sales, for anything sponsorship) hears about
-      // every new item straight away, not only at submit-for-review.
+      // The owner's department (people who use the section) hears about
+      // every new item straight away; the owner is told it is theirs.
       const recipients = await resolveItemCreationRecipients(
         tx,
         session.organisation.id,
-        { kind: data.kind, category, ownerRole },
+        { kind: data.kind, category, ownerUserId, ownerRole },
         session.user.id,
       );
-      if (ownerUserId !== session.user.id) recipients.push(ownerUserId);
       await notify(tx, {
         userIds: recipients,
         kind: "item_created",
@@ -335,6 +322,22 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
         entityType: "signage_item",
         entityId: item.id,
       });
+      if (ownerName) {
+        await notifyOwnerChange(tx, {
+          actor: { id: session.user.id, name: session.user.fullName || session.user.email },
+          to: { id: ownerUserId, name: ownerName },
+          items: [
+            {
+              id: item.id,
+              ref,
+              name: data.name,
+              kind: data.kind,
+              editionCode: edition.code,
+              fromUserId: null,
+            },
+          ],
+        });
+      }
       return ref;
     });
     revalidatePath("/", "layout");
@@ -371,16 +374,24 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
       "category",
       "sponsorId",
       "signoffs",
+      "ownerUserId",
+      "ownerRole",
     ] as const) {
       delete patch[key];
     }
   }
   if (patch.locationId) patch.hallId = (await hallOfLocation(patch.locationId)) ?? patch.hallId;
-  // A new owner must be on the team; the owning team follows them.
+  // Whoever may edit the item may give it to someone who can own it; the
+  // owning team follows them. An unchanged owner is kept whatever their state.
   let newOwner: { id: string; name: string } | null = null;
   if (patch.ownerUserId && patch.ownerUserId !== bundle.item.ownerUserId) {
+    const nextSponsor = patch.sponsorId !== undefined ? patch.sponsorId : bundle.item.sponsorId;
+    const nextCategory = patch.category !== undefined ? patch.category : bundle.item.category;
     try {
-      const owner = await resolveOwner(session.organisation.id, patch.ownerUserId);
+      const owner = await resolveOwner(session.organisation.id, patch.ownerUserId, {
+        kind: bundle.item.kind,
+        sponsored: Boolean(nextSponsor) || nextCategory === "sponsor",
+      });
       newOwner = { id: patch.ownerUserId, name: owner.name };
       if (owner.role) patch.ownerRole = owner.role;
     } catch (err) {
@@ -388,6 +399,8 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
     }
   } else {
     delete patch.ownerUserId;
+    // The owning team only follows a new owner (the form's hidden default never moves it).
+    delete patch.ownerRole;
   }
 
   if (canEditCosts) {
@@ -555,14 +568,20 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
           newOwner && set.ownerUserId ? ` — owner changed to ${newOwner.name}` : ""
         }${restarted ? " — sign-off restarted" : ""}`,
       });
-      if (newOwner && set.ownerUserId && newOwner.id !== session.user.id) {
-        await notify(tx, {
-          userIds: [newOwner.id],
-          kind: "item_created",
-          title: `You now own ${item.ref} — ${item.name}`,
-          link: itemPath(bundle.edition.code, item),
-          entityType: "signage_item",
-          entityId: item.id,
+      if (newOwner && set.ownerUserId) {
+        await notifyOwnerChange(tx, {
+          actor: { id: session.user.id, name: session.user.fullName || session.user.email },
+          to: newOwner,
+          items: [
+            {
+              id: item.id,
+              ref: item.ref,
+              name: item.name,
+              kind: item.kind,
+              editionCode: bundle.edition.code,
+              fromUserId: item.ownerUserId,
+            },
+          ],
         });
       }
       return restarted ? ("restarted" as const) : ("saved" as const);

@@ -1,13 +1,11 @@
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
 import { X } from "lucide-react";
 import { db } from "@/lib/db/client";
-import { memberships, users } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, isSuperAdmin } from "@/lib/authz";
-import { accessLive } from "@/lib/access";
+import { loadTeam, peopleFor, personOptions } from "@/lib/people";
 import {
   countPendingForUser,
   oldestPendingForUser,
@@ -74,7 +72,7 @@ export default async function MyWorkPage({
   const defaultEvent = filterEvent ?? live.find((e) => e.edition.code === defaultCode) ?? null;
   const canChase = can(session.actor, { type: "approval.chase" });
 
-  const [signoffs, oldest, team, taskSummary, board, staff] = await Promise.all([
+  const [signoffs, oldest, teamSignoffs, taskSummary, board, team] = await Promise.all([
     countPendingForUser(session),
     oldestPendingForUser(session, 3),
     canChase ? teamPendingSummary(orgId) : Promise.resolve(null),
@@ -86,25 +84,23 @@ export default async function MyWorkPage({
       scope,
       editionId: filterEvent?.edition.id ?? null,
     }),
-    db
-      .select({
-        id: users.id,
-        name: users.fullName,
-        email: users.email,
-        suspendedAt: memberships.suspendedAt,
-        accessEndsAt: memberships.accessEndsAt,
-      })
-      .from(memberships)
-      .innerJoin(users, eq(memberships.userId, users.id))
-      .where(eq(memberships.organisationId, orgId))
-      .orderBy(users.fullName),
+    loadTeam(db, orgId),
   ]);
-  // Tasks go to people with access; someone suspended still shows on the
-  // tasks they already have, so opening one never reassigns it by accident.
-  const holding = new Set(board.map((t) => t.assignedToUserId));
-  const people = staff
-    .filter((s) => accessLive(s) || holding.has(s.id))
-    .map((s) => ({ id: s.id, name: s.name || s.email }));
+  // Tasks go to people with access (lib/people.ts); someone suspended still
+  // shows, labelled, on the tasks they already have, so opening one never
+  // reassigns it by accident.
+  const assignees = personOptions(team, { type: "task" }, { organisationId: orgId });
+  const people = await peopleFor(
+    db,
+    orgId,
+    { type: "task" },
+    {
+      include: board.map((t) => t.assignedToUserId),
+      team,
+    },
+  );
+  const myDepartmentId =
+    session.actor.kind === "staff" ? (session.actor.departmentId ?? null) : null;
   const overdueOnly = due === "overdue";
   const tasks = overdueOnly
     ? board.filter((t) => t.status !== "done" && (t.overdue || t.overdueSubtasks > 0))
@@ -135,7 +131,7 @@ export default async function MyWorkPage({
         signoffs={signoffs}
         oldest={oldest}
         tasks={taskSummary}
-        team={team && team.total > 0 ? team : null}
+        team={teamSignoffs && teamSignoffs.total > 0 ? teamSignoffs : null}
       />
 
       <section id="tasks" className="scroll-mt-20 space-y-3" aria-labelledby="tasks-heading">
@@ -172,7 +168,8 @@ export default async function MyWorkPage({
         </div>
         <TaskForm
           currentUserId={session.user.id}
-          assignees={people}
+          currentDepartmentId={myDepartmentId}
+          assignees={assignees}
           canAssign={canAssign}
           events={live.map((e) => ({
             id: e.edition.id,

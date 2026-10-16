@@ -23,6 +23,8 @@ import { Label } from "@/components/ui/label";
 import { SelectNative } from "@/components/ui/select-native";
 import { useConfirm } from "@/components/confirm-dialog";
 import { bulkSignageAction, type BulkOutcome } from "@/app/actions/signage-bulk";
+import { PersonPicker } from "@/components/people/person-picker";
+import { nameOf, type PersonOption } from "@/components/people/groups";
 
 /** What a bulk action did, kept on screen until dismissed. */
 export type BulkResult = {
@@ -37,6 +39,10 @@ type Props = {
   canEditCosts: boolean;
   canDelete: boolean;
   canClose: boolean;
+  /** Who items can be given to ("Change owner"); none hides it. */
+  owners?: PersonOption[];
+  /** The viewer, offered first as "Me". */
+  meId?: string | null;
   /** The result, whatever happened; the list keeps the failed rows selected. */
   onResult: (result: BulkResult) => void;
   onClear: () => void;
@@ -61,12 +67,15 @@ export function BulkActionsBar({
   canEditCosts,
   canDelete,
   canClose,
+  owners = [],
+  meId = null,
   onResult,
   onClear,
 }: Props) {
   const [dialog, setDialog] = useState<
-    "supplier" | "install" | "confirm_print" | "confirm_delivered" | null
+    "supplier" | "install" | "confirm_print" | "confirm_delivered" | "owner" | null
   >(null);
+  const [ownerUserId, setOwnerUserId] = useState("");
   const [pending, start] = useTransition();
   const [confirmDialog, confirm] = useConfirm();
   const [supplierId, setSupplierId] = useState(suppliers[0]?.id ?? "");
@@ -167,6 +176,16 @@ export function BulkActionsBar({
           <DropdownMenuItem onSelect={() => setDialog("install")}>
             Set install date
           </DropdownMenuItem>
+          {owners.length > 0 && (
+            <DropdownMenuItem
+              onSelect={() => {
+                setOwnerUserId("");
+                setDialog("owner");
+              }}
+            >
+              Change owner
+            </DropdownMenuItem>
+          )}
           {canClose && (
             <DropdownMenuItem onSelect={() => void closeAll()}>Mark complete</DropdownMenuItem>
           )}
@@ -215,6 +234,42 @@ export function BulkActionsBar({
               onClick={() => run({ ids: selectedIds, action: "set_supplier", supplierId })}
             >
               Set supplier
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={dialog === "owner"} onOpenChange={(o) => !o && setDialog(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Change the owner</DialogTitle>
+            <DialogDescription>
+              For the {plural(n)} selected. Items the person can&apos;t work on — or you can&apos;t
+              change — are left as they are and listed. They&apos;re told the items are theirs, and
+              the previous owners are told too.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-1.5">
+            <Label htmlFor="bulk-owner">New owner</Label>
+            <PersonPicker
+              id="bulk-owner"
+              people={owners}
+              meId={meId}
+              value={ownerUserId}
+              onChange={setOwnerUserId}
+              blankLabel="— Choose a person —"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDialog(null)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={pending || !ownerUserId}
+              onClick={() => run({ ids: selectedIds, action: "set_owner", ownerUserId })}
+            >
+              Give {n === 1 ? "it" : `${n} items`} to{" "}
+              {ownerUserId ? nameOf(owners, ownerUserId) : "…"}
             </Button>
           </DialogFooter>
         </DialogContent>

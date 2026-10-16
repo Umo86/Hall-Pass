@@ -16,9 +16,11 @@ import {
   itemAuthzCtx,
   loadItemBundle,
   normaliseSignoffs,
+  notifyOwnerChange,
   ownEdition,
   resolveItemCreationRecipients,
 } from "@/lib/domain/signage";
+import { checkPick, ownerRoleOf } from "@/lib/people";
 import {
   ensureStandDesignWorkflow,
   mapPlanToWorkflow,
@@ -65,6 +67,8 @@ const standSchema = z
     sponsorId: uuidOrNull,
     description: z.string().max(5000).optional().nullable(),
     signoffs: planSchema,
+    /** Who runs the stand (default: whoever creates it); its panels follow. */
+    ownerUserId: uuidOrNull,
   })
   .superRefine((d, ctx) => {
     if (d.category === "sponsor" && !d.sponsorId) {
@@ -138,6 +142,17 @@ export async function createStandDesign(input: unknown): Promise<ActionResult<{ 
   const hallId = data.locationId
     ? ((await hallOfLocation(data.locationId)) ?? data.hallId)
     : data.hallId;
+  // Another owner must be able to work on feature stands (lib/people.ts).
+  let owner: { id: string; name: string; role: "ops" | "marketing" | null } | null = null;
+  if (data.ownerUserId && data.ownerUserId !== session.user.id) {
+    const res = await checkPick(db, session.organisation.id, data.ownerUserId, {
+      type: "owner",
+      item: { kind: "stand_design", sponsored: data.category === "sponsor" },
+    });
+    if (!res.ok) return fail(res.error, { ownerUserId: res.error });
+    owner = { id: res.member.userId, name: res.member.name, role: ownerRoleOf(res.member) };
+  }
+  const ownerUserId = owner?.id ?? session.user.id;
 
   try {
     const ref = await db.transaction(async (tx) => {
@@ -175,8 +190,8 @@ export async function createStandDesign(input: unknown): Promise<ActionResult<{ 
           depthMm: data.depthMm ?? null,
           heightMm: data.heightMm ?? null,
           sponsorId: data.category === "sponsor" ? (data.sponsorId ?? null) : null,
-          ownerRole: "ops",
-          ownerUserId: session.user.id,
+          ownerRole: owner?.role ?? "ops",
+          ownerUserId,
           workflowId,
           createdBy: session.user.id,
         })
@@ -188,15 +203,31 @@ export async function createStandDesign(input: unknown): Promise<ActionResult<{ 
         entityType: "signage_item",
         entityId: item.id,
         action: "create",
-        after: { ref, name: data.name, signoffs },
-        summary: `Created stand ${ref} — ${data.name}`,
+        after: { ref, name: data.name, signoffs, ownerUserId },
+        summary: `Created stand ${ref} — ${data.name}${owner ? ` (owner ${owner.name})` : ""}`,
       });
       const recipients = await resolveItemCreationRecipients(
         tx,
         session.organisation.id,
-        { kind: "stand_design", category: data.category, ownerRole: "ops" },
+        { kind: "stand_design", category: data.category, ownerUserId, ownerRole: "ops" },
         session.user.id,
       );
+      if (owner) {
+        await notifyOwnerChange(tx, {
+          actor: { id: session.user.id, name: session.user.fullName || session.user.email },
+          to: owner,
+          items: [
+            {
+              id: item.id,
+              ref,
+              name: data.name,
+              kind: "stand_design",
+              editionCode: edition.code,
+              fromUserId: null,
+            },
+          ],
+        });
+      }
       await notify(tx, {
         userIds: recipients,
         kind: "item_created",
@@ -309,8 +340,9 @@ export async function addStandPanel(input: unknown): Promise<ActionResult<{ ref:
           material: data.material || null,
           finish: data.finish || null,
           supplierId: data.supplierId ?? null,
-          ownerRole: "ops",
-          ownerUserId: session.user.id,
+          // A panel is its stand's owner's to run.
+          ownerRole: stand.ownerRole,
+          ownerUserId: stand.ownerUserId ?? session.user.id,
           workflowId,
           createdBy: session.user.id,
         })

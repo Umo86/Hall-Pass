@@ -1,6 +1,12 @@
 "use server";
 
-import { archivedSupplierMessage, ownEdition } from "@/lib/domain/signage";
+import {
+  archivedSupplierMessage,
+  notifyOwnerChange,
+  ownEdition,
+  type OwnerChange,
+} from "@/lib/domain/signage";
+import { loadTeam, ownerRoleOf, refusalFor, refusalMessage } from "@/lib/people";
 
 import { revalidatePath } from "next/cache";
 import ExcelJS from "exceljs";
@@ -97,6 +103,11 @@ export type ImportOutcome = {
   dryRun?: boolean;
   /** Halls, locations and suppliers the sheet adds (when createMissing is ticked). */
   adds?: { halls: number; locations: number; suppliers: number };
+  /**
+   * The "Owner email" column: rows owned by the person named, rows left to
+   * you (blank, not on the team, or can't work on that item), and why.
+   */
+  owners?: { fromSheet: number; toYou: number; notes: { row: number; message: string }[] };
 };
 
 /**
@@ -200,7 +211,11 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
       name,
     ) ?? byName(supplierRows, name);
 
-  const parsed: Array<{ rowNumber: number; data: z.infer<typeof rowSchema> }> = [];
+  const parsed: Array<{
+    rowNumber: number;
+    data: z.infer<typeof rowSchema>;
+    ownerEmail: string;
+  }> = [];
   const errors: { row: number; message: string }[] = [];
 
   // Columns are found by their headings, so older sheets still import.
@@ -217,6 +232,53 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
             : String(v);
   });
   const column = importColumnFinder(Array.from(headings, (h) => h ?? ""));
+  // "Owner email" (or "Owner"): who each new row belongs to.
+  const ownerColumn = (() => {
+    const i = Array.from(headings, (h) => (h ?? "").toLowerCase().replace(/[^a-z]/g, "")).findIndex(
+      (h) => h === "owneremail" || h === "owner",
+    );
+    return i === -1 ? null : i + 1;
+  })();
+  const team = await loadTeam(db, session.organisation.id);
+  const importerRole = session.actor.kind === "staff" ? session.actor.role : null;
+  const ownerNotes: { row: number; message: string }[] = [];
+  /**
+   * Who owns a row: the person in "Owner email" when they are an active
+   * member who can work on this kind of item, otherwise the importer (null
+   * for an update leaves the owner as it is).
+   */
+  const ownerFor = (
+    rowNumber: number,
+    email: string,
+    item: { sponsored: boolean; isUpdate: boolean },
+  ): { userId: string; name: string; role: "ops" | "marketing" | null } | null => {
+    const trimmed = email.trim().toLowerCase();
+    const me = {
+      userId: session.user.id,
+      name: "you",
+      role: ownerRoleOf({ role: importerRole ?? "viewer" }),
+    };
+    if (!trimmed) return item.isUpdate ? null : me;
+    const m = team.find((x) => x.email.toLowerCase() === trimmed);
+    const ownable = { kind: "signage" as const, sponsored: item.sponsored };
+    const refusal = refusalFor({ type: "owner", item: ownable }, m, {
+      organisationId: session.organisation.id,
+    });
+    if (!m || refusal) {
+      const why = !m
+        ? `${email.trim()} isn't on the team`
+        : refusalMessage(m.name, refusal!, { type: "owner", item: ownable }).replace(
+            / — pick someone else$/,
+            "",
+          );
+      ownerNotes.push({
+        row: rowNumber,
+        message: item.isUpdate ? `${why} — owner left as it was` : `${why} — given to you`,
+      });
+      return item.isUpdate ? null : me;
+    }
+    return { userId: m.userId, name: m.name, role: ownerRoleOf(m) };
+  };
 
   ws.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return; // header
@@ -310,7 +372,11 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
       if (supplier?.isArchived && supplier.id !== current?.supplierId) {
         return rowError(archivedSupplierMessage(supplier.name));
       }
-      parsed.push({ rowNumber, data: d });
+      parsed.push({
+        rowNumber,
+        data: d,
+        ownerEmail: ownerColumn ? cell(ownerColumn) : "",
+      });
     }
   });
 
@@ -321,6 +387,22 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
     );
   }
   if (parsed.length === 0) return fail("No rows found to import");
+  // Who owns each row, worked out once for the check and the import alike.
+  const owners = parsed.map(({ rowNumber, data, ownerEmail }) =>
+    ownerFor(rowNumber, ownerEmail, {
+      sponsored: Boolean(data.sponsor) || data.category === "sponsor",
+      isUpdate: Boolean(data.ref),
+    }),
+  );
+  const ownerSummary = {
+    fromSheet: owners.filter((o) => o && o.userId !== session.user.id).length,
+    toYou: parsed.filter((p, i) => !p.data.ref && owners[i]?.userId === session.user.id).length,
+    notes: ownerNotes,
+  };
+  const ownerWords =
+    ownerColumn && ownerSummary.fromSheet + ownerNotes.length > 0
+      ? ` — ${ownerSummary.fromSheet} owned by the people named${ownerNotes.length ? `, ${ownerNotes.length} left to you or unchanged (see the rows)` : ""}`
+      : "";
 
   if (dryRun) {
     // What the import would do, worked out the same way as below.
@@ -356,16 +438,19 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
           locations: newLocations.size,
           suppliers: newSuppliers.size,
         },
+        ...(ownerColumn ? { owners: ownerSummary } : {}),
       },
-      `Checked: ${parsed.length - updated} new, ${updated} updated, nothing imported yet`,
+      `Checked: ${parsed.length - updated} new, ${updated} updated, nothing imported yet${ownerWords}`,
     );
   }
 
   try {
     let created = 0;
     let updated = 0;
+    const given = new Map<string, { name: string; items: OwnerChange[] }>();
     await db.transaction(async (tx) => {
-      for (const { data } of parsed) {
+      for (const [index, { data }] of parsed.entries()) {
+        const owner = owners[index];
         let supplierId: string | null | undefined;
         if (data.supplier) {
           const existing = supplierByName(data.supplier);
@@ -439,29 +524,66 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
           }).filter(([, v]) => v !== undefined),
         ) as Partial<typeof signageItems.$inferInsert>;
         const existing = data.ref ? itemByRef.get(data.ref.toUpperCase()) : undefined;
+        const note = (o: NonNullable<typeof owner>, item: OwnerChange) => {
+          if (o.userId === session.user.id) return;
+          const entry = given.get(o.userId) ?? { name: o.name, items: [] };
+          entry.items.push(item);
+          given.set(o.userId, entry);
+        };
         if (existing) {
-          await tx.update(signageItems).set(values).where(eq(signageItems.id, existing.id));
+          // An update changes the owner only when the sheet names someone who can own it.
+          const ownerSet =
+            owner && owner.userId !== existing.ownerUserId
+              ? { ownerUserId: owner.userId, ...(owner.role ? { ownerRole: owner.role } : {}) }
+              : {};
+          await tx
+            .update(signageItems)
+            .set({ ...values, ...ownerSet })
+            .where(eq(signageItems.id, existing.id));
+          if (owner && "ownerUserId" in ownerSet) {
+            note(owner, {
+              id: existing.id,
+              ref: existing.ref,
+              name: data.name,
+              kind: existing.kind,
+              editionCode: edition.code,
+              fromUserId: existing.ownerUserId,
+            });
+          }
           updated++;
         } else {
           const { ref, seq } = await nextSignageRef(tx, editionId, edition.code);
-          await tx.insert(signageItems).values({
-            ...values,
-            name: data.name,
-            editionId,
+          const o = owner ?? { userId: session.user.id, name: "you", role: null };
+          const [row] = await tx
+            .insert(signageItems)
+            .values({
+              ...values,
+              name: data.name,
+              editionId,
+              ref,
+              seq,
+              kind: "signage",
+              // Blank category: sponsored rows are sponsor signage, the rest organiser.
+              category: data.category || (values.sponsorId ? "sponsor" : "organiser"),
+              // The owning team follows the owner, as when adding a sign.
+              ownerRole: o.role ?? "ops",
+              ownerUserId: o.userId,
+              workflowId: await defaultSignageWorkflowId(
+                tx,
+                session.organisation.id,
+                values.itemTypeId ?? null,
+              ),
+              isSponsorDeliverable: Boolean(values.sponsorId),
+              createdBy: session.user.id,
+            })
+            .returning({ id: signageItems.id });
+          note(o, {
+            id: row.id,
             ref,
-            seq,
+            name: data.name,
             kind: "signage",
-            // Blank category: sponsored rows are sponsor signage, the rest organiser.
-            category: data.category || (values.sponsorId ? "sponsor" : "organiser"),
-            ownerRole: "ops",
-            ownerUserId: session.user.id,
-            workflowId: await defaultSignageWorkflowId(
-              tx,
-              session.organisation.id,
-              values.itemTypeId ?? null,
-            ),
-            isSponsorDeliverable: Boolean(values.sponsorId),
-            createdBy: session.user.id,
+            editionCode: edition.code,
+            fromUserId: null,
           });
           created++;
         }
@@ -473,14 +595,31 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
         entityType: "edition",
         entityId: editionId,
         action: "import",
-        after: { created, updated, rows: parsed.length },
-        summary: `Schedule import: ${created} created, ${updated} updated`,
+        after: {
+          created,
+          updated,
+          rows: parsed.length,
+          ...(ownerColumn
+            ? { owners: [...given].map(([userId, g]) => ({ userId, items: g.items.length })) }
+            : {}),
+        },
+        summary: `Schedule import: ${created} created, ${updated} updated${
+          given.size ? ` — given to ${[...given.values()].map((g) => g.name).join(", ")}` : ""
+        }`,
       });
+      // Each person named in the sheet hears once which items are theirs.
+      for (const [userId, g] of given) {
+        await notifyOwnerChange(tx, {
+          actor: { id: session.user.id, name: session.user.fullName || session.user.email },
+          to: { id: userId, name: g.name },
+          items: g.items,
+        });
+      }
     });
     revalidatePath("/", "layout");
     return success(
-      { created, updated, errors: [] },
-      `Imported ${created + updated} rows (${created} new, ${updated} updated)`,
+      { created, updated, errors: [], ...(ownerColumn ? { owners: ownerSummary } : {}) },
+      `Imported ${created + updated} rows (${created} new, ${updated} updated)${ownerWords}`,
     );
   } catch (err) {
     return fail(err instanceof Error ? err.message : "Import failed");

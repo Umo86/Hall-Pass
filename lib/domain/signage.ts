@@ -2,7 +2,7 @@
  * Domain glue between signage items, the status machine and the workflow
  * engine. Used by server actions; kept out of components entirely.
  */
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db, Tx } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -19,11 +19,21 @@ import {
   sponsorEntitlements,
   sponsors,
   suppliers,
+  users,
   venues,
   workflows,
 } from "@/lib/db/schema";
 import { notify } from "@/lib/notify";
+import { brandName } from "@/lib/config";
 import { departmentSignerIds } from "@/lib/domain/departments";
+import {
+  departmentRouting,
+  eligibleIds,
+  loadTeam,
+  orNames,
+  partnerInviters,
+  rerouteDepartmentSteps,
+} from "@/lib/people";
 import {
   confirmsForSuppliers,
   signoffPaused,
@@ -180,6 +190,33 @@ export function engineSettingsFor(bundle: ItemBundle): EngineSettings {
   };
 }
 
+/**
+ * Safety net for a new or restarted round: a department step named for
+ * someone who can no longer sign for that department goes to the
+ * department's main approver (or anyone in it), and an item following its
+ * defaults goes to the department's current main approver
+ * (rerouteDepartmentSteps). Changes the instances in place.
+ */
+async function routeToSigners(tx: Tx, bundle: ItemBundle, instances: Instance[]): Promise<void> {
+  if (!instances.some((i) => i.assignedDepartmentId && i.stepKind === "approval")) return;
+  const routing = await departmentRouting(tx, bundle.organisation.id);
+  const moves = rerouteDepartmentSteps(
+    instances.map((i) => ({
+      id: i.id,
+      status: i.status,
+      stepKind: i.stepKind,
+      assignedUserId: i.assignedUserId,
+      assignedDepartmentId: i.assignedDepartmentId ?? null,
+      delegatedFromUserId: i.delegatedFromUserId,
+    })),
+    { followsDefaults: !bundle.item.signoffs, ...routing },
+  );
+  for (const mv of moves) {
+    const inst = instances.find((i) => i.id === mv.id);
+    if (inst) inst.assignedUserId = mv.to;
+  }
+}
+
 /** Start a fresh run for the item and persist it. Returns the instances. */
 export async function startItemRun(tx: Tx, bundle: ItemBundle, now: Date): Promise<Instance[]> {
   const workflowId = bundle.item.workflowId;
@@ -193,6 +230,7 @@ export async function startItemRun(tx: Tx, bundle: ItemBundle, now: Date): Promi
     runNumber,
     now,
   });
+  await routeToSigners(tx, bundle, run);
   const persisted = await persistRun(tx, "signage_item", bundle.item.id, run);
   await tx
     .update(signageItems)
@@ -201,42 +239,160 @@ export async function startItemRun(tx: Tx, bundle: ItemBundle, now: Date): Promi
   return persisted;
 }
 
+/** A team member as new-item notifications see them. */
+export type CreationMember = {
+  userId: string;
+  role: string;
+  departmentId: string | null;
+  /** Sections they use; null = every section. */
+  features: readonly string[] | null;
+  /** Access active (not suspended, end date not reached). */
+  active: boolean;
+};
+
+/** The section an item of this kind lives in. */
+function sectionOfKind(kind: CreationItem["kind"]): string {
+  if (kind === "sponsorship_item") return "sponsorship";
+  if (kind === "stand_design" || kind === "stand_panel") return "stand_designs";
+  return "signage";
+}
+
+type CreationItem = {
+  kind: "signage" | "sponsorship_item" | "stand_design" | "stand_panel";
+  category: string | null;
+  ownerUserId: string | null;
+  /** The old two-team owner, used only when the owner has no department. */
+  ownerRole: "ops" | "marketing";
+};
+
 /**
- * Who hears about a newly created item: members of the owning role, plus
- * sales for anything sponsorship (their team sells it) — never the creator.
- * Pure so the rules are unit-testable.
+ * Who hears about a newly created item ("New items in my area"): people
+ * with access in the owner's department who use the item's section. When
+ * the owner has no department, the owning team instead (plus Sales for
+ * anything sponsorship), with the same section check. Never the creator,
+ * nor the owner (who is told the item is theirs — item_assigned). Pure so
+ * the rules are unit-testable.
  */
 export function itemCreationRecipients(
-  members: Array<{ userId: string; role: string }>,
-  item: {
-    kind: "signage" | "sponsorship_item" | "stand_design" | "stand_panel";
-    category: string | null;
-    ownerRole: "ops" | "marketing";
-  },
+  members: readonly CreationMember[],
+  item: CreationItem,
   creatorUserId: string,
 ): string[] {
-  const roles = new Set<string>([item.ownerRole]);
-  if (item.kind === "sponsorship_item" || item.category === "sponsor") roles.add("sales");
-  return [...new Set(members.filter((m) => roles.has(m.role)).map((m) => m.userId))].filter(
-    (id) => id !== creatorUserId,
+  const section = sectionOfKind(item.kind);
+  const usesSection = (m: CreationMember) =>
+    m.role === "admin" || m.features === null || m.features.includes(section);
+  const owner = item.ownerUserId ? members.find((m) => m.userId === item.ownerUserId) : undefined;
+  let chosen: CreationMember[];
+  if (owner?.departmentId) {
+    chosen = members.filter((m) => m.departmentId === owner.departmentId);
+  } else {
+    const roles = new Set<string>([item.ownerRole]);
+    if (item.kind === "sponsorship_item" || item.category === "sponsor") roles.add("sales");
+    chosen = members.filter((m) => roles.has(m.role));
+  }
+  return [...new Set(chosen.filter((m) => m.active && usesSection(m)).map((m) => m.userId))].filter(
+    (id) => id !== creatorUserId && id !== item.ownerUserId,
   );
 }
 
 export async function resolveItemCreationRecipients(
   db: Db | Tx,
   organisationId: string,
-  item: {
-    kind: "signage" | "sponsorship_item" | "stand_design" | "stand_panel";
-    category: string | null;
-    ownerRole: "ops" | "marketing";
-  },
+  item: CreationItem,
   creatorUserId: string,
 ): Promise<string[]> {
-  const members = await db
-    .select({ userId: memberships.userId, role: memberships.role })
+  const rows = await db
+    .select({
+      userId: memberships.userId,
+      role: memberships.role,
+      departmentId: memberships.departmentId,
+      features: memberships.features,
+      active: sql<boolean>`${activeMembership()}`,
+    })
     .from(memberships)
-    .where(and(eq(memberships.organisationId, organisationId), activeMembership()));
-  return itemCreationRecipients(members, item, creatorUserId);
+    .where(eq(memberships.organisationId, organisationId));
+  return itemCreationRecipients(
+    rows.map((r) => ({ ...r, active: Boolean(r.active) })),
+    item,
+    creatorUserId,
+  );
+}
+
+/** An item whose owner just changed, for telling the people concerned. */
+export type OwnerChange = {
+  id: string;
+  ref: string;
+  name: string;
+  kind: string;
+  editionCode: string;
+  /** Who owned it before (null: nobody). */
+  fromUserId: string | null;
+};
+
+/**
+ * Tell the new owner the items are theirs (item_assigned, emailed; one
+ * message for several) and each previous owner that theirs have moved —
+ * never the person who made the change.
+ */
+export async function notifyOwnerChange(
+  tx: Tx,
+  opts: {
+    actor: { id: string; name: string };
+    to: { id: string; name: string };
+    items: readonly OwnerChange[];
+  },
+): Promise<void> {
+  const { actor, to, items } = opts;
+  if (items.length === 0) return;
+  if (to.id !== actor.id) {
+    const one = items[0];
+    await notify(tx, {
+      userIds: [to.id],
+      kind: "item_assigned",
+      title:
+        items.length === 1
+          ? `${actor.name} gave you ${one.ref} — ${one.name}`
+          : `${actor.name} gave you ${items.length} items`,
+      body:
+        items.length === 1
+          ? "You own it now: reminders and decisions about it come to you."
+          : `${items
+              .slice(0, 5)
+              .map((i) => i.ref)
+              .join(", ")}${items.length > 5 ? "…" : ""}. You own them now.`,
+      link:
+        items.length === 1
+          ? itemPath(one.editionCode, one)
+          : `/${one.editionCode}/signage?show=mine`,
+      ...(items.length === 1 ? { entityType: "signage_item" as const, entityId: one.id } : {}),
+    });
+  }
+  const byPrevious = new Map<string, OwnerChange[]>();
+  for (const i of items) {
+    if (!i.fromUserId || i.fromUserId === actor.id || i.fromUserId === to.id) continue;
+    byPrevious.set(i.fromUserId, [...(byPrevious.get(i.fromUserId) ?? []), i]);
+  }
+  for (const [userId, list] of byPrevious) {
+    const one = list[0];
+    await notify(tx, {
+      userIds: [userId],
+      kind: "item_assigned",
+      title:
+        list.length === 1
+          ? `${one.ref} is now ${to.name}'s`
+          : `${list.length} of your items are now ${to.name}'s`,
+      body: `${actor.name} gave ${
+        list.length === 1
+          ? `${one.ref} — ${one.name}`
+          : list
+              .map((i) => i.ref)
+              .slice(0, 5)
+              .join(", ")
+      } to ${to.name}.`,
+      link: itemPath(one.editionCode, one),
+      ...(list.length === 1 ? { entityType: "signage_item" as const, entityId: one.id } : {}),
+    });
+  }
 }
 
 /** User ids that can decide an instance — used for notifications. */
@@ -367,6 +523,132 @@ export async function defaultSignageWorkflowId(
   return (rows.find((r) => r.isDefault) ?? rows[0])?.id ?? null;
 }
 
+/** The product's name as this organisation shows it (never hard-coded). */
+function brandOf(bundle: ItemBundle): string {
+  return bundle.organisation.brandName?.trim() || brandName;
+}
+
+/** Live invitations nobody has accepted yet for this company in this event. */
+async function pendingInvites(
+  tx: Tx,
+  bundle: ItemBundle,
+  scope: { role: "supplier" | "venue" | "sponsor"; scopeId: string },
+): Promise<{ email: string; at: Date }[]> {
+  const rows = await tx
+    .select({
+      email: externalGrants.invitedEmail,
+      at: externalGrants.createdAt,
+      expiresAt: externalGrants.expiresAt,
+    })
+    .from(externalGrants)
+    .where(
+      and(
+        eq(externalGrants.organisationId, bundle.organisation.id),
+        eq(externalGrants.editionId, bundle.edition.id),
+        eq(externalGrants.role, scope.role),
+        eq(externalGrants.scopeId, scope.scopeId),
+        isNull(externalGrants.userId),
+        isNull(externalGrants.revokedAt),
+      ),
+    );
+  return rows.filter((r) => !r.expiresAt || r.expiresAt.getTime() > Date.now());
+}
+
+/**
+ * A partner step started with nobody at the company able to sign in: tell
+ * the people who can act. A supplier's confirmation goes to whoever
+ * confirms production (they can confirm it themselves); a venue or sponsor
+ * sign-off goes to Operations and the item's owner. People who can invite
+ * partners get the invitation link; everyone else is told who can.
+ */
+async function noticeNobodyCanSignIn(
+  tx: Tx,
+  bundle: ItemBundle,
+  inst: { stepName: string; stepKind?: string },
+  scope: { role: "supplier" | "venue" | "sponsor"; scopeId: string },
+): Promise<void> {
+  const { item, edition, organisation } = bundle;
+  const team = await loadTeam(tx, organisation.id);
+  const companyName =
+    scope.role === "supplier"
+      ? (
+          await tx
+            .select({ name: suppliers.name })
+            .from(suppliers)
+            .where(eq(suppliers.id, scope.scopeId))
+            .limit(1)
+        )[0]?.name
+      : scope.role === "venue"
+        ? bundle.venue.name
+        : (
+            await tx
+              .select({ name: sponsors.companyName })
+              .from(sponsors)
+              .where(eq(sponsors.id, scope.scopeId))
+              .limit(1)
+          )[0]?.name;
+  const who = companyName ?? `the ${scope.role}`;
+  const recipients =
+    scope.role === "supplier"
+      ? await productionConfirmerIds(tx, organisation.id)
+      : [
+          ...eligibleIds(team, { type: "task" }, { organisationId: organisation.id }).filter(
+            (id) => team.find((m) => m.userId === id)?.role === "ops",
+          ),
+          ...(item.ownerUserId ? [item.ownerUserId] : []),
+        ];
+  if (recipients.length === 0) return;
+  const inviters = await partnerInviters(tx, organisation.id, { team });
+  const inviterIds = new Set(inviters.map((m) => m.userId));
+  const askNames = orNames(inviters.map((m) => m.name));
+  const invites = await pendingInvites(tx, bundle, scope);
+  const brand = brandOf(bundle);
+  const itemLink = itemPath(edition.code, item);
+  const inviteLink = `/users?tab=external&invite=1&role=${scope.role}&scopeId=${scope.scopeId}&edition=${edition.id}`;
+  const isConfirm = inst.stepKind === "confirmation";
+  const title = isConfirm
+    ? `To confirm — ${inst.stepName}: ${item.name} (${item.ref})`
+    : `Nobody at ${who} can sign off ${item.ref} — ${item.name}`;
+  const situation = invites.length
+    ? `${invites[0].email} was invited on ${formatDate(invites[0].at)} but hasn't signed in to ${brand} yet, so ${who} can't ${isConfirm ? "confirm this" : `sign off ${inst.stepName}`}.`
+    : `Nobody at ${who} can sign in to ${brand} yet, so they can't ${isConfirm ? "confirm this" : `sign off ${inst.stepName}`}.`;
+  const doIt = isConfirm ? `Confirm it on ${item.ref} yourself once it's done` : "";
+  const invite = invites.length ? "resend the invitation" : "invite them";
+  const canInviteText = isConfirm ? `${doIt}, or ${invite}.` : `${capitalise(invite)}.`;
+  const askText = isConfirm
+    ? `${doIt} — or ask ${askNames} to ${invite}.`
+    : `Ask ${askNames} to ${invite}.`;
+  const unique = [...new Set(recipients)];
+  const canInvite = unique.filter((id) => inviterIds.has(id));
+  const others = unique.filter((id) => !inviterIds.has(id));
+  const base = {
+    kind: "approval_requested",
+    title,
+    entityType: "signage_item" as const,
+    entityId: item.id,
+  };
+  if (canInvite.length) {
+    await notify(tx, {
+      ...base,
+      userIds: canInvite,
+      body: `${situation} ${canInviteText}`,
+      link: inviteLink,
+    });
+  }
+  if (others.length) {
+    await notify(tx, {
+      ...base,
+      userIds: others,
+      body: `${situation} ${askText}`,
+      link: isConfirm ? itemLink : `${itemLink}?tab=artwork`,
+    });
+  }
+}
+
+function capitalise(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 /**
  * Tell whoever holds each given pending step that it is now their turn.
  * Callers pass only newly pending instances so nobody is told twice.
@@ -385,7 +667,7 @@ export async function notifyPendingAssignees(
 ): Promise<void> {
   const item = bundle.item;
   for (const inst of instances.filter((x) => x.status === "pending")) {
-    let assignees = await resolveAssigneeUserIds(
+    const assignees = await resolveAssigneeUserIds(
       tx,
       bundle.organisation.id,
       bundle.edition.id,
@@ -403,27 +685,19 @@ export async function notifyPendingAssignees(
       // No supplier chosen at all: Operations were already told the item is
       // approved without one (decideApproval), so say nothing misleading here.
       if (!item.supplierId) continue;
-      // A supplier with no portal login: tell those who confirm for suppliers
-      // (Operations by default), who can confirm it themselves on the item.
-      const [confirmers, [supplier]] = await Promise.all([
-        productionConfirmerIds(tx, bundle.organisation.id),
-        tx
-          .select({ name: suppliers.name })
-          .from(suppliers)
-          .where(eq(suppliers.id, item.supplierId))
-          .limit(1),
-      ]);
-      assignees = confirmers;
-      const who = supplier?.name ?? "the supplier";
-      await notify(tx, {
-        userIds: assignees,
-        kind: "approval_requested",
-        title: `To confirm — ${inst.stepName}: ${item.name} (${item.ref})`,
-        body: `Nobody at ${who} has ${bundle.organisation.brandName} access yet, so they can't confirm this. Confirm it on ${item.ref} yourself once it's done, or ask an admin to invite them.`,
-        link: itemPath(bundle.edition.code, item),
-        entityType: "signage_item",
-        entityId: item.id,
-      });
+      await noticeNobodyCanSignIn(tx, bundle, inst, { role: "supplier", scopeId: item.supplierId });
+      continue;
+    }
+    // A venue or sponsor sign-off with nobody there who can sign in.
+    if (
+      assignees.length === 0 &&
+      !inst.assignedUserId &&
+      (inst.assignedRole === "venue" || inst.assignedRole === "sponsor")
+    ) {
+      const scopeId = inst.assignedRole === "venue" ? bundle.venue.id : item.sponsorId;
+      if (scopeId) {
+        await noticeNobodyCanSignIn(tx, bundle, inst, { role: inst.assignedRole, scopeId });
+      }
       continue;
     }
     await notify(tx, {
@@ -432,7 +706,7 @@ export async function notifyPendingAssignees(
       ...(inst.stepKind === "confirmation"
         ? {
             title: `To confirm — ${inst.stepName}: ${item.name} (${item.ref})`,
-            body: `${bundle.edition.name}. Confirm it in ${bundle.organisation.brandName} once it's done.`,
+            body: `${bundle.edition.name}. Confirm it in ${brandOf(bundle)} once it's done.`,
           }
         : {
             title: `Please sign off: ${item.name} (${item.ref})`,
@@ -519,6 +793,7 @@ export async function resubmitItemInTx(
   const res = resubmitAfterChanges(run, { entity: itemEntityCtx(bundle), now: opts.now });
   let pending: Instance[];
   if (res.mode === "restart_from_step") {
+    await routeToSigners(tx, bundle, res.instances);
     const persisted = await persistRun(tx, "signage_item", item.id, res.instances);
     pending = newlyPending(run, persisted);
   } else {
@@ -595,6 +870,20 @@ export function changedSpecKeys(
 }
 
 /**
+ * Who hears that a snag was fixed (or won't be): whoever raised it and the
+ * item's owner — never the person who closed it. Pure.
+ */
+export function snagClosedRecipients(input: {
+  raisedByUserId: string | null;
+  ownerUserId: string | null;
+  actorUserId: string;
+}): string[] {
+  return [...new Set([input.raisedByUserId, input.ownerUserId])].filter(
+    (id): id is string => Boolean(id) && id !== input.actorUserId,
+  );
+}
+
+/**
  * Who hears about a new comment: the item's owner (or creator, for imported
  * items with no owner) and everyone who commented before — never the author,
  * and never external users on a staff-only comment. Pure for unit testing.
@@ -654,13 +943,16 @@ export async function normaliseSignoffs(
         userId: memberships.userId,
         role: memberships.role,
         overrides: memberships.permissionOverrides,
+        active: sql<boolean>`${activeMembership()}`,
+        fullName: users.fullName,
+        email: users.email,
       })
       .from(memberships)
+      .innerJoin(users, eq(users.id, memberships.userId))
       .where(
         and(
           eq(memberships.organisationId, opts.organisationId),
           inArray(memberships.userId, userIds),
-          activeMembership(),
         ),
       );
     const byUser = new Map(members.map((m) => [m.userId, m]));
@@ -668,18 +960,23 @@ export async function normaliseSignoffs(
       if (!entry.userId) continue;
       const m = byUser.get(entry.userId);
       const step = byId.get(entry.stepId)!;
+      // Name the person and the sign-off, so it's clear what to change.
+      const who = m ? m.fullName || m.email : "Someone you chose";
       if (!m) {
-        throw new Error(
-          "A chosen person is no longer on the team or their access is paused — pick someone else",
-        );
+        throw new Error(`${step.name}: the person chosen has left the team — pick someone else`);
+      }
+      if (!m.active) {
+        throw new Error(`${step.name}: ${who}'s access is paused or has ended — pick someone else`);
       }
       if (signoffPaused(m.overrides as PermissionOverrides)) {
-        throw new Error("A chosen person can't sign off — pick someone else");
+        throw new Error(`${step.name}: ${who}'s sign-off is paused — pick someone else`);
       }
       if (step.departmentId) {
         const signers = await departmentSignerIds(db, opts.organisationId, step.departmentId);
         if (!signers.includes(entry.userId)) {
-          throw new Error(`${step.name}: pick one of that department's approvers`);
+          throw new Error(
+            `${step.name}: ${who} no longer signs off for that department — pick one of its approvers`,
+          );
         }
       } else if (m.role !== "admin" && step.approverRole && m.role !== step.approverRole) {
         throw new Error(`${step.name}: pick someone from that department`);

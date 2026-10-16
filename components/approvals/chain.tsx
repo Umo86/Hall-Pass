@@ -2,6 +2,7 @@ import { formatDate, formatDateTime, roleLabel } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { DecideButtons } from "./decide-buttons";
 import { DelegateButton } from "./delegate-button";
+import type { PersonOption } from "@/components/people/groups";
 import { STEP_STATE_CLASSES, isPast, stepStateLabel, waitingOnLabel } from "./step-words";
 
 export type ChainInstance = {
@@ -87,7 +88,7 @@ export function ApprovalChain({
   canDelegateIds: Set<string>;
   currentVersionId: string | null;
   requiresInstallPhoto: boolean;
-  delegatableUsers: { id: string; name: string }[];
+  delegatableUsers: PersonOption[];
   /** The record's ref, for the toast after a decision. */
   itemRef?: string;
 }) {
@@ -161,7 +162,7 @@ function ChainStep({
   canDelegate: boolean;
   currentVersionId: string | null;
   requiresInstallPhoto: boolean;
-  delegatableUsers: { id: string; name: string }[];
+  delegatableUsers: PersonOption[];
   itemRef?: string;
 }) {
   const overdue = inst.status === "pending" && isPast(inst.dueAt);
@@ -206,7 +207,11 @@ function ChainStep({
             />
           )}
           {isCurrentRun && canDelegate && inst.status === "pending" && (
-            <DelegateButton instanceId={inst.id} users={delegatableUsers} />
+            <DelegateButton
+              instanceId={inst.id}
+              users={delegatableUsers}
+              currentUserId={inst.assignedUserId}
+            />
           )}
         </div>
       </div>

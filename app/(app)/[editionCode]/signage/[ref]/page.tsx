@@ -8,16 +8,21 @@ import {
   contractors,
   externalGrants,
   halls,
-  memberships,
   signageItems,
   snags as snagsTable,
   sponsors as sponsorsTable,
   suppliers,
-  users,
 } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can, type ApprovalStepCtx, type PermissionOverrides, type StaffRole } from "@/lib/authz";
-import { accessLive, canReceiveSignoff } from "@/lib/access";
+import { can, type ApprovalStepCtx } from "@/lib/authz";
+import {
+  loadTeam,
+  peopleFor,
+  personOptions,
+  signoffRefusal,
+  type PersonOption,
+  type TeamMember,
+} from "@/lib/people";
 import {
   itemAuthzCtx,
   itemProgress,
@@ -38,7 +43,7 @@ import {
   getEntityComments,
   getItemByRef,
   getItemInstances,
-  getItemSnags,
+  getItemSnagsWithPeople,
   getItemVersions,
   artworkInvalidationPreview,
   panelWarning,
@@ -72,7 +77,11 @@ import { LifecycleButtons } from "@/components/signage/lifecycle-buttons";
 import { NextStepCard } from "@/components/signage/next-step-card";
 import { SnagsPanel, type SnagView } from "@/components/signage/snags-panel";
 import { QuickComment } from "@/components/signage/quick-comment";
-import { defaultSignoffPlan, signoffPlanSummary } from "@/components/signage/signoff-summary";
+import {
+  defaultSignoffPlan,
+  signoffPlanSummary,
+  staleSignoffPeople,
+} from "@/components/signage/signoff-summary";
 import { ITEM_SECTION } from "@/lib/edition-path";
 import { PANEL_BLOCKED_MESSAGE, artworkBlockedReason, isVideoArtwork } from "@/lib/artwork-rules";
 import { listStandPanels, standFormOptions } from "@/lib/queries/stand-designs";
@@ -143,15 +152,6 @@ type Item = NonNullable<Awaited<ReturnType<typeof getItemByRef>>>;
 type Bundle = NonNullable<Awaited<ReturnType<typeof loadItemBundle>>>;
 type StaffSession = Awaited<ReturnType<typeof requireStaffSession>>;
 type InstanceRows = Awaited<ReturnType<typeof getItemInstances>>;
-type StaffRow = {
-  id: string;
-  fullName: string | null;
-  email: string;
-  role: StaffRole;
-  overrides: unknown;
-  suspendedAt: Date | null;
-  accessEndsAt: Date | null;
-};
 type Deadlines = Awaited<ReturnType<typeof editionForDeadlines>>;
 
 export default async function ItemDetailPage({
@@ -176,64 +176,51 @@ export default async function ItemDetailPage({
   const tabs = isStand ? STAND_TABS : isPanel ? PANEL_TABS : TABS;
   const tab = resolveTab(sp.tab, tabs);
 
-  const [parent, instanceRows, staffRows, deadlines, [openSnagCount], supplier] = await Promise.all(
-    [
-      // A panel belongs to a stand: link back to it.
-      isPanel && item.parentItemId
-        ? db
-            .select({
-              ref: signageItems.ref,
-              name: signageItems.name,
-              status: signageItems.status,
-              standNumber: signageItems.standNumber,
-              hallName: halls.name,
-            })
-            .from(signageItems)
-            .leftJoin(halls, eq(signageItems.hallId, halls.id))
-            .where(eq(signageItems.id, item.parentItemId))
-            .then((r) => r[0] ?? null)
-        : null,
-      getItemInstances(item.id),
-      // Everyone on the team (names on the sign-off list, suspended people
-      // included); tasks and sign-offs go only to people with access.
-      db
-        .select({
-          id: users.id,
-          fullName: users.fullName,
-          email: users.email,
-          role: memberships.role,
-          overrides: memberships.permissionOverrides,
-          suspendedAt: memberships.suspendedAt,
-          accessEndsAt: memberships.accessEndsAt,
-        })
-        .from(memberships)
-        .innerJoin(users, eq(memberships.userId, users.id))
-        .where(eq(memberships.organisationId, session.organisation.id)),
-      editionForDeadlines(bundle.edition.id),
-      db
-        .select({ n: count() })
-        .from(snagsTable)
-        .where(
-          and(
-            eq(snagsTable.signageItemId, item.id),
-            inArray(snagsTable.status, ["open", "in_progress"]),
-          ),
+  const [parent, instanceRows, team, deadlines, [openSnagCount], supplier] = await Promise.all([
+    // A panel belongs to a stand: link back to it.
+    isPanel && item.parentItemId
+      ? db
+          .select({
+            ref: signageItems.ref,
+            name: signageItems.name,
+            status: signageItems.status,
+            standNumber: signageItems.standNumber,
+            hallName: halls.name,
+          })
+          .from(signageItems)
+          .leftJoin(halls, eq(signageItems.hallId, halls.id))
+          .where(eq(signageItems.id, item.parentItemId))
+          .then((r) => r[0] ?? null)
+      : null,
+    getItemInstances(item.id),
+    // Everyone on the team (names on the sign-off list, suspended people
+    // included); pickers offer only people who can act (lib/people.ts).
+    loadTeam(db, session.organisation.id),
+    editionForDeadlines(bundle.edition.id),
+    db
+      .select({ n: count() })
+      .from(snagsTable)
+      .where(
+        and(
+          eq(snagsTable.signageItemId, item.id),
+          inArray(snagsTable.status, ["open", "in_progress"]),
         ),
-      item.supplierId
-        ? db
-            .select({ name: suppliers.name })
-            .from(suppliers)
-            .where(
-              and(
-                eq(suppliers.id, item.supplierId),
-                eq(suppliers.organisationId, session.organisation.id),
-              ),
-            )
-            .then((r) => r[0] ?? null)
-        : null,
-    ],
-  );
+      ),
+    item.supplierId
+      ? db
+          .select({ name: suppliers.name })
+          .from(suppliers)
+          .where(
+            and(
+              eq(suppliers.id, item.supplierId),
+              eq(suppliers.organisationId, session.organisation.id),
+            ),
+          )
+          .then((r) => r[0] ?? null)
+      : null,
+  ]);
   const openSnags = Number(openSnagCount?.n ?? 0);
+
   const listSegment = ITEM_SECTION[isPanel ? "stand_design" : item.kind];
   const listLabel = isSponsorship
     ? "Sponsorship"
@@ -269,14 +256,31 @@ export default async function ItemDetailPage({
   };
 
   // What happens next: the current round's waiting steps and who holds each.
-  const nameById = new Map(staffRows.map((u) => [u.id, u.fullName || u.email]));
+  const nameById = new Map(team.map((m) => [m.userId, m.name]));
   const deptNames = await departmentNames(
     db,
     instanceRows.map((r) => r.instance.assignedDepartmentId),
   );
+  /** A named person who can't sign their step now is shown with why. */
+  const assigneeLabel = (i: InstanceRows[number]["instance"]): string | null => {
+    if (!i.assignedUserId) return null;
+    const name = nameById.get(i.assignedUserId);
+    if (!name) return null;
+    if (i.stepKindSnapshot !== "approval" || !["pending", "waiting"].includes(i.status)) {
+      return name;
+    }
+    // Someone handed it on purpose need not be in the department.
+    const refusal = signoffRefusal(
+      team.find((m) => m.userId === i.assignedUserId),
+      {
+        departmentId: i.delegatedFromUserId ? null : i.assignedDepartmentId,
+      },
+    );
+    return refusal ? `${name} (${refusal.label.toLowerCase()})` : name;
+  };
   const currentRun = instanceRows.filter((r) => r.instance.runNumber === item.currentRunNumber);
   const whoOf = (i: InstanceRows[number]["instance"]) =>
-    (i.assignedUserId && nameById.get(i.assignedUserId)) ||
+    assigneeLabel(i) ||
     (i.assignedDepartmentId ? (deptNames.get(i.assignedDepartmentId) ?? null) : null) ||
     (i.assignedRole === "supplier"
       ? (supplier?.name ?? "the supplier")
@@ -463,9 +467,16 @@ export default async function ItemDetailPage({
           {!readOnly && (
             <AddTaskDialog
               currentUserId={session.user.id}
-              assignees={staffRows
-                .filter((u) => accessLive(u))
-                .map((u) => ({ id: u.id, name: u.fullName || u.email }))}
+              currentDepartmentId={
+                session.actor.kind === "staff" ? (session.actor.departmentId ?? null) : null
+              }
+              assignees={personOptions(
+                team,
+                { type: "task" },
+                {
+                  organisationId: session.organisation.id,
+                },
+              )}
               canAssign={can(session.actor, { type: "task.assign" })}
               entity={{
                 type: "signage_item",
@@ -571,7 +582,14 @@ export default async function ItemDetailPage({
       </nav>
 
       {tab === "details" && isStand && (
-        <StandDetails item={item} bundle={bundle} editionCode={editionCode} canEdit={canEdit} />
+        <StandDetails
+          item={item}
+          bundle={bundle}
+          editionCode={editionCode}
+          canEdit={canEdit}
+          team={team}
+          viewerId={session.user.id}
+        />
       )}
       {tab === "details" && !isStand && (
         <DetailsTab
@@ -584,7 +602,12 @@ export default async function ItemDetailPage({
           canCertificate={can(session.actor, { type: "export.run", kind: "certificate" })}
           canManageSnags={can(session.actor, { type: "snag.manage" }) && !readOnly}
           deadlines={deadlines}
-          staffRows={staffRows}
+          team={team}
+          viewer={{
+            id: session.user.id,
+            departmentId:
+              session.actor.kind === "staff" ? (session.actor.departmentId ?? null) : null,
+          }}
           supplierName={supplier?.name ?? null}
           waitingOn={pending.map((p) => p.who)}
           startEditing={sp.edit === "1"}
@@ -597,7 +620,8 @@ export default async function ItemDetailPage({
           bundle={bundle}
           session={session}
           instanceRows={instanceRows}
-          staffRows={staffRows}
+          team={team}
+          assigneeLabel={assigneeLabel}
           deptNames={deptNames}
           canDecideIds={canDecideIds}
           canDelegateIds={canDelegateIds}
@@ -650,7 +674,8 @@ async function DetailsTab({
   canCertificate,
   canManageSnags,
   deadlines,
-  staffRows,
+  team,
+  viewer,
   supplierName,
   waitingOn,
   startEditing,
@@ -665,7 +690,8 @@ async function DetailsTab({
   canCertificate: boolean;
   canManageSnags: boolean;
   deadlines: Deadlines;
-  staffRows: StaffRow[];
+  team: TeamMember[];
+  viewer: { id: string; departmentId: string | null };
   supplierName: string | null;
   waitingOn: string[];
   startEditing: boolean;
@@ -674,7 +700,7 @@ async function DetailsTab({
 }) {
   const isSponsorship = item.kind === "sponsorship_item";
   const isPanel = item.kind === "stand_panel";
-  const [options, snags, photoUrl, productPhotoUrl, contractor] = await Promise.all([
+  const [options, snags, photoUrl, productPhotoUrl, contractor, ownerOptions] = await Promise.all([
     itemFormOptions({
       organisationId: bundle.organisation.id,
       editionId: bundle.edition.id,
@@ -682,8 +708,11 @@ async function DetailsTab({
       workflowId: item.workflowId,
       includeTypeId: item.itemTypeId,
       includeSupplierId: item.supplierId,
+      viewer,
+      ownerUserId: item.ownerUserId,
+      plan: item.signoffs ?? null,
     }),
-    isSponsorship ? [] : getItemSnags(item.id),
+    isSponsorship ? [] : getItemSnagsWithPeople(item.id),
     !isSponsorship && item.installPhotoPath?.includes("/")
       ? getInlineUrl("photos", item.installPhotoPath).catch(() => null)
       : null,
@@ -695,6 +724,21 @@ async function DetailsTab({
           .where(eq(contractors.id, item.installContractorId))
           .then((r) => r[0]?.name ?? null)
       : null,
+    // The owner as owners are offered: a label when they can't own it now.
+    item.ownerUserId
+      ? peopleFor(
+          db,
+          bundle.organisation.id,
+          {
+            type: "owner",
+            item: {
+              kind: item.kind,
+              sponsored: Boolean(item.sponsorId) || item.category === "sponsor",
+            },
+          },
+          { include: [item.ownerUserId], team },
+        )
+      : ([] as PersonOption[]),
   ]);
   const snagViews: SnagView[] = await Promise.all(
     snags.map(async (snag) => ({
@@ -711,6 +755,8 @@ async function DetailsTab({
         : null,
       createdAt: snag.createdAt.toISOString(),
       resolvedAt: snag.resolvedAt?.toISOString() ?? null,
+      raisedByName: snag.raisedByName,
+      resolvedByName: snag.resolvedByName,
     })),
   );
   const nameOf = (list: { id: string; name: string }[], id: string | null) =>
@@ -725,16 +771,49 @@ async function DetailsTab({
   const printBy = deadlines ? printDeadline(item, deadlines) : item.printDeadline;
   const deliveryBy =
     item.deliveryDate ?? (deadlines ? effectiveDeadline(deadlines, "delivery") : null);
-  const owner = item.ownerUserId
-    ? (staffRows.find((u) => u.id === item.ownerUserId)?.fullName ??
-      staffRows.find((u) => u.id === item.ownerUserId)?.email ??
-      null)
-    : null;
+  // "Sam Lee · Marketing", with why when they can't own it now.
+  const ownerOption = ownerOptions.find((p) => p.id === item.ownerUserId) ?? null;
+  const changeLink = (hash: string, label: string) =>
+    canEdit ? (
+      <>
+        {" · "}
+        <Link href={`?tab=details&edit=1#${hash}`} className="link font-normal">
+          {label}
+        </Link>
+      </>
+    ) : null;
+  const owner = ownerOption ? (
+    <span>
+      {ownerOption.name}
+      {ownerOption.departmentName && (
+        <span className="text-muted-foreground font-normal"> · {ownerOption.departmentName}</span>
+      )}
+      {ownerOption.unavailable && (
+        <>
+          {" "}
+          <span className="font-normal text-amber-800 dark:text-amber-300">
+            ({ownerOption.unavailable})
+          </span>
+          {!isPanel && changeLink("ownerUserId", "Change")}
+        </>
+      )}
+    </span>
+  ) : null;
   const steps = options.signoffSteps ?? [];
   const plan =
     item.signoffs ??
     defaultSignoffPlan(steps, isSponsorship ? "sponsor" : (item.category ?? "organiser"));
-  const planSummary = steps.length > 0 ? signoffPlanSummary(steps, plan) : null;
+  const planText = steps.length > 0 ? signoffPlanSummary(steps, plan) : null;
+  const stalePeople = steps.length > 0 ? staleSignoffPeople(steps, plan) : [];
+  const planSummary = planText ? (
+    <span>
+      {planText}
+      {stalePeople.length > 0 &&
+        !isPanel &&
+        !specLocked(item.status) &&
+        changeLink("signoffs", "Change")}
+    </span>
+  ) : null;
   // Sponsor signage without a price of its own is part of a package, not a sale.
   const sold = saleState(item) === "sold";
   const countdown = item.orderByDate
@@ -968,7 +1047,7 @@ async function DetailsTab({
       {[
         parent.hallName,
         parent.standNumber ? `Stand ${parent.standNumber}` : null,
-        planSummary ? `Signed off by ${planSummary}` : null,
+        planText ? `Signed off by ${planText}` : null,
       ]
         .filter(Boolean)
         .join(" · ") || parent.name}
@@ -1081,7 +1160,8 @@ async function ArtworkAndSignOff({
   bundle,
   session,
   instanceRows,
-  staffRows,
+  team,
+  assigneeLabel,
   deptNames,
   canDecideIds,
   canDelegateIds,
@@ -1102,7 +1182,8 @@ async function ArtworkAndSignOff({
   session: StaffSession;
   now: Date;
   instanceRows: InstanceRows;
-  staffRows: StaffRow[];
+  team: TeamMember[];
+  assigneeLabel: (i: InstanceRows[number]["instance"]) => string | null;
   deptNames: Map<string, string>;
   canDecideIds: Set<string>;
   canDelegateIds: Set<string>;
@@ -1131,7 +1212,6 @@ async function ArtworkAndSignOff({
   const commentCount = Number(comments?.n ?? 0);
 
   const versionById = new Map(versions.map((v) => [v.version.id, v.version.versionNumber]));
-  const nameById = new Map(staffRows.map((u) => [u.id, u.fullName || u.email]));
   const chain: ChainInstance[] = instanceRows.map(({ instance, decider }) => ({
     id: instance.id,
     runNumber: instance.runNumber,
@@ -1153,7 +1233,7 @@ async function ArtworkAndSignOff({
       : null,
     dueAt: instance.dueAt,
     noSupplierFallback: instance.noSupplierFallback,
-    assigneeName: instance.assignedUserId ? (nameById.get(instance.assignedUserId) ?? null) : null,
+    assigneeName: assigneeLabel(instance),
     confirmedOn: instance.confirmedOn,
   }));
   // Sign-off is the decisions on the artwork; production and install are
@@ -1200,10 +1280,14 @@ async function ArtworkAndSignOff({
       };
     }),
   );
-  // Sign-offs go only to people who can sign now (canReceiveSignoff).
-  const delegatableUsers = staffRows
-    .filter((u) => canReceiveSignoff({ ...u, overrides: u.overrides as PermissionOverrides }))
-    .map((u) => ({ id: u.id, name: u.fullName || u.email }));
+  // Sign-offs go only to people who can sign now (lib/people.ts, canReceiveSignoff).
+  const delegatableUsers = personOptions(
+    team,
+    { type: "signoff" },
+    {
+      organisationId: session.organisation.id,
+    },
+  );
   const noun =
     item.kind === "stand_design" ? "design" : item.kind === "stand_panel" ? "graphic" : "artwork";
 
@@ -1385,18 +1469,31 @@ async function StandDetails({
   bundle,
   editionCode,
   canEdit,
+  team,
+  viewerId,
 }: {
   item: Item;
   bundle: Bundle;
   editionCode: string;
   canEdit: boolean;
+  team: TeamMember[];
+  viewerId: string;
 }) {
-  const options = await standFormOptions({
-    organisationId: bundle.organisation.id,
-    editionId: bundle.edition.id,
-    workflowId: item.workflowId,
-    includeSupplierId: item.supplierId,
-  });
+  const [options, owners] = await Promise.all([
+    standFormOptions({
+      organisationId: bundle.organisation.id,
+      editionId: bundle.edition.id,
+      workflowId: item.workflowId,
+      includeSupplierId: item.supplierId,
+    }),
+    // Who can run a feature stand; its panels follow.
+    peopleFor(
+      db,
+      bundle.organisation.id,
+      { type: "owner", item: { kind: "stand_design", sponsored: Boolean(item.sponsorId) } },
+      { include: [item.ownerUserId], team },
+    ),
+  ]);
   return (
     <div className="grid gap-4">
       {!canEdit && (
@@ -1425,8 +1522,11 @@ async function StandDetails({
           sponsorId: item.sponsorId,
           description: item.description,
           signoffs: item.signoffs ?? null,
+          ownerUserId: item.ownerUserId,
         }}
         options={options}
+        owners={owners}
+        viewerId={viewerId}
       />
     </div>
   );

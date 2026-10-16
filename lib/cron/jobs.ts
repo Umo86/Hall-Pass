@@ -1,19 +1,6 @@
 import { appUrl } from "@/lib/app-url";
 import "server-only";
-import {
-  and,
-  count,
-  eq,
-  gte,
-  inArray,
-  isNotNull,
-  isNull,
-  lte,
-  max,
-  ne,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNotNull, isNull, max, or, sql } from "drizzle-orm";
 import { s3Delete, s3Enabled, s3List } from "@/lib/storage";
 import { databaseSupabaseRef, supabaseUrl } from "@/lib/auth/supabase-config";
 import { db, type Db, type Tx } from "@/lib/db/client";
@@ -30,11 +17,11 @@ import {
   signageItems,
   notifications,
   standSubmissions,
-  tasks,
   users,
 } from "@/lib/db/schema";
 import { artworkDue, diffDaysIso, standDesignDue } from "@/lib/deadlines";
 import { editionForDeadlines } from "@/lib/queries/editions";
+import { dueTaskCounts } from "@/lib/queries/tasks";
 import { notify } from "@/lib/notify";
 import { sendEmail } from "@/lib/email/send";
 import { renderNotificationEmail } from "@/lib/email/template";
@@ -577,11 +564,15 @@ export async function dailyDigest(today: string): Promise<JobResult> {
  * Idempotent per day: skipped when they already had one in the last 20 hours.
  */
 export async function taskReminders(today: string): Promise<JobResult> {
-  const due = await db
-    .select({ userId: tasks.assignedToUserId, n: count() })
-    .from(tasks)
-    .where(and(ne(tasks.status, "done"), lte(tasks.dueDate, today)))
-    .groupBy(tasks.assignedToUserId);
+  // The same count as My Work (overdue + due today, top-level tasks, a late
+  // subtask counting its task), per person per organisation.
+  const counts = await dueTaskCounts({ today });
+  const perUser = new Map<string, number>();
+  for (const c of counts) {
+    const n = c.overdue + c.dueToday;
+    if (n > 0) perUser.set(c.userId, (perUser.get(c.userId) ?? 0) + n);
+  }
+  const due = [...perUser].map(([userId, n]) => ({ userId, n }));
   let sent = 0;
   let skipped = 0;
   const since = new Date(Date.now() - 20 * 3_600_000);

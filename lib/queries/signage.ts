@@ -8,6 +8,7 @@ import {
   auditLog,
   comments,
   contractors,
+  externalGrants,
   halls,
   itemTypes,
   locations,
@@ -33,6 +34,7 @@ import { todayInLondon } from "@/lib/today";
 import { editionForDeadlines } from "@/lib/queries/editions";
 import { SIGNAGE_KINDS } from "@/lib/edition-path";
 import { loadRun } from "@/lib/workflow/persist";
+import { alias } from "drizzle-orm/pg-core";
 
 /** A waiting sign-off or confirmation on a list row. */
 export type ScheduleStep = {
@@ -69,6 +71,8 @@ export type ScheduleRow = {
   supplierName: string | null;
   ownerRole: string;
   ownerUserId: string | null;
+  /** The owner's name (or email). */
+  ownerName: string | null;
   widthMm: number | null;
   heightMm: number | null;
   quantity: number;
@@ -100,10 +104,13 @@ export async function listScheduleRows(
   opts: { viewer?: StaffActor; today?: string } = {},
 ): Promise<ScheduleRow[]> {
   const today = opts.today ?? todayInLondon();
+  const owner = alias(users, "item_owner");
   const [rows, deadlines] = await Promise.all([
     db
       .select({
         item: signageItems,
+        ownerName: owner.fullName,
+        ownerEmail: owner.email,
         typeName: itemTypes.name,
         format: itemTypes.format,
         hallName: halls.name,
@@ -120,6 +127,7 @@ export async function listScheduleRows(
       .leftJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
       .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
       .leftJoin(artworkVersions, eq(signageItems.currentArtworkVersionId, artworkVersions.id))
+      .leftJoin(owner, eq(owner.id, signageItems.ownerUserId))
       // Everything for the show — organiser signage, sponsor signage and the
       // items sold in the Sponsorship section — in one schedule.
       .where(
@@ -231,6 +239,7 @@ export async function listScheduleRows(
       supplierName: r.supplierName,
       ownerRole: r.item.ownerRole,
       ownerUserId: r.item.ownerUserId,
+      ownerName: r.ownerName || r.ownerEmail || null,
       widthMm: r.item.widthMm,
       heightMm: r.item.heightMm,
       quantity: r.item.quantity,
@@ -567,6 +576,30 @@ export async function getItemSnags(itemId: string) {
     .orderBy(desc(snags.createdAt));
 }
 
+/** An item's snags with who raised and who fixed each one (names, not ids). */
+export async function getItemSnagsWithPeople(itemId: string) {
+  const raiser = alias(users, "snag_raiser");
+  const fixer = alias(users, "snag_fixer");
+  const rows = await db
+    .select({
+      snag: snags,
+      raisedName: raiser.fullName,
+      raisedEmail: raiser.email,
+      fixedName: fixer.fullName,
+      fixedEmail: fixer.email,
+    })
+    .from(snags)
+    .leftJoin(raiser, eq(raiser.id, snags.raisedByUserId))
+    .leftJoin(fixer, eq(fixer.id, snags.resolvedBy))
+    .where(eq(snags.signageItemId, itemId))
+    .orderBy(desc(snags.createdAt));
+  return rows.map((r) => ({
+    ...r.snag,
+    raisedByName: r.raisedName || r.raisedEmail || null,
+    resolvedByName: r.fixedName || r.fixedEmail || null,
+  }));
+}
+
 /**
  * How many approvals a new version would invalidate — shown in the upload
  * dialog ("This will invalidate 3 approvals") before the user confirms.
@@ -644,7 +677,12 @@ export type OnsiteRow = {
     severity: string;
     status: string;
     photoPath: string | null;
+    /** Who reported it, when known, and when. */
+    raisedByName: string | null;
+    raisedAt: string;
   }[];
+  /** Someone at the item's supplier can sign in (a live, accepted portal invitation). */
+  supplierHasAccess: boolean;
   currentArtworkVersionId: string | null;
   /**
    * The earliest production confirmation still waiting in the current
@@ -719,11 +757,37 @@ export async function listOnsiteRows(editionId: string): Promise<OnsiteRow[]> {
       )
       .orderBy(asc(approvalInstances.sortOrderSnapshot)),
     db
-      .select()
+      .select({ snag: snags, raisedName: users.fullName, raisedEmail: users.email })
       .from(snags)
+      .leftJoin(users, eq(users.id, snags.raisedByUserId))
       .where(and(inArray(snags.signageItemId, ids), inArray(snags.status, ["open", "in_progress"])))
       .orderBy(desc(snags.createdAt)),
   ]);
+  // Suppliers with someone who can sign in for this event (an accepted,
+  // live invitation of an active account).
+  const supplierIds = [
+    ...new Set(rows.map((r) => r.item.supplierId).filter((x): x is string => Boolean(x))),
+  ];
+  const withAccess = new Set<string>();
+  if (supplierIds.length > 0) {
+    const grants = await db
+      .select({ scopeId: externalGrants.scopeId, expiresAt: externalGrants.expiresAt })
+      .from(externalGrants)
+      .where(
+        and(
+          eq(externalGrants.editionId, editionId),
+          eq(externalGrants.role, "supplier"),
+          eq(externalGrants.scopeType, "supplier"),
+          inArray(externalGrants.scopeId, supplierIds),
+          isNotNull(externalGrants.userId),
+          isNull(externalGrants.revokedAt),
+        ),
+      );
+    for (const g of grants) {
+      if (g.scopeId && (!g.expiresAt || g.expiresAt.getTime() > Date.now()))
+        withAccess.add(g.scopeId);
+    }
+  }
   const deptNames = await departmentNames(
     db,
     confirmations.map((c) => c.instance.assignedDepartmentId),
@@ -738,7 +802,7 @@ export async function listOnsiteRows(editionId: string): Promise<OnsiteRow[]> {
     );
     const last = round[round.length - 1];
     const first = round.find((c) => c.instance.status === "pending");
-    const itemSnags = openSnagRows.filter((s) => s.signageItemId === r.item.id);
+    const itemSnags = openSnagRows.filter((s) => s.snag.signageItemId === r.item.id);
     const p = first?.instance;
     return {
       id: r.item.id,
@@ -756,13 +820,16 @@ export async function listOnsiteRows(editionId: string): Promise<OnsiteRow[]> {
       supplierName: r.supplierName,
       installedAt: r.item.installedAt?.toISOString() ?? null,
       openSnags: itemSnags.length,
-      openSnagList: itemSnags.map((s) => ({
+      openSnagList: itemSnags.map(({ snag: s, raisedName, raisedEmail }) => ({
         id: s.id,
         description: s.description,
         severity: s.severity,
         status: s.status,
         photoPath: s.photoPath,
+        raisedByName: raisedName || raisedEmail || null,
+        raisedAt: s.createdAt.toISOString(),
       })),
+      supplierHasAccess: Boolean(r.item.supplierId && withAccess.has(r.item.supplierId)),
       currentArtworkVersionId: r.item.currentArtworkVersionId,
       pendingConfirmation: p
         ? {

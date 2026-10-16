@@ -152,3 +152,19 @@ export function snagLabel(kind: string, status: string): string | null {
   if (status === "installed" || status === "snagged") return "Raise snag";
   return null;
 }
+
+/**
+ * "Big Print Co can't sign in — confirm it yourself": on a supplier's step
+ * the viewer may confirm, when nobody at the supplier can sign in.
+ */
+export function supplierCantSignIn(input: {
+  canDecide: boolean;
+  assignedRole: string | null;
+  assignedUserId: string | null;
+  supplierName: string | null;
+  supplierHasAccess: boolean;
+}): string | null {
+  if (!input.canDecide || input.assignedRole !== "supplier" || input.assignedUserId) return null;
+  if (!input.supplierName || input.supplierHasAccess) return null;
+  return `${input.supplierName} can't sign in — confirm it yourself`;
+}

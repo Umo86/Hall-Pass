@@ -10,7 +10,7 @@ import { getInlineUrl } from "@/lib/storage";
 import { todayInLondon } from "@/lib/today";
 import { Page, PageHeader } from "@/components/page-header";
 import { OnsiteChecklist, type OnsiteCard } from "@/components/onsite/onsite-checklist";
-import { onsiteAction } from "@/components/onsite/rules";
+import { onsiteAction, supplierCantSignIn } from "@/components/onsite/rules";
 
 export const metadata = { title: "Onsite" };
 export const dynamic = "force-dynamic";
@@ -86,9 +86,18 @@ export default async function OnsitePage({ params }: { params: Promise<{ edition
             photoUrl: s.photoPath?.includes("/")
               ? await getInlineUrl("photos", s.photoPath).catch(() => null)
               : null,
+            raisedByName: s.raisedByName,
+            raisedAt: s.raisedAt,
           })),
         ),
         expectedLockedVersionId: r.currentArtworkVersionId,
+        note: supplierCantSignIn({
+          canDecide,
+          assignedRole: p?.assignedRole ?? null,
+          assignedUserId: p?.assignedUserId ?? null,
+          supplierName: r.supplierName,
+          supplierHasAccess: r.supplierHasAccess,
+        }),
         action: onsiteAction({
           kind: r.kind,
           status: r.status,

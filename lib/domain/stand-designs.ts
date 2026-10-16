@@ -187,22 +187,41 @@ type PanelPlace = {
   standNumber: string | null;
   category: string | null;
   sponsorId: string | null;
+  /** Who runs it: a panel's owner is always its stand's owner. */
+  ownerUserId?: string | null;
+  ownerRole?: "ops" | "marketing";
 };
 
+type PanelPatch = Partial<
+  Omit<PanelPlace, "ownerRole"> & {
+    ownerRole: "ops" | "marketing";
+    signoffs: SignoffPlan | null;
+    isSponsorDeliverable: boolean;
+  }
+>;
+
 /**
- * What a panel takes from its stand after the stand changes: its place
- * (hall, location, stand no.) until it is installed, and — while it is
- * still a draft — whose stand it is and who signs it off (the stand's plan
- * already mapped onto the panel's workflow). Only real differences.
+ * What a panel takes from its stand after the stand changes: its owner
+ * (always — a panel's owner can only change on its stand), its place (hall,
+ * location, stand no.) until it is installed, and — while it is still a
+ * draft — whose stand it is and who signs it off (the stand's plan already
+ * mapped onto the panel's workflow). Only real differences.
  */
 export function panelSyncPatch(
   stand: PanelPlace,
   panel: PanelPlace & { status: string; signoffs: SignoffPlan | null },
   mappedSignoffs: SignoffPlan | null,
-): Partial<PanelPlace & { signoffs: SignoffPlan | null; isSponsorDeliverable: boolean }> {
-  const patch: Partial<
-    PanelPlace & { signoffs: SignoffPlan | null; isSponsorDeliverable: boolean }
-  > = {};
+): PanelPatch {
+  const patch: PanelPatch = {};
+  if (
+    stand.ownerUserId !== undefined &&
+    (stand.ownerUserId ?? null) !== (panel.ownerUserId ?? null)
+  ) {
+    patch.ownerUserId = stand.ownerUserId ?? null;
+  }
+  if (stand.ownerRole && panel.ownerRole && stand.ownerRole !== panel.ownerRole) {
+    patch.ownerRole = stand.ownerRole;
+  }
   if (PANEL_PLACED.includes(panel.status)) return patch;
   for (const key of ["hallId", "locationId", "standNumber"] as const) {
     if ((stand[key] ?? null) !== (panel[key] ?? null)) patch[key] = stand[key] ?? null;

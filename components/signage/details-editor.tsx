@@ -27,6 +27,13 @@ export function DetailsEditor({
   const router = useRouter();
   const pathname = usePathname();
   const search = useSearchParams();
+  // A "Change" link on this page (`?edit=1#ownerUserId`) opens the form too.
+  const editParam = search.get("edit") === "1";
+  const [seenEditParam, setSeenEditParam] = useState(editParam);
+  if (editParam !== seenEditParam) {
+    setSeenEditParam(editParam);
+    if (editParam && canEdit) setEditing(true);
+  }
 
   function leave() {
     setEditing(false);

@@ -1,24 +1,30 @@
 import "server-only";
 import { listDepartments } from "@/lib/domain/departments";
-import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   contractors,
   halls,
   itemTypes,
   locations,
-  memberships,
   signageItems,
   sponsorEntitlements,
   sponsors,
   supplierServiceLinks,
   supplierServices,
   suppliers,
-  users,
   workflows,
 } from "@/lib/db/schema";
 import { defaultSignageWorkflowId } from "@/lib/domain/signage";
-import { activeMembership } from "@/lib/users/active";
+import {
+  eligibleIds,
+  loadTeam,
+  peopleFor,
+  signoffRefusal,
+  type PersonOption,
+  type TeamMember,
+} from "@/lib/people";
+import type { SignoffPlan } from "@/lib/workflow/types";
 import { loadStepDefs } from "@/lib/workflow/persist";
 import { isDepartmentStep } from "@/lib/workflow/signoffs";
 import type { ItemFormOptions } from "@/components/signage/item-form";
@@ -43,6 +49,12 @@ export async function itemFormOptions(opts: {
    * saving never drops a supplier the picker didn't list.
    */
   includeSupplierId?: string | null;
+  /** The person filling the form in: offered first as "Me". */
+  viewer?: { id: string; departmentId: string | null } | null;
+  /** The item's owner now (edit): kept in the picker, labelled if they can't own it any more. */
+  ownerUserId?: string | null;
+  /** The item's stored sign-off choices (edit): named people who can't sign are kept, labelled. */
+  plan?: SignoffPlan | null;
 }): Promise<ItemFormOptions> {
   const isSignage = opts.kind === "signage";
   const [
@@ -134,25 +146,10 @@ export async function itemFormOptions(opts: {
           )
           .orderBy(desc(workflows.isDefault), asc(workflows.name))
       : [],
-    // Who can own an item: anyone with access on the team except viewers.
-    db
-      .select({
-        id: users.id,
-        fullName: users.fullName,
-        email: users.email,
-        role: memberships.role,
-      })
-      .from(memberships)
-      .innerJoin(users, eq(memberships.userId, users.id))
-      .where(
-        and(
-          eq(memberships.organisationId, opts.organisationId),
-          ne(memberships.role, "viewer"),
-          activeMembership(),
-        ),
-      )
-      .orderBy(asc(users.fullName), asc(users.email)),
+    // Who can own an item, and the names on its sign-off: lib/people.ts.
+    loadTeam(db, opts.organisationId),
   ]);
+  const team = peopleRows;
   // Archived suppliers are left out of pickers, except one the item still uses.
   const keepArchived = new Set<string>();
   if (opts.includeSupplierId) keepArchived.add(opts.includeSupplierId);
@@ -202,19 +199,69 @@ export async function itemFormOptions(opts: {
     suppliers: [...supplierMap.values()],
     contractors: contractorRows,
     workflows: wfRows,
-    people: peopleRows.map((p) => ({ id: p.id, name: p.fullName || p.email, role: p.role })),
+    owners: await ownerChoices(team, {
+      organisationId: opts.organisationId,
+      kind: opts.kind,
+      ownerUserId: opts.ownerUserId ?? null,
+    }),
+    viewer: opts.viewer ?? null,
     signoffSteps: steps.filter(isDepartmentStep).map((s) => {
       const dept = s.departmentId ? deptById.get(s.departmentId) : undefined;
+      const people = (dept?.approvers ?? [])
+        .filter((a) => a.active && a.userId)
+        .map((a) => ({ id: a.userId!, name: a.fullName, jobTitle: a.jobTitle }));
+      // Someone this item names for the step who can't sign it now stays
+      // visible, with why, so the choice is never silently swapped.
+      const unavailable = (opts.plan ?? [])
+        .filter((p) => p.stepId === s.id && p.userId && !people.some((x) => x.id === p.userId))
+        .map((p) => {
+          const m = team.find((x) => x.userId === p.userId);
+          return {
+            id: p.userId!,
+            name: m?.name ?? "Someone who has left",
+            reason:
+              signoffRefusal(m, { departmentId: s.departmentId ?? null })?.label ??
+              "Can't sign off",
+          };
+        });
       return {
         id: s.id,
         name: s.name,
         departmentName: dept?.name ?? s.name.replace(/ sign-off$/, ""),
         defaultUserId: s.approverType === "user" ? s.approverUserId : null,
         defaultFor: s.defaultFor ?? [],
-        people: (dept?.approvers ?? [])
-          .filter((a) => a.active && a.userId)
-          .map((a) => ({ id: a.userId!, name: a.fullName, jobTitle: a.jobTitle })),
+        people,
+        ...(unavailable.length > 0 ? { unavailable } : {}),
       };
     }),
   };
+}
+
+/**
+ * Who can own an item of this kind, for organiser and for sponsor signage
+ * (Sales may own sponsor signage only). Each list also carries the people
+ * the other one offers, labelled, so switching the category never drops
+ * the person picked; the current owner is always there.
+ */
+async function ownerChoices(
+  team: TeamMember[],
+  opts: {
+    organisationId: string;
+    kind: "signage" | "sponsorship_item";
+    ownerUserId: string | null;
+  },
+): Promise<Record<"organiser" | "sponsor", PersonOption[]>> {
+  const purpose = (sponsored: boolean) =>
+    ({ type: "owner", item: { kind: opts.kind, sponsored } }) as const;
+  const either = [
+    ...eligibleIds(team, purpose(false), { organisationId: opts.organisationId }),
+    ...eligibleIds(team, purpose(true), { organisationId: opts.organisationId }),
+    opts.ownerUserId,
+  ];
+  const [organiser, sponsor] = await Promise.all(
+    [false, true].map((sponsored) =>
+      peopleFor(db, opts.organisationId, purpose(sponsored), { include: either, team }),
+    ),
+  );
+  return { organiser, sponsor };
 }

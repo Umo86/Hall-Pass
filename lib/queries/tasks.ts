@@ -188,23 +188,34 @@ export async function boardTasks(opts: {
 }
 
 /**
- * My open tasks at a glance: overdue (the task or one of its subtasks), due
- * today, and due in the next seven days. One query; drives the My Work strip
- * and the count next to My Work in the navigation (overdue + due today).
+ * Open top-level tasks per person: overdue (the task or one of its
+ * subtasks), due today, and due in the next seven days. The one count both
+ * My Work (its strip and the number by My Work in the navigation: overdue +
+ * due today) and the morning task reminder use, so they always agree.
  */
-export async function myTaskSummary(opts: {
-  organisationId: string;
-  userId: string;
+export async function dueTaskCounts(opts: {
   today?: string;
-}): Promise<{ overdue: number; dueToday: number; dueThisWeek: number }> {
+  organisationId?: string;
+  userId?: string;
+}): Promise<
+  {
+    organisationId: string;
+    userId: string;
+    overdue: number;
+    dueToday: number;
+    dueThisWeek: number;
+  }[]
+> {
   const today = opts.today ?? todayInLondon();
   const weekEnd = addDaysIso(today, 7);
   const lateSubtask = sql`exists (
     select 1 from ${tasks} sub
     where sub.parent_task_id = ${tasks.id} and sub.status <> 'done' and sub.due_date < ${today}
   )`;
-  const [row] = await db
+  const rows = await db
     .select({
+      organisationId: tasks.organisationId,
+      userId: tasks.assignedToUserId,
       overdue: sql<number>`(count(*) filter (where ${tasks.dueDate} < ${today} or ${lateSubtask}))::int`,
       dueToday: sql<number>`(count(*) filter (where ${tasks.dueDate} = ${today} and not ${lateSubtask}))::int`,
       dueThisWeek: sql<number>`(count(*) filter (where ${tasks.dueDate} >= ${today} and ${tasks.dueDate} <= ${weekEnd}))::int`,
@@ -212,16 +223,37 @@ export async function myTaskSummary(opts: {
     .from(tasks)
     .where(
       and(
-        eq(tasks.organisationId, opts.organisationId),
-        eq(tasks.assignedToUserId, opts.userId),
+        opts.organisationId ? eq(tasks.organisationId, opts.organisationId) : undefined,
+        opts.userId ? eq(tasks.assignedToUserId, opts.userId) : undefined,
         isNull(tasks.parentTaskId),
         ne(tasks.status, "done"),
         or(lte(tasks.dueDate, weekEnd), lateSubtask),
       ),
-    );
+    )
+    .groupBy(tasks.organisationId, tasks.assignedToUserId);
+  return rows.map((r) => ({
+    organisationId: r.organisationId,
+    userId: r.userId,
+    overdue: Number(r.overdue ?? 0),
+    dueToday: Number(r.dueToday ?? 0),
+    dueThisWeek: Number(r.dueThisWeek ?? 0),
+  }));
+}
+
+/**
+ * My open tasks at a glance: overdue (the task or one of its subtasks), due
+ * today, and due in the next seven days (dueTaskCounts). Drives the My Work
+ * strip and the count next to My Work in the navigation (overdue + due today).
+ */
+export async function myTaskSummary(opts: {
+  organisationId: string;
+  userId: string;
+  today?: string;
+}): Promise<{ overdue: number; dueToday: number; dueThisWeek: number }> {
+  const [row] = await dueTaskCounts(opts);
   return {
-    overdue: Number(row?.overdue ?? 0),
-    dueToday: Number(row?.dueToday ?? 0),
-    dueThisWeek: Number(row?.dueThisWeek ?? 0),
+    overdue: row?.overdue ?? 0,
+    dueToday: row?.dueToday ?? 0,
+    dueThisWeek: row?.dueThisWeek ?? 0,
   };
 }

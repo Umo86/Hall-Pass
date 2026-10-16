@@ -24,6 +24,10 @@ export function SignoffPicker({
       {steps.map((step) => {
         const choice = plan.find((p) => p.stepId === step.id);
         const people = step.people;
+        // Someone this item names who can't sign it now stays listed, with why.
+        const stale = choice?.userId
+          ? step.unavailable?.find((u) => u.id === choice.userId)
+          : undefined;
         return (
           <li key={step.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
             <label className="flex min-w-48 flex-1 items-center gap-2 text-sm">
@@ -44,6 +48,11 @@ export function SignoffPicker({
                 className="h-8 w-full sm:w-60"
               >
                 <option value="">Anyone in {step.departmentName}</option>
+                {stale && (
+                  <option value={stale.id}>
+                    {stale.name} ({stale.reason})
+                  </option>
+                )}
                 {people.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
@@ -52,6 +61,12 @@ export function SignoffPicker({
                   </option>
                 ))}
               </SelectNative>
+            )}
+            {stale && (
+              <p className="w-full text-xs text-amber-800 dark:text-amber-300">
+                {stale.name} can&apos;t sign this off now ({stale.reason.toLowerCase()}) — pick
+                someone else, or leave it to anyone in {step.departmentName}.
+              </p>
             )}
             {choice && people.length === 0 && (
               <p className="w-full text-xs text-amber-800 dark:text-amber-300">

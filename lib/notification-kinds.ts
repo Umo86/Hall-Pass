@@ -9,6 +9,7 @@ export const MUTABLE_KINDS = [
   "snag",
   "delegation",
   "item_created",
+  "item_assigned",
   "supplier_needed",
   "task_assigned",
   "task_reminder",
@@ -28,6 +29,7 @@ export const KIND_LABELS: Record<MutableKind, string> = {
   snag: "Snags raised or resolved on items I own",
   delegation: "A sign-off is delegated to me",
   item_created: "New items in my area",
+  item_assigned: "An item is given to me",
   supplier_needed: "An approved item still has no supplier (Operations)",
   task_assigned: "A task is assigned to me (or one I gave out is done)",
   task_reminder: "Morning reminder of my tasks due",
@@ -67,6 +69,7 @@ export function notificationGroup(kind: string): NotificationGroup {
   if (
     kind === "artwork_uploaded" ||
     kind === "item_created" ||
+    kind === "item_assigned" ||
     kind === "comment" ||
     kind === "snag" ||
     kind === "supplier_needed" ||

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { approvalInstances, signageItems, suppliers } from "@/lib/db/schema";
 import {
@@ -10,9 +10,19 @@ import {
   bulkConfirmSkipReason,
   itemAuthzCtx,
   loadItemBundle,
+  notifyOwnerChange,
   syncConfirmationDueDates,
   type BulkConfirmStep,
+  type OwnerChange,
 } from "@/lib/domain/signage";
+import {
+  loadTeam,
+  ownerRoleOf,
+  refusalFor,
+  refusalMessage,
+  type OwnableItem,
+  type TeamMember,
+} from "@/lib/people";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { can, missingAbilityMessage, type ApprovalStepCtx } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
@@ -32,8 +42,11 @@ const schema = z.object({
     "close",
     "confirm_print",
     "confirm_delivered",
+    "set_owner",
   ]),
   supplierId: z.string().uuid().optional().nullable(),
+  /** Change owner: who gets the items. */
+  ownerUserId: z.string().uuid().optional().nullable(),
   installDate: z.string().date().optional().nullable(),
   installSlot: z.enum(["am", "pm", "overnight"]).optional().nullable(),
   /** Bulk confirmations: the day it really happened (default today). */
@@ -62,6 +75,7 @@ const VERBS: Record<z.infer<typeof schema>["action"], string> = {
   close: "marked complete",
   confirm_print: "confirmed sent to print",
   confirm_delivered: "confirmed delivered",
+  set_owner: "given to a new owner",
 };
 
 /** "Cannot send for sign-off yet — missing: width" → "missing: width". */
@@ -190,6 +204,23 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<Bu
     return finish();
   }
 
+  if (action === "set_owner") {
+    if (!parsed.data.ownerUserId) return fail("Choose who gets the items");
+    const res = await changeOwners(session, ids, parsed.data.ownerUserId);
+    if ("error" in res) return fail(res.error);
+    done = res.done;
+    failures.push(...res.failures);
+    const out = finish();
+    return out.ok
+      ? success<BulkOutcome>(
+          out.data!,
+          failures.length === 0
+            ? `${done} ${done === 1 ? "item" : "items"} given to ${res.toName}`
+            : `${done} given to ${res.toName}, ${failures.length} left as they were`,
+        )
+      : out;
+  }
+
   // Field updates (supplier / install date + slot): checked and recorded
   // item by item, so each item's History shows the change. The supplier is
   // part of costs: costs.edit, or a sponsorship item they may edit.
@@ -256,4 +287,137 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<Bu
     }
   }
   return finish();
+}
+
+type BulkSession = Awaited<ReturnType<typeof requireSession>>;
+
+/**
+ * Bulk "Change owner": each item is checked on its own — the right to edit
+ * it (whoever may edit an item may give it away), the event, and that the
+ * new owner can work on that kind of item (lib/people.ts) — then changed
+ * with its own audit row. A stand's panels go with it. The new owner gets
+ * one message for them all; each previous owner hears which of theirs moved.
+ */
+async function changeOwners(
+  session: BulkSession,
+  ids: string[],
+  toUserId: string,
+): Promise<{ done: number; failures: BulkFailure[]; toName: string } | { error: string }> {
+  const orgId = session.organisation.id;
+  const team = await loadTeam(db, orgId);
+  const to = team.find((m) => m.userId === toUserId);
+  // Nobody can be given anything while their access is paused or ended.
+  const access = checkPickSync(team, toUserId, orgId);
+  if (access) return { error: access };
+  const failures: BulkFailure[] = [];
+  const changed: OwnerChange[] = [];
+  let done = 0;
+  for (const id of ids) {
+    const bundle = await loadItemBundle(db, id, { organisationId: orgId });
+    const item = bundle?.item;
+    const refusal = !bundle
+      ? "not found"
+      : bundle.item.deletedAt
+        ? "deleted"
+        : editionIsReadOnly(bundle.edition.status)
+          ? "the event is archived"
+          : bundle.item.kind === "stand_panel"
+            ? "a panel goes with its stand — change the stand's owner"
+            : !can(session.actor, { type: "signage.edit", item: itemAuthzCtx(bundle) })
+              ? "you can't change it"
+              : bundle.item.ownerUserId === toUserId
+                ? `already ${to!.name}'s`
+                : ownerRefusalWords(team, toUserId, bundle.item, orgId);
+    if (!bundle || !item || refusal) {
+      failures.push({ id, ref: item?.ref ?? "Unknown item", reason: refusal ?? "not found" });
+      continue;
+    }
+    try {
+      const role = ownerRoleOf(to!);
+      await db.transaction(async (tx) => {
+        const set = { ownerUserId: toUserId, ...(role ? { ownerRole: role } : {}) };
+        await tx.update(signageItems).set(set).where(eq(signageItems.id, id));
+        await writeAudit(tx, {
+          organisationId: orgId,
+          editionId: bundle.edition.id,
+          actorUserId: session.user.id,
+          entityType: "signage_item",
+          entityId: id,
+          action: "update",
+          before: { ownerUserId: item.ownerUserId, ownerRole: item.ownerRole },
+          after: set,
+          summary: `${item.ref}: owner changed to ${to!.name} (bulk)`,
+        });
+        if (item.kind === "stand_design") {
+          // Its panels are the stand's owner's too.
+          const panels = await tx
+            .update(signageItems)
+            .set(set)
+            .where(and(eq(signageItems.parentItemId, id), isNull(signageItems.deletedAt)))
+            .returning({ id: signageItems.id, ref: signageItems.ref });
+          for (const p of panels) {
+            await writeAudit(tx, {
+              organisationId: orgId,
+              editionId: bundle.edition.id,
+              actorUserId: session.user.id,
+              entityType: "signage_item",
+              entityId: p.id,
+              action: "update",
+              after: set,
+              summary: `${p.ref}: owner changed to ${to!.name} with its stand ${item.ref}`,
+            });
+          }
+        }
+      });
+      changed.push({
+        id,
+        ref: item.ref,
+        name: item.name,
+        kind: item.kind,
+        editionCode: bundle.edition.code,
+        fromUserId: item.ownerUserId,
+      });
+      done += 1;
+    } catch (err) {
+      console.error("bulk owner", id, err);
+      failures.push({ id, ref: item.ref, reason: "could not be saved" });
+    }
+  }
+  if (changed.length > 0) {
+    await db.transaction((tx) =>
+      notifyOwnerChange(tx, {
+        actor: { id: session.user.id, name: session.user.fullName || session.user.email },
+        to: { id: toUserId, name: to!.name },
+        items: changed,
+      }),
+    );
+  }
+  return { done, failures, toName: to!.name };
+}
+
+/** Why the person can't be given anything at all (not on the team, suspended, ended). */
+function checkPickSync(team: TeamMember[], userId: string, organisationId: string): string | null {
+  const m = team.find((x) => x.userId === userId);
+  const refusal = refusalFor({ type: "task" }, m, { organisationId });
+  return refusal ? refusalMessage(m?.name ?? "That person", refusal, { type: "task" }) : null;
+}
+
+/** "Sam can't work on sponsor signage" for one item, or null when they can own it. */
+function ownerRefusalWords(
+  team: TeamMember[],
+  userId: string,
+  item: { kind: OwnableItem["kind"]; sponsorId: string | null; category: string | null },
+  organisationId: string,
+): string | null {
+  const m = team.find((x) => x.userId === userId);
+  const ownable: OwnableItem = {
+    kind: item.kind,
+    sponsored: Boolean(item.sponsorId) || item.category === "sponsor",
+  };
+  const refusal = refusalFor({ type: "owner", item: ownable }, m, { organisationId });
+  if (!refusal) return null;
+  return refusalMessage(m?.name ?? "That person", refusal, {
+    type: "owner",
+    item: ownable,
+  }).replace(/ — pick someone else$/, "");
 }

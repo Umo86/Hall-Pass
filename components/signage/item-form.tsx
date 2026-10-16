@@ -10,10 +10,12 @@ import { Label } from "@/components/ui/label";
 import { SelectNative } from "@/components/ui/select-native";
 import { Textarea } from "@/components/ui/textarea";
 import { useConfirm } from "@/components/confirm-dialog";
-import { formatDate, formatMoney, roleLabel } from "@/lib/format";
+import { formatDate, formatMoney } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { createSignageItem, updateSignageItem } from "@/app/actions/signage";
 import { SignoffPicker, updatePlan } from "./signoff-picker";
+import { PersonPicker, UnavailableNote } from "@/components/people/person-picker";
+import type { PersonOption } from "@/components/people/groups";
 import { defaultSignoffPlan as defaultPlan, signoffPlanSummary } from "./signoff-summary";
 
 export type SignoffStepOption = {
@@ -25,6 +27,8 @@ export type SignoffStepOption = {
   defaultFor: string[];
   /** The department's approvers who can sign off now. */
   people: { id: string; name: string; jobTitle: string | null }[];
+  /** People this item names for the step who can't sign it now, and why. */
+  unavailable?: { id: string; name: string; reason: string }[];
 };
 
 export type SignoffChoice = { stepId: string; userId: string | null };
@@ -38,8 +42,13 @@ export type ItemFormOptions = {
   suppliers: { id: string; name: string; services?: string[] }[];
   contractors: { id: string; name: string }[];
   workflows: { id: string; name: string }[];
-  /** Team members who can own an item (viewers excluded). */
-  people?: { id: string; name: string; role: string }[];
+  /**
+   * Who can own the item (lib/people.ts), for organiser and for sponsor
+   * signage; the current owner stays listed, labelled if they can't any more.
+   */
+  owners?: Record<"organiser" | "sponsor", PersonOption[]>;
+  /** The person filling the form in ("Me"). */
+  viewer?: { id: string; departmentId: string | null } | null;
   /** Department sign-offs the item can ask for, and who can sign each. */
   signoffSteps?: SignoffStepOption[];
 };
@@ -237,6 +246,15 @@ function ItemFormInner({
     setPlan((current) => updatePlan(steps, current, stepId, on, userId));
   }
   const [hallId, setHallId] = useState(values.hallId ?? "");
+  // The owner: new items start with the person adding them ("Me").
+  const viewer = options.viewer ?? null;
+  const meListed = Boolean(
+    viewer &&
+    Object.values(options.owners ?? {}).some((list) => list.some((p) => p.id === viewer.id)),
+  );
+  const [ownerId, setOwnerId] = useState(
+    values.ownerUserId ?? (mode === "create" && meListed ? viewer!.id : ""),
+  );
   const [pending, start] = useTransition();
   const router = useRouter();
 
@@ -556,11 +574,48 @@ function ItemFormInner({
     </>
   );
 
+  // Who owns it: people who can work on this kind of item (and, for
+  // signage, this category); the current owner stays, labelled if they can't.
+  const ownerList: PersonOption[] =
+    options.owners?.[isSponsorship || category === "sponsor" ? "sponsor" : "organiser"] ?? [];
+  const ownerField =
+    ownerList.length > 0
+      ? field(
+          "ownerUserId",
+          "Owner",
+          <>
+            <PersonPicker
+              id="ownerUserId"
+              name="ownerUserId"
+              people={ownerList}
+              meId={viewer?.id}
+              meDepartmentId={viewer?.departmentId}
+              value={ownerId}
+              onChange={(v) => {
+                setOwnerId(v);
+                setDirty(true);
+              }}
+              blankLabel={
+                mode === "create"
+                  ? meListed
+                    ? undefined
+                    : "Me"
+                  : !ownerId
+                    ? "Nobody yet"
+                    : undefined
+              }
+            />
+            <UnavailableNote people={ownerList} userId={ownerId} what="own this item" />
+          </>,
+          { hint: "Who is responsible; reminders and decisions go to them." },
+        )
+      : null;
+
   // A new sponsorship item isn't sold or designed yet: it takes the default
   // sign-off, which can be changed later from its page.
   const signoffSection =
     steps.length > 0 && !(isSponsorship && mode === "create") ? (
-      <section className="grid gap-2" aria-labelledby="signoff-heading">
+      <section id="signoffs" className="grid scroll-mt-20 gap-2" aria-labelledby="signoff-heading">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
             <h3 id="signoff-heading" className="text-sm font-semibold">
@@ -859,6 +914,9 @@ function ItemFormInner({
           className="rounded-lg border"
           open={moreOpen}
           onToggle={(e) => setMoreOpen(e.currentTarget.open)}
+          // A link to a field inside (#ownerUserId) makes the browser open it
+          // before React hydrates; the effect above then opens it too.
+          suppressHydrationWarning
         >
           <summary className="cursor-pointer px-4 py-3 text-sm font-semibold select-none">
             More details
@@ -887,49 +945,14 @@ function ItemFormInner({
               />,
               { span: "sm:col-span-3" },
             )}
+            {ownerField}
             {isSponsorship ? (
               <>
                 {field("widthMm", "Width (mm)", numberInput("widthMm", { disabled: lockSpec }))}
                 {field("heightMm", "Height (mm)", numberInput("heightMm", { disabled: lockSpec }))}
-                <input type="hidden" name="ownerRole" value={values.ownerRole ?? "ops"} />
               </>
             ) : (
               <>
-                {options.people && options.people.length > 0 ? (
-                  <>
-                    <input type="hidden" name="ownerRole" value={values.ownerRole ?? "ops"} />
-                    {field(
-                      "ownerUserId",
-                      "Owner",
-                      <SelectNative
-                        id="ownerUserId"
-                        name="ownerUserId"
-                        defaultValue={values.ownerUserId ?? ""}
-                      >
-                        <option value="">{mode === "create" ? "Me" : "Keep current owner"}</option>
-                        {options.people.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} ({roleLabel(p.role)})
-                          </option>
-                        ))}
-                      </SelectNative>,
-                      { hint: "Who is responsible; reminders go to them." },
-                    )}
-                  </>
-                ) : (
-                  field(
-                    "ownerRole",
-                    "Owner",
-                    <SelectNative
-                      id="ownerRole"
-                      name="ownerRole"
-                      defaultValue={values.ownerRole ?? "ops"}
-                    >
-                      <option value="ops">Operations</option>
-                      <option value="marketing">Marketing</option>
-                    </SelectNative>,
-                  )
-                )}
                 {field("depthMm", "Depth (mm)", numberInput("depthMm", { disabled: lockSpec }))}
                 {field(
                   "sided",

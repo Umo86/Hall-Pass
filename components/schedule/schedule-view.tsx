@@ -49,6 +49,7 @@ import { formatDate, formatDayMonth, formatMoney, slotLabel, statusLabel } from 
 import type { ScheduleRow } from "@/lib/queries/signage";
 import { itemPath } from "@/lib/edition-path";
 import { BulkActionsBar, type BulkResult } from "./bulk-actions";
+import type { PersonOption } from "@/components/people/groups";
 import { ImportSignsSheet } from "./new-sign-menu";
 
 const STATUS_ORDER = [
@@ -90,6 +91,10 @@ type Props = {
   canEditCosts: boolean;
   canDelete: boolean;
   canClose: boolean;
+  /** Who the selected items can be given to (bulk "Change owner"). */
+  owners?: PersonOption[];
+  /** The viewer, for "Me" in the owner picker. */
+  meId?: string | null;
 };
 
 // Shown by default; the rest stay one click away in the Columns menu.
@@ -99,6 +104,7 @@ const DEFAULT_HIDDEN: VisibilityState = {
   typeName: false,
   format: false,
   supplierName: false,
+  ownerName: false,
   standNumber: false,
   size: false,
   quantity: false,
@@ -178,6 +184,8 @@ export function ScheduleView({
   canEditCosts,
   canDelete,
   canClose,
+  owners,
+  meId,
 }: Props) {
   const [view, setView] = useQueryState("view", parseAsString.withDefault("table"));
   const [show, setShow] = useQueryState("show", parseAsString.withDefault(""));
@@ -443,6 +451,11 @@ export function ScheduleView({
       {
         accessorKey: "supplierName",
         header: "Supplier",
+        cell: ({ getValue }) => getValue() ?? "—",
+      },
+      {
+        accessorKey: "ownerName",
+        header: "Owner",
         cell: ({ getValue }) => getValue() ?? "—",
       },
       {
@@ -894,6 +907,8 @@ export function ScheduleView({
           canEditCosts={canEditCosts}
           canDelete={canDelete}
           canClose={canClose}
+          owners={owners}
+          meId={meId}
           onResult={onBulkResult}
           onClear={() => setSelected({})}
         />

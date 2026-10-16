@@ -13,7 +13,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { EmptyState } from "@/components/empty-state";
 import { useConfirm } from "@/components/confirm-dialog";
 import { useDecisionDialog } from "@/components/approvals/decide-buttons";
-import { RaiseSnagButton } from "@/components/signage/snags-panel";
+import { RaiseSnagButton, raisedLine } from "@/components/signage/snags-panel";
 import { ResolveSnagButton } from "@/components/signage/resolve-snag-dialog";
 import { closeSignageItem } from "@/app/actions/signage";
 import { undoMarkComplete } from "@/app/actions/snags";
@@ -46,8 +46,18 @@ export type OnsiteCard = {
   supplierName: string | null;
   installedAt: string | null;
   openSnags: number;
-  snags: { id: string; description: string; severity: string; photoUrl: string | null }[];
+  snags: {
+    id: string;
+    description: string;
+    severity: string;
+    photoUrl: string | null;
+    /** Who reported it, when known. */
+    raisedByName: string | null;
+    raisedAt: string;
+  }[];
   expectedLockedVersionId: string | null;
+  /** A line to read before acting, e.g. "Big Print Co can't sign in — confirm it yourself". */
+  note?: string | null;
   /** What the card offers next (see onsiteAction). */
   action: OnsiteAction;
 };
@@ -466,7 +476,8 @@ function OnsiteItem({
               <div className="min-w-0 flex-1">
                 <p>{s.description}</p>
                 <p className="text-muted-foreground text-xs">
-                  {statusLabel(s.severity)}
+                  {statusLabel(s.severity)} ·{" "}
+                  {raisedLine({ raisedByName: s.raisedByName, createdAt: s.raisedAt })}
                   {s.photoUrl && (
                     <>
                       {" · "}
@@ -497,6 +508,7 @@ function OnsiteItem({
         </ul>
       )}
 
+      {c.note && <p className="text-xs font-medium text-amber-800 dark:text-amber-300">{c.note}</p>}
       {(c.action?.type === "waiting" || c.action?.type === "open_item") && (
         <p className="text-muted-foreground text-xs">{c.action.text}</p>
       )}

@@ -31,6 +31,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { SelectNative } from "@/components/ui/select-native";
+import { PersonPicker, UnavailableNote } from "@/components/people/person-picker";
+import type { PersonOption } from "@/components/people/groups";
 import { Textarea } from "@/components/ui/textarea";
 import { SegmentGroup, segmentClass } from "@/components/ui/segmented";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -83,7 +85,8 @@ const COLUMNS: { status: Status; label: string; head: string; body: string }[] =
 
 const PHONE_COLUMN_KEY = "hp-board-column";
 
-export type Person = { id: string; name: string };
+/** Someone a task can go to; the current assignee stays listed, labelled, if they can't any more. */
+export type Person = PersonOption;
 
 /** True on devices with a mouse or trackpad (drag and drop works there). */
 function useFinePointer() {
@@ -659,16 +662,23 @@ function TaskDetail({
             <Input name="dueDate" type="date" defaultValue={task.dueDate ?? ""} />
           </label>
           {canAssign ? (
-            <label className="grid gap-1 text-sm">
-              <span className="font-medium">Assigned to</span>
-              <SelectNative name="assignedToUserId" defaultValue={task.assignedToUserId}>
-                {people.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.id === currentUserId ? "Me" : p.name}
-                  </option>
-                ))}
-              </SelectNative>
-            </label>
+            <div className="grid gap-1 text-sm">
+              <label htmlFor={`assignee-${task.id}`} className="font-medium">
+                Assigned to
+              </label>
+              <PersonPicker
+                id={`assignee-${task.id}`}
+                name="assignedToUserId"
+                people={people}
+                meId={currentUserId}
+                defaultValue={task.assignedToUserId}
+              />
+              <UnavailableNote
+                people={people}
+                userId={task.assignedToUserId}
+                what="work on this task"
+              />
+            </div>
           ) : (
             <div />
           )}

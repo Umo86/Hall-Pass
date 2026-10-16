@@ -284,10 +284,11 @@ d("onsite on a real database", () => {
     // No supplier at all: nothing here (the approval already said so).
     expect(await run(false)).toHaveLength(0);
     // A supplier with nobody on the portal: Operations hear, pointed at the
-    // item to confirm it themselves (only admins can invite the supplier).
+    // item to confirm it themselves, and told who can invite the supplier
+    // (nobody here can, so "a super admin").
     const [note] = await run(true);
-    expect(note.body).toContain(`Nobody at Print Shop ${n} has Hall Pass access yet`);
-    expect(note.body).toContain("or ask an admin to invite them.");
+    expect(note.body).toContain(`Nobody at Print Shop ${n} can sign in to Hall Pass yet`);
+    expect(note.body).toContain("— or ask a super admin to invite them.");
     expect(note.link).toMatch(new RegExp(`^/ONS${n}/signage/SIG-ONS${n}-\\d{3}$`));
   });
 });

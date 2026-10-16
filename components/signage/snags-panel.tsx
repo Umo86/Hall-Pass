@@ -30,7 +30,27 @@ export type SnagView = {
   resolutionPhotoUrl: string | null;
   createdAt: string;
   resolvedAt: string | null;
+  /** Who reported it (unknown on older snags). */
+  raisedByName?: string | null;
+  /** Who resolved it, or decided it won't be fixed. */
+  resolvedByName?: string | null;
 };
+
+/** "Raised by Sam Lee · 3 Oct 2026, 14:05" (or just the date on older snags). */
+export function raisedLine(s: Pick<SnagView, "raisedByName" | "createdAt">): string {
+  return `${s.raisedByName ? `Raised by ${s.raisedByName}` : "Raised"} · ${formatDateTime(s.createdAt)}`;
+}
+
+/** "Fixed by Jo Bloggs · 4 Oct 2026, 09:12", "Won't fix — Jo Bloggs · …". */
+export function fixedLine(
+  s: Pick<SnagView, "status" | "resolvedByName" | "resolvedAt">,
+): string | null {
+  if (!s.resolvedAt || (s.status !== "resolved" && s.status !== "wont_fix")) return null;
+  const who = s.resolvedByName ?? "someone";
+  return s.status === "resolved"
+    ? `Fixed by ${who} · ${formatDateTime(s.resolvedAt)}`
+    : `Won't fix — ${who} · ${formatDateTime(s.resolvedAt)}`;
+}
 
 type Result = { ok: boolean; error?: string; message?: string };
 
@@ -112,8 +132,8 @@ export function RaiseSnagButton({
             </DialogTitle>
             <DialogDescription>
               {damage
-                ? "It stays Delivered; if it is installed before this is fixed, it is marked Snagged. Operations and the owner are told."
-                : "The item is marked Snagged until every snag is resolved. Operations and the owner are told."}
+                ? "It stays Delivered; if it is installed before this is fixed, it is marked Snagged. Operations and the owner are told; you're told when it's fixed."
+                : "The item is marked Snagged until every snag is resolved. Operations and the owner are told; you're told when it's fixed."}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
@@ -247,9 +267,6 @@ export function SnagsPanel({
               <StatusBadge status={snag.status} />
               <span className="font-medium">{snag.description}</span>
               <span className="text-muted-foreground text-xs">{statusLabel(snag.severity)}</span>
-              <span className="text-muted-foreground text-xs">
-                {formatDateTime(snag.createdAt)}
-              </span>
               {snag.photoUrl && (
                 <a
                   className="text-primary text-xs hover:underline"
@@ -261,6 +278,10 @@ export function SnagsPanel({
                 </a>
               )}
             </div>
+            <p className="text-muted-foreground mt-1 text-xs">
+              {raisedLine(snag)}
+              {fixedLine(snag) && <> · {fixedLine(snag)}</>}
+            </p>
             {(snag.resolutionNote || snag.resolutionPhotoUrl) && (
               <p className="text-muted-foreground mt-1 text-xs">
                 {snag.resolutionNote}

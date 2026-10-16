@@ -7,10 +7,13 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SelectNative } from "@/components/ui/select-native";
+import { PersonPicker } from "@/components/people/person-picker";
+import type { PersonOption } from "@/components/people/groups";
 import { createTask } from "@/app/actions/tasks";
 import { cn } from "@/lib/utils";
 
-export type Assignee = { id: string; name: string };
+/** Someone a task can be given to (peopleFor(…, { type: "task" }) in lib/people.ts). */
+export type Assignee = PersonOption;
 export type TaskEvent = { id: string; code: string; name: string };
 
 /**
@@ -20,6 +23,7 @@ export type TaskEvent = { id: string; code: string; name: string };
  */
 export function TaskForm({
   currentUserId,
+  currentDepartmentId = null,
   assignees,
   canAssign,
   events = [],
@@ -30,6 +34,8 @@ export function TaskForm({
   className,
 }: {
   currentUserId: string;
+  /** The viewer's department: offered first after "Me". */
+  currentDepartmentId?: string | null;
   assignees: Assignee[];
   canAssign: boolean;
   /** Events to choose from; none hides the picker. */
@@ -112,18 +118,15 @@ export function TaskForm({
         className="h-9 w-full min-w-0 sm:w-40"
       />
       {canAssign && (
-        <SelectNative
+        <PersonPicker
           name="assignedToUserId"
           aria-label="Assign to"
+          people={assignees}
+          meId={currentUserId}
+          meDepartmentId={currentDepartmentId}
           defaultValue={currentUserId}
-          className="h-9 w-full min-w-0 sm:w-44"
-        >
-          {assignees.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.id === currentUserId ? "Me" : a.name}
-            </option>
-          ))}
-        </SelectNative>
+          className="h-9 w-full min-w-0 sm:w-56"
+        />
       )}
       {showEvents && (
         <SelectNative
