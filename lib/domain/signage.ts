@@ -399,7 +399,7 @@ export async function notifyPendingAssignees(
         userIds: assignees,
         kind: "approval_requested",
         title: `To confirm — ${inst.stepName}: ${item.name} (${item.ref})`,
-        body: `The supplier has no Hall Pass access, so nobody there can confirm this. Confirm it yourself once it's done, or invite them under Settings → Team → External access.`,
+        body: `The supplier has no Hall Pass access, so nobody there can confirm this. Confirm it yourself once it's done, or invite them under Users → External.`,
         link: `${itemPath(bundle.edition.code, item)}?tab=artwork`,
         entityType: "signage_item",
         entityId: item.id,

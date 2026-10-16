@@ -46,8 +46,8 @@ export default async function SettingsPage({
     ...(canUsers ? [{ id: "storage" as const, label: "Storage" }] : []),
   ];
   const { tab: rawTab } = await searchParams;
-  // Sign-off moved to Approvals → Approvers.
-  if (rawTab === "signoff") redirect("/approvals?tab=approvers");
+  // Sign-off moved to Users → Departments (Approvals → Who signs off shows it).
+  if (rawTab === "signoff") redirect("/users?tab=departments");
   // Personal settings moved to My account.
   if (rawTab === "general") redirect("/account");
   // The team, invitations and external access moved to Users.

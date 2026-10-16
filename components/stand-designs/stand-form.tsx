@@ -252,7 +252,7 @@ export function StandForm({
           </div>
           {steps.length === 0 ? (
             <p className="text-sm text-amber-800 dark:text-amber-300">
-              No departments set up yet — add them under Approvals → Approvers.
+              No departments set up yet — add them under Users → Departments.
             </p>
           ) : (
             <SignoffPicker

@@ -609,7 +609,7 @@ async function main() {
         eq(s.workflowSteps.approverType, "role"),
       ),
     );
-  // Sign-off departments and their approvers (Approvals → Approvers).
+  // Sign-off departments and their approvers (Users → Departments).
   const deptDefs = [
     { name: "Operations", role: "ops", jobTitle: "Operations Manager", signsLast: false },
     { name: "Marketing", role: "marketing", jobTitle: "Marketing Manager", signsLast: false },

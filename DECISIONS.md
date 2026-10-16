@@ -294,3 +294,43 @@ useful fields for every item.
 - **Feedback** uses toasts (sonner) and `useConfirm()` instead of
   `window.confirm`; pages share `PageHeader`, `EmptyState` and
   `SegmentedLinks`.
+- **Users list.** With email set up, invited rows offer Resend; without, Copy
+  link. Both make a new link (links are stored only as hashes). An open
+  invitation is edited on the same /users/[id] page, by invitation id.
+- **Sections in forms.** "All sections" is stored as null, and so is ticking
+  every visible section. Abilities in a switched-off section are hidden but
+  keep their stored value. `approval.decide` is no longer a checkbox; a
+  stored false shows as "Sign-off paused" with Resume.
+- **New departments** start without sign-off (from Add user or from
+  Departments), so a new team never silently joins every sign-off.
+- **Removing people.** Removing the main approver promotes nobody: the
+  department step goes to everyone left in the department. Sign-offs waiting
+  on the person must be handed to someone (not a viewer); their tasks and
+  items move to the admin removing them.
+- **Who can be invited.** Staff invitations refuse emails with live portal
+  access or a membership elsewhere; partner invitations refuse team members'
+  emails. Joining links approver entries by email within that organisation
+  only. Expired staff invitations can't be accepted or claimed.
+- **Event setup.** Six essentials count towards progress: dates, halls,
+  deadlines, who signs off, sign types and first signs. People is
+  recommended; suppliers and sponsorship are optional. "Who signs off" is
+  done when the signage workflow exists, at least one department signs off,
+  and every department that signs organiser signage has someone with an
+  account who can sign; it is "waiting" while they are only invited.
+  Progress shows only for events still to come. Events that existed before
+  this change show dates and deadlines as to do once, until confirmed.
+- **Default event** (pages without one in the address): the hp-last-event
+  cookie, else the earliest event that hasn't closed, else the most recent
+  past one, never an archived one while a live one exists.
+- **Event phase** is worked out from the dates (Planning, Build-up, Open,
+  Breakdown, Finished; Archived stays). The stored status is no longer
+  edited in the UI; an event restored from archive becomes Planning, or
+  Closed if finished.
+- **Copying an event** copies portal access only when an admin copies it:
+  venue access only at the same venue, supplier access for non-archived
+  suppliers, engineer and H&S access always, sponsor and exhibitor access
+  never. Choosing another venue unticks Halls & locations.
+- **New event series.** Left on Automatic, a new event joins the series whose
+  name equals the event name without its year, or a new one is created.
+- **Halls.** Removing a hall also removes its unused locations after a
+  confirm; it is refused while any sign, live or deleted, uses them.

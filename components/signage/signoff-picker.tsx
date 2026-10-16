@@ -55,8 +55,8 @@ export function SignoffPicker({
             )}
             {choice && people.length === 0 && (
               <p className="w-full text-xs text-amber-800 dark:text-amber-300">
-                No approvers with an account in {step.departmentName} yet — add them under Approvals
-                → Approvers.
+                No approvers with an account in {step.departmentName} yet — add them under Users →
+                Departments.
               </p>
             )}
           </li>

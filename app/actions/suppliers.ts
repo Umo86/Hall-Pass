@@ -186,7 +186,7 @@ export async function deleteSupplier(input: unknown): Promise<ActionResult> {
         );
       if (Number(grants.n) > 0) {
         throw new Error(
-          `${existing.name} has portal access — revoke it under Settings → Team first`,
+          `${existing.name} has portal access — revoke it under Users → External first`,
         );
       }
       await tx.delete(suppliers).where(eq(suppliers.id, existing.id));
