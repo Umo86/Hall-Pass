@@ -3,19 +3,24 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Box, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { StatusBadge } from "@/components/status-badge";
+import { EmptyState } from "@/components/empty-state";
+import { Page, PageHeader } from "@/components/page-header";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, hasFeature } from "@/lib/authz";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { listStandDesigns } from "@/lib/queries/stand-designs";
+import { standChip, standNextLine } from "@/lib/domain/stand-designs";
+import { StandList, type StandListCard } from "@/components/stand-designs/stand-list";
+import { plural } from "@/lib/format";
 
-export const metadata = { title: "Stand designs" };
+export const metadata = { title: "Feature stands" };
 export const dynamic = "force-dynamic";
 
 /**
- * Stands the organiser designs: each card shows the latest design, where
- * its sign-off is up to, and how many of its panels are approved.
+ * Feature stands: the stands the organiser designs and builds. Each card
+ * says what's next — upload the design, its sign-off, then its panels — and
+ * opens the tab where that happens.
  */
 export default async function StandDesignsPage({
   params,
@@ -33,99 +38,70 @@ export default async function StandDesignsPage({
   const canCreate =
     can(session.actor, { type: "stand_design.create" }) && !editionIsReadOnly(ed.edition.status);
 
+  const cards: StandListCard[] = stands.map((s) => {
+    const next = standNextLine({
+      status: s.status,
+      hasDesign: s.designVersion != null,
+      waitingOn: s.waitingOn.map((w) => w.who ?? w.name),
+      panels: s.panels,
+    });
+    return {
+      id: s.id,
+      ref: s.ref,
+      name: s.name,
+      status: s.status,
+      href: `/${editionCode}/stand-designs/${s.ref}?tab=${next.tab}`,
+      standNumber: s.standNumber,
+      hallName: s.hallName,
+      sponsorName: s.sponsorName,
+      size: s.size,
+      previewUrl: s.previewUrl,
+      designVersion: s.designVersion,
+      chip: standChip(s.status, s.designVersion != null),
+      // An overdue sign-off reads as a warning.
+      next: s.waitingOn.some((w) => w.overdue) ? { ...next, tone: "warning" } : next,
+      // Before the design is approved, panels may already be listed.
+      panelsNote:
+        next.tab === "artwork" && s.panels.total > 0
+          ? `${plural(s.panels.total, "panel")} listed`
+          : null,
+    };
+  });
+
   return (
-    <div className="flex flex-col gap-4 p-4 sm:p-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Stand designs</h1>
-          <p className="text-muted-foreground text-sm">
-            Stands we design: the team approves each design, then the graphics for every panel.
-          </p>
-        </div>
-        {canCreate && (
-          <Button asChild size="sm">
-            <Link href={`/${editionCode}/stand-designs/new`}>
-              <Plus className="size-4" /> New stand
-            </Link>
-          </Button>
-        )}
-      </div>
+    <Page width="full" className="max-w-7xl gap-4">
+      <PageHeader
+        title="Feature stands"
+        description="Stands we design and build: the team approves each design, then the graphics for every panel."
+        actions={
+          canCreate && (
+            <Button asChild size="sm">
+              <Link href={`/${editionCode}/stand-designs/new`}>
+                <Plus className="size-4" /> New stand
+              </Link>
+            </Button>
+          )
+        }
+      />
 
       {stands.length === 0 ? (
-        <div className="text-muted-foreground flex h-48 flex-col items-center justify-center gap-2 rounded-lg border border-dashed p-6 text-center text-sm">
-          <Box className="size-6 opacity-50" aria-hidden />
-          <p>No stands yet.</p>
-          <p className="max-w-md">
-            Create a stand, choose who approves it, and upload the design. Once it&apos;s approved,
-            add its panels and their graphics.
-          </p>
-          {canCreate && (
-            <Button size="sm" variant="outline" asChild>
-              <Link href={`/${editionCode}/stand-designs/new`}>Create the first stand</Link>
-            </Button>
-          )}
-        </div>
+        <EmptyState
+          icon={Box}
+          title="No feature stands yet"
+          description="Create a stand, choose who approves it and upload the design. List its panels whenever you like; their graphics go for sign-off once the design is approved."
+          action={
+            canCreate && (
+              <Button size="sm" asChild>
+                <Link href={`/${editionCode}/stand-designs/new`}>
+                  <Plus className="size-4" /> Create the first stand
+                </Link>
+              </Button>
+            )
+          }
+        />
       ) : (
-        <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-label="Stands">
-          {stands.map((s) => (
-            <li key={s.id}>
-              <Link
-                href={`/${editionCode}/stand-designs/${s.ref}`}
-                className="hover:border-primary/50 flex h-full flex-col overflow-hidden rounded-lg border transition-colors"
-                aria-label={s.name}
-              >
-                <div className="bg-muted flex aspect-[16/9] items-center justify-center overflow-hidden">
-                  {s.previewUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={s.previewUrl}
-                      alt={`${s.name} design`}
-                      className="size-full object-contain"
-                    />
-                  ) : (
-                    <span className="text-muted-foreground flex flex-col items-center gap-1 text-xs">
-                      <Box className="size-8 opacity-40" aria-hidden />
-                      {s.designVersion ? `Design v${s.designVersion}` : "No design yet"}
-                    </span>
-                  )}
-                </div>
-                <div className="flex flex-1 flex-col gap-2 p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="truncate font-medium">{s.name}</p>
-                      <p className="text-muted-foreground text-xs">
-                        {[
-                          s.ref,
-                          s.standNumber ? `Stand ${s.standNumber}` : null,
-                          s.hallName,
-                          s.sponsorName,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </p>
-                    </div>
-                    <StatusBadge status={s.status} />
-                  </div>
-                  {s.size && <p className="text-muted-foreground text-xs">{s.size}</p>}
-                  {s.waitingOn.length > 0 && (
-                    <p
-                      className={`text-xs ${s.waitingOn.some((w) => w.overdue) ? "text-destructive font-medium" : ""}`}
-                    >
-                      Waiting on {s.waitingOn.map((w) => w.who ?? w.name).join(", ")}
-                    </p>
-                  )}
-                  <p className="text-muted-foreground mt-auto text-xs">
-                    Panels:{" "}
-                    {s.panels.total === 0
-                      ? "none yet"
-                      : `${s.panels.approved} of ${s.panels.total} approved`}
-                  </p>
-                </div>
-              </Link>
-            </li>
-          ))}
-        </ul>
+        <StandList cards={cards} />
       )}
-    </div>
+    </Page>
   );
 }

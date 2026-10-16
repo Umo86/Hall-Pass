@@ -1,14 +1,17 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, count, eq, inArray } from "drizzle-orm";
+import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import { X } from "lucide-react";
 import { db } from "@/lib/db/client";
 import {
   comments as commentsTable,
   contractors,
+  externalGrants,
+  halls,
   memberships,
   signageItems,
   snags as snagsTable,
+  sponsors as sponsorsTable,
   suppliers,
   users,
 } from "@/lib/db/schema";
@@ -74,6 +77,16 @@ import { PANEL_BLOCKED_MESSAGE, artworkBlockedReason, isVideoArtwork } from "@/l
 import { listStandPanels, standFormOptions } from "@/lib/queries/stand-designs";
 import { StandForm } from "@/components/stand-designs/stand-form";
 import { AddPanelButton } from "@/components/stand-designs/add-panel";
+import { PanelDetails } from "@/components/stand-designs/panel-details";
+import { AddTaskDialog } from "@/components/tasks/add-task-dialog";
+import { SellButton } from "@/components/sponsorship/sell-dialog";
+import {
+  SPONSORSHIP_STAGE_LABELS,
+  saleState,
+  sponsorshipNextStep,
+  sponsorshipProgress,
+  sponsorshipStage,
+} from "@/lib/domain/sponsorship";
 
 export const dynamic = "force-dynamic";
 
@@ -159,8 +172,15 @@ export default async function ItemDetailPage({
       // A panel belongs to a stand: link back to it.
       isPanel && item.parentItemId
         ? db
-            .select({ ref: signageItems.ref, name: signageItems.name, status: signageItems.status })
+            .select({
+              ref: signageItems.ref,
+              name: signageItems.name,
+              status: signageItems.status,
+              standNumber: signageItems.standNumber,
+              hallName: halls.name,
+            })
             .from(signageItems)
+            .leftJoin(halls, eq(signageItems.hallId, halls.id))
             .where(eq(signageItems.id, item.parentItemId))
             .then((r) => r[0] ?? null)
         : null,
@@ -320,7 +340,7 @@ export default async function ItemDetailPage({
       : null;
   const readiness = signoffReadiness(item);
   const now = new Date();
-  const step = nextStep({
+  const sharedStep = nextStep({
     kind: item.kind,
     status: item.status,
     onHoldReason: item.onHoldReason,
@@ -336,11 +356,53 @@ export default async function ItemDetailPage({
     can: can_,
     now,
   });
-  const progress = itemProgress(item.kind, item.status, {
-    fieldsReady: readiness.fieldsReady,
-    hasArtwork: readiness.hasArtwork,
-    previousStatus: item.previousStatus,
-  });
+  // Sponsorship items: sold first, then the sponsor's artwork, sign-off,
+  // order and delivery — the shared step worded for selling and ordering.
+  const sponsorship = isSponsorship
+    ? await sponsorshipContext({
+        item,
+        bundle,
+        session,
+        canEdit,
+        readOnly,
+      })
+    : null;
+  const stage = isSponsorship
+    ? sponsorshipStage({
+        kind: item.kind,
+        sponsorId: item.sponsorId,
+        hasArtwork: readiness.hasArtwork,
+        status: item.status,
+        previousStatus: item.previousStatus,
+      })
+    : null;
+  const confirmation = pending.find((p) => p.stepKind === "confirmation") ?? null;
+  const sponsorStep =
+    sponsorship && stage
+      ? sponsorshipNextStep(sharedStep, {
+          stage,
+          status: item.status,
+          fieldsReady: readiness.fieldsReady,
+          sponsorName: sponsorship.sponsorName,
+          supplierName: supplier?.name ?? null,
+          orderByDate: item.orderByDate,
+          today: todayInLondon(),
+          confirmation: confirmation
+            ? { who: confirmation.who, canDecide: confirmation.canDecide }
+            : null,
+          canSell: sponsorship.canSell,
+          canUpload: can_.upload,
+          inviteHref: sponsorship.inviteHref,
+        })
+      : null;
+  const step = sponsorStep?.step ?? sharedStep;
+  const progress = stage
+    ? sponsorshipProgress(stage)
+    : itemProgress(item.kind, item.status, {
+        fieldsReady: readiness.fieldsReady,
+        hasArtwork: readiness.hasArtwork,
+        previousStatus: item.previousStatus,
+      });
   // The next step's confirmation button is the one place to confirm it.
   const confirmInNextStep = step.action?.type === "confirm" ? step.action.instanceId : null;
 
@@ -367,10 +429,37 @@ export default async function ItemDetailPage({
           </nav>
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight">{item.name}</h1>
-            <StatusBadge status={item.status} />
+            {stage ? (
+              // One status for a sponsorship item: where it is in selling and ordering.
+              <StatusBadge
+                status={
+                  item.status === "on_hold"
+                    ? "on_hold"
+                    : stage === "for_sale"
+                      ? "draft"
+                      : item.status
+                }
+                label={item.status === "on_hold" ? "On hold" : SPONSORSHIP_STAGE_LABELS[stage]}
+              />
+            ) : (
+              <StatusBadge status={item.status} />
+            )}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {!readOnly && (
+            <AddTaskDialog
+              currentUserId={session.user.id}
+              assignees={staffRows.map((u) => ({ id: u.id, name: u.fullName || u.email }))}
+              canAssign={can(session.actor, { type: "task.assign" })}
+              entity={{
+                type: "signage_item",
+                id: item.id,
+                editionId: bundle.edition.id,
+                label: item.ref,
+              }}
+            />
+          )}
           <LifecycleButtons
             itemId={item.id}
             itemRef={item.ref}
@@ -393,8 +482,14 @@ export default async function ItemDetailPage({
             {isStand
               ? "Next: upload the design."
               : isSponsorship
-                ? "Next: add a photo, then upload the artwork."
-                : "Next: upload the artwork."}
+                ? item.sponsorId
+                  ? "Next: add a photo, then upload the sponsor's artwork."
+                  : "Next: add a photo, then mark it sold when a sponsor buys it."
+                : isPanel
+                  ? parent && APPROVED_OR_LATER.includes(parent.status)
+                    ? "Next: upload its graphic."
+                    : "Its graphic can be uploaded once the stand design is approved."
+                  : "Next: upload the artwork."}
           </p>
           <Link
             href={`?tab=${tab}`}
@@ -421,6 +516,20 @@ export default async function ItemDetailPage({
         currentVersionId={item.currentArtworkVersionId}
         requiresInstallPhoto={requiresInstallPhoto}
         canEditFields={canEdit && !isStand}
+        extraAction={
+          sponsorStep?.sell && sponsorship ? (
+            <SellButton
+              item={{
+                id: item.id,
+                ref: item.ref,
+                name: item.name,
+                costEstimate: item.costEstimate,
+              }}
+              sponsors={sponsorship.sponsors}
+              variant={step.action ? "outline" : "default"}
+            />
+          ) : null
+        }
       />
 
       <nav className="flex gap-1 overflow-x-auto border-b" aria-label="Item sections">
@@ -464,6 +573,7 @@ export default async function ItemDetailPage({
           supplierName={supplier?.name ?? null}
           waitingOn={pending.map((p) => p.who)}
           startEditing={sp.edit === "1"}
+          parent={parent}
         />
       )}
       {tab === "artwork" && (
@@ -497,7 +607,7 @@ export default async function ItemDetailPage({
           canAdd={
             can(session.actor, { type: "stand_design.create" }) &&
             canEdit &&
-            APPROVED_OR_LATER.includes(item.status)
+            item.status !== "closed"
           }
         />
       )}
@@ -529,6 +639,7 @@ async function DetailsTab({
   supplierName,
   waitingOn,
   startEditing,
+  parent,
 }: {
   item: Item;
   bundle: Bundle;
@@ -543,8 +654,11 @@ async function DetailsTab({
   supplierName: string | null;
   waitingOn: string[];
   startEditing: boolean;
+  /** A panel's stand: where it is and its address. */
+  parent: { ref: string; name: string; hallName: string | null; standNumber: string | null } | null;
 }) {
   const isSponsorship = item.kind === "sponsorship_item";
+  const isPanel = item.kind === "stand_panel";
   const [options, snags, photoUrl, productPhotoUrl, contractor] = await Promise.all([
     itemFormOptions({
       organisationId: bundle.organisation.id,
@@ -605,9 +719,10 @@ async function DetailsTab({
     item.signoffs ??
     defaultSignoffPlan(steps, isSponsorship ? "sponsor" : (item.category ?? "organiser"));
   const planSummary = steps.length > 0 ? signoffPlanSummary(steps, plan) : null;
-  const sold = Boolean(item.sponsorId);
+  // Sponsor signage without a price of its own is part of a package, not a sale.
+  const sold = saleState(item) === "sold";
   const countdown = item.orderByDate
-    ? orderCountdown(item.orderByDate, todayInLondon(), sold)
+    ? orderCountdown(item.orderByDate, todayInLondon(), Boolean(item.sponsorId))
     : null;
   const profit =
     sold && item.salePrice != null && item.costEstimate != null
@@ -628,78 +743,105 @@ async function DetailsTab({
   ];
 
   // The facts each team needs at a glance; "Edit details" changes them.
-  const facts: Fact[] = isSponsorship
-    ? [
-        ["Status", sold ? "Sold" : "Available"],
-        ["Sponsor", nameOf(options.sponsors, item.sponsorId) ?? dash],
-        ["Type", nameOf(options.itemTypes, item.itemTypeId) ?? dash],
-        ["Quantity", item.quantity.toLocaleString("en-GB")],
-        ["Supplier", supplierName ?? dash],
-        ...costs([["Cost price", formatMoney(item.costEstimate)]]),
-        ...(sold
-          ? costs([
-              ["Sale price", formatMoney(item.salePrice)],
-              ["Profit", profit != null ? formatMoney(profit) : "—"],
-            ])
-          : []),
-        [
-          "Order by",
-          item.orderByDate ? (
-            <span>
-              {formatDate(item.orderByDate)}
-              {countdown && (
-                <span
-                  className={
-                    countdown.warning || countdown.tone === "overdue"
-                      ? "text-destructive font-medium"
-                      : "text-muted-foreground"
-                  }
-                >
-                  {" "}
-                  — {countdown.warning ?? countdown.label}
-                </span>
-              )}
-            </span>
-          ) : (
-            dash
-          ),
-        ],
-        artworkDueFact,
-        ["Waiting on", waitingOn.length ? waitingOn.join(", ") : dash],
-      ]
-    : [
-        [
-          "Where",
-          [nameOf(options.halls, item.hallId), nameOf(options.locations, item.locationId)]
-            .filter(Boolean)
-            .join(" · ") || dash,
-        ],
-        ["Stand no.", item.standNumber || dash],
-        [
-          "Size",
-          item.widthMm && item.heightMm
-            ? `${item.widthMm} × ${item.heightMm} mm${item.quantity > 1 ? ` · ${item.quantity} off` : ""}`
-            : dash,
-        ],
-        ["Fixing", item.fixingMethod ? statusLabel(item.fixingMethod) : dash],
-        ["Type", nameOf(options.itemTypes, item.itemTypeId) ?? dash],
-        ...(item.category === "sponsor"
-          ? ([["Sponsor", nameOf(options.sponsors, item.sponsorId) ?? dash]] as Fact[])
-          : []),
-        ["Owner", owner ?? dash],
-        ["Waiting on", waitingOn.length ? waitingOn.join(", ") : dash],
-        artworkDueFact,
-        ["Print by", printBy ? formatDate(printBy) : dash],
-        ["Delivery", deliveryBy ? formatDate(deliveryBy) : dash],
-        [
-          "Install",
-          item.installDate
-            ? `${formatDate(item.installDate)}${item.installSlot ? ` ${slotLabel(item.installSlot)}` : ""}`
-            : dash,
-        ],
-        ["Supplier", supplierName ?? <span className="text-muted-foreground">Not set yet</span>],
-        ...costs([["Cost price", formatMoney(item.costEstimate)]]),
-      ];
+  const panelFacts: Fact[] = [
+    [
+      "Size",
+      item.widthMm && item.heightMm
+        ? `${item.widthMm} × ${item.heightMm} mm${item.quantity > 1 ? ` · ${item.quantity} off` : ""}`
+        : dash,
+    ],
+    ["Printer", supplierName ?? <span className="text-muted-foreground">Not chosen yet</span>],
+    ["Owner", owner ?? dash],
+    ["Waiting on", waitingOn.length ? waitingOn.join(", ") : dash],
+    ["Print by", printBy ? formatDate(printBy) : dash],
+    ["Delivery", deliveryBy ? formatDate(deliveryBy) : dash],
+    [
+      "Install",
+      item.installDate
+        ? `${formatDate(item.installDate)}${item.installSlot ? ` ${slotLabel(item.installSlot)}` : ""}`
+        : dash,
+    ],
+    ...costs([["Cost price", formatMoney(item.costEstimate)]]),
+  ];
+  const facts: Fact[] = isPanel
+    ? panelFacts
+    : isSponsorship
+      ? [
+          [
+            "Sale",
+            { available: "For sale", sold: "Sold", in_package: "In the sponsor's package" }[
+              saleState(item)
+            ],
+          ],
+          ["Sponsor", nameOf(options.sponsors, item.sponsorId) ?? dash],
+          ["Type", nameOf(options.itemTypes, item.itemTypeId) ?? dash],
+          ["Quantity", item.quantity.toLocaleString("en-GB")],
+          ["Supplier", supplierName ?? dash],
+          ...costs([["Cost price", formatMoney(item.costEstimate)]]),
+          ...(sold
+            ? costs([
+                ["Sale price", formatMoney(item.salePrice)],
+                ["Profit", profit != null ? formatMoney(profit) : "—"],
+              ])
+            : []),
+          [
+            "Order by",
+            item.orderByDate ? (
+              <span>
+                {formatDate(item.orderByDate)}
+                {countdown && (
+                  <span
+                    className={
+                      countdown.warning || countdown.tone === "overdue"
+                        ? "text-destructive font-medium"
+                        : "text-muted-foreground"
+                    }
+                  >
+                    {" "}
+                    — {countdown.warning ?? countdown.label}
+                  </span>
+                )}
+              </span>
+            ) : (
+              dash
+            ),
+          ],
+          artworkDueFact,
+          ["Waiting on", waitingOn.length ? waitingOn.join(", ") : dash],
+        ]
+      : [
+          [
+            "Where",
+            [nameOf(options.halls, item.hallId), nameOf(options.locations, item.locationId)]
+              .filter(Boolean)
+              .join(" · ") || dash,
+          ],
+          ["Stand no.", item.standNumber || dash],
+          [
+            "Size",
+            item.widthMm && item.heightMm
+              ? `${item.widthMm} × ${item.heightMm} mm${item.quantity > 1 ? ` · ${item.quantity} off` : ""}`
+              : dash,
+          ],
+          ["Fixing", item.fixingMethod ? statusLabel(item.fixingMethod) : dash],
+          ["Type", nameOf(options.itemTypes, item.itemTypeId) ?? dash],
+          ...(item.category === "sponsor"
+            ? ([["Sponsor", nameOf(options.sponsors, item.sponsorId) ?? dash]] as Fact[])
+            : []),
+          ["Owner", owner ?? dash],
+          ["Waiting on", waitingOn.length ? waitingOn.join(", ") : dash],
+          artworkDueFact,
+          ["Print by", printBy ? formatDate(printBy) : dash],
+          ["Delivery", deliveryBy ? formatDate(deliveryBy) : dash],
+          [
+            "Install",
+            item.installDate
+              ? `${formatDate(item.installDate)}${item.installSlot ? ` ${slotLabel(item.installSlot)}` : ""}`
+              : dash,
+          ],
+          ["Supplier", supplierName ?? <span className="text-muted-foreground">Not set yet</span>],
+          ...costs([["Cost price", formatMoney(item.costEstimate)]]),
+        ];
   // Everything else that has been filled in.
   const extra: Fact[] = [
     ...(item.material ? ([["Material", item.material]] as Fact[]) : []),
@@ -723,7 +865,7 @@ async function DetailsTab({
       ...(item.poNumber ? ([["PO number", item.poNumber]] as Fact[]) : []),
       ...(item.budgetLine ? ([["Budget line", item.budgetLine]] as Fact[]) : []),
     ]),
-    ...(planSummary ? ([["Sign-off", planSummary]] as Fact[]) : []),
+    ...(planSummary && !isPanel ? ([["Sign-off", planSummary]] as Fact[]) : []),
   ];
   const snagsCard = !isSponsorship &&
     (snagViews.length > 0 || ["installed", "snagged"].includes(item.status)) && (
@@ -747,114 +889,165 @@ async function DetailsTab({
     </dl>
   );
 
-  return (
-    <div className="grid gap-4">
-      {snagsFirst && snagsCard}
-      <DetailsEditor
-        canEdit={canEdit}
-        initialEditing={startEditing}
-        formProps={{
-          kind: formKind(item.kind),
-          status: item.status,
-          requiredFields: signoffRequiredFields(item.kind),
-          lockSpec: specLocked(item.status),
-          eventArtworkDue,
-          values: {
-            id: item.id,
-            name: item.name,
-            description: item.description,
-            category: item.category,
-            itemTypeId: item.itemTypeId,
-            hallId: item.hallId,
-            locationId: item.locationId,
-            standNumber: item.standNumber,
-            ownerRole: item.ownerRole,
-            ownerUserId: item.ownerUserId,
-            sponsorId: item.sponsorId,
-            sponsorEntitlementId: item.sponsorEntitlementId,
-            widthMm: item.widthMm,
-            heightMm: item.heightMm,
-            depthMm: item.depthMm,
-            quantity: item.quantity,
-            sided: item.sided,
-            material: item.material,
-            finish: item.finish,
-            fixingMethod: item.fixingMethod,
-            weightKg: item.weightKg,
-            requiresVenueApproval: item.requiresVenueApproval,
-            signoffs: item.signoffs ?? null,
-            // Costs stay on the server for people who can't see them.
-            budgetLine: canSeeCosts ? item.budgetLine : null,
-            costEstimate: canSeeCosts ? item.costEstimate : null,
-            costActual: canSeeCosts ? item.costActual : null,
-            poNumber: canSeeCosts ? item.poNumber : null,
-            supplierId: item.supplierId,
-            artworkDueOverride: item.artworkDueOverride,
-            printDeadline: item.printDeadline,
-            orderByDate: item.orderByDate,
-            salePrice: canSeeCosts ? item.salePrice : null,
-            deliveryDate: item.deliveryDate,
-            installDate: item.installDate,
-            installSlot: item.installSlot,
-            installContractorId: item.installContractorId,
-          },
-          options,
-          canSeeCosts,
-          canEditCosts,
-          editionCode,
-        }}
-      >
-        <div className={cn("grid gap-4", isSponsorship && "sm:grid-cols-[14rem_1fr]")}>
-          {isSponsorship && (
-            <PhotoUploader
-              itemId={item.id}
-              photoUrl={productPhotoUrl}
-              alt={item.name}
-              canEdit={canEdit}
-            />
-          )}
-          <div className="flex flex-col gap-3">
-            {factList([...facts, ...extra])}
-            {item.description && (
-              <div className="border-t pt-3">
-                <p className="text-muted-foreground">Notes</p>
-                <p className="whitespace-pre-line">{item.description}</p>
-              </div>
-            )}
+  // The facts, the same whichever form edits them.
+  const glance = (
+    <div className={cn("grid gap-4", isSponsorship && "sm:grid-cols-[14rem_1fr]")}>
+      {isSponsorship && (
+        <PhotoUploader
+          itemId={item.id}
+          photoUrl={productPhotoUrl}
+          alt={item.name}
+          canEdit={canEdit}
+        />
+      )}
+      <div className="flex flex-col gap-3">
+        {factList([...facts, ...extra])}
+        {item.description && (
+          <div className="border-t pt-3">
+            <p className="text-muted-foreground">Notes</p>
+            <p className="whitespace-pre-line">{item.description}</p>
+          </div>
+        )}
+        {!isSponsorship && (
+          <p>
+            <span className="text-muted-foreground">Installed: </span>
+            {item.installedAt ? formatDateTime(item.installedAt) : "Not yet"}
+            {photoUrl ? (
+              <>
+                {" · "}
+                <a className="link" href={photoUrl} target="_blank" rel="noreferrer">
+                  View photo
+                </a>
+              </>
+            ) : item.installPhotoPath ? (
+              " · photo on file"
+            ) : null}
+          </p>
+        )}
+        {(!isSponsorship || canCertificate) && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 border-t pt-3">
+            {/* A spec label goes on a sign; sponsorship items don't have one. */}
             {!isSponsorship && (
-              <p>
-                <span className="text-muted-foreground">Installed: </span>
-                {item.installedAt ? formatDateTime(item.installedAt) : "Not yet"}
-                {photoUrl ? (
-                  <>
-                    {" · "}
-                    <a className="link" href={photoUrl} target="_blank" rel="noreferrer">
-                      View photo
-                    </a>
-                  </>
-                ) : item.installPhotoPath ? (
-                  " · photo on file"
-                ) : null}
-              </p>
-            )}
-            <div className="flex flex-wrap gap-x-4 gap-y-1 border-t pt-3">
               <a className="link" href={`/api/exports/spec-label/${item.ref}`}>
                 Spec label (PDF)
               </a>
-              {canCertificate &&
-                (APPROVED_OR_LATER.includes(item.status) ? (
-                  <a className="link" href={`/api/exports/certificate/${item.ref}`}>
-                    Approval certificate (PDF)
-                  </a>
-                ) : (
-                  <span className="text-muted-foreground">
-                    Approval certificate: once signed off
-                  </span>
-                ))}
-            </div>
+            )}
+            {canCertificate &&
+              (APPROVED_OR_LATER.includes(item.status) ? (
+                <a className="link" href={`/api/exports/certificate/${item.ref}`}>
+                  Approval certificate (PDF)
+                </a>
+              ) : (
+                <span className="text-muted-foreground">Approval certificate: once signed off</span>
+              ))}
           </div>
-        </div>
-      </DetailsEditor>
+        )}
+      </div>
+    </div>
+  );
+  // A panel's place and sign-off come from its stand; they are changed there.
+  const fromStand = isPanel && parent && (
+    <p className="bg-muted/50 rounded-md px-3 py-2 text-sm">
+      <span className="text-muted-foreground">From the stand: </span>
+      {[
+        parent.hallName,
+        parent.standNumber ? `Stand ${parent.standNumber}` : null,
+        planSummary ? `Signed off by ${planSummary}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ") || parent.name}
+      {" — "}
+      <Link href={`/${editionCode}/stand-designs/${parent.ref}`} className="link">
+        change these on the stand
+      </Link>
+    </p>
+  );
+
+  return (
+    <div className="grid gap-4">
+      {snagsFirst && snagsCard}
+      {isPanel ? (
+        <PanelDetails
+          canEdit={canEdit}
+          initialEditing={startEditing}
+          lockSpec={specLocked(item.status)}
+          status={item.status}
+          suppliers={options.suppliers.map((sup) => ({ id: sup.id, name: sup.name }))}
+          fromStand={fromStand}
+          values={{
+            id: item.id,
+            ref: item.ref,
+            name: item.name,
+            widthMm: item.widthMm,
+            heightMm: item.heightMm,
+            quantity: item.quantity,
+            supplierId: item.supplierId,
+            material: item.material,
+            finish: item.finish,
+            description: item.description,
+            installDate: item.installDate,
+          }}
+        >
+          {glance}
+        </PanelDetails>
+      ) : (
+        <DetailsEditor
+          canEdit={canEdit}
+          initialEditing={startEditing}
+          formProps={{
+            kind: formKind(item.kind),
+            status: item.status,
+            requiredFields: signoffRequiredFields(item.kind),
+            lockSpec: specLocked(item.status),
+            eventArtworkDue,
+            values: {
+              id: item.id,
+              name: item.name,
+              description: item.description,
+              category: item.category,
+              itemTypeId: item.itemTypeId,
+              hallId: item.hallId,
+              locationId: item.locationId,
+              standNumber: item.standNumber,
+              ownerRole: item.ownerRole,
+              ownerUserId: item.ownerUserId,
+              sponsorId: item.sponsorId,
+              sponsorEntitlementId: item.sponsorEntitlementId,
+              widthMm: item.widthMm,
+              heightMm: item.heightMm,
+              depthMm: item.depthMm,
+              quantity: item.quantity,
+              sided: item.sided,
+              material: item.material,
+              finish: item.finish,
+              fixingMethod: item.fixingMethod,
+              weightKg: item.weightKg,
+              requiresVenueApproval: item.requiresVenueApproval,
+              signoffs: item.signoffs ?? null,
+              // Costs stay on the server for people who can't see them.
+              budgetLine: canSeeCosts ? item.budgetLine : null,
+              costEstimate: canSeeCosts ? item.costEstimate : null,
+              costActual: canSeeCosts ? item.costActual : null,
+              poNumber: canSeeCosts ? item.poNumber : null,
+              supplierId: item.supplierId,
+              artworkDueOverride: item.artworkDueOverride,
+              printDeadline: item.printDeadline,
+              orderByDate: item.orderByDate,
+              salePrice: canSeeCosts ? item.salePrice : null,
+              deliveryDate: item.deliveryDate,
+              installDate: item.installDate,
+              installSlot: item.installSlot,
+              installContractorId: item.installContractorId,
+            },
+            options,
+            canSeeCosts,
+            canEditCosts,
+            editionCode,
+          }}
+        >
+          {glance}
+        </DetailsEditor>
+      )}
       {!snagsFirst && snagsCard}
       {!canEdit && (
         <p className="text-muted-foreground text-sm">
@@ -1197,6 +1390,7 @@ async function StandDetails({
       )}
       <StandForm
         mode="edit"
+        editionId={bundle.edition.id}
         editionCode={editionCode}
         status={item.status}
         readOnly={!canEdit}
@@ -1259,26 +1453,30 @@ async function PanelsSection({
           editionCode={editionCode}
           enabled={canAdd}
           suppliers={options.suppliers}
+          designApproved={designApproved}
         />
       </div>
-      {!designApproved && (
-        <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
-          {panels.length > 0
-            ? `The design has gone back for sign-off since panels were added. ${
-                panelWarning({
-                  approved: panels.filter((p) =>
-                    ["approved", "approved_with_conditions"].includes(p.status),
-                  ).length,
-                  inProduction: panels.filter((p) =>
-                    ["in_production", "delivered", "installed", "snagged", "closed"].includes(
-                      p.status,
-                    ),
-                  ).length,
-                }) ?? "Check the panels still fit."
-              }`
-            : "Panels can be added once the stand design is approved."}
-        </p>
-      )}
+      {!designApproved &&
+        (() => {
+          // Panels already signed off or being made while the design is back in sign-off.
+          const warning = panelWarning({
+            approved: panels.filter((p) =>
+              ["approved", "approved_with_conditions"].includes(p.status),
+            ).length,
+            inProduction: panels.filter((p) =>
+              ["in_production", "delivered", "installed", "snagged", "closed"].includes(p.status),
+            ).length,
+          });
+          return warning ? (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+              The design has gone back for sign-off since its panels were approved. {warning}
+            </p>
+          ) : (
+            <p className="bg-muted/50 text-muted-foreground rounded-lg px-3 py-2 text-sm">
+              You can list panels now; their graphics go for sign-off once the design is approved.
+            </p>
+          );
+        })()}
       {panels.length > 0 && (
         <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Panels">
           {panels.map((p) => (
@@ -1321,4 +1519,50 @@ async function PanelsSection({
       )}
     </div>
   );
+}
+
+/** What a sponsorship item's page needs to sell it and to invite its sponsor. */
+async function sponsorshipContext({
+  item,
+  bundle,
+  session,
+  canEdit,
+  readOnly,
+}: {
+  item: Item;
+  bundle: Bundle;
+  session: StaffSession;
+  canEdit: boolean;
+  readOnly: boolean;
+}) {
+  const isAdmin = can(session.actor, { type: "users.manage" });
+  const [sponsorRows, grants] = await Promise.all([
+    db
+      .select({ id: sponsorsTable.id, name: sponsorsTable.companyName })
+      .from(sponsorsTable)
+      .where(eq(sponsorsTable.editionId, bundle.edition.id))
+      .orderBy(sponsorsTable.companyName),
+    isAdmin && item.sponsorId
+      ? db
+          .select({ n: count() })
+          .from(externalGrants)
+          .where(
+            and(
+              eq(externalGrants.scopeType, "sponsor"),
+              eq(externalGrants.scopeId, item.sponsorId),
+              isNull(externalGrants.revokedAt),
+            ),
+          )
+      : [{ n: 0 }],
+  ]);
+  return {
+    sponsors: sponsorRows,
+    sponsorName: sponsorRows.find((sp) => sp.id === item.sponsorId)?.name ?? null,
+    canSell: can(session.actor, { type: "sponsorship.create" }) && canEdit,
+    // Admins invite the sponsor to the portal, unless someone there already has access.
+    inviteHref:
+      isAdmin && !readOnly && item.sponsorId && Number(grants[0]?.n ?? 0) === 0
+        ? `/users?tab=external&invite=1&role=sponsor&scopeId=${item.sponsorId}&edition=${bundle.edition.id}`
+        : null,
+  };
 }

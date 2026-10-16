@@ -2,7 +2,9 @@
 
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Camera, Gift } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { removeItemPhoto, uploadItemPhoto } from "@/app/actions/sponsorship";
 
@@ -25,7 +27,13 @@ export function PhotoUploader({
 
   return (
     <div className="space-y-2">
-      <div className="bg-muted flex aspect-[4/3] w-full items-center justify-center overflow-hidden rounded-md border">
+      {/* Without a photo the space stays small on a phone. */}
+      <div
+        className={cn(
+          "bg-muted flex w-full items-center justify-center overflow-hidden rounded-md border",
+          photoUrl ? "aspect-[4/3]" : "h-20 sm:aspect-[4/3] sm:h-auto",
+        )}
+      >
         {photoUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={photoUrl} alt={alt} className="size-full object-cover" />
@@ -54,6 +62,7 @@ export function PhotoUploader({
               start(async () => {
                 const res = await uploadItemPhoto(fd);
                 if (!res.ok) setError(res.error);
+                else toast.success(res.message ?? "Photo saved");
                 if (input.current) input.current.value = "";
                 router.refresh();
               });
@@ -78,6 +87,7 @@ export function PhotoUploader({
                 start(async () => {
                   const res = await removeItemPhoto({ itemId });
                   if (!res.ok) setError(res.error);
+                  else toast.success(res.message ?? "Photo removed");
                   router.refresh();
                 })
               }

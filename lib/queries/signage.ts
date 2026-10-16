@@ -334,6 +334,8 @@ export type SponsorshipRow = {
   ref: string;
   name: string;
   status: string;
+  /** The status it was put on hold from. */
+  previousStatus: string | null;
   typeName: string | null;
   kind: "signage" | "sponsorship_item";
   sponsorId: string | null;
@@ -348,7 +350,50 @@ export type SponsorshipRow = {
   /** Artwork preview, used when there is no product photo. */
   previewPath: string | null;
   currentVersion: number | null;
+  /** Who the current round's sign-off waits on ("Marketing", "Dana Director"). */
+  waitingOn: string[];
 };
+
+/**
+ * Who each item's current sign-off round waits on: the named person, else
+ * the department, else the role. Approval steps only.
+ */
+async function signoffWaitingOn(
+  rows: { id: string; currentRunNumber: number }[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  if (rows.length === 0) return out;
+  const runOf = new Map(rows.map((r) => [r.id, r.currentRunNumber]));
+  const pending = await db
+    .select({ instance: approvalInstances, name: users.fullName, email: users.email })
+    .from(approvalInstances)
+    .leftJoin(users, eq(approvalInstances.assignedUserId, users.id))
+    .where(
+      and(
+        eq(approvalInstances.entityType, "signage_item"),
+        inArray(
+          approvalInstances.entityId,
+          rows.map((r) => r.id),
+        ),
+        eq(approvalInstances.status, "pending"),
+        eq(approvalInstances.stepKindSnapshot, "approval"),
+      ),
+    )
+    .orderBy(asc(approvalInstances.sortOrderSnapshot));
+  const depts = await departmentNames(
+    db,
+    pending.map((p) => p.instance.assignedDepartmentId),
+  );
+  for (const { instance: p, name, email } of pending) {
+    if (runOf.get(p.entityId) !== p.runNumber) continue;
+    const who =
+      (p.assignedUserId && (name || email)) ||
+      (p.assignedDepartmentId ? depts.get(p.assignedDepartmentId) : null) ||
+      roleLabel(p.assignedRole);
+    out.set(p.entityId, [...(out.get(p.entityId) ?? []), who]);
+  }
+  return out;
+}
 
 /**
  * The sponsorship register: everything for sale to sponsors (sponsorship
@@ -378,11 +423,17 @@ export async function listSponsorshipRows(editionId: string): Promise<Sponsorshi
       ),
     )
     .orderBy(sql`${signageItems.orderByDate} ASC NULLS LAST`, asc(signageItems.seq));
+  const waiting = await signoffWaitingOn(
+    rows
+      .filter((r) => r.item.status === "in_review")
+      .map((r) => ({ id: r.item.id, currentRunNumber: r.item.currentRunNumber })),
+  );
   return rows.map((r) => ({
     id: r.item.id,
     ref: r.item.ref,
     name: r.item.name,
     status: r.item.status,
+    previousStatus: r.item.previousStatus,
     typeName: r.typeName,
     kind: r.item.kind as "signage" | "sponsorship_item",
     sponsorId: r.item.sponsorId,
@@ -396,6 +447,7 @@ export async function listSponsorshipRows(editionId: string): Promise<Sponsorshi
     photoPath: r.item.photoPath,
     previewPath: r.previewPath,
     currentVersion: r.currentVersion,
+    waitingOn: waiting.get(r.item.id) ?? [],
   }));
 }
 
@@ -582,15 +634,32 @@ export type OnsiteRow = {
   installDate: string | null;
   installSlot: string | null;
   contractorName: string | null;
+  supplierName: string | null;
   installedAt: string | null;
   openSnags: number;
-  currentArtworkVersionId: string | null;
-  /** The pending Installed confirmation, if the item is waiting for one. */
-  installInstance: {
+  /** The open snags themselves, newest first (photo paths, not URLs). */
+  openSnagList: {
     id: string;
+    description: string;
+    severity: string;
+    status: string;
+    photoPath: string | null;
+  }[];
+  currentArtworkVersionId: string | null;
+  /**
+   * The earliest production confirmation still waiting in the current
+   * round (Sent to print, Delivered or Installed), with who holds it.
+   */
+  pendingConfirmation: {
+    id: string;
+    stepName: string;
+    /** The round's last confirmation: the install step, whatever it is called. */
+    isInstall: boolean;
     assignedRole: string | null;
     assignedUserId: string | null;
     assignedDepartmentId: string | null;
+    /** "Operations", "Big Print Co", a person's name. */
+    who: string;
   } | null;
   authz: {
     ownerUserId: string | null;
@@ -605,8 +674,8 @@ const ONSITE_STATUSES = ["in_production", "delivered", "installed", "snagged", "
 
 /**
  * The Onsite checklist: every sign, sponsorship item and stand panel that is
- * printed or later, with what it needs next (install confirmation, snags,
- * close). Ordered by install date and slot, then ref.
+ * printed or later, with what it needs next (the confirmation that is
+ * waiting, its open snags, close). Ordered by install date and slot, then ref.
  */
 export async function listOnsiteRows(editionId: string): Promise<OnsiteRow[]> {
   const rows = await db
@@ -615,11 +684,13 @@ export async function listOnsiteRows(editionId: string): Promise<OnsiteRow[]> {
       hallName: halls.name,
       locationName: locations.name,
       contractorName: contractors.name,
+      supplierName: suppliers.name,
     })
     .from(signageItems)
     .leftJoin(halls, eq(signageItems.hallId, halls.id))
     .leftJoin(locations, eq(signageItems.locationId, locations.id))
     .leftJoin(contractors, eq(signageItems.installContractorId, contractors.id))
+    .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
     .where(
       and(
         eq(signageItems.editionId, editionId),
@@ -634,36 +705,41 @@ export async function listOnsiteRows(editionId: string): Promise<OnsiteRow[]> {
     .orderBy(asc(signageItems.installDate), asc(signageItems.installSlot), asc(signageItems.seq));
   const ids = rows.map((r) => r.item.id);
   if (ids.length === 0) return [];
-  const [pendingInstalls, snagCounts] = await Promise.all([
+  const [confirmations, openSnagRows] = await Promise.all([
     db
-      .select({
-        id: approvalInstances.id,
-        entityId: approvalInstances.entityId,
-        runNumber: approvalInstances.runNumber,
-        assignedRole: approvalInstances.assignedRole,
-        assignedUserId: approvalInstances.assignedUserId,
-        assignedDepartmentId: approvalInstances.assignedDepartmentId,
-      })
+      .select({ instance: approvalInstances, name: users.fullName, email: users.email })
       .from(approvalInstances)
+      .leftJoin(users, eq(approvalInstances.assignedUserId, users.id))
       .where(
         and(
           eq(approvalInstances.entityType, "signage_item"),
           inArray(approvalInstances.entityId, ids),
-          eq(approvalInstances.status, "pending"),
-          eq(approvalInstances.stepNameSnapshot, "Installed"),
+          eq(approvalInstances.stepKindSnapshot, "confirmation"),
         ),
-      ),
+      )
+      .orderBy(asc(approvalInstances.sortOrderSnapshot)),
     db
-      .select({ itemId: snags.signageItemId, n: sql<number>`count(*)::int` })
+      .select()
       .from(snags)
       .where(and(inArray(snags.signageItemId, ids), inArray(snags.status, ["open", "in_progress"])))
-      .groupBy(snags.signageItemId),
+      .orderBy(desc(snags.createdAt)),
   ]);
-  const snagsByItem = new Map(snagCounts.map((s) => [s.itemId, Number(s.n)]));
+  const deptNames = await departmentNames(
+    db,
+    confirmations.map((c) => c.instance.assignedDepartmentId),
+  );
+  const byItem = new Map<string, typeof confirmations>();
+  for (const c of confirmations) {
+    byItem.set(c.instance.entityId, [...(byItem.get(c.instance.entityId) ?? []), c]);
+  }
   return rows.map((r) => {
-    const inst = pendingInstalls.find(
-      (p) => p.entityId === r.item.id && p.runNumber === r.item.currentRunNumber,
+    const round = (byItem.get(r.item.id) ?? []).filter(
+      (c) => c.instance.runNumber === r.item.currentRunNumber,
     );
+    const last = round[round.length - 1];
+    const first = round.find((c) => c.instance.status === "pending");
+    const itemSnags = openSnagRows.filter((s) => s.signageItemId === r.item.id);
+    const p = first?.instance;
     return {
       id: r.item.id,
       ref: r.item.ref,
@@ -677,15 +753,31 @@ export async function listOnsiteRows(editionId: string): Promise<OnsiteRow[]> {
       installDate: r.item.installDate,
       installSlot: r.item.installSlot,
       contractorName: r.contractorName,
+      supplierName: r.supplierName,
       installedAt: r.item.installedAt?.toISOString() ?? null,
-      openSnags: snagsByItem.get(r.item.id) ?? 0,
+      openSnags: itemSnags.length,
+      openSnagList: itemSnags.map((s) => ({
+        id: s.id,
+        description: s.description,
+        severity: s.severity,
+        status: s.status,
+        photoPath: s.photoPath,
+      })),
       currentArtworkVersionId: r.item.currentArtworkVersionId,
-      installInstance: inst
+      pendingConfirmation: p
         ? {
-            id: inst.id,
-            assignedRole: inst.assignedRole,
-            assignedUserId: inst.assignedUserId,
-            assignedDepartmentId: inst.assignedDepartmentId,
+            id: p.id,
+            stepName: p.stepNameSnapshot,
+            isInstall: p.id === last?.instance.id,
+            assignedRole: p.assignedRole,
+            assignedUserId: p.assignedUserId,
+            assignedDepartmentId: p.assignedDepartmentId,
+            who:
+              (p.assignedUserId && (first.name || first.email)) ||
+              (p.assignedDepartmentId ? deptNames.get(p.assignedDepartmentId) : null) ||
+              (p.assignedRole === "supplier"
+                ? (r.supplierName ?? "the supplier")
+                : roleLabel(p.assignedRole)),
           }
         : null,
       authz: {

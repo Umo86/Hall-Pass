@@ -6,8 +6,9 @@ import { editionIsReadOnly } from "@/lib/edition-lock";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { standFormOptions } from "@/lib/queries/stand-designs";
 import { StandForm } from "@/components/stand-designs/stand-form";
+import { Page, PageHeader } from "@/components/page-header";
 
-export const metadata = { title: "New stand" };
+export const metadata = { title: "New feature stand" };
 export const dynamic = "force-dynamic";
 
 export default async function NewStandPage({
@@ -30,13 +31,12 @@ export default async function NewStandPage({
   });
 
   return (
-    <div className="flex flex-col gap-4 p-4 sm:p-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">New stand</h1>
-        <p className="text-muted-foreground text-sm">
-          Set up the stand and choose who approves its design. You&apos;ll upload the design next.
-        </p>
-      </div>
+    <Page width="narrow" className="gap-4">
+      <PageHeader
+        title="New feature stand"
+        description="Set up the stand and choose who approves its design. You'll upload the design next."
+        back={{ href: `/${editionCode}/stand-designs`, label: "Feature stands" }}
+      />
       <StandForm
         mode="create"
         editionId={ed.edition.id}
@@ -44,6 +44,6 @@ export default async function NewStandPage({
         values={{}}
         options={options}
       />
-    </div>
+    </Page>
   );
 }

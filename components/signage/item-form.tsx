@@ -342,7 +342,13 @@ function ItemFormInner({
       // a change (an omitted quantity or "sided" would fall back to defaults).
       for (const key of LOCKED_FIELDS) clean[key] = values[key] ?? null;
     }
-    if (!lockSpec && steps.length > 0 && plan.length === 0) {
+    if (
+      !lockSpec &&
+      steps.length > 0 &&
+      plan.length === 0 &&
+      // New sponsorship items take the default sign-off (no picker shown).
+      !(isSponsorship && mode === "create")
+    ) {
       setError("Choose at least one department to sign this off");
       setPlanOpen(true);
       return;
@@ -550,8 +556,10 @@ function ItemFormInner({
     </>
   );
 
+  // A new sponsorship item isn't sold or designed yet: it takes the default
+  // sign-off, which can be changed later from its page.
   const signoffSection =
-    steps.length > 0 ? (
+    steps.length > 0 && !(isSponsorship && mode === "create") ? (
       <section className="grid gap-2" aria-labelledby="signoff-heading">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
@@ -559,11 +567,15 @@ function ItemFormInner({
               Sign-off
             </h3>
             <p className="text-muted-foreground text-xs">
-              {planOpen
-                ? `Who approves the artwork. Pre-set for ${
-                    category === "sponsor" ? "sponsor" : "organiser"
-                  } signage — untick a department or pick the person. They're emailed when it's their turn.`
-                : "Who approves the artwork; they're emailed when it's their turn."}
+              {isSponsorship
+                ? planOpen
+                  ? "Who approves the sponsor's artwork — untick a department or pick the person. They're emailed when it's their turn."
+                  : "Who approves the sponsor's artwork; they're emailed when it's their turn."
+                : planOpen
+                  ? `Who approves the artwork. Pre-set for ${
+                      category === "sponsor" ? "sponsor" : "organiser"
+                    } signage — untick a department or pick the person. They're emailed when it's their turn.`
+                  : "Who approves the artwork; they're emailed when it's their turn."}
             </p>
           </div>
           {!planOpen && !lockSpec && (

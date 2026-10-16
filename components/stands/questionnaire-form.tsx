@@ -2,6 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -30,12 +32,20 @@ const TRIGGERS: Array<[keyof QuestionnaireValues, string]> = [
   ["hasTieredSeating", "Tiered seating"],
 ];
 
+/**
+ * The structure questionnaire, editable (the exhibitor's portal) or as
+ * answers. Pass onCancel/onSaved when it opens from "Edit answers".
+ */
 export function QuestionnaireForm({
   values,
   readOnly,
+  onCancel,
+  onSaved,
 }: {
   values: QuestionnaireValues;
   readOnly: boolean;
+  onCancel?: () => void;
+  onSaved?: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -81,7 +91,11 @@ export function QuestionnaireForm({
             otherComplexNotes: fd.get("otherComplexNotes") || null,
           });
           if (!res.ok) setError(res.error);
-          else {
+          else if (onSaved) {
+            toast.success(res.message ?? "Answers saved");
+            onSaved();
+            router.refresh();
+          } else {
             setMessage(res.message ?? "Saved");
             router.refresh();
           }
@@ -126,8 +140,13 @@ export function QuestionnaireForm({
       </div>
       <div className="flex items-center gap-3">
         <Button type="submit" disabled={pending}>
-          Save questionnaire
+          {pending ? "Saving…" : "Save questionnaire"}
         </Button>
+        {onCancel && (
+          <Button type="button" variant="outline" onClick={onCancel} disabled={pending}>
+            Cancel
+          </Button>
+        )}
         {message && <span className="text-sm text-green-700 dark:text-green-400">{message}</span>}
         {error && <span className="text-destructive text-sm">{error}</span>}
       </div>
@@ -141,5 +160,34 @@ function FragmentRow({ label, value }: { label: string; value: boolean }) {
       <dt className="text-muted-foreground">{label}</dt>
       <dd>{value ? "Yes" : "No"}</dd>
     </>
+  );
+}
+
+/**
+ * Staff view of the questionnaire: the answers, with "Edit answers" for
+ * reviewers who need to correct them.
+ */
+export function QuestionnaireAnswers({
+  values,
+  canEdit,
+}: {
+  values: QuestionnaireValues;
+  canEdit: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <div className="grid gap-3">
+      {canEdit && !editing && (
+        <Button size="sm" variant="outline" className="w-fit" onClick={() => setEditing(true)}>
+          <Pencil aria-hidden /> Edit answers
+        </Button>
+      )}
+      <QuestionnaireForm
+        values={values}
+        readOnly={!editing}
+        onCancel={() => setEditing(false)}
+        onSaved={() => setEditing(false)}
+      />
+    </div>
   );
 }

@@ -34,6 +34,7 @@ export function NextStepCard({
   currentVersionId,
   requiresInstallPhoto,
   canEditFields,
+  extraAction,
 }: {
   step: NextStep;
   progress: ProgressStep[];
@@ -44,6 +45,8 @@ export function NextStepCard({
   requiresInstallPhoto: boolean;
   /** Checklist lines link to the form only for people who can change it. */
   canEditFields: boolean;
+  /** A kind's own button beside the step's (e.g. Mark as sold on a sponsorship item). */
+  extraAction?: React.ReactNode;
 }) {
   const action = (a: NextStepAction | null | undefined, primary: boolean) => {
     if (!a) return null;
@@ -94,9 +97,10 @@ export function NextStepCard({
           </h2>
           {step.detail && <p className="text-muted-foreground text-sm">{step.detail}</p>}
         </div>
-        {(step.action || step.secondary) && (
+        {(step.action || step.secondary || extraAction) && (
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             {action(step.secondary, false)}
+            {extraAction}
             {action(step.action, true)}
           </div>
         )}

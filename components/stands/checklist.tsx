@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { tickRulesChecklist } from "@/app/actions/stands";
@@ -17,19 +18,30 @@ export function RulesChecklist({
   submissionId,
   items,
   canTick,
+  submitted = false,
 }: {
   submissionId: string;
   items: ChecklistItem[];
   canTick: boolean;
+  /** Already submitted: an empty list means the venue has no rules. */
+  submitted?: boolean;
 }) {
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
   if (items.length === 0) {
-    return (
+    return submitted ? (
+      <p className="text-muted-foreground rounded-lg border border-dashed px-4 py-6 text-sm">
+        This venue has no rules set up — add them in{" "}
+        <Link href="/settings/venues" className="link">
+          Settings → Venues
+        </Link>
+        .
+      </p>
+    ) : (
       <p className="text-muted-foreground text-sm">
-        The checklist is generated from the venue rules when the design is submitted.
+        The checklist is made from the venue&apos;s rules when the exhibitor submits their design.
       </p>
     );
   }

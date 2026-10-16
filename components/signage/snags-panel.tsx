@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status-badge";
 import { raiseSnag, updateSnag } from "@/app/actions/snags";
 import { formatDateTime, statusLabel } from "@/lib/format";
+import { ResolveSnagButton } from "./resolve-snag-dialog";
 
 export type SnagView = {
   id: string;
@@ -35,19 +36,27 @@ type Result = { ok: boolean; error?: string; message?: string };
 
 /**
  * "Raise snag" button and dialog: what's wrong, how bad, a photo. Used on
- * the item page and the Onsite checklist.
+ * the item page and the Onsite checklist; there, on a delivered item, it is
+ * "Report damage" (goods arriving damaged).
  */
 export function RaiseSnagButton({
   itemId,
   itemRef,
   size = "sm",
   variant = "outline",
+  label = "Raise snag",
+  damage = false,
+  className,
   onDone,
 }: {
   itemId: string;
   itemRef: string;
   size?: "sm" | "default";
   variant?: "outline" | "default" | "secondary";
+  label?: string;
+  /** Delivered, not yet installed: the snag records damage on arrival. */
+  damage?: boolean;
+  className?: string;
   onDone?: (res: Result) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -85,6 +94,7 @@ export function RaiseSnagButton({
       <Button
         size={size}
         variant={variant}
+        className={className}
         onClick={() => {
           // Nothing carries over from a cancelled attempt.
           setError(null);
@@ -92,15 +102,18 @@ export function RaiseSnagButton({
           setOpen(true);
         }}
       >
-        Raise snag
+        {label}
       </Button>
       <Dialog open={open} onOpenChange={(o) => !o && setOpen(false)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Raise a snag on {itemRef}</DialogTitle>
+            <DialogTitle>
+              {damage ? `Report damage on ${itemRef}` : `Raise a snag on ${itemRef}`}
+            </DialogTitle>
             <DialogDescription>
-              The item is marked Snagged until every snag is resolved. Operations and the owner are
-              told.
+              {damage
+                ? "It stays Delivered; if it is installed before this is fixed, it is marked Snagged. Operations and the owner are told."
+                : "The item is marked Snagged until every snag is resolved. Operations and the owner are told."}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
@@ -110,7 +123,11 @@ export function RaiseSnagButton({
                 id="snag-description"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="e.g. Left edge peeling, wrong panel fitted, hung crooked"
+                placeholder={
+                  damage
+                    ? "e.g. Corner crushed in transit, wrong size delivered"
+                    : "e.g. Left edge peeling, wrong panel fitted, hung crooked"
+                }
                 rows={3}
               />
             </div>
@@ -143,7 +160,7 @@ export function RaiseSnagButton({
               Cancel
             </Button>
             <Button disabled={pending || !description.trim()} onClick={submit}>
-              Raise snag
+              {damage ? "Report damage" : "Raise snag"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -167,49 +184,23 @@ export function SnagsPanel({
   /** Installed or snagged items only; others show why not. */
   canRaise: boolean;
 }) {
-  const [closing, setClosing] = useState<{ id: string; status: "resolved" | "wont_fix" } | null>(
-    null,
-  );
-  // The wording the dialog was opened with — kept while it fades out, so
-  // "Resolved" does not flip to "Won't fix" mid-animation.
-  const [kind, setKind] = useState<"resolved" | "wont_fix">("resolved");
-  const [note, setNote] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
 
-  function move(snagId: string, status: string, withNote = false) {
-    setError(null);
+  /** In progress or reopened: no note needed. Resolving goes through its dialog. */
+  function move(snagId: string, status: "open" | "in_progress") {
     start(async () => {
       const fd = new FormData();
       fd.set("snagId", snagId);
       fd.set("status", status);
-      if (withNote) {
-        if (note.trim()) fd.set("note", note.trim());
-        if (file) fd.set("file", file);
-      }
       const res = await updateSnag(fd);
       if (!res.ok) {
-        setError(res.error);
-        if (!withNote) toast.error(res.error);
+        toast.error(res.error);
         return;
       }
       toast.success(res.message ?? `Snag on ${itemRef} updated`);
-      setClosing(null);
-      setNote("");
-      setFile(null);
       router.refresh();
     });
-  }
-
-  /** Every dialog starts clean: no note or photo from the last snag. */
-  function openClosing(id: string, status: "resolved" | "wont_fix") {
-    setNote("");
-    setFile(null);
-    setError(null);
-    setKind(status);
-    setClosing({ id, status });
   }
 
   const open = snags.filter((s) => s.status === "open" || s.status === "in_progress");
@@ -302,21 +293,19 @@ export function SnagsPanel({
                 )}
                 {(snag.status === "open" || snag.status === "in_progress") && (
                   <>
-                    <Button
-                      size="sm"
+                    <ResolveSnagButton
+                      snagId={snag.id}
+                      itemRef={itemRef}
+                      description={snag.description}
                       disabled={pending}
-                      onClick={() => openClosing(snag.id, "resolved")}
-                    >
-                      Resolved
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
+                    />
+                    <ResolveSnagButton
+                      snagId={snag.id}
+                      itemRef={itemRef}
+                      description={snag.description}
+                      outcome="wont_fix"
                       disabled={pending}
-                      onClick={() => openClosing(snag.id, "wont_fix")}
-                    >
-                      Won&apos;t fix
-                    </Button>
+                    />
                   </>
                 )}
                 {(snag.status === "resolved" || snag.status === "wont_fix") && canRaise && (
@@ -334,46 +323,6 @@ export function SnagsPanel({
           </li>
         ))}
       </ul>
-
-      <Dialog open={closing !== null} onOpenChange={(o) => !o && setClosing(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {kind === "resolved" ? "Mark this snag resolved" : "Mark as won't fix"}
-            </DialogTitle>
-            <DialogDescription>
-              {kind === "resolved"
-                ? "Say what was done and add a photo of the fix if you have one."
-                : "Say why it is being left as it is."}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-3">
-            <Textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder={kind === "resolved" ? "What was done" : "Why it stays"}
-              rows={3}
-            />
-            <FileInput
-              accept="image/*"
-              buttonLabel="Add a photo of the fix"
-              onFileChange={(files) => setFile(files?.[0] ?? null)}
-            />
-            {error && <p className="text-destructive text-sm">{error}</p>}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setClosing(null)}>
-              Cancel
-            </Button>
-            <Button
-              disabled={pending || (kind === "wont_fix" && !note.trim())}
-              onClick={() => closing && move(closing.id, closing.status, true)}
-            >
-              {kind === "resolved" ? "Resolved" : "Won't fix"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </section>
   );
 }

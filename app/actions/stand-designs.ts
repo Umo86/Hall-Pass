@@ -2,12 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { and, eq, sql } from "drizzle-orm";
-import { db } from "@/lib/db/client";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { db, type Tx } from "@/lib/db/client";
 import { locations, signageItems } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
-import { requireSession } from "@/lib/auth/actor";
+import { requireSession, type Session } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { notify } from "@/lib/notify";
 import {
@@ -19,12 +19,18 @@ import {
   ownEdition,
   resolveItemCreationRecipients,
 } from "@/lib/domain/signage";
-import { ensureStandDesignWorkflow, mapPlanToWorkflow } from "@/lib/domain/stand-designs";
+import {
+  ensureStandDesignWorkflow,
+  mapPlanToWorkflow,
+  panelSyncPatch,
+} from "@/lib/domain/stand-designs";
+import type { SignoffPlan } from "@/lib/workflow/types";
 import { loadStepDefs } from "@/lib/workflow/persist";
 import { formatStandPanelRef, nextStandDesignRef, nextStandItemSeq } from "@/lib/refs";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { itemPath } from "@/lib/edition-path";
-import { APPROVED_OR_LATER, type SignageStatus } from "@/lib/status/signage";
+import { plural } from "@/lib/format";
+import { updateSignageItem } from "./signage";
 
 const mm = z.coerce.number().int().positive().max(100_000).optional().nullable();
 const uuidOrNull = z.string().uuid().optional().nullable();
@@ -209,9 +215,11 @@ export async function createStandDesign(input: unknown): Promise<ActionResult<{ 
 }
 
 /**
- * A graphic panel on an approved stand. It takes the stand's place and
- * approvers (matched department by department on the print workflow), then
- * goes through graphics sign-off and print → delivered → installed like a sign.
+ * A graphic panel on a stand, at any point before the stand is complete (so
+ * printers can quote early; its graphic waits for the design's approval).
+ * It takes the stand's place and approvers (matched department by
+ * department on the print workflow), then goes through graphics sign-off
+ * and print → delivered → installed like a sign.
  */
 export async function addStandPanel(input: unknown): Promise<ActionResult<{ ref: string }>> {
   const parsed = panelSchema.safeParse(input);
@@ -252,8 +260,8 @@ export async function addStandPanel(input: unknown): Promise<ActionResult<{ ref:
         .from(signageItems)
         .where(eq(signageItems.id, data.standId))
         .for("update");
-      if (!APPROVED_OR_LATER.includes(stand.status as SignageStatus)) {
-        throw new Error("Panels can be added once the stand design is approved");
+      if (stand.status === "closed") {
+        throw new Error("This stand is complete — panels can no longer be added");
       }
       const [{ n }] = await tx
         .select({ n: sql<number>`count(*)::int` })
@@ -334,4 +342,109 @@ export async function addStandPanel(input: unknown): Promise<ActionResult<{ ref:
   } catch (err) {
     return fail(err instanceof Error ? err.message : "Something went wrong");
   }
+}
+
+/**
+ * Bring a stand's panels into line with it: where it is (until a panel is
+ * installed) and, while a panel is still a draft, whose stand it is and who
+ * signs it off. One audit row per panel changed. Returns how many changed.
+ */
+async function syncPanelsToStand(tx: Tx, session: Session, standId: string): Promise<number> {
+  const [stand] = await tx
+    .select()
+    .from(signageItems)
+    .where(eq(signageItems.id, standId))
+    .for("update");
+  if (!stand || stand.kind !== "stand_design") return 0;
+  const panels = await tx
+    .select()
+    .from(signageItems)
+    .where(and(eq(signageItems.parentItemId, stand.id), isNull(signageItems.deletedAt)));
+  if (panels.length === 0) return 0;
+  const fromSteps = stand.workflowId ? await loadStepDefs(tx, stand.workflowId) : [];
+  const stepsByWorkflow = new Map<string, Awaited<ReturnType<typeof loadStepDefs>>>();
+  const defaultWorkflowId = await defaultSignageWorkflowId(tx, session.organisation.id, null);
+  let changed = 0;
+  for (const panel of panels) {
+    let mapped: SignoffPlan | null = panel.signoffs ?? null;
+    if (panel.status === "draft") {
+      const workflowId = panel.workflowId ?? defaultWorkflowId;
+      if (workflowId && !stepsByWorkflow.has(workflowId)) {
+        stepsByWorkflow.set(workflowId, await loadStepDefs(tx, workflowId));
+      }
+      const plan = mapPlanToWorkflow(
+        stand.signoffs ?? null,
+        fromSteps,
+        (workflowId && stepsByWorkflow.get(workflowId)) || [],
+      );
+      mapped = plan
+        ? await normaliseSignoffs(tx, {
+            organisationId: session.organisation.id,
+            workflowId,
+            category: stand.category,
+            plan,
+          })
+        : null;
+    }
+    const patch = panelSyncPatch(stand, panel, mapped);
+    const keys = Object.keys(patch);
+    if (keys.length === 0) continue;
+    await tx
+      .update(signageItems)
+      .set(patch as Partial<typeof signageItems.$inferInsert>)
+      .where(eq(signageItems.id, panel.id));
+    await writeAudit(tx, {
+      organisationId: session.organisation.id,
+      editionId: stand.editionId,
+      actorUserId: session.user.id,
+      entityType: "signage_item",
+      entityId: panel.id,
+      action: "update",
+      before: Object.fromEntries(keys.map((k) => [k, panel[k as keyof typeof panel] ?? null])),
+      after: patch,
+      summary: `Updated ${panel.ref} to match its stand ${stand.ref} (${keys
+        .filter((k) => k !== "isSponsorDeliverable")
+        .join(", ")})`,
+    });
+    changed++;
+  }
+  return changed;
+}
+
+/**
+ * Save a stand (the same checks, rules and audit as any item), then bring
+ * its panels into line: its hall, location and stand no. until a panel is
+ * installed; whose stand it is and who signs off while a panel is a draft.
+ */
+export async function updateStandDesign(input: unknown): Promise<ActionResult> {
+  const parsed = z.object({ id: z.string().uuid() }).passthrough().safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await requireSession();
+  const bundle = await loadItemBundle(db, parsed.data.id, {
+    organisationId: session.organisation.id,
+  });
+  if (!bundle || bundle.item.deletedAt || bundle.item.kind !== "stand_design") {
+    return fail("Stand not found");
+  }
+  const saved = await updateSignageItem(input);
+  if (!saved.ok) return saved;
+  // updateSignageItem checked the right to edit and the event; the panels
+  // are the stand's own, so the same right covers them.
+  let followed = 0;
+  try {
+    followed = await db.transaction((tx) => syncPanelsToStand(tx, session, bundle.item.id));
+  } catch (err) {
+    console.error("updateStandDesign: panels", err);
+    return success(
+      undefined,
+      `${saved.message ?? "Saved"} — but its panels could not be updated to match; save again`,
+    );
+  }
+  if (followed > 0) revalidatePath("/", "layout");
+  return success(
+    undefined,
+    followed > 0
+      ? `${saved.message ?? "Saved"} — ${plural(followed, "panel")} updated to match`
+      : saved.message,
+  );
 }

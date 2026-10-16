@@ -45,6 +45,7 @@ import {
 } from "@/lib/domain/signage";
 import { itemPath } from "@/lib/edition-path";
 import { panelParent } from "@/lib/domain/stand-designs";
+import { settleApprovalNotifications } from "@/lib/domain/notifications";
 
 const MAX_ARTWORK_BYTES = 200 * 1024 * 1024;
 const PREVIEWABLE = ["image/png", "image/jpeg", "image/tiff", "image/svg+xml"];
@@ -258,6 +259,9 @@ async function recordArtworkVersion(
         set.status = signageTransition(item.status, "artwork_uploaded");
         await tx.update(signageItems).set(set).where(eq(signageItems.id, item.id));
         const instances = await startItemRun(tx, bundle, new Date());
+        await settleApprovalNotifications(tx, "signage_item", item.id, {
+          newlyPending: instances.filter((i) => i.status === "pending").map((i) => i.id),
+        });
         await notifyPendingAssignees(tx, bundle, instances);
         reviewStarted = true;
         status = "in_review";
@@ -275,6 +279,8 @@ async function recordArtworkVersion(
         const run = await loadRun(tx, "signage_item", item.id, item.currentRunNumber);
         const res = invalidateOnNewVersion(run, { entity: itemEntityCtx(bundle), now: new Date() });
         await persistRun(tx, "signage_item", item.id, res.instances);
+        // Requests for steps the new version superseded are over.
+        await settleApprovalNotifications(tx, "signage_item", item.id);
         for (const inst of res.invalidated) {
           const approvers = inst.decidedBy ? [inst.decidedBy] : [];
           await notify(tx, {
@@ -306,6 +312,8 @@ async function recordArtworkVersion(
             const res = await tx.transaction((sp) =>
               back ? resubmitItemInTx(sp, updated, opts) : submitItemInTx(sp, updated, opts),
             );
+            // Sent for sign-off just now: anyone not asked this time is done.
+            await settleApprovalNotifications(tx, "signage_item", item.id);
             reviewStarted = true;
             status = res.next;
             note = ` and sent ${back ? "back " : ""}for sign-off${res.pending.length ? ` — waiting on ${askedSummary(res.pending)}` : ""}`;

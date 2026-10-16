@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,19 +18,23 @@ import {
 import { addStandPanel } from "@/app/actions/stand-designs";
 
 /**
- * Add a graphic panel to an approved stand. Before the design is approved
- * the button stays off and says why.
+ * Add a graphic panel to a stand — at any point before it is complete, so
+ * printers can quote early. Its graphic goes for sign-off once the design
+ * is approved.
  */
 export function AddPanelButton({
   standId,
   editionCode,
   enabled,
   suppliers,
+  designApproved = true,
 }: {
   standId: string;
   editionCode: string;
   enabled: boolean;
   suppliers: { id: string; name: string }[];
+  /** Approved: the new panel opens on its graphic; before that, on its details. */
+  designApproved?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +57,10 @@ export function AddPanelButton({
         return;
       }
       setOpen(false);
-      router.push(`/${editionCode}/stand-panels/${res.data?.ref}?tab=artwork`);
+      toast.success(res.message ?? "Panel added");
+      router.push(
+        `/${editionCode}/stand-panels/${res.data?.ref}?${designApproved ? "tab=artwork&" : ""}created=1`,
+      );
     });
   }
 
@@ -80,8 +88,8 @@ export function AddPanelButton({
           <DialogHeader>
             <DialogTitle>Add a panel</DialogTitle>
             <DialogDescription>
-              Name and size the panel, then upload its graphic. The stand&apos;s approvers sign it
-              off.
+              Name and size the panel. Its graphic goes to the stand&apos;s approvers once the
+              design is approved.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={onSubmit} className="grid grid-cols-2 gap-3">
@@ -123,7 +131,7 @@ export function AddPanelButton({
             {field("finish", "Finish", <Input id="finish" name="finish" />)}
             <div className="col-span-2 flex flex-wrap items-center gap-3">
               <Button type="submit" disabled={pending}>
-                Add panel
+                {pending ? "Adding…" : "Add panel"}
               </Button>
               {error && <span className="text-destructive text-sm">{error}</span>}
             </div>

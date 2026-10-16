@@ -23,9 +23,10 @@ async function decide(page: Page, baseURL: string, ref: string, button: string) 
   await expect(dialog).toHaveCount(0);
 }
 
+/** Upload a draft's first file: it goes for sign-off in the same step. */
 async function uploadAndSubmit(page: Page, url: string, fileName: string) {
   await page.goto(`${url}?tab=artwork`);
-  const upload = page.getByRole("button", { name: "Upload" });
+  const upload = page.getByRole("button", { name: "Upload", exact: true });
   // A file chosen before React has hydrated is lost; choose again until the
   // Upload button wakes up.
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -40,8 +41,7 @@ async function uploadAndSubmit(page: Page, url: string, fileName: string) {
   await upload.click();
   await expect(page.getByText(`v1 — ${fileName}`)).toBeVisible();
   await page.goto(url);
-  await page.getByRole("button", { name: "Submit for review" }).click();
-  await expect(page.getByText("In review", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("In sign-off", { exact: true }).first()).toBeVisible();
 }
 
 test.describe("stand designs", () => {
@@ -55,6 +55,7 @@ test.describe("stand designs", () => {
 
     // Ops sets up the stand and chooses who approves it.
     await ops.goto(`${baseURL}/BIRM27/stand-designs`);
+    await expect(ops.getByRole("heading", { name: "Feature stands", exact: true })).toBeVisible();
     await ops.getByRole("link", { name: "New stand" }).click();
     await ops.getByLabel("Stand name").fill(name);
     await ops.getByLabel("Stand no.").fill("Z99");
@@ -73,25 +74,13 @@ test.describe("stand designs", () => {
     const standUrl = ops.url().split("?")[0];
     const standRef = standUrl.split("/").pop()!;
 
-    // No panels until the design is approved.
+    // Panels can be listed before the design is approved (printers quote early).
     await ops.goto(`${standUrl}?tab=panels`);
-    await expect(ops.getByRole("button", { name: "Add panel" })).toBeDisabled();
     await expect(
-      ops.getByText("Panels can be added once the stand design is approved."),
+      ops.getByText(
+        "You can list panels now; their graphics go for sign-off once the design is approved.",
+      ),
     ).toBeVisible();
-
-    // The design goes for sign-off to the named marketer and operations.
-    await uploadAndSubmit(ops, standUrl, "stand-design.pdf");
-    const mkt = await as(browser, "marketing@media10.test", baseURL!);
-    await mkt.goto(`${baseURL}/approvals`);
-    await expect(mkt.getByText(`Stand design: ${name}`)).toBeVisible();
-    await decide(mkt, baseURL!, standRef, "Approve");
-    await decide(ops, baseURL!, standRef, "Approve");
-    await ops.goto(standUrl);
-    await expect(ops.getByText("Approved", { exact: true }).first()).toBeVisible();
-
-    // Now a panel can be added; it goes to the same approvers.
-    await ops.goto(`${standUrl}?tab=panels`);
     await ops.getByRole("button", { name: "Add panel" }).click();
     const dialog = ops.getByRole("dialog");
     await dialog.getByLabel("Panel name").fill("Back wall");
@@ -103,12 +92,38 @@ test.describe("stand designs", () => {
     const panelRef = `${standRef}-P1`;
     await expect(ops.getByRole("link", { name: new RegExp(standRef) })).toBeVisible();
 
-    await ops.goto(panelUrl);
-    await expect(ops.getByLabel("Needs Operations sign-off")).toBeChecked();
-    await expect(ops.getByLabel("Needs Marketing sign-off")).toBeChecked();
-    await expect(ops.getByLabel("Needs Senior management sign-off")).not.toBeChecked();
-    await expect(ops.getByLabel("Who signs Marketing sign-off")).toHaveValue(/.+/);
+    // The panel's own details are the slim set; place and sign-off come from the stand.
+    const glance = ops.getByRole("region", { name: "At a glance" });
+    await expect(
+      glance.getByText(/From the stand: Hall 1 · Stand Z99 · Signed off by/),
+    ).toBeVisible();
+    await expect(glance.getByText(/Operations, Marketing \(Marcus Marketing\)/)).toBeVisible();
+    await ops.getByRole("button", { name: "Edit details" }).click();
+    await expect(ops.getByLabel("Panel name")).toHaveValue("Back wall");
+    await expect(ops.getByLabel("Printer")).toBeVisible();
+    await expect(ops.getByText("Whose signage is it?")).toHaveCount(0);
+    await expect(ops.getByLabel("Fixing method")).toHaveCount(0);
+    await ops.getByRole("button", { name: "Cancel" }).click();
 
+    // Moving the stand moves its panel (still a draft) too.
+    await ops.goto(standUrl);
+    await ops.getByLabel("Stand no.").fill("Z98");
+    await ops.getByRole("button", { name: "Save changes" }).click();
+    await expect(ops.getByText(/1 panel updated to match/)).toBeVisible();
+    await ops.goto(panelUrl);
+    await expect(ops.getByText(/From the stand: Hall 1 · Stand Z98/)).toBeVisible();
+
+    // The design goes for sign-off to the named marketer and operations.
+    await uploadAndSubmit(ops, standUrl, "stand-design.pdf");
+    const mkt = await as(browser, "marketing@media10.test", baseURL!);
+    await mkt.goto(`${baseURL}/approvals`);
+    await expect(mkt.getByText(`Stand design: ${name}`)).toBeVisible();
+    await decide(mkt, baseURL!, standRef, "Approve");
+    await decide(ops, baseURL!, standRef, "Approve");
+    await ops.goto(standUrl);
+    await expect(ops.getByText("Approved", { exact: true }).first()).toBeVisible();
+
+    // Now the panel's graphic goes to the same approvers.
     await uploadAndSubmit(ops, panelUrl, "back-wall.pdf");
     await decide(mkt, baseURL!, panelRef, "Approve");
     await decide(ops, baseURL!, panelRef, "Approve");
@@ -117,11 +132,11 @@ test.describe("stand designs", () => {
     // Next it's printed, delivered and installed like a sign.
     await expect(ops.getByText("Sent to print").first()).toBeVisible();
 
-    // The stand shows its panels' progress.
-    await ops.goto(`${baseURL}/BIRM27/stand-designs`);
-    await expect(
-      ops.getByRole("link", { name }).getByText("Panels: 1 of 1 approved"),
-    ).toBeVisible();
+    // The stand's card shows its panels' progress and opens on Panels.
+    await ops.goto(`${baseURL}/BIRM27/stand-designs?q=${encodeURIComponent(name)}`);
+    const standCard = ops.getByRole("link", { name });
+    await expect(standCard.getByText("Panels: 1 of 1 approved")).toBeVisible();
+    await expect(standCard).toHaveAttribute("href", new RegExp(`${standRef}\\?tab=panels$`));
 
     // Stands and panels stay out of the Signage table.
     await ops.goto(`${baseURL}/BIRM27/signage`);
@@ -134,7 +149,7 @@ test.describe("stand designs", () => {
   test("only admins and operations set up stands", async ({ browser, baseURL }) => {
     const mkt = await as(browser, "marketing@media10.test", baseURL!);
     await mkt.goto(`${baseURL}/BIRM27/stand-designs`);
-    await expect(mkt.getByRole("heading", { name: "Stand designs" })).toBeVisible();
+    await expect(mkt.getByRole("heading", { name: "Feature stands" })).toBeVisible();
     await expect(mkt.getByRole("link", { name: "New stand" })).toHaveCount(0);
     await mkt.goto(`${baseURL}/BIRM27/stand-designs/new`);
     await mkt.waitForURL("**/BIRM27/stand-designs");

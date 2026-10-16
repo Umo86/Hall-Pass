@@ -47,6 +47,7 @@ import {
   syncConfirmationDueDates,
 } from "@/lib/domain/signage";
 import { diffDaysIso } from "@/lib/deadlines";
+import { settleApprovalNotifications } from "@/lib/domain/notifications";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { itemPath } from "@/lib/edition-path";
 
@@ -326,6 +327,19 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
   const canEditCosts = can(session.actor, { type: "costs.edit" });
   const { id, ...patchRaw } = parsed.data;
   const patch = applyRiggedRule(patchRaw);
+  // A panel's place, owner and sign-off come from its stand and change there.
+  if (bundle.item.kind === "stand_panel") {
+    for (const key of [
+      "hallId",
+      "locationId",
+      "standNumber",
+      "category",
+      "sponsorId",
+      "signoffs",
+    ] as const) {
+      delete patch[key];
+    }
+  }
   if (patch.locationId) patch.hallId = (await hallOfLocation(patch.locationId)) ?? patch.hallId;
   // A new owner must be on the team; the owning team follows them.
   let newOwner: { id: string; name: string } | null = null;
@@ -477,6 +491,10 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
       if (restarted) {
         const updated = { ...bundle, item: { ...item, ...set } as typeof item };
         const instances = await startItemRun(tx, updated, new Date());
+        // The old round's requests are over; the new round's are sent next.
+        await settleApprovalNotifications(tx, "signage_item", item.id, {
+          newlyPending: instances.filter((i) => i.status === "pending").map((i) => i.id),
+        });
         await notifyPendingAssignees(tx, updated, instances);
       }
       await writeAudit(tx, {
@@ -570,6 +588,8 @@ export async function softDeleteSignageItem(input: unknown): Promise<ActionResul
         action: "soft_delete",
         summary: `Deleted ${bundle.item.ref} — ${bundle.item.name}`,
       });
+      // Nobody is asked to sign off a deleted item any more.
+      await settleApprovalNotifications(tx, "signage_item", parsed.data.id);
     });
     revalidatePath("/", "layout");
     return success(
@@ -610,6 +630,7 @@ export async function restoreSignageItem(
         action: "restore",
         summary: `Restored ${bundle.item.ref}`,
       });
+      await settleApprovalNotifications(tx, "signage_item", parsed.data.id);
     });
     revalidatePath("/", "layout");
     return success(
@@ -742,6 +763,8 @@ export async function holdSignageItem(input: unknown): Promise<ActionResult> {
       after: { status: next, reason: parsed.data.reason },
       summary: `${bundle.item.ref} put on hold`,
     });
+    // Sign-off is paused: its requests are settled until it resumes.
+    await settleApprovalNotifications(tx, "signage_item", bundle.item.id);
   });
   revalidatePath("/", "layout");
   return success(undefined, `${bundle.item.ref} is on hold — its sign-offs are paused`);
@@ -792,6 +815,9 @@ export async function resumeSignageItem(input: unknown): Promise<ActionResult> {
       .where(eq(signageItems.id, bundle.item.id));
     if (startReview) {
       const instances = await startItemRun(tx, bundle, new Date());
+      await settleApprovalNotifications(tx, "signage_item", bundle.item.id, {
+        newlyPending: instances.filter((i) => i.status === "pending").map((i) => i.id),
+      });
       await notifyPendingAssignees(tx, bundle, instances);
     } else if (bundle.item.currentRunNumber > 0 && heldDays > 0) {
       const run = await loadRun(tx, "signage_item", bundle.item.id, bundle.item.currentRunNumber);
@@ -808,6 +834,7 @@ export async function resumeSignageItem(input: unknown): Promise<ActionResult> {
       after: { status: next, dueDatesShiftedByDays: heldDays },
       summary: `${bundle.item.ref} resumed`,
     });
+    if (!startReview) await settleApprovalNotifications(tx, "signage_item", bundle.item.id);
   });
   revalidatePath("/", "layout");
   return success(undefined, `${bundle.item.ref} resumed`);

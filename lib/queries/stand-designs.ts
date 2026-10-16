@@ -14,13 +14,20 @@ import { departmentNames } from "@/lib/domain/departments";
 import { ensureStandDesignWorkflow } from "@/lib/domain/stand-designs";
 import { itemFormOptions } from "@/lib/queries/item-form-options";
 import { getInlineUrl } from "@/lib/storage";
+import { roleLabel } from "@/lib/format";
 import { APPROVED_OR_LATER, type SignageStatus } from "@/lib/status/signage";
 import type { StandFormOptions } from "@/components/stand-designs/stand-form";
 
 export type WaitingOn = { name: string; who: string | null; overdue: boolean };
 
-/** What each item is waiting on now: its pending sign-off or confirmation steps. */
-async function waitingOn(ids: string[]): Promise<Map<string, WaitingOn[]>> {
+/**
+ * What each item is waiting on now: the pending sign-off or confirmation
+ * steps of its current round (pass each item's round to ignore older ones).
+ */
+async function waitingOn(
+  ids: string[],
+  runOf?: Map<string, number>,
+): Promise<Map<string, WaitingOn[]>> {
   const out = new Map<string, WaitingOn[]>();
   if (ids.length === 0) return out;
   const rows = await db
@@ -40,10 +47,15 @@ async function waitingOn(ids: string[]): Promise<Map<string, WaitingOn[]>> {
   );
   const now = Date.now();
   for (const r of rows) {
+    if (runOf && runOf.get(r.entityId) !== r.runNumber) continue;
     const list = out.get(r.entityId) ?? [];
     list.push({
       name: r.stepNameSnapshot,
-      who: r.assignedDepartmentId ? (depts.get(r.assignedDepartmentId) ?? null) : r.assignedRole,
+      who: r.assignedDepartmentId
+        ? (depts.get(r.assignedDepartmentId) ?? null)
+        : r.assignedRole
+          ? roleLabel(r.assignedRole)
+          : null,
       overdue: Boolean(r.dueAt && r.dueAt.getTime() < now),
     });
     out.set(r.entityId, list);
@@ -107,7 +119,7 @@ export async function listStandDesigns(editionId: string): Promise<StandCard[]> 
     .orderBy(asc(signageItems.seq));
   const ids = rows.map((r) => r.item.id);
   const [waiting, panelRows] = await Promise.all([
-    waitingOn(ids),
+    waitingOn(ids, new Map(rows.map((r) => [r.item.id, r.item.currentRunNumber]))),
     ids.length
       ? db
           .select({ parentId: signageItems.parentItemId, status: signageItems.status })
@@ -170,7 +182,10 @@ export async function listStandPanels(standId: string): Promise<PanelRow[]> {
     .leftJoin(artworkVersions, eq(signageItems.currentArtworkVersionId, artworkVersions.id))
     .where(and(eq(signageItems.parentItemId, standId), isNull(signageItems.deletedAt)))
     .orderBy(asc(signageItems.seq));
-  const waiting = await waitingOn(rows.map((r) => r.item.id));
+  const waiting = await waitingOn(
+    rows.map((r) => r.item.id),
+    new Map(rows.map((r) => [r.item.id, r.item.currentRunNumber])),
+  );
   return Promise.all(
     rows.map(async (r) => ({
       id: r.item.id,

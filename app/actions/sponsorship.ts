@@ -121,7 +121,7 @@ export async function markSold(input: unknown): Promise<ActionResult> {
       return name;
     });
     refresh(bundle);
-    return success(undefined, `Sold to ${sponsorName}`);
+    return success(undefined, `${bundle.item.ref} sold to ${sponsorName}`);
   } catch (err) {
     unstable_rethrow(err);
     if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
@@ -163,7 +163,7 @@ export async function markUnsold(input: unknown): Promise<ActionResult> {
       });
     });
     refresh(bundle);
-    return success(undefined, "Marked as available");
+    return success(undefined, `${bundle.item.ref} is for sale again`);
   } catch (err) {
     unstable_rethrow(err);
     console.error("markUnsold", err);

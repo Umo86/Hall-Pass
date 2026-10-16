@@ -387,27 +387,42 @@ export async function notifyPendingAssignees(
       item,
       inst,
     );
-    // A supplier with no portal login can't confirm anything: tell
-    // operations, who can confirm it themselves or invite the supplier.
+    // A supplier's confirmation with nobody at the supplier to make it.
     if (
       assignees.length === 0 &&
       inst.stepKind === "confirmation" &&
       inst.assignedRole === "supplier" &&
       !inst.assignedUserId
     ) {
-      const ops = await tx
-        .select({ userId: memberships.userId })
-        .from(memberships)
-        .where(
-          and(eq(memberships.organisationId, bundle.organisation.id), eq(memberships.role, "ops")),
-        );
+      // No supplier chosen at all: Operations were already told the item is
+      // approved without one (decideApproval), so say nothing misleading here.
+      if (!item.supplierId) continue;
+      // A supplier with no portal login: tell Operations, who can confirm it
+      // themselves or invite the supplier.
+      const [ops, [supplier]] = await Promise.all([
+        tx
+          .select({ userId: memberships.userId })
+          .from(memberships)
+          .where(
+            and(
+              eq(memberships.organisationId, bundle.organisation.id),
+              eq(memberships.role, "ops"),
+            ),
+          ),
+        tx
+          .select({ name: suppliers.name })
+          .from(suppliers)
+          .where(eq(suppliers.id, item.supplierId))
+          .limit(1),
+      ]);
       assignees = ops.map((m) => m.userId);
+      const who = supplier?.name ?? "the supplier";
       await notify(tx, {
         userIds: assignees,
         kind: "approval_requested",
         title: `To confirm — ${inst.stepName}: ${item.name} (${item.ref})`,
-        body: `The supplier has no Hall Pass access, so nobody there can confirm this. Confirm it yourself once it's done, or invite them under Users → External.`,
-        link: `${itemPath(bundle.edition.code, item)}?tab=artwork`,
+        body: `Nobody at ${who} has Hall Pass access yet, so they can't confirm this. Invite them, or confirm it on ${item.ref} yourself once it's done.`,
+        link: `/users?tab=external&invite=1&role=supplier&scopeId=${item.supplierId}&edition=${bundle.edition.id}`,
         entityType: "signage_item",
         entityId: item.id,
       });

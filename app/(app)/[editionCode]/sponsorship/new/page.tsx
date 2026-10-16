@@ -5,6 +5,8 @@ import { can, hasFeature } from "@/lib/authz";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { itemFormOptions } from "@/lib/queries/item-form-options";
 import { ItemForm } from "@/components/signage/item-form";
+import { Page, PageHeader } from "@/components/page-header";
+import { signoffRequiredFields } from "@/lib/domain/signage";
 
 export const metadata = { title: "New sponsorship item" };
 export const dynamic = "force-dynamic";
@@ -31,17 +33,22 @@ export default async function NewSponsorshipItemPage({
   });
 
   return (
-    <div className="flex flex-col gap-4 p-4 sm:p-6">
-      <h1 className="text-xl font-semibold tracking-tight">New sponsorship item</h1>
+    <Page width="narrow" className="gap-4">
+      <PageHeader
+        title="New sponsorship item"
+        description="What sponsors can buy: what it is, who makes it, what it costs and when it must be ordered. Mark it sold when a sponsor buys it."
+        back={{ href: `/${editionCode}/sponsorship`, label: "Sponsorship" }}
+      />
       <ItemForm
         mode="create"
         kind="sponsorship_item"
         values={{ editionId: ed.edition.id }}
         options={options}
+        requiredFields={signoffRequiredFields("sponsorship_item")}
         canSeeCosts={can(session.actor, { type: "costs.view" })}
         canEditCosts={can(session.actor, { type: "costs.edit" })}
         editionCode={editionCode}
       />
-    </div>
+    </Page>
   );
 }

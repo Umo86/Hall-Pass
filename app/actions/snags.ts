@@ -21,6 +21,11 @@ const MAX_PHOTO_BYTES = 15 * 1024 * 1024;
 /** Snags are raised on things that get installed: signs and stand panels. */
 const SNAGGABLE_KINDS = ["signage", "stand_panel"];
 const OPEN_STATUSES = ["open", "in_progress"] as const;
+/**
+ * Where a snag can be open: installed (or snagged) items, and delivered ones
+ * — damage found at goods-in, before anything goes up.
+ */
+const SNAG_STATUSES = ["delivered", "installed", "snagged"];
 
 const raiseSchema = z.object({
   itemId: z.string().uuid(),
@@ -79,9 +84,11 @@ async function openSnagCount(tx: Tx, itemId: string): Promise<number> {
 }
 
 /**
- * Raise a snag on an installed sign or panel: what's wrong, how bad, and a
- * photo if there is one. The item goes to Snagged until every snag is
- * resolved. Admin, ops and marketing.
+ * Raise a snag on a sign or panel: what's wrong, how bad, and a photo if
+ * there is one. An installed item goes to Snagged until every snag is
+ * resolved; a delivered one (damage on arrival) stays Delivered, and is
+ * marked Snagged if it is installed before the damage is fixed. Admin, ops
+ * and marketing.
  */
 export async function raiseSnag(formData: FormData): Promise<ActionResult> {
   const parsed = raiseSchema.safeParse(formValues(formData));
@@ -94,8 +101,8 @@ export async function raiseSnag(formData: FormData): Promise<ActionResult> {
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!SNAGGABLE_KINDS.includes(bundle.item.kind)) return fail("Snags are for signs and panels");
-  if (!["installed", "snagged"].includes(bundle.item.status)) {
-    return fail("Snags are raised once the item is installed — confirm Installed first");
+  if (!SNAG_STATUSES.includes(bundle.item.status)) {
+    return fail("Snags are raised once the item is delivered — confirm Delivered first");
   }
   const photo = await savePhoto(formData, bundle, "snag-photo").catch(() => ({
     error: "Could not save the photo — check your signal and try again",
@@ -173,7 +180,14 @@ export async function raiseSnag(formData: FormData): Promise<ActionResult> {
     }
   });
   revalidatePath("/", "layout");
-  return success(undefined, next ? "Snag raised — item marked Snagged" : "Snag raised");
+  return success(
+    undefined,
+    next
+      ? `Snag raised on ${item.ref} — marked Snagged`
+      : item.status === "delivered"
+        ? `Damage reported on ${item.ref}`
+        : `Snag raised on ${item.ref}`,
+  );
 }
 
 /**
@@ -197,13 +211,13 @@ export async function updateSnag(formData: FormData): Promise<ActionResult> {
   // While on hold the item's status is frozen, so clearing its last snag
   // could not move it back to Installed — resume first.
   if (bundle.item.status === "on_hold") return fail("Resume the item first — it is on hold");
-  // An open snag belongs on an installed (or snagged) item: a closed or
-  // reopened item would otherwise carry an open snag nothing can act on.
-  if (!closing && !["installed", "snagged"].includes(bundle.item.status)) {
+  // An open snag belongs on a delivered, installed (or snagged) item: a
+  // closed item would otherwise carry an open snag nothing can act on.
+  if (!closing && !SNAG_STATUSES.includes(bundle.item.status)) {
     return fail(
       bundle.item.status === "closed"
         ? "This item is closed — use Reopen on it first"
-        : "Snags can only be open on an installed item",
+        : "Snags can only be open on a delivered or installed item",
     );
   }
   const photo = closing
@@ -283,4 +297,52 @@ export async function updateSnag(formData: FormData): Promise<ActionResult> {
         ? "Snag reopened — item marked Snagged"
         : "Snag updated",
   );
+}
+
+/**
+ * Onsite's Undo straight after "Done – close": the item goes back to
+ * Installed with its install record kept (reopen, then installed again —
+ * the status machine's own two steps). Admin and ops.
+ */
+export async function undoMarkComplete(input: unknown): Promise<ActionResult> {
+  const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await requireSession();
+  if (
+    !can(session.actor, { type: "signage.close" }) ||
+    !can(session.actor, { type: "signage.reopen" })
+  ) {
+    return fail("You cannot reopen items");
+  }
+  const bundle = await loadItemBundle(db, parsed.data.id, {
+    organisationId: session.organisation.id,
+  });
+  if (!bundle || bundle.item.deletedAt) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
+  if (bundle.item.status !== "closed") return fail(`${bundle.item.ref} isn't complete any more`);
+  const next = signageTransition(signageTransition("closed", "reopen"), "installed");
+  const { item, edition } = bundle;
+  const undone = await db.transaction(async (tx) => {
+    const rows = await tx
+      .update(signageItems)
+      .set({ status: next })
+      .where(and(eq(signageItems.id, item.id), eq(signageItems.status, "closed")))
+      .returning({ id: signageItems.id });
+    if (rows.length === 0) return false;
+    await writeAudit(tx, {
+      organisationId: session.organisation.id,
+      editionId: edition.id,
+      actorUserId: session.user.id,
+      entityType: "signage_item",
+      entityId: item.id,
+      action: "status_change",
+      before: { status: "closed" },
+      after: { status: next, undo: "mark_complete" },
+      summary: `${item.ref} back to Installed (Mark complete undone)`,
+    });
+    return true;
+  });
+  if (!undone) return fail(`${item.ref} changed meanwhile — refresh`);
+  revalidatePath("/", "layout");
+  return success(undefined, `${item.ref} is back under Ready to close`);
 }

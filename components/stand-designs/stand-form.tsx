@@ -2,13 +2,22 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SelectNative } from "@/components/ui/select-native";
 import { Textarea } from "@/components/ui/textarea";
-import { createStandDesign } from "@/app/actions/stand-designs";
-import { updateSignageItem } from "@/app/actions/signage";
+import { createStandDesign, updateStandDesign } from "@/app/actions/stand-designs";
+import { saveSponsor } from "@/app/actions/sponsors";
 import type { SignoffChoice, SignoffStepOption } from "@/components/signage/item-form";
 import { SignoffPicker, updatePlan } from "@/components/signage/signoff-picker";
 
@@ -36,7 +45,8 @@ export type StandFormValues = {
 
 /**
  * A stand the organiser designs: where it is, its size, and who approves
- * the design. Used to create a stand and to edit it.
+ * the design. Used to create a stand and to edit it; saving an edit brings
+ * its panels into line (place, and sign-off while they are drafts).
  */
 export function StandForm({
   mode,
@@ -66,7 +76,11 @@ export function StandForm({
   );
   const [touched, setTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [sponsorList, setSponsorList] = useState(options.sponsors);
+  const [sponsorId, setSponsorId] = useState(values.sponsorId ?? "");
+  const [addingSponsor, setAddingSponsor] = useState(false);
+  const [sponsorError, setSponsorError] = useState<string | null>(null);
+  const [newSponsorName, setNewSponsorName] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [pending, start] = useTransition();
   const router = useRouter();
@@ -85,7 +99,6 @@ export function StandForm({
     raw.signoffs = plan;
     if (category !== "sponsor") raw.sponsorId = null;
     setError(null);
-    setMessage(null);
     setErrors({});
     start(async () => {
       if (mode === "create") {
@@ -97,16 +110,38 @@ export function StandForm({
           router.push(`/${editionCode}/stand-designs/${res.data?.ref}?tab=artwork`);
         }
       } else {
-        const res = await updateSignageItem({ ...raw, id: values.id });
+        const res = await updateStandDesign({ ...raw, id: values.id });
         if (!res.ok) {
           setError(res.error);
           setErrors(res.fieldErrors ?? {});
         } else {
           setTouched(false);
-          setMessage(res.message ?? "Saved");
+          toast.success(res.message ?? "Saved");
           router.refresh();
         }
       }
+    });
+  }
+
+  /** "+ New sponsor…": add one to the event and pick it. */
+  function addSponsor() {
+    const companyName = newSponsorName.trim();
+    if (!companyName) {
+      setSponsorError("Enter the sponsor's name");
+      return;
+    }
+    setSponsorError(null);
+    start(async () => {
+      const res = await saveSponsor({ editionId, companyName });
+      if (!res.ok || !res.data) {
+        setSponsorError(res.ok ? "Could not add the sponsor" : res.error);
+        return;
+      }
+      const added = { id: res.data.id, name: companyName };
+      setSponsorList((list) => [...list, added].sort((a, b) => a.name.localeCompare(b.name)));
+      setSponsorId(added.id);
+      setAddingSponsor(false);
+      toast.success(res.message ?? `${companyName} added`);
     });
   }
 
@@ -181,13 +216,27 @@ export function StandForm({
             field(
               "sponsorId",
               "Sponsor",
-              <SelectNative id="sponsorId" name="sponsorId" defaultValue={values.sponsorId ?? ""}>
+              <SelectNative
+                id="sponsorId"
+                name="sponsorId"
+                value={sponsorId}
+                onChange={(e) => {
+                  if (e.target.value === "new") {
+                    setSponsorError(null);
+                    setNewSponsorName("");
+                    setAddingSponsor(true);
+                    return;
+                  }
+                  setSponsorId(e.target.value);
+                }}
+              >
                 <option value="">— Select —</option>
-                {options.sponsors.map((s) => (
+                {sponsorList.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name}
                   </option>
                 ))}
+                {editionId && <option value="new">+ New sponsor…</option>}
               </SelectNative>,
               "sm:col-span-2",
             )}
@@ -284,10 +333,53 @@ export function StandForm({
             {mode === "create" ? "Create stand" : "Save changes"}
           </Button>
           {pending && <span className="text-muted-foreground text-sm">Saving…</span>}
-          {message && <span className="text-sm text-emerald-700">{message}</span>}
-          {error && <span className="text-destructive text-sm">{error}</span>}
+          {error && (
+            <span role="alert" className="text-destructive text-sm">
+              {error}
+            </span>
+          )}
         </div>
       )}
+
+      <Dialog open={addingSponsor} onOpenChange={setAddingSponsor}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New sponsor</DialogTitle>
+            <DialogDescription>
+              Added to this event&apos;s sponsors; fill in their contact and package under
+              Sponsorship → Sponsors.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-1.5">
+            <Label htmlFor="new-sponsor-name">Company name</Label>
+            <Input
+              id="new-sponsor-name"
+              value={newSponsorName}
+              onChange={(e) => setNewSponsorName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addSponsor();
+                }
+              }}
+              autoFocus
+            />
+          </div>
+          {sponsorError && (
+            <p role="alert" className="text-destructive text-sm">
+              {sponsorError}
+            </p>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setAddingSponsor(false)}>
+              Cancel
+            </Button>
+            <Button type="button" disabled={pending} onClick={addSponsor}>
+              {pending ? "Adding…" : "Add sponsor"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </form>
   );
 }

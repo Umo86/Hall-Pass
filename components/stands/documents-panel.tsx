@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { FileText, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SelectNative } from "@/components/ui/select-native";
@@ -123,6 +124,7 @@ export function DocumentsPanel({
                 if (!res.ok) setError(res.error);
                 else {
                   setFile(null);
+                  toast.success(res.message ?? `${DOC_LABELS[docType] ?? "Document"} uploaded`);
                   router.refresh();
                 }
               });
@@ -138,70 +140,76 @@ export function DocumentsPanel({
         {documents.map((d) => (
           <li
             key={d.id}
-            className="flex flex-wrap items-center gap-3 rounded-lg border p-3 text-sm"
+            className="flex flex-col gap-2 rounded-lg border p-3 text-sm sm:flex-row sm:flex-wrap sm:items-center sm:gap-3"
           >
-            <FileText className="text-muted-foreground size-5" aria-hidden />
-            <div className="min-w-0 flex-1">
-              <p className="font-medium">
-                {DOC_LABELS[d.docType] ?? statusLabel(d.docType)} — {d.fileName}
-              </p>
-              <p className="text-muted-foreground text-xs">
-                v{d.submissionVersion ?? 1} · {d.uploaderName ?? "—"} ·{" "}
-                {formatDateTime(d.createdAt)}
-                {d.expiresAt ? ` · expires ${formatDate(d.expiresAt)}` : ""}
-                {d.reviewNote ? ` · “${d.reviewNote}”` : ""}
-              </p>
-            </div>
-            {d.expiryFlag && (
-              <span className="text-destructive text-xs font-medium">
-                Expires before the show closes
-              </span>
-            )}
-            <StatusBadge status={d.status} />
-            {d.downloadUrl && (
-              <Button size="sm" variant="outline" asChild>
-                <a href={d.downloadUrl}>Download</a>
-              </Button>
-            )}
-            {canReview && d.status === "received" && (
-              <div className="flex gap-1">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={pending}
-                  onClick={() =>
-                    start(async () => {
-                      const res = await reviewStandDocument({
-                        documentId: d.id,
-                        status: "accepted",
-                      });
-                      setError(res.ok ? null : res.error);
-                      router.refresh();
-                    })
-                  }
-                >
-                  Accept
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={pending}
-                  onClick={() =>
-                    start(async () => {
-                      const res = await reviewStandDocument({
-                        documentId: d.id,
-                        status: "rejected",
-                        reviewNote: "Not acceptable — see comments",
-                      });
-                      setError(res.ok ? null : res.error);
-                      router.refresh();
-                    })
-                  }
-                >
-                  Reject
-                </Button>
+            <div className="flex min-w-0 flex-1 items-start gap-3">
+              <FileText className="text-muted-foreground mt-0.5 size-5 shrink-0" aria-hidden />
+              <div className="min-w-0 flex-1">
+                <p className="font-medium break-words">
+                  {DOC_LABELS[d.docType] ?? statusLabel(d.docType)} — {d.fileName}
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  v{d.submissionVersion ?? 1} · {d.uploaderName ?? "—"} ·{" "}
+                  {formatDateTime(d.createdAt)}
+                  {d.expiresAt ? ` · expires ${formatDate(d.expiresAt)}` : ""}
+                  {d.reviewNote ? ` · “${d.reviewNote}”` : ""}
+                </p>
               </div>
-            )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {d.expiryFlag && (
+                <span className="text-destructive text-xs font-medium">
+                  Expires before the show closes
+                </span>
+              )}
+              <StatusBadge status={d.status} />
+              {d.downloadUrl && (
+                <Button size="sm" variant="outline" asChild>
+                  <a href={d.downloadUrl}>Download</a>
+                </Button>
+              )}
+              {canReview && d.status === "received" && (
+                <div className="flex gap-1">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() =>
+                      start(async () => {
+                        const res = await reviewStandDocument({
+                          documentId: d.id,
+                          status: "accepted",
+                        });
+                        setError(res.ok ? null : res.error);
+                        if (res.ok) toast.success(`Accepted ${d.fileName}`);
+                        router.refresh();
+                      })
+                    }
+                  >
+                    Accept
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() =>
+                      start(async () => {
+                        const res = await reviewStandDocument({
+                          documentId: d.id,
+                          status: "rejected",
+                          reviewNote: "Not acceptable — see comments",
+                        });
+                        setError(res.ok ? null : res.error);
+                        if (res.ok) toast.success(`Rejected ${d.fileName} — say why in Comments`);
+                        router.refresh();
+                      })
+                    }
+                  >
+                    Reject
+                  </Button>
+                </div>
+              )}
+            </div>
           </li>
         ))}
       </ul>
