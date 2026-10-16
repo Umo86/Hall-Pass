@@ -33,27 +33,31 @@ export default async function UsersPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const session = await requireStaffSession();
-  const isAdmin = can(session.actor, { type: "users.manage" });
+  // Super admins and managers add and change people; partners and
+  // departments are their own abilities (super admins by default).
+  const canPeople = can(session.actor, { type: "people.manage" });
+  const canPartners = can(session.actor, { type: "partners.invite" });
+  const canDepartments = can(session.actor, { type: "departments.manage" });
   const params = await searchParams;
   const raw = one(params.tab);
   const tab: Tab =
-    raw === "external" && isAdmin ? "external" : raw === "departments" ? "departments" : "team";
+    raw === "external" && canPartners ? "external" : raw === "departments" ? "departments" : "team";
   const tabs: { id: Tab; label: string }[] = [
     { id: "team", label: "Team" },
-    ...(isAdmin ? [{ id: "external" as const, label: "External" }] : []),
+    ...(canPartners ? [{ id: "external" as const, label: "External" }] : []),
     { id: "departments", label: "Departments" },
   ];
   const orgId = session.organisation.id;
   // A link to External (e.g. "invite this supplier" from a notification)
   // opened by someone who isn't an admin: Team, saying why. Its ?role= and
   // ?invite= are dropped so they aren't read as Team filters.
-  if (raw === "external" && !isAdmin) redirect("/users?from=external");
-  const externalRefused = !isAdmin && one(params.from) === "external";
+  if (raw === "external" && !canPartners) redirect("/users?from=external");
+  const externalRefused = !canPartners && one(params.from) === "external";
   const admins = externalRefused
     ? (await setupContacts(orgId)).filter((c) => c.role === "admin")
     : [];
   // Adding a team member is the main action, except on External (inviting outsiders).
-  const showAdd = isAdmin && tab !== "external";
+  const showAdd = canPeople && tab !== "external";
 
   return (
     <Page width="full" className={cn("max-w-7xl", showAdd && "pb-24 sm:pb-6")}>
@@ -105,7 +109,8 @@ export default async function UsersPage({
         <TeamTab
           organisationId={orgId}
           viewerId={session.user.id}
-          isAdmin={isAdmin}
+          isAdmin={canPeople}
+          actor={session.actor}
           params={{
             q: one(params.q),
             dept: one(params.dept),
@@ -134,8 +139,8 @@ export default async function UsersPage({
       {tab === "departments" && (
         <DepartmentsPanel
           departments={await listDepartmentCards(db, orgId)}
-          members={isAdmin ? await memberOptions(db, orgId) : []}
-          canEdit={isAdmin}
+          members={canDepartments ? await memberOptions(db, orgId) : []}
+          canEdit={canDepartments}
         />
       )}
 

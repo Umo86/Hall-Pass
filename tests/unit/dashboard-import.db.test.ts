@@ -13,7 +13,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "@/lib/db/schema";
 import type { Session } from "@/lib/auth/actor";
-import type { StaffRole } from "@/lib/authz";
+import type { PermissionOverrides, StaffRole } from "@/lib/authz";
 import { IMPORT_COLUMNS } from "@/lib/exports/import-columns";
 
 const state = vi.hoisted(() => ({ session: null as unknown }));
@@ -36,7 +36,7 @@ let orgId: string;
 let editionId: string;
 const people: Record<string, { id: string; role: StaffRole }> = {};
 
-function as(key: string) {
+function as(key: string, overrides: PermissionOverrides = {}) {
   const p = people[key];
   const session: Session = {
     actor: {
@@ -44,6 +44,7 @@ function as(key: string) {
       userId: p.id,
       organisationId: orgId,
       role: p.role,
+      overrides,
       signoffDepartmentIds: [],
     },
     user: { id: p.id, email: `${key}-${n}@import.test`, fullName: key, isExternal: false },
@@ -126,6 +127,7 @@ d("schedule import: check first, then import", () => {
     orgId = org.id;
     for (const [key, role] of [
       ["ops", "ops"],
+      ["marketing", "marketing"],
       ["viewer", "viewer"],
     ] as const) {
       const id = randomUUID();
@@ -215,6 +217,36 @@ d("schedule import: check first, then import", () => {
     as("viewer");
     const res = await actions.importSchedule(form(await sheet(rows), { dryRun: true }));
     expect(res).toMatchObject({ ok: false, error: "You cannot import items" });
+  });
+
+  it("halls, locations and suppliers are only made by people who may add them (P1.3)", async () => {
+    // Marketing can add signs but not halls or suppliers.
+    as("marketing");
+    const res = await actions.importSchedule(
+      form(await sheet(rows), { dryRun: true, createMissing: true }),
+    );
+    expect(res.ok && res.data && res.data.errors).toEqual([
+      { row: 4, message: "Unknown hall “Hall 9”" },
+    ]);
+    // Operations with suppliers taken away: the new supplier is refused.
+    as("ops", { "suppliers.manage": false });
+    const noSuppliers = await actions.importSchedule(
+      form(await sheet(rows), { dryRun: true, createMissing: true }),
+    );
+    expect(noSuppliers.ok && noSuppliers.data && noSuppliers.data.errors).toEqual([
+      { row: 4, message: `Unknown supplier “New Print ${n}”` },
+    ]);
+  });
+
+  it("a granted import can't change someone else's item, and bulk off stops it", async () => {
+    as("viewer", { "signage.create": true });
+    const res = await actions.importSchedule(form(await sheet(rows), { dryRun: true }));
+    expect(res.ok && res.data && res.data.errors).toEqual(
+      expect.arrayContaining([{ row: 3, message: `SIG-${code}-001 isn't yours to change` }]),
+    );
+    as("ops", { "signage.bulk": false });
+    const off = await actions.importSchedule(form(await sheet(rows), { dryRun: true }));
+    expect(off).toMatchObject({ ok: false, error: "You cannot import items" });
   });
 
   it("the import then does what the check said, with one audit row", async () => {

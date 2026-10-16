@@ -44,8 +44,9 @@ export default async function SuppliersPage({
   const session = await requireStaffSession();
   if (!hasFeature(session.actor, "suppliers")) return <SectionUnavailable feature="suppliers" />;
   const orgId = session.organisation.id;
-  const canEdit = can(session.actor, { type: "settings.manage" });
-  const canInvite = can(session.actor, { type: "users.manage" });
+  const canEdit = can(session.actor, { type: "suppliers.manage" });
+  const canEditServices = can(session.actor, { type: "lists.manage" });
+  const canInvite = can(session.actor, { type: "partners.invite" });
   const params = await searchParams;
   const tab = one(params.tab) === "contractors" ? "contractors" : "suppliers";
   const today = todayInLondon();
@@ -263,6 +264,7 @@ export default async function SuppliersPage({
           supplierCount: supplierCountOf.get(s.id) ?? 0,
         }))}
         canEdit={canEdit}
+        canEditServices={canEditServices}
         canInvite={canInvite}
         emailOn={invitesCanBeEmailed()}
         currentEvent={current ? { code: current.code, name: current.name } : null}

@@ -6,7 +6,7 @@ import { buildImportTemplate } from "@/lib/exports/import-template";
 export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Sign in required" }, { status: 401 });
-  if (!can(session.actor, { type: "signage.create" })) {
+  if (!can(session.actor, { type: "signage.import" })) {
     return NextResponse.json({ error: "Not permitted" }, { status: 403 });
   }
   const data = await buildImportTemplate();

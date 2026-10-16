@@ -10,11 +10,12 @@
  */
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Db, Tx } from "@/lib/db/client";
-import { approvalInstances, memberships, notifications } from "@/lib/db/schema";
+import { approvalInstances, notifications } from "@/lib/db/schema";
 import { loadItemBundle, resolveAssigneeUserIds } from "@/lib/domain/signage";
 import { loadStandBundle } from "@/lib/domain/stand";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { resolveNotifications } from "@/lib/notify";
+import { productionConfirmerIds } from "@/lib/users/active";
 import { APPROVAL_REQUEST_KINDS } from "@/lib/notification-kinds";
 
 export type ApprovalEntityType = "signage_item" | "stand_submission";
@@ -28,8 +29,8 @@ type PendingStep = {
 };
 
 /**
- * Everyone who could act on one step: its assignees, plus Operations for a
- * supplier's confirmation (they can confirm it themselves).
+ * Everyone who could act on one step: its assignees, plus whoever confirms
+ * for suppliers (Operations by default) on a supplier's confirmation.
  */
 export async function stepHolderIds(
   exec: Db | Tx,
@@ -51,11 +52,8 @@ export async function stepHolderIds(
   );
   const kind = step.stepKindSnapshot ?? step.stepKind;
   if (kind === "confirmation" && step.assignedRole === "supplier" && !step.assignedUserId) {
-    const ops = await exec
-      .select({ userId: memberships.userId })
-      .from(memberships)
-      .where(and(eq(memberships.organisationId, ctx.organisationId), eq(memberships.role, "ops")));
-    ids.push(...ops.map((o) => o.userId));
+    // Whoever confirms for suppliers (signage.confirm), active people only.
+    ids.push(...(await productionConfirmerIds(exec, ctx.organisationId)));
   }
   return [...new Set(ids)];
 }

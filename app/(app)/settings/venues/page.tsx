@@ -15,7 +15,7 @@ export const metadata = { title: "Venues · Settings" };
 export const dynamic = "force-dynamic";
 
 export default async function VenuesPage() {
-  const { session, canOpen, canManage, canUsers } = await settingsAccess();
+  const { session, canOpen, canManage, canInvite } = await settingsAccess();
   const header = (
     <PageHeader
       title="Venues"
@@ -98,7 +98,7 @@ export default async function VenuesPage() {
           eventCount: seriesCount.get(s.id) ?? 0,
         }))}
         canEdit={canManage}
-        canInvite={canUsers}
+        canInvite={canInvite}
         emailOn={invitesCanBeEmailed()}
       />
     </>

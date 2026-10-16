@@ -38,8 +38,12 @@ type NavItem = {
 };
 
 export type NavOptions = {
-  /** Admin/ops: show the event-setup pages. */
+  /** Gets events ready (event.setup): show Setup and Event details. */
   canSetup: boolean;
+  /** Halls & locations (halls.manage); defaults to canSetup. */
+  canHalls?: boolean;
+  /** "Create your event" (events.create); defaults to canSetup. */
+  canCreateEvent?: boolean;
   /** Admin/ops or admin: show Settings. */
   canSettings: boolean;
   /** Exhibitor stand approvals are hidden unless switched on. */
@@ -119,7 +123,7 @@ export function AppNav({
         ...(allowed(options, "reports") && options.canExport !== false
           ? [{ label: "Reports", href: `/${code}/reports`, icon: FileBarChart }]
           : []),
-        ...(options.canSetup
+        ...((options.canHalls ?? options.canSetup)
           ? [{ label: "Halls & locations", href: `/${code}/halls`, icon: MapPin }]
           : []),
         ...(options.canSetup && !(setup && setup.done < setup.total)
@@ -130,7 +134,7 @@ export function AppNav({
 
   const counts = options.counts;
   const globalItems: NavItem[] = [
-    ...(editions.length === 0 && options.canSetup
+    ...(editions.length === 0 && (options.canCreateEvent ?? options.canSetup)
       ? [{ label: "Create your event", href: "/start", icon: Sparkles }]
       : []),
     {

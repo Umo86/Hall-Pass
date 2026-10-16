@@ -18,6 +18,7 @@ import {
 } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
+import { accessLive } from "@/lib/access";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import {
@@ -139,13 +140,24 @@ async function resolveOwner(
   userId: string,
 ): Promise<{ role: "ops" | "marketing" | null; name: string }> {
   const [row] = await db
-    .select({ role: memberships.role, fullName: users.fullName, email: users.email })
+    .select({
+      role: memberships.role,
+      fullName: users.fullName,
+      email: users.email,
+      suspendedAt: memberships.suspendedAt,
+      accessEndsAt: memberships.accessEndsAt,
+    })
     .from(memberships)
     .innerJoin(users, eq(memberships.userId, users.id))
     .where(and(eq(memberships.organisationId, organisationId), eq(memberships.userId, userId)))
     .limit(1);
   if (!row) throw new Error("The owner must be someone on your team");
   if (row.role === "viewer") throw new Error("A viewer can't own items — pick someone else");
+  if (!accessLive(row)) {
+    throw new Error(
+      `${row.fullName || row.email}'s access is paused or has ended — pick someone else`,
+    );
+  }
   return {
     role: row.role === "ops" || row.role === "marketing" ? row.role : null,
     name: row.fullName || row.email,
@@ -346,7 +358,8 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
   if (!can(session.actor, { type: "signage.edit", item: itemAuthzCtx(bundle) })) {
     return fail("You cannot edit this item");
   }
-  const canEditCosts = can(session.actor, { type: "costs.edit" });
+  // Costs, PO and supplier: costs.edit, or a sponsorship item they may edit.
+  const canEditCosts = can(session.actor, { type: "costs.edit", item: itemAuthzCtx(bundle) });
   const { id, ...patchRaw } = parsed.data;
   const patch = applyRiggedRule(patchRaw);
   // A panel's place, owner and sign-off come from its stand and change there.
@@ -377,7 +390,7 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
     delete patch.ownerUserId;
   }
 
-  if (canEditCosts || bundle.item.kind === "sponsorship_item") {
+  if (canEditCosts) {
     const supplierError = await archivedSupplierError(
       session.organisation.id,
       patch.supplierId,
@@ -430,7 +443,7 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
       if (patch.weightKg !== undefined) set.weightKg = num(patch.weightKg);
       if (patch.salePrice !== undefined) set.salePrice = num(patch.salePrice);
       // Whoever runs a sponsorship item also buys it: supplier and cost.
-      if (canEditCosts || bundle.item.kind === "sponsorship_item") {
+      if (canEditCosts) {
         assign("budgetLine", "budgetLine");
         assign("poNumber", "poNumber");
         assign("supplierId", "supplierId");

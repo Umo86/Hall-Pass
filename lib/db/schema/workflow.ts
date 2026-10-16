@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   date,
@@ -7,6 +8,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import {
@@ -61,6 +63,10 @@ export const approvers = pgTable(
     index("approvers_org_idx").on(t.organisationId),
     index("approvers_user_idx").on(t.userId),
     index("approvers_email_idx").on(t.email),
+    // At most one main approver per department.
+    uniqueIndex("approvers_one_main")
+      .on(t.departmentId)
+      .where(sql`${t.isMain}`),
   ],
 );
 

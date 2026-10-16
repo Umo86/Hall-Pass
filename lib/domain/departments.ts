@@ -3,6 +3,9 @@ import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db, Tx } from "@/lib/db/client";
 import { defaultSignageSteps } from "@/lib/workflow/defaults";
 import { approvers, departments, memberships, workflowSteps, workflows } from "@/lib/db/schema";
+import { signoffPaused, type PermissionOverrides } from "@/lib/authz";
+import { accessLive } from "@/lib/access";
+import { activeMembership } from "@/lib/users/active";
 
 export type Department = typeof departments.$inferSelect;
 export type Approver = typeof approvers.$inferSelect;
@@ -62,8 +65,14 @@ export async function syncDepartmentSteps(tx: Db | Tx, organisationId: string): 
     .select()
     .from(departments)
     .where(eq(departments.organisationId, organisationId));
-  const mains = await tx
-    .select({ departmentId: approvers.departmentId, userId: approvers.userId })
+  // A main approver who can't sign now (suspended, access ended or sign-off
+  // paused) isn't named: the step goes to everyone in the department.
+  const mainRows = await tx
+    .select({
+      departmentId: approvers.departmentId,
+      userId: approvers.userId,
+      overrides: memberships.permissionOverrides,
+    })
     .from(approvers)
     .innerJoin(
       memberships,
@@ -77,8 +86,10 @@ export async function syncDepartmentSteps(tx: Db | Tx, organisationId: string): 
         eq(approvers.organisationId, organisationId),
         eq(approvers.isMain, true),
         isNotNull(approvers.userId),
+        activeMembership(),
       ),
     );
+  const mains = mainRows.filter((m) => !signoffPaused(m.overrides as PermissionOverrides));
   const mainByDept = new Map(mains.map((m) => [m.departmentId, m.userId!]));
   const flows = await tx
     .select({ id: workflows.id })
@@ -186,7 +197,10 @@ export async function departmentIdsForUser(
   return rows.map((r) => r.id);
 }
 
-/** People who can sign off for a department right now (account set up). */
+/**
+ * People who can sign off for a department right now: account set up,
+ * access active and sign-off not paused.
+ */
 export async function departmentSignerIds(
   db: Db | Tx,
   organisationId: string,
@@ -203,10 +217,14 @@ export async function departmentSignerIds(
       ),
     )
     .where(
-      and(eq(approvers.organisationId, organisationId), eq(approvers.departmentId, departmentId)),
+      and(
+        eq(approvers.organisationId, organisationId),
+        eq(approvers.departmentId, departmentId),
+        activeMembership(),
+      ),
     );
   return rows
-    .filter((r) => (r.overrides as Record<string, unknown> | null)?.["approval.decide"] !== false)
+    .filter((r) => !signoffPaused(r.overrides as PermissionOverrides))
     .map((r) => r.userId!);
 }
 
@@ -237,6 +255,8 @@ export async function listDepartments(db: Db | Tx, organisationId: string) {
         approver: approvers,
         hasMembership: sql<boolean>`${memberships.id} IS NOT NULL`,
         overrides: memberships.permissionOverrides,
+        suspendedAt: memberships.suspendedAt,
+        accessEndsAt: memberships.accessEndsAt,
       })
       .from(approvers)
       .leftJoin(
@@ -255,10 +275,11 @@ export async function listDepartments(db: Db | Tx, organisationId: string) {
       .filter((p) => p.approver.departmentId === d.id)
       .map((p) => ({
         ...p.approver,
-        /** Account set up and able to sign off. */
+        /** Account set up, access active and able to sign off. */
         active:
           Boolean(p.approver.userId && p.hasMembership) &&
-          (p.overrides as Record<string, unknown> | null)?.["approval.decide"] !== false,
+          accessLive(p) &&
+          !signoffPaused(p.overrides as PermissionOverrides),
       })),
   }));
 }

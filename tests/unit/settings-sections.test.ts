@@ -4,14 +4,27 @@ import {
   legacySettingsRedirect,
   SETTINGS_SECTIONS,
   settingsSectionsFor,
+  type SettingsAllows,
+  type SettingsNeed,
 } from "@/components/settings/sections";
 import { emailStatus, storageStatus } from "@/components/settings/system-status";
 import { NOTIFICATION_GROUPS } from "@/components/account/notification-groups";
 import { MUTABLE_KINDS } from "@/lib/notification-kinds";
 
+const ALL: SettingsNeed[] = [
+  "organisation.manage",
+  "lists.manage",
+  "signage.delete",
+  "system.manage",
+];
+const allows =
+  (...needs: SettingsNeed[]): SettingsAllows =>
+  (need) =>
+    needs.includes(need);
+
 describe("settings sections", () => {
   it("admins see everything, in order", () => {
-    expect(settingsSectionsFor({ canManage: true, canUsers: true }).map((s) => s.id)).toEqual([
+    expect(settingsSectionsFor(allows(...ALL)).map((s) => s.id)).toEqual([
       "organisation",
       "item-types",
       "venues",
@@ -20,16 +33,36 @@ describe("settings sections", () => {
     ]);
   });
 
-  it("Operations see everything but System", () => {
-    const ids = settingsSectionsFor({ canManage: true, canUsers: false }).map((s) => s.id);
+  it("Operations (everything but System by default) see everything but System", () => {
+    const ops = allows("organisation.manage", "lists.manage", "signage.delete");
+    const ids = settingsSectionsFor(ops).map((s) => s.id);
     expect(ids).toEqual(["organisation", "item-types", "venues", "recycle-bin"]);
-    expect(canOpenSection("system", { canManage: true, canUsers: false })).toBe(false);
+    expect(canOpenSection("system", ops)).toBe(false);
+  });
+
+  it("each section is opened by its own ability", () => {
+    expect(settingsSectionsFor(allows("lists.manage")).map((s) => s.id)).toEqual([
+      "item-types",
+      "venues",
+    ]);
+    expect(settingsSectionsFor(allows("signage.delete")).map((s) => s.id)).toEqual(["recycle-bin"]);
+    expect(settingsSectionsFor(allows("organisation.manage")).map((s) => s.id)).toEqual([
+      "organisation",
+    ]);
+    const needs = Object.fromEntries(SETTINGS_SECTIONS.map((s) => [s.id, s.needs]));
+    expect(needs).toEqual({
+      organisation: "organisation.manage",
+      "item-types": "lists.manage",
+      venues: "lists.manage",
+      "recycle-bin": "signage.delete",
+      system: "system.manage",
+    });
   });
 
   it("everyone else sees nothing", () => {
-    expect(settingsSectionsFor({ canManage: false, canUsers: false })).toEqual([]);
+    expect(settingsSectionsFor(allows())).toEqual([]);
     for (const s of SETTINGS_SECTIONS) {
-      expect(canOpenSection(s.id, { canManage: false, canUsers: false })).toBe(false);
+      expect(canOpenSection(s.id, allows())).toBe(false);
     }
   });
 

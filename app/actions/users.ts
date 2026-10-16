@@ -1,42 +1,56 @@
 "use server";
 
 /**
- * Users: add people, change what they can do, remove them, and manage
- * invitation links. The database work lives in lib/users/manage.ts; each
- * action here parses, checks users.manage, runs it in one transaction
- * (audit rows included) and revalidates.
+ * Users: add people, change what they can do, suspend them, end their
+ * access on a date, remove them, and manage invitation links. The database
+ * work lives in lib/users/manage.ts; each action here parses, checks the
+ * people action (people.manage for super admins and managers, users.manage
+ * to remove), runs it in one transaction — where the per-person rules are
+ * checked against the person as loaded — and revalidates.
  */
 import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { z } from "zod";
 import { db } from "@/lib/db/client";
-import { can, FEATURES } from "@/lib/authz";
+import { can, FEATURES, MANAGER_SCOPES, missingAbilityMessage } from "@/lib/authz";
 import { requireSession, type Session } from "@/lib/auth/actor";
 import { deliverInvite } from "@/lib/auth/staff-invite";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { roleLabel } from "@/lib/format";
-import { ABILITY_KEYS, firstName, STAFF_ROLES } from "@/lib/users/rules";
+import { EDITABLE_ABILITY_KEYS, firstName, STAFF_ROLES } from "@/lib/users/rules";
 import {
   cancelInviteTx,
   inviteUserTx,
+  reactivateMemberTx,
   removeMemberTx,
   renewGrantLinkTx,
   renewInviteLinkTx,
+  setAccessEndTx,
+  suspendMemberTx,
   updateInviteTx,
   updateMemberTx,
   UserError,
 } from "@/lib/users/manage";
+import type { AbilityKey } from "@/lib/authz";
 
-const NOT_ALLOWED = "Only admins manage users";
+const NOT_ALLOWED = "Only super admins and managers add and change people";
 
 const abilitiesSchema = z
   .object(
-    Object.fromEntries(ABILITY_KEYS.map((k) => [k, z.boolean().optional()])) as Record<
-      (typeof ABILITY_KEYS)[number],
+    Object.fromEntries(EDITABLE_ABILITY_KEYS.map((k) => [k, z.boolean().optional()])) as Record<
+      AbilityKey,
       z.ZodOptional<z.ZodBoolean>
     >,
   )
+  .partial()
   .strict();
+
+/** A London date (YYYY-MM-DD) access ends on; null clears it. */
+const accessEndsOn = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Enter the end date as a date")
+  .nullable()
+  .optional();
 
 const personSchema = z
   .object({
@@ -60,6 +74,12 @@ const personSchema = z
     signoffs: z
       .array(z.object({ departmentId: z.string().uuid(), isMain: z.boolean() }).strict())
       .max(50),
+    /** Super admins only (checked in the transaction); undefined = unchanged. */
+    managerScope: z
+      .enum(MANAGER_SCOPES as [string, ...string[]])
+      .nullable()
+      .optional(),
+    accessEndsOn,
   })
   .strict();
 
@@ -74,6 +94,16 @@ const updateMemberSchema = personSchema
 const updateInviteSchema = personSchema.extend({ inviteId: z.string().uuid() }).strict();
 
 type Role = (typeof STAFF_ROLES)[number];
+type Scope = (typeof MANAGER_SCOPES)[number];
+
+/** The form's data as lib/users/manage.ts takes it. */
+function personData<T extends { role: string; managerScope?: string | null }>(data: T) {
+  return {
+    ...data,
+    role: data.role as Role,
+    managerScope: data.managerScope as Scope | null | undefined,
+  };
+}
 
 function invalid(error: z.ZodError): ActionResult<never> {
   const fieldErrors: Record<string, string> = {};
@@ -96,9 +126,13 @@ function refresh() {
   revalidatePath("/approvals");
 }
 
-async function adminSession(): Promise<Session | null> {
+/**
+ * A session allowed to open the people actions at all (super admins and
+ * managers); who they may change is checked per person in the transaction.
+ */
+async function peopleSession(): Promise<Session | null> {
   const session = await requireSession();
-  return can(session.actor, { type: "users.manage" }) ? session : null;
+  return can(session.actor, { type: "people.manage" }) ? session : null;
 }
 
 function ctx(session: Session) {
@@ -125,9 +159,9 @@ export type InviteUserResult = {
 export async function inviteUser(input: unknown): Promise<ActionResult<InviteUserResult>> {
   const parsed = inviteSchema.safeParse(input);
   if (!parsed.success) return invalid(parsed.error);
-  const session = await adminSession();
+  const session = await peopleSession();
   if (!session) return fail(NOT_ALLOWED);
-  const data = { ...parsed.data, role: parsed.data.role as Role };
+  const data = personData(parsed.data);
   try {
     const invite = await db.transaction((tx) => inviteUserTx(tx, ctx(session), data));
     const delivery = await deliverInvite({
@@ -162,11 +196,11 @@ export async function inviteUser(input: unknown): Promise<ActionResult<InviteUse
 export async function updateUser(input: unknown): Promise<ActionResult> {
   const parsed = updateMemberSchema.safeParse(input);
   if (!parsed.success) return invalid(parsed.error);
-  const session = await adminSession();
+  const session = await peopleSession();
   if (!session) return fail(NOT_ALLOWED);
   try {
     const out = await db.transaction((tx) =>
-      updateMemberTx(tx, ctx(session), { ...parsed.data, role: parsed.data.role as Role }),
+      updateMemberTx(tx, ctx(session), personData(parsed.data)),
     );
     refresh();
     if (out.changed.length === 0) return success(undefined, "Nothing to save");
@@ -185,11 +219,11 @@ export async function updateUser(input: unknown): Promise<ActionResult> {
 export async function updateInvitation(input: unknown): Promise<ActionResult> {
   const parsed = updateInviteSchema.safeParse(input);
   if (!parsed.success) return invalid(parsed.error);
-  const session = await adminSession();
+  const session = await peopleSession();
   if (!session) return fail(NOT_ALLOWED);
   try {
     const out = await db.transaction((tx) =>
-      updateInviteTx(tx, ctx(session), { ...parsed.data, role: parsed.data.role as Role }),
+      updateInviteTx(tx, ctx(session), personData(parsed.data)),
     );
     refresh();
     return success(undefined, `Saved — ${firstName(out.name)} gets this when they accept`);
@@ -208,8 +242,10 @@ export async function removeUser(input: unknown): Promise<ActionResult> {
     .strict()
     .safeParse(input);
   if (!parsed.success) return fail("Invalid request");
-  const session = await adminSession();
-  if (!session) return fail(NOT_ALLOWED);
+  const session = await requireSession();
+  if (!can(session.actor, { type: "users.manage" })) {
+    return fail("Only a super admin can remove people");
+  }
   try {
     const out = await db.transaction((tx) =>
       removeMemberTx(tx, { ...ctx(session), actorName: inviterName(session) }, parsed.data),
@@ -237,7 +273,7 @@ export async function removeUser(input: unknown): Promise<ActionResult> {
 export async function cancelInvitation(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ inviteId: z.string().uuid() }).strict().safeParse(input);
   if (!parsed.success) return fail("Invalid request");
-  const session = await adminSession();
+  const session = await peopleSession();
   if (!session) return fail(NOT_ALLOWED);
   try {
     const name = await db.transaction((tx) =>
@@ -259,7 +295,7 @@ export async function resendInvitation(
 ): Promise<ActionResult<{ emailed: boolean; inviteUrl?: string }>> {
   const parsed = z.object({ inviteId: z.string().uuid() }).strict().safeParse(input);
   if (!parsed.success) return fail("Invalid request");
-  const session = await adminSession();
+  const session = await peopleSession();
   if (!session) return fail(NOT_ALLOWED);
   try {
     const { invite, inviteUrl } = await db.transaction((tx) =>
@@ -294,7 +330,7 @@ export async function newInvitationLink(
 ): Promise<ActionResult<{ inviteUrl: string }>> {
   const parsed = z.object({ inviteId: z.string().uuid() }).strict().safeParse(input);
   if (!parsed.success) return fail("Invalid request");
-  const session = await adminSession();
+  const session = await peopleSession();
   if (!session) return fail(NOT_ALLOWED);
   try {
     const { inviteUrl } = await db.transaction((tx) =>
@@ -313,8 +349,10 @@ export async function newExternalLink(
 ): Promise<ActionResult<{ inviteUrl: string }>> {
   const parsed = z.object({ grantId: z.string().uuid() }).strict().safeParse(input);
   if (!parsed.success) return fail("Invalid request");
-  const session = await adminSession();
-  if (!session) return fail("Only admins manage external access");
+  const session = await requireSession();
+  if (!can(session.actor, { type: "partners.invite" })) {
+    return fail(missingAbilityMessage("partners.invite"));
+  }
   try {
     const inviteUrl = await db.transaction((tx) =>
       renewGrantLinkTx(tx, ctx(session), parsed.data.grantId),
@@ -323,5 +361,90 @@ export async function newExternalLink(
     return success({ inviteUrl }, "New link ready — the earlier one no longer works");
   } catch (err) {
     return failure(err, "newExternalLink");
+  }
+}
+
+/**
+ * Suspend someone: they can't sign in or be told about anything until
+ * reactivated. Sign-offs waiting on them by name go to the person picked;
+ * everything else stays as it is.
+ */
+export async function suspendUser(input: unknown): Promise<ActionResult<{ handedOver: number }>> {
+  const parsed = z
+    .object({ userId: z.string().uuid(), handToUserId: z.string().uuid().nullish() })
+    .strict()
+    .safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await peopleSession();
+  if (!session) return fail(NOT_ALLOWED);
+  try {
+    const out = await db.transaction((tx) =>
+      suspendMemberTx(tx, { ...ctx(session), actorName: inviterName(session) }, parsed.data),
+    );
+    refresh();
+    revalidatePath("/", "layout");
+    return success(
+      { handedOver: out.handedOver },
+      `${out.name} suspended${
+        out.handedOver
+          ? ` — ${out.handedOver} sign-off${out.handedOver === 1 ? "" : "s"} handed over`
+          : ""
+      }`,
+    );
+  } catch (err) {
+    return failure(err, "suspendUser");
+  }
+}
+
+/** Give a suspended person their access back, as it was. */
+export async function reactivateUser(input: unknown): Promise<ActionResult> {
+  const parsed = z.object({ userId: z.string().uuid() }).strict().safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await peopleSession();
+  if (!session) return fail(NOT_ALLOWED);
+  try {
+    const out = await db.transaction((tx) => reactivateMemberTx(tx, ctx(session), parsed.data));
+    refresh();
+    revalidatePath("/", "layout");
+    return success(
+      undefined,
+      out.accessEnded
+        ? `${out.name} reactivated — their access end date has passed, so set a new one to let them in`
+        : `${out.name} can sign in again`,
+    );
+  } catch (err) {
+    return failure(err, "reactivateUser");
+  }
+}
+
+/**
+ * Set or clear the London date someone's access ends (a team member or an
+ * open invitation). Access lasts to the end of that day.
+ */
+export async function setAccessEnd(input: unknown): Promise<ActionResult> {
+  const parsed = z
+    .object({
+      userId: z.string().uuid().optional(),
+      inviteId: z.string().uuid().optional(),
+      date: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "Enter the end date as a date")
+        .nullable(),
+    })
+    .strict()
+    .refine((d) => Boolean(d.userId) !== Boolean(d.inviteId), "Choose a person")
+    .safeParse(input);
+  if (!parsed.success) return fail(parsed.error.issues[0]?.message ?? "Invalid request");
+  const session = await peopleSession();
+  if (!session) return fail(NOT_ALLOWED);
+  try {
+    const out = await db.transaction((tx) => setAccessEndTx(tx, ctx(session), parsed.data));
+    refresh();
+    return success(
+      undefined,
+      out.endsAt ? `Saved — ${firstName(out.name)}'s access ends then` : "End date cleared",
+    );
+  } catch (err) {
+    return failure(err, "setAccessEnd");
   }
 }

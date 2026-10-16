@@ -42,12 +42,18 @@ export async function dispatchNotificationEmails(
     .limit(opts.limit ?? 100);
   if (rows.length === 0) return 0;
 
+  // People who have left, are suspended or whose access has ended get no email.
+  const { activeRecipientIds } = await import("@/lib/notify");
+  const allowed = await activeRecipientIds(
+    db,
+    rows.map((r) => r.u.id),
+  );
   const base = appUrl();
   const doneIds: string[] = [];
   let sent = 0;
   for (const { n, u } of rows) {
-    // Already seen in the app, or never emailed: nothing to send.
-    if (n.readAt || IN_APP_ONLY.has(n.kind)) {
+    // Already seen in the app, never emailed, or no longer allowed: nothing to send.
+    if (n.readAt || IN_APP_ONLY.has(n.kind) || !allowed.has(u.id)) {
       doneIds.push(n.id);
       continue;
     }

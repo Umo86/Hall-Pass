@@ -5,8 +5,13 @@ import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
-import type { Feature, StaffRole } from "@/lib/authz";
-import { defaultAbilities, firstName, roleForDepartment, type Abilities } from "@/lib/users/rules";
+import type { AbilityKey, Feature, StaffRole } from "@/lib/authz";
+import {
+  defaultAbilities,
+  firstName,
+  roleForDepartment,
+  type AbilityChoices,
+} from "@/lib/users/rules";
 import { inviteUser, type InviteUserResult } from "@/app/actions/users";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,10 +35,13 @@ export function AddUserForm({
   departments,
   visible,
   initial,
+  access,
 }: {
   departments: DepartmentOption[];
   visible: Feature[];
   initial: { departmentId: string; signsOff: boolean; fullName: string; email: string };
+  /** What the viewer may give (managers); omitted for super admins. */
+  access?: { roles: StaffRole[]; abilities: AbilityKey[] };
 }) {
   const startDept = departments.find((d) => d.id === initial.departmentId && !d.isArchived);
   const [fullName, setFullName] = useState(initial.fullName);
@@ -44,7 +52,7 @@ export function AddUserForm({
   const [role, setRole] = useState<StaffRole | null>(roleForDepartment(startDept?.name));
   const [roleTouched, setRoleTouched] = useState(false);
   const [features, setFeatures] = useState<Feature[] | null>(null);
-  const [abilities, setAbilities] = useState<Abilities>(
+  const [abilities, setAbilities] = useState<AbilityChoices>(
     defaultAbilities(roleForDepartment(startDept?.name) ?? "viewer"),
   );
   const [signsOff, setSignsOff] = useState(initial.signsOff && Boolean(startDept?.signsOff));
@@ -240,7 +248,13 @@ export function AddUserForm({
             error={errors.newDepartmentName}
           />
         </div>
-        <RoleCards name="add-role" value={role} onChange={pickRole} error={errors.role} />
+        <RoleCards
+          name="add-role"
+          value={role}
+          onChange={pickRole}
+          allowed={access?.roles}
+          error={errors.role}
+        />
       </section>
 
       {role !== "admin" ? (
@@ -292,6 +306,7 @@ export function AddUserForm({
               value={abilities}
               onChange={setAbilities}
               features={features}
+              assignable={access?.abilities}
             />
           )}
         </section>

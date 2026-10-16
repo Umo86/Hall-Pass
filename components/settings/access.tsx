@@ -5,18 +5,27 @@ import { requireStaffSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
-import { canOpenSection, SETTINGS_SECTIONS, type SettingsSectionId } from "./sections";
+import {
+  canOpenSection,
+  SETTINGS_SECTIONS,
+  settingsSectionsFor,
+  type SettingsAllows,
+  type SettingsSectionId,
+} from "./sections";
 
-/** The session plus what this person can do in Settings. */
+/** The session plus what this person can do in Settings (each section by its ability). */
 export async function settingsAccess() {
   const session = await requireStaffSession();
-  const canManage = can(session.actor, { type: "settings.manage" });
-  const canUsers = can(session.actor, { type: "users.manage" });
+  const allows: SettingsAllows = (need) => can(session.actor, { type: need });
   return {
     session,
-    canManage,
-    canUsers,
-    canOpen: (id: SettingsSectionId) => canOpenSection(id, { canManage, canUsers }),
+    allows,
+    sections: settingsSectionsFor(allows),
+    /** Item types, services and venues (lists.manage). */
+    canManage: allows("lists.manage"),
+    /** Give partners portal access (venues). */
+    canInvite: can(session.actor, { type: "partners.invite" }),
+    canOpen: (id: SettingsSectionId) => canOpenSection(id, allows),
   };
 }
 
@@ -27,7 +36,7 @@ export function SectionLocked({ id }: { id: SettingsSectionId }) {
     <EmptyState
       icon={Lock}
       title={
-        section.needs === "users"
+        section.needs === "system.manage"
           ? `Only admins can open ${section.label}`
           : `Only admins and Operations can change ${section.label.toLowerCase()}`
       }

@@ -1,5 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -9,7 +11,7 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
-import { externalRole, scopeType, staffRole } from "./enums";
+import { externalRole, managerScope, scopeType, staffRole } from "./enums";
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -91,8 +93,8 @@ export const memberships = pgTable(
       .notNull()
       .references(() => organisations.id),
     role: staffRole("role").notNull(),
-    // Per-user ability overrides on top of the role defaults; keys are
-    // whitelisted in lib/authz.ts (OVERRIDE_KEYS). Admins ignore overrides.
+    // Per-user ability overrides on top of the role defaults; keys are the
+    // ABILITIES registry in lib/authz.ts. Admins ignore overrides.
     permissionOverrides: jsonb("permission_overrides")
       .$type<Record<string, boolean>>()
       .notNull()
@@ -107,6 +109,17 @@ export const memberships = pgTable(
      */
     features: text("features").array(),
     jobTitle: text("job_title"),
+    /**
+     * A manager adds and changes people: their own department, or everyone
+     * (never other managers or super admins). Null = not a manager. Super
+     * admins manage everyone already, so theirs is always null.
+     */
+    managerScope: managerScope("manager_scope"),
+    /** Paused: can't sign in or be told about anything until reactivated. */
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    suspendedBy: uuid("suspended_by").references(() => users.id),
+    /** Access ends at this moment (the end of a London day); null = no end. */
+    accessEndsAt: timestamp("access_ends_at", { withTimezone: true }),
     ...timestamps,
   },
   (t) => [
@@ -114,6 +127,11 @@ export const memberships = pgTable(
     index("memberships_department_idx").on(t.departmentId),
     index("memberships_user_idx").on(t.userId),
     index("memberships_org_idx").on(t.organisationId),
+    index("memberships_suspended_by_idx").on(t.suspendedBy),
+    check(
+      "memberships_manager_scope_not_admin",
+      sql`${t.role} <> 'admin' OR ${t.managerScope} IS NULL`,
+    ),
   ],
 );
 
@@ -172,6 +190,9 @@ export const staffInvites = pgTable(
       onDelete: "set null",
     }),
     features: text("features").array(),
+    /** Copied onto the membership when accepted. */
+    managerScope: managerScope("manager_scope"),
+    accessEndsAt: timestamp("access_ends_at", { withTimezone: true }),
     /** Null on invitations sent before expiry existed: they never expire. */
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     invitedBy: uuid("invited_by").references(() => users.id),

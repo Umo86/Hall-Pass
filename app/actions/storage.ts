@@ -19,7 +19,7 @@ export async function startStorageSelfTest(): Promise<
   ActionResult<{ url: string; contentType: string; storagePath: string }>
 > {
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) return fail("Admins only");
+  if (!can(session.actor, { type: "system.manage" })) return fail("Super admins only");
   if (!s3Enabled()) return fail("No bucket is configured");
   try {
     const storagePath = `${CHECK_PREFIX}${randomUUID()}.txt`;
@@ -37,7 +37,7 @@ export async function finishStorageSelfTest(
   const parsed = z.object({ storagePath: z.string().min(1).max(200) }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) return fail("Admins only");
+  if (!can(session.actor, { type: "system.manage" })) return fail("Super admins only");
   const { storagePath } = parsed.data;
   if (!storagePath.startsWith(CHECK_PREFIX) || storagePath.includes("..")) {
     return fail("Invalid request");
@@ -68,8 +68,8 @@ export async function copyBlobFilesToBucket(
   const parsed = schema.safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) {
-    return fail("Only admins can move the file store");
+  if (!can(session.actor, { type: "system.manage" })) {
+    return fail("Only super admins can move the file store");
   }
   try {
     const result = await copyBlobBatch({

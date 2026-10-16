@@ -6,7 +6,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { organisations } from "@/lib/db/schema";
-import { can } from "@/lib/authz";
+import { can, missingAbilityMessage } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -37,8 +37,8 @@ export async function updateOrganisationSettings(input: unknown): Promise<Action
   const parsed = schema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and Operations can change organisation settings");
+  if (!can(session.actor, { type: "organisation.manage" })) {
+    return fail(missingAbilityMessage("organisation.manage"));
   }
   const orgId = session.organisation.id;
   const data = parsed.data;

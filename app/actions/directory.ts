@@ -7,7 +7,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { contractors, events, suppliers, venues } from "@/lib/db/schema";
 import type { Tx } from "@/lib/db/client";
-import { can } from "@/lib/authz";
+import { can, missingAbilityMessage } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -91,6 +91,13 @@ const schema = z.discriminatedUnion("type", [
 ]);
 
 const TABLES = { event: events, venue: venues, supplier: suppliers, contractor: contractors };
+/** Who may change each kind of entry. */
+const DIRECTORY_ABILITY = {
+  event: "events.create",
+  venue: "lists.manage",
+  supplier: "suppliers.manage",
+  contractor: "suppliers.manage",
+} as const;
 const LABELS = {
   event: "Event series",
   venue: "Venue",
@@ -122,15 +129,14 @@ async function uniqueCode(
   }
 }
 
-/** Add or edit an event series, venue, supplier or install contractor (admin & ops). */
+/** Add or edit an event series, venue, supplier or install contractor (each by its own ability). */
 export async function saveDirectoryEntry(input: unknown): Promise<ActionResult> {
   const parsed = schema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admin and ops can change this list");
-  }
   const { type, id } = parsed.data;
+  const needs = DIRECTORY_ABILITY[type];
+  if (!can(session.actor, { type: needs })) return fail(missingAbilityMessage(needs));
   const table = TABLES[type];
   const orgId = session.organisation.id;
   // A code left out keeps the one it has (edit) or is made from the name (add).
@@ -193,8 +199,8 @@ export async function setVenueArchived(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid(), archived: z.boolean() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admin and ops can change this list");
+  if (!can(session.actor, { type: "lists.manage" })) {
+    return fail(missingAbilityMessage("lists.manage"));
   }
   const { id, archived } = parsed.data;
   const orgId = session.organisation.id;

@@ -18,6 +18,7 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import { defaultSignageWorkflowId } from "@/lib/domain/signage";
+import { activeMembership } from "@/lib/users/active";
 import { loadStepDefs } from "@/lib/workflow/persist";
 import { isDepartmentStep } from "@/lib/workflow/signoffs";
 import type { ItemFormOptions } from "@/components/signage/item-form";
@@ -133,7 +134,7 @@ export async function itemFormOptions(opts: {
           )
           .orderBy(desc(workflows.isDefault), asc(workflows.name))
       : [],
-    // Who can own an item: anyone on the team except viewers.
+    // Who can own an item: anyone with access on the team except viewers.
     db
       .select({
         id: users.id,
@@ -144,7 +145,11 @@ export async function itemFormOptions(opts: {
       .from(memberships)
       .innerJoin(users, eq(memberships.userId, users.id))
       .where(
-        and(eq(memberships.organisationId, opts.organisationId), ne(memberships.role, "viewer")),
+        and(
+          eq(memberships.organisationId, opts.organisationId),
+          ne(memberships.role, "viewer"),
+          activeMembership(),
+        ),
       )
       .orderBy(asc(users.fullName), asc(users.email)),
   ]);

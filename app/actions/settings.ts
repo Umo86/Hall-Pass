@@ -17,7 +17,7 @@ import {
   users,
   venues,
 } from "@/lib/db/schema";
-import { can } from "@/lib/authz";
+import { can, missingAbilityMessage } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { generateInviteToken, hashInviteToken } from "@/lib/auth/invite-token";
@@ -51,8 +51,8 @@ export async function inviteExternal(input: unknown): Promise<ActionResult<{ inv
   const parsed = inviteSchema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) {
-    return fail("Only admins manage external access");
+  if (!can(session.actor, { type: "partners.invite" })) {
+    return fail(missingAbilityMessage("partners.invite"));
   }
   const data = parsed.data;
   const orgId = session.organisation.id;
@@ -130,6 +130,7 @@ export async function inviteExternal(input: unknown): Promise<ActionResult<{ inv
           scopeId: data.scopeId ?? null,
         },
         summary: `Invited ${data.email} as ${roleLabel(data.role)}`,
+        subjectEmail: data.email,
       });
       return grant.id;
     });
@@ -159,8 +160,8 @@ export async function revokeGrant(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ grantId: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) {
-    return fail("Only admins manage external access");
+  if (!can(session.actor, { type: "partners.invite" })) {
+    return fail(missingAbilityMessage("partners.invite"));
   }
   try {
     const grant = await db.transaction(async (tx) => {
@@ -184,6 +185,8 @@ export async function revokeGrant(input: unknown): Promise<ActionResult> {
         entityId: row.id,
         action: "grant_revoke",
         summary: `Revoked external access for ${row.invitedEmail}`,
+        subjectUserId: row.userId,
+        subjectEmail: row.invitedEmail,
       });
       return row;
     });

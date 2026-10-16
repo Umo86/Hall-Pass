@@ -19,7 +19,8 @@ import {
   pickDefaultEdition,
   sortForGroup,
 } from "@/lib/queries/editions";
-import { getSetupStatus } from "@/lib/queries/setup";
+import { getSetupStatus, setupPermissionsFor } from "@/lib/queries/setup";
+import { settingsSectionsFor } from "@/components/settings/sections";
 import { editionCodeFromPath } from "@/lib/edition-path";
 import { todayInLondon } from "@/lib/today";
 import { dateRangeWithYear } from "@/components/setup/format";
@@ -66,7 +67,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const cookieStore = await cookies();
   const sidebarHidden = cookieStore.get(SIDEBAR_COOKIE)?.value === "hidden";
-  const canSetup = can(actor, { type: "settings.manage" });
+  // Getting an event ready (dates, halls, lists or suppliers) shows Setup.
+  const canSetup = can(actor, { type: "event.setup" });
+  const canCreateEvent = can(actor, { type: "events.create" });
   const today = todayInLondon();
 
   // The event pages without one in their address use: the last one opened,
@@ -92,11 +95,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const setupStatus =
     // Only while the event is still to come: nobody sets up a finished one.
     canSetup && current && eventGroup(current.edition, today) === "upcoming"
-      ? await getSetupStatus(current.edition, session.organisation.id, {
-          canSetup,
-          canUsers: can(actor, { type: "users.manage" }),
-          canAddSigns: can(actor, { type: "signage.create" }),
-        })
+      ? await getSetupStatus(current.edition, session.organisation.id, setupPermissionsFor(actor))
       : null;
 
   // The default event first, so the side navigation shows it on pages
@@ -126,6 +125,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   );
   const navOptions = {
     canSetup,
+    canHalls: can(actor, { type: "halls.manage" }),
+    canCreateEvent,
     setup:
       current && setupStatus
         ? {
@@ -134,7 +135,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             total: setupStatus.summary.total,
           }
         : null,
-    canSettings: canSetup || can(actor, { type: "users.manage" }),
+    // At least one Settings section can be opened.
+    canSettings: settingsSectionsFor((need) => can(actor, { type: need })).length > 0,
     counts: {
       approvals: signoffs.total,
       approvalsOverdue: signoffs.overdue > 0,
@@ -179,6 +181,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           defaultCode={defaultCode}
           navCode={current?.edition.code ?? null}
           canSetup={canSetup}
+          canCreate={canCreateEvent}
         />
         {/* Never squeezed: on a phone the event switcher gives way instead. */}
         <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">

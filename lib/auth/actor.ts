@@ -2,7 +2,8 @@ import "server-only";
 import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { and, eq, isNull } from "drizzle-orm";
+import { after } from "next/server";
+import { and, asc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   externalGrants,
@@ -18,6 +19,8 @@ import {
   type PermissionOverrides,
   type StaffActor,
 } from "@/lib/authz";
+import { accessState, type AccessBlock } from "@/lib/access";
+import { activeMembership } from "@/lib/users/active";
 import { createSupabaseServerClient, supabaseConfigured } from "./supabase-server";
 import { claimStaffInvite, openStaffInviteFor } from "./claim-staff-invite";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
@@ -57,18 +60,110 @@ export type Session = {
   organisation: { id: string; brandName: string; settings: OrganisationSettings };
 };
 
-/** Session for a user id without cookies — used by the tokenised iCal feed. */
+/** A session, or why a signed-in team member is turned away (Users v2). */
+type Loaded =
+  { session: Session; blocked?: undefined } | { session?: undefined; blocked: AccessBlock };
+
+/**
+ * Session for a user id without cookies — used by the tokenised iCal feed.
+ * Suspended people and people whose access has ended get nothing.
+ */
 export async function sessionForUserId(userId: string): Promise<Session | null> {
-  return loadSessionForUserId(userId);
+  // A calendar app fetching the feed isn't the person being active.
+  return (await loadForUserId(userId, { touch: false }))?.session ?? null;
 }
 
-async function loadSessionForUserId(userId: string): Promise<Session | null> {
+async function loadForUserId(userId: string, opts?: LoadOpts): Promise<Loaded | null> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) return null;
-  return loadSessionForUser(user);
+  return loadForUser(user, opts);
 }
 
-async function loadSessionForUser(user: typeof users.$inferSelect): Promise<Session | null> {
+/** touch: record last activity (signed-in page loads; not the iCal feed). */
+type LoadOpts = { touch?: boolean };
+
+type MembershipRow = typeof memberships.$inferSelect;
+
+/**
+ * Who a turned-away person should ask: whoever suspended them, else a
+ * manager whose scope covers them, else a super admin (all with access).
+ */
+async function whoToAsk(m: MembershipRow): Promise<string | null> {
+  const name = (u: { fullName: string; email: string }) => u.fullName || u.email;
+  const rows = await db
+    .select({
+      userId: memberships.userId,
+      role: memberships.role,
+      managerScope: memberships.managerScope,
+      departmentId: memberships.departmentId,
+      fullName: users.fullName,
+      email: users.email,
+    })
+    .from(memberships)
+    .innerJoin(users, eq(users.id, memberships.userId))
+    .where(
+      and(
+        eq(memberships.organisationId, m.organisationId),
+        activeMembership(),
+        or(eq(memberships.role, "admin"), sql`${memberships.managerScope} IS NOT NULL`),
+      ),
+    )
+    .orderBy(asc(memberships.createdAt));
+  const others = rows.filter((r) => r.userId !== m.userId);
+  const suspender = m.suspendedBy ? others.find((r) => r.userId === m.suspendedBy) : undefined;
+  if (suspender) return name(suspender);
+  const manager = others.find(
+    (r) =>
+      r.role !== "admin" &&
+      (r.managerScope === "everyone" ||
+        (r.managerScope === "department" &&
+          m.departmentId != null &&
+          r.departmentId === m.departmentId)),
+  );
+  if (manager && m.role !== "admin" && !m.managerScope) return name(manager);
+  const admin = others.find((r) => r.role === "admin");
+  return admin ? name(admin) : null;
+}
+
+const LAST_SEEN_EVERY_MS = 15 * 60 * 1000;
+
+/**
+ * Record when someone was last active (users.last_seen_at), at most every
+ * 15 minutes, after the response is sent. Never fails the request.
+ */
+function touchLastSeen(user: typeof users.$inferSelect) {
+  const seen = user.lastSeenAt?.getTime() ?? 0;
+  if (Date.now() - seen < LAST_SEEN_EVERY_MS) return;
+  const write = async () => {
+    try {
+      await db
+        .update(users)
+        .set({ lastSeenAt: new Date() })
+        .where(
+          and(
+            eq(users.id, user.id),
+            or(
+              isNull(users.lastSeenAt),
+              lt(users.lastSeenAt, new Date(Date.now() - LAST_SEEN_EVERY_MS)),
+            ),
+          ),
+        );
+    } catch (err) {
+      console.error("last seen", err);
+    }
+  };
+  try {
+    after(write);
+  } catch {
+    // Outside a request (scripts, tests): write it now, without waiting.
+    void write();
+  }
+}
+
+async function loadForUser(
+  user: typeof users.$inferSelect,
+  opts: LoadOpts = { touch: true },
+): Promise<Loaded | null> {
   let membership = await db.query.memberships.findFirst({
     where: eq(memberships.userId, user.id),
   });
@@ -84,6 +179,10 @@ async function loadSessionForUser(user: typeof users.$inferSelect): Promise<Sess
     }
   }
   if (membership) {
+    // Suspended, or access ended: turned away here, never on to the
+    // partner-invitation branch below.
+    const state = accessState(membership);
+    if (state !== "active") return { blocked: { state, askName: await whoToAsk(membership) } };
     const org = await db.query.organisations.findFirst({
       where: eq(organisations.id, membership.organisationId),
     });
@@ -97,11 +196,15 @@ async function loadSessionForUser(user: typeof users.$inferSelect): Promise<Sess
       signoffDepartmentIds: await departmentIdsForUser(db, org.id, user.id),
       departmentId: membership.departmentId,
       features: parseFeatures(membership.features),
+      managerScope: membership.role === "admin" ? null : membership.managerScope,
     };
+    if (opts.touch !== false) touchLastSeen(user);
     return {
-      actor,
-      user: { id: user.id, email: user.email, fullName: user.fullName, isExternal: false },
-      organisation: { id: org.id, brandName: org.brandName, settings: org.settings },
+      session: {
+        actor,
+        user: { id: user.id, email: user.email, fullName: user.fullName, isExternal: false },
+        organisation: { id: org.id, brandName: org.brandName, settings: org.settings },
+      },
     };
   }
 
@@ -122,6 +225,7 @@ async function loadSessionForUser(user: typeof users.$inferSelect): Promise<Sess
     where: eq(organisations.id, grants[0].organisationId),
   });
   if (!org) return null;
+  if (opts.touch !== false) touchLastSeen(user);
   const actor: ExternalActor = {
     kind: "external",
     userId: user.id,
@@ -136,24 +240,23 @@ async function loadSessionForUser(user: typeof users.$inferSelect): Promise<Sess
     })),
   };
   return {
-    actor,
-    user: { id: user.id, email: user.email, fullName: user.fullName, isExternal: true },
-    organisation: { id: org.id, brandName: org.brandName, settings: org.settings },
+    session: {
+      actor,
+      user: { id: user.id, email: user.email, fullName: user.fullName, isExternal: true },
+      organisation: { id: org.id, brandName: org.brandName, settings: org.settings },
+    },
   };
 }
 
-/**
- * The current session, or null when signed out. Cached for the request, so
- * layouts, pages and actions share one lookup.
- */
-export const getSession = cache(async (): Promise<Session | null> => {
+/** Who is signed in on this request (cached), or why they are turned away. */
+const loadRequest = cache(async (): Promise<Loaded | null> => {
   const supabase = await createSupabaseServerClient();
   if (supabase) {
     const {
       data: { user },
     } = await supabase.auth.getUser();
     if (user) {
-      const existing = await loadSessionForUserId(user.id);
+      const existing = await loadForUserId(user.id);
       if (existing) return existing;
       // First sign-in: create the app user row keyed by the auth uid.
       if (user.email) {
@@ -161,7 +264,7 @@ export const getSession = cache(async (): Promise<Session | null> => {
           .insert(users)
           .values({ id: user.id, email: user.email, fullName: "" })
           .onConflictDoNothing();
-        return loadSessionForUserId(user.id);
+        return loadForUserId(user.id);
       }
       return null;
     }
@@ -174,10 +277,27 @@ export const getSession = cache(async (): Promise<Session | null> => {
     if (!email || !demoEmailAllowed(email)) return null;
     const user = await db.query.users.findFirst({ where: eq(users.email, email) });
     if (!user) return null;
-    return loadSessionForUser(user);
+    return loadForUser(user);
   }
   return null;
 });
+
+/**
+ * The current session, or null when signed out — or when the person's access
+ * is suspended or has ended (getAccessBlock says which). Cached for the
+ * request, so layouts, pages and actions share one lookup.
+ */
+export const getSession = cache(async (): Promise<Session | null> => {
+  return (await loadRequest())?.session ?? null;
+});
+
+/**
+ * Why the signed-in person was turned away (suspended or access ended) and
+ * who to ask, for the sign-in page; null otherwise.
+ */
+export async function getAccessBlock(): Promise<AccessBlock | null> {
+  return (await loadRequest())?.blocked ?? null;
+}
 
 export async function requireSession(): Promise<Session> {
   const session = await getSession();

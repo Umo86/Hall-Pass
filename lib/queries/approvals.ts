@@ -29,9 +29,16 @@ import {
   approvers,
   reminderLog,
 } from "@/lib/db/schema";
-import { can, type ApprovalStepCtx } from "@/lib/authz";
+import {
+  can,
+  confirmsForSuppliers,
+  signoffPaused,
+  type ApprovalStepCtx,
+  type PermissionOverrides,
+} from "@/lib/authz";
+import { activeMembership } from "@/lib/users/active";
 import { requireSession, type Session } from "@/lib/auth/actor";
-import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
+import { itemAuthzCtx, loadItemBundle, stepIsMine } from "@/lib/domain/signage";
 import { loadStandBundle, standAuthzCtx } from "@/lib/domain/stand";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { standsEnabled } from "@/lib/config";
@@ -59,17 +66,21 @@ function candidateFilter(session: Session, all: boolean): SQL | undefined {
       return all ? undefined : or(me, eq(approvalInstances.assignedRole, "admin"));
     }
     const depts = actor.signoffDepartmentIds ?? [];
+    // Print, delivery and install confirmations (supplier and ops steps) go
+    // to whoever confirms for suppliers (signage.confirm), not by role.
+    const production = and(
+      isNull(approvalInstances.assignedUserId),
+      eq(approvalInstances.stepKindSnapshot, "confirmation"),
+      inArray(approvalInstances.assignedRole, ["supplier", "ops"]),
+    );
     return or(
       me,
-      and(isNull(approvalInstances.assignedUserId), eq(approvalInstances.assignedRole, actor.role)),
-      // Operations can confirm a supplier's print / delivery steps themselves.
-      actor.role === "ops"
-        ? and(
-            isNull(approvalInstances.assignedUserId),
-            eq(approvalInstances.assignedRole, "supplier"),
-            eq(approvalInstances.stepKindSnapshot, "confirmation"),
-          )
-        : undefined,
+      and(
+        isNull(approvalInstances.assignedUserId),
+        eq(approvalInstances.assignedRole, actor.role),
+        actor.role === "ops" ? ne(approvalInstances.stepKindSnapshot, "confirmation") : undefined,
+      ),
+      confirmsForSuppliers(actor) ? production : undefined,
       depts.length > 0
         ? and(
             isNull(approvalInstances.assignedUserId),
@@ -180,16 +191,16 @@ function liveOpen(organisationId: string): SQL | undefined {
 }
 
 /** Someone whose sign-off is paused (Users → "Sign-off paused") decides nothing. */
-function signoffPaused(session: Session): boolean {
+function isPaused(session: Session): boolean {
   const a = session.actor;
-  return a.kind === "staff" && a.role !== "admin" && a.overrides?.["approval.decide"] === false;
+  return a.kind === "staff" && a.role !== "admin" && signoffPaused(a.overrides);
 }
 
 /** How many sign-offs are waiting on me, and how many of those are overdue. */
 export async function countPendingForUser(
   session: Session,
 ): Promise<{ total: number; overdue: number }> {
-  if (signoffPaused(session)) return { total: 0, overdue: 0 };
+  if (isPaused(session)) return { total: 0, overdue: 0 };
   const [row] = await db
     .select({
       total: sql<number>`count(*)::int`,
@@ -221,7 +232,7 @@ export async function oldestPendingForUser(
   session: Session,
   limit = 3,
 ): Promise<PendingSummaryRow[]> {
-  if (signoffPaused(session)) return [];
+  if (isPaused(session)) return [];
   const rows = await db
     .select({
       instance: approvalInstances,
@@ -291,7 +302,7 @@ export async function pendingEntityIdsForUser(
   entityIds: string[],
 ): Promise<Set<string>> {
   const wanted = [...new Set(entityIds)].filter(Boolean);
-  if (wanted.length === 0 || signoffPaused(session)) return new Set();
+  if (wanted.length === 0 || isPaused(session)) return new Set();
   const rows = await db
     .selectDistinct({ id: approvalInstances.entityId })
     .from(approvalInstances)
@@ -480,17 +491,33 @@ export async function openSignoffsForTeam(
   const deptIds = [
     ...new Set(rows.map((r) => r.instance.assignedDepartmentId).filter(Boolean)),
   ] as string[];
+  // Only people who can sign now: active, sign-off not paused.
   const deptPeople = deptIds.length
-    ? await db
-        .select({ departmentId: approvers.departmentId, name: users.fullName, email: users.email })
-        .from(approvers)
-        .innerJoin(users, eq(users.id, approvers.userId))
-        .where(
-          and(
-            eq(approvers.organisationId, session.organisation.id),
-            inArray(approvers.departmentId, deptIds),
-          ),
-        )
+    ? (
+        await db
+          .select({
+            departmentId: approvers.departmentId,
+            name: users.fullName,
+            email: users.email,
+            overrides: memberships.permissionOverrides,
+          })
+          .from(approvers)
+          .innerJoin(users, eq(users.id, approvers.userId))
+          .innerJoin(
+            memberships,
+            and(
+              eq(memberships.userId, approvers.userId),
+              eq(memberships.organisationId, approvers.organisationId),
+            ),
+          )
+          .where(
+            and(
+              eq(approvers.organisationId, session.organisation.id),
+              inArray(approvers.departmentId, deptIds),
+              activeMembership(),
+            ),
+          )
+      ).filter((p) => !signoffPaused(p.overrides as PermissionOverrides))
     : [];
   const staffRoles = ["admin", "ops", "marketing", "sales", "event_director", "viewer"];
   const roles = [
@@ -502,16 +529,24 @@ export async function openSignoffsForTeam(
     ),
   ];
   const rolePeople = roles.length
-    ? await db
-        .select({ role: memberships.role, name: users.fullName, email: users.email })
-        .from(memberships)
-        .innerJoin(users, eq(users.id, memberships.userId))
-        .where(
-          and(
-            eq(memberships.organisationId, session.organisation.id),
-            inArray(memberships.role, roles as (typeof memberships.$inferSelect)["role"][]),
-          ),
-        )
+    ? (
+        await db
+          .select({
+            role: memberships.role,
+            name: users.fullName,
+            email: users.email,
+            overrides: memberships.permissionOverrides,
+          })
+          .from(memberships)
+          .innerJoin(users, eq(users.id, memberships.userId))
+          .where(
+            and(
+              eq(memberships.organisationId, session.organisation.id),
+              inArray(memberships.role, roles as (typeof memberships.$inferSelect)["role"][]),
+              activeMembership(),
+            ),
+          )
+      ).filter((p) => !signoffPaused(p.overrides as PermissionOverrides))
     : [];
 
   const instanceIds = rows.map((r) => r.instance.id);
@@ -536,14 +571,14 @@ export async function openSignoffsForTeam(
   const mineIf = (inst: typeof approvalInstances.$inferSelect) => {
     if (inst.assignedUserId) return inst.assignedUserId === me.userId;
     if (me.kind !== "staff") return false;
-    if (inst.assignedDepartmentId) {
-      return (me.signoffDepartmentIds ?? []).includes(inst.assignedDepartmentId);
-    }
-    if (inst.assignedRole === me.role) return true;
-    return (
-      me.role === "ops" &&
-      inst.assignedRole === "supplier" &&
-      inst.stepKindSnapshot === "confirmation"
+    return stepIsMine(
+      {
+        stepKind: inst.stepKindSnapshot,
+        assignedRole: inst.assignedRole,
+        assignedUserId: inst.assignedUserId,
+        assignedDepartmentId: inst.assignedDepartmentId,
+      },
+      me,
     );
   };
   return rows.map((r) => {

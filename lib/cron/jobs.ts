@@ -1,6 +1,19 @@
 import { appUrl } from "@/lib/app-url";
 import "server-only";
-import { and, count, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  max,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import { s3Delete, s3Enabled, s3List } from "@/lib/storage";
 import { databaseSupabaseRef, supabaseUrl } from "@/lib/auth/supabase-config";
 import { db, type Db, type Tx } from "@/lib/db/client";
@@ -28,6 +41,10 @@ import { renderNotificationEmail } from "@/lib/email/template";
 import { brandName, standsEnabled } from "@/lib/config";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { writeAudit } from "@/lib/audit";
+import { activeMembership } from "@/lib/users/active";
+import { accessEndPlan, londonDateOfAccessEnd } from "@/lib/access";
+import { signoffsWaitingOn } from "@/lib/users/manage";
+import { syncDepartmentSteps } from "@/lib/domain/departments";
 import { formatDate } from "@/lib/format";
 import { itemPath } from "@/lib/edition-path";
 import { todayInLondon } from "@/lib/today";
@@ -40,7 +57,8 @@ import { settleStaleApprovalNotifications } from "@/lib/domain/notifications";
 
 export type JobResult = { job: string; sent: number; skipped: number };
 
-type ReminderTarget = "approval_instance" | "signage_item" | "exhibitor" | "document";
+type ReminderTarget =
+  "approval_instance" | "signage_item" | "exhibitor" | "document" | "membership";
 type ReminderKind =
   | "minus7"
   | "minus2"
@@ -80,7 +98,13 @@ async function staffUserIdsByRoles(
   const rows = await db
     .select({ userId: memberships.userId })
     .from(memberships)
-    .where(and(eq(memberships.organisationId, organisationId), inArray(memberships.role, roles)));
+    .where(
+      and(
+        eq(memberships.organisationId, organisationId),
+        inArray(memberships.role, roles),
+        activeMembership(),
+      ),
+    );
   return rows.map((r) => r.userId);
 }
 
@@ -811,8 +835,135 @@ export async function orphanArtworkSweep(today: string): Promise<JobResult> {
   return { job: "orphan_artwork_sweep", sent, skipped };
 }
 
+/**
+ * Who looks after this person's access: the organisation's super admins and
+ * the managers whose scope covers them (active people only).
+ */
+async function accessOverseerIds(
+  exec: Db | Tx,
+  person: { userId: string; organisationId: string; departmentId: string | null },
+): Promise<string[]> {
+  const rows = await exec
+    .select({
+      userId: memberships.userId,
+      role: memberships.role,
+      managerScope: memberships.managerScope,
+      departmentId: memberships.departmentId,
+    })
+    .from(memberships)
+    .where(and(eq(memberships.organisationId, person.organisationId), activeMembership()));
+  return rows
+    .filter(
+      (r) =>
+        r.userId !== person.userId &&
+        (r.role === "admin" ||
+          r.managerScope === "everyone" ||
+          (r.managerScope === "department" &&
+            person.departmentId != null &&
+            r.departmentId === person.departmentId)),
+    )
+    .map((r) => r.userId);
+}
+
+/**
+ * Job — access end dates (Users v2). Access itself stops at read time the
+ * moment the end date passes; this records "Access ended" once per person,
+ * re-routes department sign-offs away from them, tells super admins and
+ * their managers about sign-offs still waiting on them by name, and warns
+ * those same people a week before an end date.
+ */
+export async function endExpiredAccess(today: string, now = new Date()): Promise<JobResult> {
+  const rows = await db
+    .select({
+      m: memberships,
+      email: users.email,
+      name: users.fullName,
+    })
+    .from(memberships)
+    .innerJoin(users, eq(users.id, memberships.userId))
+    .where(isNotNull(memberships.accessEndsAt));
+  if (rows.length === 0) return { job: "access_end", sent: 0, skipped: 0 };
+  const recorded = await db
+    .select({ id: auditLog.entityId, at: max(auditLog.createdAt) })
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.entityType, "membership"),
+        inArray(
+          auditLog.entityId,
+          rows.map((r) => r.m.id),
+        ),
+        sql`${auditLog.after}->>'accessEnded' = 'true'`,
+      ),
+    )
+    .groupBy(auditLog.entityId);
+  const recordedAt = new Map(recorded.map((r) => [r.id, r.at]));
+  const plan = accessEndPlan(
+    rows.map((r) => ({
+      id: r.m.id,
+      accessEndsAt: r.m.accessEndsAt,
+      suspendedAt: r.m.suspendedAt,
+      endedRecordedAt: recordedAt.get(r.m.id) ?? null,
+    })),
+    { now, today },
+  );
+  const byId = new Map(rows.map((r) => [r.m.id, r]));
+  let sent = 0;
+  const orgs = new Set<string>();
+  for (const id of plan.ended) {
+    const { m, email, name } = byId.get(id)!;
+    const who = name || email;
+    await db.transaction(async (tx) => {
+      await writeAudit(tx, {
+        organisationId: m.organisationId,
+        actorType: "cron",
+        entityType: "membership",
+        entityId: m.id,
+        action: "grant_revoke",
+        before: { accessEndsAt: m.accessEndsAt!.toISOString() },
+        after: { accessEnded: true, accessEndsAt: m.accessEndsAt!.toISOString() },
+        summary: `Access ended for ${email}`,
+        subjectUserId: m.userId,
+        subjectEmail: email,
+      });
+      const waiting = await signoffsWaitingOn(tx, m.organisationId, m.userId);
+      if (waiting.length > 0) {
+        await notify(tx, {
+          userIds: await accessOverseerIds(tx, m),
+          kind: "access_ended",
+          title: `${who}'s access has ended — ${waiting.length === 1 ? "a sign-off still waits" : `${waiting.length} sign-offs still wait`} on them`,
+          body: `Hand ${waiting.length === 1 ? "it" : "them"} to someone else: ${[...new Set(waiting.map((w) => w.ref))].slice(0, 5).join(", ")}.`,
+          link: `/users/${m.userId}`,
+        });
+      }
+    });
+    orgs.add(m.organisationId);
+    sent++;
+  }
+  // Department sign-offs stop naming main approvers whose access has ended.
+  for (const orgId of orgs) {
+    await db.transaction((tx) => syncDepartmentSteps(tx, orgId));
+  }
+  for (const id of plan.warn) {
+    const { m, email, name } = byId.get(id)!;
+    await db.transaction(async (tx) => {
+      if (!(await recordSend("membership", m.id, "minus7", today, tx))) return;
+      await notify(tx, {
+        userIds: await accessOverseerIds(tx, m),
+        kind: "access_ending",
+        title: `${name || email}'s access ends in a week (${formatDate(londonDateOfAccessEnd(m.accessEndsAt!))})`,
+        body: "Change or clear the end date on their page if they still need access.",
+        link: `/users/${m.userId}`,
+      });
+      sent++;
+    });
+  }
+  return { job: "access_end", sent, skipped: rows.length - plan.ended.length - plan.warn.length };
+}
+
 export async function runDailyJobs(today: string): Promise<JobResult[]> {
   const results: JobResult[] = [];
+  results.push(await endExpiredAccess(today));
   results.push(await approvalReminders(today));
   results.push(await staleApprovalNotifications(today));
   results.push(await escalation(today));

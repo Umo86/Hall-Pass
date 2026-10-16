@@ -2,15 +2,35 @@
  * The single authorisation module (non-negotiable 1). Every server action and
  * route handler checks `can(actor, action, resource)` before reading
  * non-public data or mutating anything. Pure TypeScript — unit tested per
- * permission-matrix row, including negatives.
+ * permission-matrix row, including negatives (tests/unit/authz*.test.ts,
+ * with a frozen snapshot of the rules before the abilities registry).
+ *
+ * can() runs in this order: tenancy → external people → sections → abilities
+ * → the role, item or assignment rule. Who may add and change people (super
+ * admins and managers) is at the end of the file.
  */
+import { roleLabel } from "./format";
 
 export type StaffRole = "admin" | "ops" | "marketing" | "sales" | "event_director" | "viewer";
+
+/** Staff roles in the order they are offered. `admin` is shown as "Super admin". */
+export const STAFF_ROLES: readonly StaffRole[] = [
+  "admin",
+  "ops",
+  "marketing",
+  "sales",
+  "event_director",
+  "viewer",
+];
 
 export type ExternalRole =
   "venue" | "structural_engineer" | "hs" | "supplier" | "exhibitor" | "contractor" | "sponsor";
 
 export type ScopeType = "venue" | "supplier" | "exhibitor" | "sponsor";
+
+/** Who a manager may add and change: their own department, or everyone. */
+export type ManagerScope = "department" | "everyone";
+export const MANAGER_SCOPES: readonly ManagerScope[] = ["department", "everyone"];
 
 export type GrantInfo = {
   role: ExternalRole;
@@ -22,41 +42,11 @@ export type GrantInfo = {
 };
 
 /**
- * Abilities an admin can grant or remove per user on top of the role
- * defaults. Precedence: admins ignore overrides entirely; an explicit
- * true/false wins over the role default; anything else falls back to the
- * role. `approval.decide: true` never bypasses step assignment — it can only
- * be used to remove the ability. `users.manage` is deliberately not
- * overridable (no privilege-escalation path).
- */
-export const OVERRIDE_KEYS = [
-  "signage.create",
-  "sponsorship.create",
-  "costs.edit",
-  "approval.decide",
-  "settings.manage",
-] as const;
-export type OverrideKey = (typeof OVERRIDE_KEYS)[number];
-
-/**
- * Which roles have each overridable ability by default. The single source
- * for can() and for the Team screen's checkboxes.
- */
-export const OVERRIDE_ROLE_DEFAULTS: Record<OverrideKey, readonly StaffRole[]> = {
-  "signage.create": ["admin", "ops", "marketing"],
-  "sponsorship.create": ["admin", "ops", "sales"],
-  "costs.edit": ["admin", "ops"],
-  "approval.decide": ["admin", "ops", "marketing", "sales", "event_director", "viewer"],
-  "settings.manage": ["admin", "ops"],
-};
-export type PermissionOverrides = Partial<Record<OverrideKey, boolean>>;
-
-/**
- * App sections an admin can switch on or off per person (Users → Sections).
- * A person with no list (null) has every section, which is how everyone
- * worked before sections existed. Admins always have every section.
- * Viewing a single record, deciding a sign-off assigned to you, tasks and
- * comments are never gated, so links from emails and sign-offs keep working.
+ * App sections a person can be given (Users → Sections). A person with no
+ * list (null) has every section, which is how everyone worked before
+ * sections existed. Admins always have every section. Viewing a single
+ * record, deciding a sign-off assigned to you, tasks and comments are never
+ * gated, so links from emails and sign-offs keep working.
  */
 export const FEATURES = [
   "signage",
@@ -89,6 +79,327 @@ export function parseFeatures(value: unknown): Feature[] | null {
   return value.filter((v): v is Feature => (FEATURES as readonly string[]).includes(v));
 }
 
+// ---------------------------------------------------------------------------
+// Abilities: what can be fine-tuned per person on top of their role.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every ability, in the order the person form shows them. Stored per person
+ * as `memberships.permission_overrides` (only differences from the role).
+ * Precedence: super admins ignore anything stored; a stored false always
+ * blocks; a stored true grants a "grant" ability outright, and for a "gate"
+ * ability only switches it on — the item or step assignment rule still
+ * applies (so `approval.decide: true` never lets anyone decide steps that
+ * aren't theirs). Super-admin powers (`users.manage`, `system.manage`,
+ * `events.archive`) and being a manager are never abilities, so nothing
+ * stored can reach them.
+ */
+export const ABILITY_KEYS = [
+  "signage.create",
+  "signage.delete",
+  "signage.lifecycle",
+  "signage.bulk",
+  "approval.decide",
+  "approval.delegate",
+  "approval.chase",
+  "costs.view",
+  "costs.edit",
+  "sponsorship.create",
+  "sponsorship.sell",
+  "events.create",
+  "events.edit",
+  "halls.manage",
+  "suppliers.manage",
+  "lists.manage",
+  "organisation.manage",
+  "signage.confirm",
+  "snag.manage",
+  "reports.download",
+  "task.assign",
+  "partners.invite",
+  "departments.manage",
+] as const;
+export type AbilityKey = (typeof ABILITY_KEYS)[number];
+
+/**
+ * Keys stored before the registry. They are still read (as a fallback for
+ * the abilities that replaced them) but never written again: saving a person
+ * writes the new keys and drops these.
+ */
+export type LegacyOverrideKey = "settings.manage";
+
+export type PermissionOverrides = Partial<Record<AbilityKey | LegacyOverrideKey, boolean>>;
+
+export const ABILITY_GROUPS = [
+  "signage",
+  "signoff",
+  "money",
+  "sponsorship",
+  "events",
+  "onsite",
+  "people",
+] as const;
+export type AbilityGroup = (typeof ABILITY_GROUPS)[number];
+
+export const ABILITY_GROUP_LABELS: Record<AbilityGroup, string> = {
+  signage: "Signage and artwork",
+  signoff: "Sign-off",
+  money: "Money",
+  sponsorship: "Sponsorship",
+  events: "Events and setup",
+  onsite: "Onsite and reports",
+  people: "People",
+};
+
+export type AbilityDef = {
+  label: string;
+  description: string;
+  group: AbilityGroup;
+  /** Roles that have it by default (admins always do). */
+  roles: readonly StaffRole[];
+  /** "grant": a stored true grants it. "gate": a stored true only switches it on. */
+  kind: "grant" | "gate";
+  /** The section it belongs to: the form hides it while that section is off. */
+  feature: Feature | null;
+  /** An older stored key read when nothing is stored under this one. */
+  legacy?: LegacyOverrideKey | "sponsorship.create";
+  /** With nothing stored, it follows this ability (a granted one included). */
+  derivedFrom?: AbilityKey;
+  /** Off whenever any of these is off. */
+  requires?: readonly AbilityKey[];
+  /** Roles that have part of it by default, and what part. */
+  partial?: Partial<Record<StaffRole, { kinds: readonly string[]; label: string }>>;
+  /** Only a super admin may give it; managers never can. */
+  superAdminGrants?: true;
+  /** Not a checkbox in the form (approval.decide shows as "Sign-off paused"). */
+  hidden?: true;
+};
+
+const EVERYONE: readonly StaffRole[] = STAFF_ROLES;
+const ADMIN_OPS: readonly StaffRole[] = ["admin", "ops"];
+const SETUP = { group: "events", roles: ADMIN_OPS, kind: "grant", feature: null } as const;
+
+export const ABILITIES: Record<AbilityKey, AbilityDef> = {
+  "signage.create": {
+    label: "Add signage",
+    description: "Add signs and take your own through to sign-off.",
+    group: "signage",
+    roles: ["admin", "ops", "marketing"],
+    kind: "grant",
+    feature: "signage",
+  },
+  "signage.delete": {
+    label: "Delete and restore items",
+    description:
+      "Delete signs, sponsorship items and stands; restore them from Recently deleted or the Recycle bin.",
+    group: "signage",
+    roles: ADMIN_OPS,
+    kind: "grant",
+    feature: null,
+  },
+  "signage.lifecycle": {
+    label: "Hold, reopen and mark complete",
+    description:
+      "Put items on hold and resume them, reopen finished items, mark installed items complete and undo it.",
+    group: "signage",
+    roles: ADMIN_OPS,
+    kind: "grant",
+    feature: null,
+  },
+  "signage.bulk": {
+    label: "Import from Excel and bulk actions",
+    description:
+      "Import a schedule and change many items at once; each item still checks what you may change.",
+    group: "signage",
+    roles: ["admin", "ops", "marketing"],
+    kind: "gate",
+    feature: "signage",
+    derivedFrom: "signage.create",
+  },
+  "approval.decide": {
+    label: "Sign off artwork",
+    description: "Decide sign-offs that are theirs. Switched off, it shows as “Sign-off paused”.",
+    group: "signoff",
+    roles: EVERYONE,
+    kind: "gate",
+    feature: null,
+    hidden: true,
+  },
+  "approval.delegate": {
+    label: "Hand sign-offs to someone else",
+    description: "Pass a sign-off that is waiting on you to a colleague.",
+    group: "signoff",
+    roles: ["admin", "ops", "marketing", "sales", "event_director"],
+    kind: "gate",
+    feature: null,
+  },
+  "approval.chase": {
+    label: "Chase overdue sign-offs",
+    description: "See everyone's sign-offs and send reminders.",
+    group: "signoff",
+    roles: ADMIN_OPS,
+    kind: "grant",
+    feature: null,
+  },
+  "costs.view": {
+    label: "See costs and prices",
+    description: "Cost estimates, actual costs, budgets, sale prices and sponsor spend.",
+    group: "money",
+    roles: EVERYONE,
+    kind: "grant",
+    feature: null,
+  },
+  "costs.edit": {
+    label: "Edit costs and PO numbers",
+    description: "Costs, PO numbers, budget lines and the supplier on signage.",
+    group: "money",
+    roles: ADMIN_OPS,
+    kind: "grant",
+    feature: null,
+    requires: ["costs.view"],
+  },
+  "sponsorship.create": {
+    label: "Add sponsorship items",
+    description: "Add items for sale and take your own through to sign-off.",
+    group: "sponsorship",
+    roles: ["admin", "ops", "sales"],
+    kind: "grant",
+    feature: "sponsorship",
+  },
+  "sponsorship.sell": {
+    label: "Mark sold and manage sponsors and packages",
+    description: "Record and undo sales; add or change sponsors and what their package includes.",
+    group: "sponsorship",
+    roles: ["admin", "ops", "sales"],
+    kind: "grant",
+    feature: "sponsorship",
+    legacy: "sponsorship.create",
+    requires: ["costs.view"],
+  },
+  "events.create": {
+    ...SETUP,
+    label: "Create and copy events",
+    description: "Start an event or copy a previous one; add event series.",
+    legacy: "settings.manage",
+  },
+  "events.edit": {
+    ...SETUP,
+    label: "Edit event dates and deadlines",
+    description: "Dates, venue, budget, logo and deadlines; tick off setup.",
+    legacy: "settings.manage",
+  },
+  "halls.manage": {
+    ...SETUP,
+    label: "Manage halls and locations",
+    description: "Add, rename and remove halls and the locations in them.",
+    legacy: "settings.manage",
+  },
+  "suppliers.manage": {
+    ...SETUP,
+    label: "Manage suppliers",
+    description: "Suppliers and install contractors: add, edit, archive and delete.",
+    legacy: "settings.manage",
+  },
+  "lists.manage": {
+    ...SETUP,
+    label: "Manage lists",
+    description: "Item types, supplier services and venues.",
+    legacy: "settings.manage",
+  },
+  "organisation.manage": {
+    ...SETUP,
+    label: "Organisation settings",
+    description: "Name, currency, chasing rules and the install photo rule.",
+    legacy: "settings.manage",
+    superAdminGrants: true,
+  },
+  "signage.confirm": {
+    label: "Confirm print, delivery and install",
+    description:
+      "Confirm a supplier's print and delivery, and installs and build checks, yourself.",
+    group: "onsite",
+    roles: ADMIN_OPS,
+    kind: "grant",
+    feature: null,
+  },
+  "snag.manage": {
+    label: "Raise and fix snags",
+    description: "Report damage and problems on items, and mark them fixed.",
+    group: "onsite",
+    roles: ["admin", "ops", "marketing"],
+    kind: "grant",
+    feature: null,
+  },
+  "reports.download": {
+    label: "Download reports",
+    description:
+      "Venue pack, contractor schedule, labels, schedule, registers, certificates and the sponsorship report.",
+    group: "onsite",
+    roles: ["admin", "ops", "marketing", "event_director"],
+    kind: "grant",
+    feature: null,
+    partial: { sales: { kinds: ["sponsor_report"], label: "Sponsorship report only" } },
+  },
+  "task.assign": {
+    label: "Give tasks to others",
+    description: "Assign tasks to colleagues, not just themselves.",
+    group: "people",
+    roles: ["admin", "ops", "marketing", "sales", "event_director"],
+    kind: "grant",
+    feature: null,
+  },
+  "partners.invite": {
+    label: "Invite partners",
+    description: "Give suppliers, the venue and sponsors portal access, and take it away.",
+    group: "people",
+    roles: ["admin"],
+    kind: "grant",
+    feature: null,
+    superAdminGrants: true,
+  },
+  "departments.manage": {
+    label: "Manage departments and who signs off",
+    description: "Departments, sign-off order and rules, and approvers.",
+    group: "people",
+    roles: ["admin"],
+    kind: "grant",
+    feature: null,
+    superAdminGrants: true,
+  },
+};
+
+/** The six abilities that were one "settings.manage" before the registry. */
+export const SETTINGS_ABILITIES = [
+  "events.create",
+  "events.edit",
+  "halls.manage",
+  "suppliers.manage",
+  "lists.manage",
+  "organisation.manage",
+] as const satisfies readonly AbilityKey[];
+
+/** Getting an event ready: any of these opens Setup. */
+export const EVENT_SETUP_ABILITIES = [
+  "events.edit",
+  "halls.manage",
+  "lists.manage",
+  "suppliers.manage",
+] as const satisfies readonly AbilityKey[];
+
+/**
+ * @deprecated The keys that could be stored before the registry. Kept for
+ * the v1 override tests; use ABILITY_KEYS.
+ */
+export const OVERRIDE_KEYS = [
+  "signage.create",
+  "sponsorship.create",
+  "costs.edit",
+  "approval.decide",
+  "settings.manage",
+] as const;
+/** @deprecated See OVERRIDE_KEYS. */
+export type OverrideKey = (typeof OVERRIDE_KEYS)[number];
+
 export type StaffActor = {
   kind: "staff";
   userId: string;
@@ -97,10 +408,12 @@ export type StaffActor = {
   overrides?: PermissionOverrides;
   /** Sign-off departments this person approves for (Users → Departments). */
   signoffDepartmentIds?: string[];
-  /** The department they belong to (display and grouping only). */
+  /** The department they belong to. */
   departmentId?: string | null;
   /** Sections they can use; null or missing = every section. */
   features?: Feature[] | null;
+  /** Managers add and change people in this scope; super admins manage everyone. */
+  managerScope?: ManagerScope | null;
 };
 
 export type ExternalActor = {
@@ -111,6 +424,9 @@ export type ExternalActor = {
 };
 
 export type Actor = StaffActor | ExternalActor;
+
+/** Just what abilities depend on: a role and what is stored for the person. */
+export type AbilityHolder = { role: StaffRole; overrides?: PermissionOverrides | null };
 
 /** A signage item, reduced to the fields authorisation depends on. */
 export type SignageItemCtx = {
@@ -160,6 +476,16 @@ export type ApprovalStepCtx = {
     { type: "signage_item"; item: SignageItemCtx } | { type: "stand"; sub: StandSubmissionCtx };
 };
 
+/** A team member or an open staff invitation, as the people rules see them. */
+export type PersonCtx = {
+  organisationId: string;
+  /** Null for an invitation nobody has accepted yet. */
+  userId: string | null;
+  role: StaffRole;
+  departmentId: string | null;
+  managerScope: ManagerScope | null;
+};
+
 export type Action =
   | { type: "view_edition" }
   | { type: "signage.view"; item: SignageItemCtx }
@@ -173,12 +499,18 @@ export type Action =
   | { type: "signage.edit"; item: SignageItemCtx }
   | { type: "signage.delete" }
   | { type: "signage.restore" }
+  /** Change many items at once (each item still checks its own rule). */
+  | { type: "signage.bulk" }
+  /** Import a schedule from Excel: bulk and adding signage. */
+  | { type: "signage.import" }
   | { type: "artwork.upload"; item: SignageItemCtx }
   | { type: "signage.submit"; item: SignageItemCtx }
   | { type: "approval.decide"; step: ApprovalStepCtx }
   | { type: "approval.delegate"; step: ApprovalStepCtx }
   /** Chase someone else's sign-off (Remind on Approvals → Everyone's). */
   | { type: "approval.remind"; step: ApprovalStepCtx }
+  /** See everyone's sign-offs (Approvals → Everyone's, the team views). */
+  | { type: "approval.chase" }
   | { type: "signage.hold" }
   | { type: "signage.resume" }
   | { type: "signage.reopen" }
@@ -187,14 +519,142 @@ export type Action =
   | { type: "stand.review" }
   | { type: "stand.submit"; sub: StandSubmissionCtx }
   | { type: "costs.view" }
-  | { type: "costs.edit" }
+  /** With an item: sponsorship items also let whoever may edit them set costs. */
+  | { type: "costs.edit"; item?: SignageItemCtx }
+  | { type: "sponsorship.sell" }
   | { type: "comment.internal.write" }
   | { type: "comment.internal.read" }
   | { type: "comment.external.write"; entity: SignageItemCtx | StandSubmissionCtx }
   | { type: "snag.manage" }
   | { type: "export.run"; kind: string }
+  | { type: "events.create" }
+  | { type: "events.edit" }
+  | { type: "halls.manage" }
+  | { type: "suppliers.manage" }
+  | { type: "lists.manage" }
+  | { type: "organisation.manage" }
+  /** Derived: any of the six setup abilities (opens Settings). */
   | { type: "settings.manage" }
-  | { type: "users.manage" };
+  /** Derived: dates, halls, lists or suppliers (opens an event's Setup). */
+  | { type: "event.setup" }
+  | { type: "partners.invite" }
+  | { type: "departments.manage" }
+  /** Super admins only: grant super admin or manager, remove people, removal impact. */
+  | { type: "users.manage" }
+  /** Super admins only: storage, email and calendar feed settings. */
+  | { type: "system.manage" }
+  /** Super admins only: archive and restore events. */
+  | { type: "events.archive" }
+  /** Open Users to add people: super admins and managers. */
+  | { type: "people.manage" }
+  | { type: "person.edit"; person: PersonCtx }
+  | { type: "person.suspend"; person: PersonCtx & { lastActiveAdmin?: boolean } }
+  | { type: "person.remove"; person: PersonCtx };
+
+function holderOf(a: Actor | AbilityHolder): AbilityHolder | null {
+  if ("kind" in a && a.kind === "external") return null;
+  return a as AbilityHolder;
+}
+
+/**
+ * What is stored for this ability: its own key, else the older key it
+ * replaced, else nothing (undefined = the role default).
+ */
+export function storedAbility(
+  overrides: PermissionOverrides | null | undefined,
+  key: AbilityKey,
+): boolean | undefined {
+  if (!overrides) return undefined;
+  const o = overrides as Record<string, unknown>;
+  if (typeof o[key] === "boolean") return o[key] as boolean;
+  const legacy = ABILITIES[key].legacy;
+  if (legacy && typeof o[legacy] === "boolean") return o[legacy] as boolean;
+  return undefined;
+}
+
+/** A stored "approval.decide: false" — their sign-off has been paused. */
+export function signoffPaused(overrides: PermissionOverrides | null | undefined): boolean {
+  return overrides?.["approval.decide"] === false;
+}
+
+/**
+ * Has this person the ability, leaving items and steps aside? Super admins
+ * always; a stored false never; a required ability off never; a stored true
+ * yes; otherwise the ability it derives from, or the role default.
+ */
+export function abilityOn(actor: Actor | AbilityHolder, key: AbilityKey): boolean {
+  const h = holderOf(actor);
+  if (!h) return false;
+  if (h.role === "admin") return true;
+  const def = ABILITIES[key];
+  const stored = storedAbility(h.overrides, key);
+  if (stored === false) return false;
+  if (def.requires?.some((r) => !abilityOn(h, r))) return false;
+  if (stored === true) return true;
+  if (def.derivedFrom) return abilityOn(h, def.derivedFrom);
+  return def.roles.includes(h.role);
+}
+
+export type AbilityLevel = "yes" | "partial" | "no";
+
+/** "yes", "no", or "partial" (a role that has part of it, nothing stored). */
+export function abilityLevel(actor: Actor | AbilityHolder, key: AbilityKey): AbilityLevel {
+  if (abilityOn(actor, key)) return "yes";
+  const h = holderOf(actor);
+  if (!h) return "no";
+  const def = ABILITIES[key];
+  if (def.partial?.[h.role] && storedAbility(h.overrides, key) === undefined) {
+    if (!def.requires?.some((r) => !abilityOn(h, r))) return "partial";
+  }
+  return "no";
+}
+
+const LEVEL_RANK: Record<AbilityLevel, number> = { no: 0, partial: 1, yes: 2 };
+
+/** The ability an action is governed by, if any. */
+export function abilityFor(action: Action): AbilityKey | null {
+  switch (action.type) {
+    case "signage.create":
+    case "sponsorship.create":
+    case "signage.bulk":
+    case "approval.decide":
+    case "approval.delegate":
+    case "approval.chase":
+    case "costs.view":
+    case "costs.edit":
+    case "sponsorship.sell":
+    case "events.create":
+    case "events.edit":
+    case "halls.manage":
+    case "suppliers.manage":
+    case "lists.manage":
+    case "organisation.manage":
+    case "snag.manage":
+    case "task.assign":
+    case "partners.invite":
+    case "departments.manage":
+      return action.type;
+    case "signage.delete":
+    case "signage.restore":
+      return "signage.delete";
+    case "signage.hold":
+    case "signage.resume":
+    case "signage.reopen":
+    case "signage.close":
+      return "signage.lifecycle";
+    case "approval.remind":
+      return "approval.chase";
+    case "export.run":
+      return "reports.download";
+    default:
+      return null;
+  }
+}
+
+/** Does the role have the ability by default (nothing stored)? */
+function roleHas(key: AbilityKey, role: StaffRole): boolean {
+  return ABILITIES[key].roles.includes(role);
+}
 
 function activeGrants(actor: ExternalActor, now = new Date()): GrantInfo[] {
   return actor.grants.filter(
@@ -314,23 +774,42 @@ function externalCanDecide(actor: ExternalActor, step: ApprovalStepCtx, now = ne
   );
 }
 
+/** Is this a print, delivery or install confirmation that Operations do for the supplier? */
+function isProductionConfirmation(step: ApprovalStepCtx): boolean {
+  return (
+    step.stepKind === "confirmation" &&
+    !step.assignedUserId &&
+    (step.assignedRole === "supplier" || step.assignedRole === "ops")
+  );
+}
+
 function staffCanDecide(actor: StaffActor, step: ApprovalStepCtx): boolean {
   if (actor.role === "admin") return true;
-  // Operations run production: they can confirm a supplier's step themselves
-  // when the supplier hasn't (or has no portal access).
-  if (
-    step.stepKind === "confirmation" &&
-    step.assignedRole === "supplier" &&
-    !step.assignedUserId &&
-    actor.role === "ops"
-  ) {
-    return true;
+  // Confirm print, delivery and install: a supplier's step when the supplier
+  // hasn't (or has no portal access), and the Installed / build check steps.
+  if (isProductionConfirmation(step)) {
+    return (
+      storedAbility(actor.overrides, "signage.confirm") ?? roleHas("signage.confirm", actor.role)
+    );
   }
   if (step.assignedUserId) return step.assignedUserId === actor.userId;
   if (step.assignedDepartmentId) {
     return actor.signoffDepartmentIds?.includes(step.assignedDepartmentId) ?? false;
   }
   return step.assignedRole === actor.role;
+}
+
+/**
+ * Does this person confirm suppliers' print and delivery (and the Installed
+ * steps) themselves? The same answer as can(approval.decide) on such a step,
+ * for the queries and notifications that list who holds those steps.
+ */
+export function confirmsForSuppliers(actor: Actor | AbilityHolder): boolean {
+  const h = holderOf(actor);
+  if (!h) return false;
+  if (h.role === "admin") return true;
+  if (signoffPaused(h.overrides)) return false;
+  return storedAbility(h.overrides, "signage.confirm") ?? roleHas("signage.confirm", h.role);
 }
 
 const sponsorScopedRoles: StaffRole[] = ["sales"];
@@ -341,7 +820,7 @@ const sponsorScopedRoles: StaffRole[] = ["sales"];
  */
 function ownsGrantedCreation(actor: StaffActor, item: SignageItemCtx): boolean {
   const key = item.kind === "sponsorship_item" ? "sponsorship.create" : "signage.create";
-  return actor.overrides?.[key] === true && item.ownerUserId === actor.userId;
+  return storedAbility(actor.overrides, key) === true && item.ownerUserId === actor.userId;
 }
 
 function isSponsorItem(item: SignageItemCtx) {
@@ -360,6 +839,7 @@ function recordOrganisation(action: Action): string | undefined {
     sub?: { organisationId?: string };
     step?: ApprovalStepCtx;
     entity?: { organisationId?: string };
+    person?: { organisationId?: string };
   };
   if (a.item) return a.item.organisationId;
   if (a.sub) return a.sub.organisationId;
@@ -368,6 +848,7 @@ function recordOrganisation(action: Action): string | undefined {
       ? a.step.entity.item.organisationId
       : a.step.entity.sub.organisationId;
   }
+  if (a.person) return a.person.organisationId;
   return a.entity?.organisationId;
 }
 
@@ -389,13 +870,16 @@ function itemFeature(item: SignageItemCtx): Feature {
 
 /**
  * The section an action belongs to, or null when it is never gated by
- * sections (viewing one record, deciding, tasks, comments, settings, users).
+ * sections (viewing one record, deciding, tasks, comments, settings, people).
  */
 export function featureForAction(action: Action): Feature | null {
   switch (action.type) {
     case "signage.create":
+    case "signage.bulk":
+    case "signage.import":
       return "signage";
     case "sponsorship.create":
+    case "sponsorship.sell":
       return "sponsorship";
     case "stand_design.create":
       return "stand_designs";
@@ -450,7 +934,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
         if ("exhibitorId" in entity) return externalCanViewStand(actor, entity, now);
         return externalCanViewSignage(actor, entity, now);
       }
-      // Externals never: costs, internal comments, settings, exports, CRUD…
+      // Externals never: costs, internal comments, settings, exports, people, CRUD…
       default:
         return false;
     }
@@ -459,7 +943,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
   const role = actor.role;
 
   // Sections switched off for this person (admins are immune). Checked
-  // before overrides so a granted ability can never reopen a section.
+  // before abilities so a granted ability can never reopen a section.
   if (role !== "admin") {
     if (action.type === "export.run" && action.kind === "sponsor_report") {
       if (!hasFeature(actor, "sponsorship") && !hasFeature(actor, "reports")) return false;
@@ -469,19 +953,18 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
     }
   }
 
-  // Per-user overrides (admins are immune, so an admin can never lock
-  // themselves out). An explicit false always blocks; an explicit true
-  // grants directly — except approval.decide, where step assignment below
-  // still applies, so a true can never let someone decide steps that are
-  // not theirs.
-  if (role !== "admin" && actor.overrides) {
-    const key = (OVERRIDE_KEYS as readonly string[]).includes(action.type)
-      ? (action.type as OverrideKey)
-      : null;
-    if (key != null) {
-      const override = actor.overrides[key];
-      if (override === false) return false;
-      if (override === true && key !== "approval.decide") return true;
+  // Abilities (admins are immune, so an admin can never lock themselves
+  // out). A stored false always blocks, and so does a required ability that
+  // is off; a stored true grants a "grant" ability; a "gate" ability falls
+  // through to the item or assignment rule below.
+  if (role !== "admin") {
+    const key = abilityFor(action);
+    if (key) {
+      const def = ABILITIES[key];
+      const stored = storedAbility(actor.overrides, key);
+      if (stored === false) return false;
+      if (def.requires?.some((r) => !abilityOn(actor, r))) return false;
+      if (stored === true && def.kind === "grant") return true;
     }
   }
 
@@ -495,8 +978,13 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
 
     case "signage.create":
     case "sponsorship.create":
-      // Sales sell sponsorship items; ops also manage them.
-      return OVERRIDE_ROLE_DEFAULTS[action.type].includes(role);
+      return roleHas(action.type, role);
+    case "signage.bulk":
+      return abilityOn(actor, "signage.bulk");
+    case "signage.import":
+      return (
+        can(actor, { type: "signage.bulk" }, now) && can(actor, { type: "signage.create" }, now)
+      );
     case "stand_design.create":
       // Admins and operations set up stands, their approvers and panels.
       return role === "admin" || role === "ops";
@@ -504,7 +992,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
     case "task.create":
       return true; // everyone keeps their own to-do list, viewers included
     case "task.assign":
-      return role !== "viewer";
+      return roleHas("task.assign", role);
     case "task.update":
       return (
         role === "admin" ||
@@ -525,7 +1013,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
 
     case "signage.delete":
     case "signage.restore":
-      return role === "admin" || role === "ops";
+      return roleHas("signage.delete", role);
 
     case "artwork.upload":
       if (isStandItem(action.item)) return role === "admin" || role === "ops";
@@ -549,25 +1037,27 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return staffCanDecide(actor, action.step);
 
     case "approval.delegate":
-      if (role === "viewer") return false;
-      if (role === "admin") return true;
-      return staffCanDecide(actor, action.step);
+      // Only steps that are yours to decide (admins: any).
+      return abilityOn(actor, "approval.delegate") && staffCanDecide(actor, action.step);
 
     case "approval.remind": {
-      // Whoever can send the item for sign-off can chase it (stands: whoever
-      // reviews them). Deciding a step doesn't make you its chaser.
-      if (role === "admin" || role === "ops") return true;
+      // Those who chase sign-offs chase any; otherwise whoever can send the
+      // item for sign-off (stands: whoever reviews them). Deciding a step
+      // doesn't make you its chaser.
+      if (roleHas("approval.chase", role)) return true;
       const entity = action.step.entity;
       return entity.type === "signage_item"
         ? can(actor, { type: "signage.submit", item: entity.item }, now)
         : can(actor, { type: "stand.review" }, now);
     }
+    case "approval.chase":
+      return roleHas("approval.chase", role);
 
     case "signage.hold":
     case "signage.resume":
     case "signage.reopen":
     case "signage.close":
-      return role === "admin" || role === "ops";
+      return roleHas("signage.lifecycle", role);
 
     case "stand.review":
       return role === "admin" || role === "ops";
@@ -575,10 +1065,16 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return false; // staff never submit on behalf of exhibitors
 
     case "costs.view":
-      // Cost and sale prices are open to the whole team.
-      return true;
+      return roleHas("costs.view", role);
     case "costs.edit":
-      return OVERRIDE_ROLE_DEFAULTS["costs.edit"].includes(role);
+      if (roleHas("costs.edit", role)) return true;
+      // Whoever may edit a sponsorship item sets its supplier, cost and PO.
+      return (
+        action.item?.kind === "sponsorship_item" &&
+        can(actor, { type: "signage.edit", item: action.item }, now)
+      );
+    case "sponsorship.sell":
+      return roleHas("sponsorship.sell", role);
 
     case "comment.internal.write":
       return role !== "viewer";
@@ -588,17 +1084,344 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
       return role !== "viewer";
 
     case "snag.manage":
-      return role === "admin" || role === "ops" || role === "marketing";
+      return roleHas("snag.manage", role);
 
-    case "export.run":
-      if (role === "viewer") return false;
-      if (role === "sales") return action.kind === "sponsor_report";
-      return true;
+    case "export.run": {
+      if (roleHas("reports.download", role)) return true;
+      const part = ABILITIES["reports.download"].partial?.[role];
+      return part?.kinds.includes(action.kind) ?? false;
+    }
 
+    case "events.create":
+    case "events.edit":
+    case "halls.manage":
+    case "suppliers.manage":
+    case "lists.manage":
+    case "organisation.manage":
+    case "partners.invite":
+    case "departments.manage":
+      return roleHas(action.type, role);
     case "settings.manage":
-      return OVERRIDE_ROLE_DEFAULTS["settings.manage"].includes(role);
+      return SETTINGS_ABILITIES.some((k) => can(actor, { type: k }, now));
+    case "event.setup":
+      return EVENT_SETUP_ABILITIES.some((k) => can(actor, { type: k }, now));
 
     case "users.manage":
+    case "system.manage":
+    case "events.archive":
       return role === "admin";
+
+    case "people.manage":
+      return managerScope(actor) != null;
+    case "person.edit":
+      return canManagePerson(actor, action.person);
+    case "person.suspend":
+      return canSuspendPerson(actor, action.person, {
+        lastActiveAdmin: action.person.lastActiveAdmin ?? false,
+      });
+    case "person.remove":
+      return canRemovePerson(actor, action.person);
   }
+}
+
+// ---------------------------------------------------------------------------
+// People: super admins and managers (Users v2). Pure, so the Users pages and
+// the server agree; the server runs personChangeRefusal inside the
+// transaction after loading the person.
+// ---------------------------------------------------------------------------
+
+/** A staff member with the admin role ("Super admin" in the app). */
+export function isSuperAdmin(actor: Actor): boolean {
+  return actor.kind === "staff" && actor.role === "admin";
+}
+
+/** Who this person may add and change: super admins everyone, managers their scope. */
+export function managerScope(actor: Actor): ManagerScope | null {
+  if (actor.kind !== "staff") return null;
+  if (actor.role === "admin") return "everyone";
+  return actor.managerScope ?? null;
+}
+
+function isSelf(actor: Actor, target: PersonCtx): boolean {
+  return target.userId != null && target.userId === actor.userId;
+}
+
+/**
+ * May this person change that one's access? Super admins: anyone in their
+ * organisation (the self rules in lib/users/manage.ts still apply).
+ * Managers: never themselves, a super admin or another manager; a
+ * department manager only people (and invitations) in their own department,
+ * and nobody when they have no department.
+ */
+export function canManagePerson(actor: Actor, target: PersonCtx): boolean {
+  if (actor.kind !== "staff") return false;
+  if (target.organisationId !== actor.organisationId) return false;
+  if (isSuperAdmin(actor)) return true;
+  const scope = managerScope(actor);
+  if (!scope) return false;
+  if (isSelf(actor, target)) return false;
+  if (target.role === "admin" || target.managerScope != null) return false;
+  if (scope === "everyone") return true;
+  return (
+    actor.departmentId != null &&
+    target.departmentId != null &&
+    target.departmentId === actor.departmentId
+  );
+}
+
+const PROBE_ITEMS: SignageItemCtx[] = [
+  { editionId: "probe", venueId: "probe", kind: "signage" },
+  { editionId: "probe", venueId: "probe", kind: "signage", sponsorId: "probe" },
+  { editionId: "probe", venueId: "probe", kind: "sponsorship_item" },
+  { editionId: "probe", venueId: "probe", kind: "stand_design" },
+  { editionId: "probe", venueId: "probe", kind: "stand_panel" },
+];
+
+/** What a role can do that no ability covers (editing, artwork, sending, stands). */
+const ROLE_POWER_PROBES: Action[] = [
+  ...PROBE_ITEMS.flatMap((item) =>
+    (["signage.edit", "artwork.upload", "signage.submit"] as const).map(
+      (type) => ({ type, item }) as Action,
+    ),
+  ),
+  { type: "stand.review" },
+  { type: "stand_design.create" },
+  { type: "comment.internal.write" },
+  { type: "comment.external.write", entity: PROBE_ITEMS[0] },
+];
+
+function roleProbe(role: StaffRole): StaffActor {
+  return { kind: "staff", userId: "probe", organisationId: "probe", role };
+}
+
+/** A role power the target would gain that the actor's role doesn't have. */
+function gainedRolePower(actorRole: StaffRole, from: StaffRole | null, to: StaffRole): boolean {
+  const actor = roleProbe(actorRole);
+  const after = roleProbe(to);
+  const before = from ? roleProbe(from) : null;
+  return ROLE_POWER_PROBES.some(
+    (a) => can(after, a) && !(before && can(before, a)) && !can(actor, a),
+  );
+}
+
+/**
+ * Roles this person may give. Super admins: every role. Managers: viewer,
+ * plus each role whose own powers and default abilities they fully have
+ * (abilities only a super admin gives are switched off for the new person,
+ * not counted here). Everyone else: none.
+ */
+export function assignableRoles(actor: Actor): StaffRole[] {
+  if (actor.kind !== "staff") return [];
+  if (isSuperAdmin(actor)) return [...STAFF_ROLES];
+  if (!managerScope(actor)) return [];
+  return STAFF_ROLES.filter((r) => {
+    if (r === "admin") return false;
+    if (r === "viewer") return true;
+    if (gainedRolePower(actor.role, null, r)) return false;
+    return ABILITY_KEYS.every((k) => {
+      const def = ABILITIES[k];
+      if (def.superAdminGrants || def.hidden) return true;
+      return LEVEL_RANK[abilityLevel({ role: r }, k)] <= LEVEL_RANK[abilityLevel(actor, k)];
+    });
+  });
+}
+
+/** Sections this person may give: "all", or the ones they have themselves. */
+export function assignableFeatures(actor: Actor): "all" | Feature[] {
+  if (actor.kind !== "staff") return [];
+  if (isSuperAdmin(actor) || actor.features == null) return "all";
+  return FEATURES.filter((f) => hasFeature(actor, f));
+}
+
+/** Abilities this person may give: super admins all; managers what they fully have. */
+export function assignableAbilities(actor: Actor): AbilityKey[] {
+  if (actor.kind !== "staff") return [];
+  if (isSuperAdmin(actor)) return [...ABILITY_KEYS];
+  if (!managerScope(actor)) return [];
+  return ABILITY_KEYS.filter(
+    (k) => !ABILITIES[k].superAdminGrants && abilityLevel(actor, k) === "yes",
+  );
+}
+
+/**
+ * Departments this person may make someone sign off for (of the live ones
+ * that sign off): all of them with departments.manage, otherwise only the
+ * ones they sign off for themselves.
+ */
+export function assignableSignoffDepartments(
+  actor: Actor,
+  liveSigning: readonly string[],
+): string[] {
+  if (actor.kind !== "staff") return [];
+  if (can(actor, { type: "departments.manage" })) return [...liveSigning];
+  const mine = new Set(actor.signoffDepartmentIds ?? []);
+  return liveSigning.filter((id) => mine.has(id));
+}
+
+/** Only super admins make managers (or change what a manager manages). */
+export function canGrantManager(actor: Actor): boolean {
+  return isSuperAdmin(actor);
+}
+
+/** Suspend, reactivate or give an end date: in scope, never yourself or the last active super admin. */
+export function canSuspendPerson(
+  actor: Actor,
+  target: PersonCtx,
+  opts: { lastActiveAdmin: boolean },
+): boolean {
+  return canManagePerson(actor, target) && !isSelf(actor, target) && !opts.lastActiveAdmin;
+}
+
+/** Remove someone from the team: super admins only, never themselves. */
+export function canRemovePerson(actor: Actor, target: PersonCtx): boolean {
+  return (
+    isSuperAdmin(actor) && target.organisationId === actor.organisationId && !isSelf(actor, target)
+  );
+}
+
+/** What a person's access is, or is proposed to be, for personChangeRefusal. */
+export type PersonAccess = {
+  role: StaffRole;
+  departmentId: string | null;
+  /** "+ New department…" in the form. */
+  newDepartmentName?: string | null;
+  /** Null = every section. */
+  features: Feature[] | null;
+  /** As stored (a paused sign-off is approval.decide: false). */
+  overrides: PermissionOverrides;
+  managerScope: ManagerScope | null;
+  signoffs: readonly { departmentId: string; isMain: boolean }[];
+  accessEndsAt?: Date | null;
+};
+
+/**
+ * Why this change to someone's access is refused, or null when it may go
+ * ahead. `target` and `before` are null when adding someone. Checks, in
+ * order: (1) the person is in scope; (2) only super admins make super
+ * admins; (3) or managers; (4) department managers keep people in their
+ * department; (5) a new department needs departments.manage; (6) sections
+ * the actor has (ones the person already had may stay); (7) role powers and
+ * abilities the person would newly gain must be ones the actor fully has,
+ * and never one only a super admin gives; (8) sign-off rows only for the
+ * actor's own sign-off departments, and main approvers only with
+ * departments.manage; (9) a paused actor can't resume someone else's
+ * sign-off. An access end date within scope is fine.
+ */
+export function personChangeRefusal(
+  actor: Actor,
+  target: PersonCtx | null,
+  before: PersonAccess | null,
+  after: PersonAccess,
+): string | null {
+  if (actor.kind !== "staff") return "You can't change people's access";
+  // 1. Scope.
+  if (target) {
+    if (target.organisationId !== actor.organisationId) {
+      return "This person isn't in your organisation";
+    }
+    if (!canManagePerson(actor, target)) return "You can't change this person's access";
+  } else if (!managerScope(actor)) {
+    return "You can't add people — ask a super admin";
+  }
+  if (isSuperAdmin(actor)) return null;
+  const scope = managerScope(actor);
+
+  // 2–3. Super admins and managers are made by super admins.
+  if (after.role === "admin") return "Only a super admin can make someone a super admin";
+  if ((after.managerScope ?? null) !== (before?.managerScope ?? null)) {
+    return "Only a super admin can make someone a manager or change what they manage";
+  }
+
+  // 4–5. Departments.
+  const newDept = after.newDepartmentName?.trim();
+  if (scope === "department") {
+    if (newDept || after.departmentId == null || after.departmentId !== actor.departmentId) {
+      return target
+        ? "You manage your own department only, so they stay in it"
+        : "You can only add people to your own department";
+    }
+  }
+  if (newDept && !can(actor, { type: "departments.manage" })) {
+    return "Only people who manage departments can add a new one — pick an existing department";
+  }
+
+  // 6. Sections.
+  const giveable = assignableFeatures(actor);
+  if (giveable !== "all") {
+    const had: readonly Feature[] = before ? (before.features ?? FEATURES) : [];
+    if (after.features == null) {
+      if (!(before && before.features == null)) {
+        return "You can only give the sections you have yourself — choose them one by one";
+      }
+    } else {
+      for (const f of after.features) {
+        if (!giveable.includes(f) && !had.includes(f)) {
+          return `You can't give the ${FEATURE_LABELS[f]} section — you don't have it yourself`;
+        }
+      }
+    }
+  }
+
+  // 7. Role powers and abilities newly gained.
+  if (
+    after.role !== before?.role &&
+    gainedRolePower(actor.role, before?.role ?? null, after.role)
+  ) {
+    return `You can't make someone ${roleLabel(after.role)}: that role can do things yours can't`;
+  }
+  const nextHolder: AbilityHolder = { role: after.role, overrides: after.overrides };
+  const prevHolder: AbilityHolder | null = before
+    ? { role: before.role, overrides: before.overrides }
+    : null;
+  for (const k of ABILITY_KEYS) {
+    const def = ABILITIES[k];
+    if (def.hidden) continue; // a paused sign-off is rule 9
+    const next = LEVEL_RANK[abilityLevel(nextHolder, k)];
+    const prev = prevHolder ? LEVEL_RANK[abilityLevel(prevHolder, k)] : 0;
+    if (next <= prev) continue;
+    if (def.superAdminGrants) return `Only a super admin can give “${def.label}”`;
+    if (next > LEVEL_RANK[abilityLevel(actor, k)]) {
+      return `You can't give “${def.label}” — you don't have it yourself`;
+    }
+  }
+
+  // 8. Sign-off rows and main approvers.
+  if (!can(actor, { type: "departments.manage" })) {
+    const prevRows = new Map((before?.signoffs ?? []).map((s) => [s.departmentId, s.isMain]));
+    const nextRows = new Map(after.signoffs.map((s) => [s.departmentId, s.isMain]));
+    const mine = new Set(actor.signoffDepartmentIds ?? []);
+    for (const [dept, main] of nextRows) {
+      if (!prevRows.has(dept)) {
+        if (!mine.has(dept)) {
+          return "You can only give sign-off for departments you sign off for yourself";
+        }
+        if (main) return "Only people who manage departments can choose a main approver";
+      } else if (prevRows.get(dept) !== main) {
+        return "Only people who manage departments can choose a main approver";
+      }
+    }
+    for (const dept of prevRows.keys()) {
+      if (!nextRows.has(dept) && !mine.has(dept)) {
+        return "You can only take away sign-off for departments you sign off for yourself";
+      }
+    }
+  }
+
+  // 9. Resuming a paused sign-off.
+  if (
+    before &&
+    signoffPaused(before.overrides) &&
+    !signoffPaused(after.overrides) &&
+    signoffPaused(actor.overrides)
+  ) {
+    return "Your own sign-off is paused, so you can't resume someone else's";
+  }
+
+  // 10. An access end date within scope is fine.
+  return null;
+}
+
+/** The refusal shown when someone lacks an ability (the server's own words). */
+export function missingAbilityMessage(key: AbilityKey): string {
+  return `You need “${ABILITIES[key].label}” for that — ask a super admin`;
 }

@@ -132,12 +132,12 @@ d("suppliers, venues and organisation settings", () => {
     await client?.end();
   });
 
-  it("refuses supplier changes from people without settings.manage", async () => {
+  it("refuses supplier changes from people without suppliers.manage", async () => {
     as("viewer");
     const res = await supplierActions.saveSupplier({ name: "Nope Ltd" });
     expect(res).toMatchObject({
       ok: false,
-      error: "Only admins and Operations can change suppliers",
+      error: "You need “Manage suppliers” for that — ask a super admin",
     });
     const archived = await supplierActions.setSupplierArchived({
       id: randomUUID(),

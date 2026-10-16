@@ -21,7 +21,7 @@ import {
   suppliers,
   venues,
 } from "@/lib/db/schema";
-import { can } from "@/lib/authz";
+import { can, missingAbilityMessage } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession, type Session } from "@/lib/auth/actor";
 import { generateInviteToken, hashInviteToken } from "@/lib/auth/invite-token";
@@ -220,8 +220,8 @@ export async function createEdition(
   const parsed = createSchema.safeParse(input);
   if (!parsed.success) return firstIssue(parsed.error);
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and Operations can create events");
+  if (!can(session.actor, { type: "events.create" })) {
+    return fail(missingAbilityMessage("events.create"));
   }
   const data = parsed.data;
   const orgId = session.organisation.id;
@@ -375,8 +375,8 @@ export async function cloneEdition(
   const parsed = cloneSchema.safeParse(input);
   if (!parsed.success) return firstIssue(parsed.error);
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and Operations can copy events");
+  if (!can(session.actor, { type: "events.create" })) {
+    return fail(missingAbilityMessage("events.create"));
   }
   const data = parsed.data;
   const orgId = session.organisation.id;
@@ -407,9 +407,21 @@ export async function cloneEdition(
     }
   }
   if (await codeInUse(code)) return codeTaken(code);
-  // Partner access is given by admins only, so only an admin's copy brings it across.
-  const copyAccess = data.include.access && can(session.actor, { type: "users.manage" });
-  const include = data.include;
+  // Each part is copied only for someone who could make it themselves: partner
+  // access with partners.invite, sponsors with sponsorship.sell, and each
+  // item by its kind (signage, sponsorship items, stands).
+  const copyAccess = data.include.access && can(session.actor, { type: "partners.invite" });
+  const include = {
+    ...data.include,
+    sponsors: data.include.sponsors && can(session.actor, { type: "sponsorship.sell" }),
+  };
+  const canStands = can(session.actor, { type: "stand_design.create" });
+  const copiesKind: Record<string, boolean> = {
+    signage: can(session.actor, { type: "signage.create" }),
+    sponsorship_item: can(session.actor, { type: "sponsorship.create" }),
+    stand_design: canStands,
+    stand_panel: canStands,
+  };
   const counts: CloneCounts = {
     halls: 0,
     locations: 0,
@@ -524,6 +536,7 @@ export async function cloneEdition(
         ...items.filter((i) => i.kind === "stand_panel"),
       ];
       for (const item of ordered) {
+        if (!copiesKind[item.kind]) continue;
         let ref: string;
         let itemSeq: number;
         let parentItemId: string | null = null;
@@ -750,8 +763,8 @@ export async function saveEventDetails(input: unknown): Promise<ActionResult> {
   const parsed = detailsSchema.safeParse(input);
   if (!parsed.success) return firstIssue(parsed.error);
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and Operations can change event details");
+  if (!can(session.actor, { type: "events.edit" })) {
+    return fail(missingAbilityMessage("events.edit"));
   }
   const data = parsed.data;
   const orgId = session.organisation.id;
@@ -874,8 +887,8 @@ export async function saveEventDeadlines(input: unknown): Promise<ActionResult> 
     .safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and Operations can change deadlines");
+  if (!can(session.actor, { type: "events.edit" })) {
+    return fail(missingAbilityMessage("events.edit"));
   }
   const current = await editionForSession(session, parsed.data.editionId);
   if (!current) return fail("Event not found");
@@ -933,8 +946,8 @@ export async function confirmSetupStep(input: unknown): Promise<ActionResult> {
     .safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and Operations can set up events");
+  if (!can(session.actor, { type: "events.edit" })) {
+    return fail(missingAbilityMessage("events.edit"));
   }
   const current = await editionForSession(session, parsed.data.editionId);
   if (!current) return fail("Event not found");
@@ -975,8 +988,8 @@ export async function setEditionArchived(input: unknown): Promise<ActionResult> 
   const parsed = z.object({ id: z.string().uuid(), archived: z.boolean() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) {
-    return fail("Only an admin can archive or bring back an event");
+  if (!can(session.actor, { type: "events.archive" })) {
+    return fail("Only a super admin can archive or bring back an event");
   }
   const current = await editionForSession(session, parsed.data.id);
   if (!current) return fail("Event not found");
@@ -1039,8 +1052,8 @@ export async function updateEdition(input: unknown): Promise<ActionResult> {
   const parsed = updateSchema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and Operations can edit events");
+  if (!can(session.actor, { type: "events.edit" })) {
+    return fail(missingAbilityMessage("events.edit"));
   }
   const data = parsed.data;
   const current = await editionForSession(session, data.id);
@@ -1049,9 +1062,9 @@ export async function updateEdition(input: unknown): Promise<ActionResult> {
   if (
     archiving &&
     data.status !== current.status &&
-    !can(session.actor, { type: "users.manage" })
+    !can(session.actor, { type: "events.archive" })
   ) {
-    return fail("Only an admin can archive or bring back an event");
+    return fail("Only a super admin can archive or bring back an event");
   }
   const set =
     current.status === "archived"
@@ -1151,8 +1164,8 @@ export async function uploadShowLogo(formData: FormData): Promise<ActionResult> 
   if (file.size > 5 * 1024 * 1024) return fail("Logos are limited to 5 MB");
   if (!LOGO_TYPES.includes(file.type)) return fail("Use a PNG, JPG, WebP, GIF or SVG image");
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and Operations can change event logos");
+  if (!can(session.actor, { type: "events.edit" })) {
+    return fail(missingAbilityMessage("events.edit"));
   }
   const edition = await editionForSession(session, editionId);
   if (!edition) return fail("Event not found");
@@ -1197,8 +1210,8 @@ export async function removeShowLogo(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ editionId: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and Operations can change event logos");
+  if (!can(session.actor, { type: "events.edit" })) {
+    return fail(missingAbilityMessage("events.edit"));
   }
   const edition = await editionForSession(session, parsed.data.editionId);
   if (!edition) return fail("Event not found");

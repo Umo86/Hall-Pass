@@ -9,6 +9,9 @@ export const staffRole = pgEnum("staff_role", [
   "viewer",
 ]);
 
+/** Who a manager adds and changes: their own department, or everyone. */
+export const managerScope = pgEnum("manager_scope", ["department", "everyone"]);
+
 export const externalRole = pgEnum("external_role", [
   "venue",
   "structural_engineer",
@@ -169,6 +172,8 @@ export const reminderTargetType = pgEnum("reminder_target_type", [
   "signage_item",
   "exhibitor",
   "document",
+  // Access end dates (Users v2): the warning a week before.
+  "membership",
 ]);
 
 export const reminderKind = pgEnum("reminder_kind", [

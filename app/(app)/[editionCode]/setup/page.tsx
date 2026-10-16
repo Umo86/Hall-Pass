@@ -17,6 +17,7 @@ import {
   hallCopySources,
   hallsEditorData,
   setupContacts,
+  setupPermissionsFor,
   venuesForPicker,
   type OrgSetupFacts,
   type SetupStep,
@@ -120,12 +121,9 @@ export default async function SetupPage({ params }: { params: Promise<{ editionC
   if (!ed) notFound();
   const edition = ed.edition;
   const archived = editionIsReadOnly(edition.status);
-  const canSetup = can(session.actor, { type: "settings.manage" }) && !archived;
-  const perms = {
-    canSetup,
-    canUsers: can(session.actor, { type: "users.manage" }),
-    canAddSigns: can(session.actor, { type: "signage.create" }) && !archived,
-  };
+  // Each step by its own ability (dates, halls, lists, suppliers…).
+  const perms = setupPermissionsFor(session.actor, { readOnly: archived });
+  const canSetup = can(session.actor, { type: "event.setup" }) && !archived;
 
   const [status, contacts, deadlines, halls, copySources, venueRows, seriesRows, logoUrl, source] =
     await Promise.all([
@@ -133,12 +131,12 @@ export default async function SetupPage({ params }: { params: Promise<{ editionC
       setupContacts(orgId),
       deadlinesForSetup(edition.id),
       hallsEditorData(edition.id),
-      canSetup ? hallCopySources(orgId, edition) : Promise.resolve([]),
-      canSetup ? venuesForPicker(orgId) : Promise.resolve([]),
-      canSetup
+      perms.halls ? hallCopySources(orgId, edition) : Promise.resolve([]),
+      perms.details ? venuesForPicker(orgId) : Promise.resolve([]),
+      perms.details
         ? db.select().from(events).where(eq(events.organisationId, orgId)).orderBy(events.name)
         : Promise.resolve([]),
-      canSetup ? showLogoUrl(edition.logoPath) : Promise.resolve(null),
+      perms.details ? showLogoUrl(edition.logoPath) : Promise.resolve(null),
       edition.clonedFromEditionId
         ? db
             .select({ name: editions.name })
@@ -183,7 +181,7 @@ export default async function SetupPage({ params }: { params: Promise<{ editionC
     step.canAct || step.state === "done" ? null : <Ask contacts={who} />;
 
   const panels: Record<string, React.ReactNode> = {
-    details: canSetup ? (
+    details: perms.details ? (
       <EventDetailsForm
         edition={{
           id: edition.id,
@@ -227,7 +225,7 @@ export default async function SetupPage({ params }: { params: Promise<{ editionC
         <HallsEditor
           editionId={edition.id}
           editionCode={edition.code}
-          canEdit={canSetup}
+          canEdit={perms.halls}
           venueName={ed.venue.name}
           halls={halls.halls}
           zones={halls.zones}
@@ -244,7 +242,7 @@ export default async function SetupPage({ params }: { params: Promise<{ editionC
           editionId={edition.id}
           deadlines={deadlines}
           confirmed={checked("deadlines")}
-          canEdit={canSetup}
+          canEdit={perms.deadlines}
         />
         {ask(stepByKey.deadlines)}
       </div>
@@ -402,7 +400,7 @@ export default async function SetupPage({ params }: { params: Promise<{ editionC
         }))}
         panels={panels}
         initialBuildStart={edition.buildStart}
-        readOnly={!canSetup}
+        readOnly={!perms.details}
       />
     </Page>
   );

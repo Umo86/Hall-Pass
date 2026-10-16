@@ -83,8 +83,10 @@ type Props = {
   /** `?stage=` from the dashboard: each stage's label and statuses. */
   stages: Record<string, { label: string; statuses: string[] }>;
   canSeeCosts: boolean;
-  /** May add signs (and so import them, and select rows for bulk actions). */
+  /** May add signs (and so import them). */
   canEdit: boolean;
+  /** May select rows for bulk actions (signage.bulk); defaults to canEdit. */
+  canBulk?: boolean;
   canEditCosts: boolean;
   canDelete: boolean;
   canClose: boolean;
@@ -172,6 +174,7 @@ export function ScheduleView({
   stages,
   canSeeCosts,
   canEdit,
+  canBulk = canEdit,
   canEditCosts,
   canDelete,
   canClose,
@@ -304,7 +307,7 @@ export function ScheduleView({
     const dateSort = (a: string | null, b: string | null) =>
       a === b ? 0 : a === null ? 1 : b === null ? -1 : a < b ? -1 : 1;
     const cols: ColumnDef<ScheduleRow>[] = [
-      ...(canEdit ? selectCol : []),
+      ...(canBulk ? selectCol : []),
       {
         accessorKey: "ref",
         header: "Ref",
@@ -481,7 +484,7 @@ export function ScheduleView({
       );
     }
     return cols;
-  }, [editionCode, canSeeCosts, canEdit]);
+  }, [editionCode, canSeeCosts, canBulk]);
 
   const table = useReactTable({
     data: filtered,
@@ -494,7 +497,7 @@ export function ScheduleView({
     getRowId: (r) => r.id,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
-    enableRowSelection: canEdit,
+    enableRowSelection: canBulk,
   });
 
   // Only what is on screen counts as selected: a chip or search hides the rest.
@@ -884,7 +887,7 @@ export function ScheduleView({
         </div>
       )}
 
-      {canEdit && selectedIds.length > 0 && (
+      {canBulk && selectedIds.length > 0 && (
         <BulkActionsBar
           selectedIds={selectedIds}
           suppliers={suppliers}

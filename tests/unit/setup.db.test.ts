@@ -21,7 +21,17 @@ let db: ReturnType<typeof drizzle<typeof schema>>;
 let setup: typeof import("@/lib/queries/setup");
 let departments: typeof import("@/lib/domain/departments");
 const suffix = String(Date.now() % 1_000_000);
-const perms = { canSetup: true, canUsers: true, canAddSigns: true };
+const perms = {
+  details: true,
+  halls: true,
+  deadlines: true,
+  signoff: true,
+  people: true,
+  types: true,
+  suppliers: true,
+  signs: true,
+  sponsorship: true,
+};
 
 let orgId: string;
 let venueId: string;

@@ -8,7 +8,7 @@ import { z } from "zod";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { halls, itemTypes, locations, signageItems, sponsors, suppliers } from "@/lib/db/schema";
-import { can } from "@/lib/authz";
+import { can, type SignageItemCtx } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -114,7 +114,12 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
   const dryRun = formData.get("dryRun") === "on";
   if (typeof editionId !== "string" || !(file instanceof File)) return fail("Invalid import");
   const session = await requireSession();
-  if (!can(session.actor, { type: "signage.create" })) return fail("You cannot import items");
+  // Importing needs both "Add signage" and "Import from Excel and bulk actions".
+  if (!can(session.actor, { type: "signage.import" })) return fail("You cannot import items");
+  // Ticking "create what's missing" adds halls and locations, or suppliers,
+  // only for people who may add them anyway.
+  const makeHalls = createMissing && can(session.actor, { type: "halls.manage" });
+  const makeSuppliers = createMissing && can(session.actor, { type: "suppliers.manage" });
 
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(await file.arrayBuffer());
@@ -150,6 +155,9 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
           status: signageItems.status,
           deletedAt: signageItems.deletedAt,
           supplierId: signageItems.supplierId,
+          ownerUserId: signageItems.ownerUserId,
+          sponsorId: signageItems.sponsorId,
+          requiresVenueApproval: signageItems.requiresVenueApproval,
         })
         .from(signageItems)
         .where(
@@ -161,6 +169,18 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
     ],
   );
   const itemByRef = new Map(itemRows.map((i) => [i.ref.toUpperCase(), i]));
+  /** An existing item as authorisation sees it. */
+  const itemCtx = (i: (typeof itemRows)[number]): SignageItemCtx => ({
+    organisationId: session.organisation.id,
+    editionId,
+    venueId: edition.venueId,
+    kind: i.kind,
+    ownerUserId: i.ownerUserId,
+    sponsorId: i.sponsorId,
+    supplierId: i.supplierId,
+    requiresVenueApproval: i.requiresVenueApproval,
+    status: i.status,
+  });
   // Only items still being prepared can be overwritten from a spreadsheet;
   // anything in sign-off changes on its own page so approvals stay honest.
   const EDITABLE = new Set(["draft", "awaiting_artwork", "changes_requested"]);
@@ -254,13 +274,21 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
         if (!EDITABLE.has(existing.status)) {
           return rowError(`${d.ref} is already in sign-off — change it on its page`);
         }
+        if (!can(session.actor, { type: "signage.edit", item: itemCtx(existing) })) {
+          return rowError(`${d.ref} isn't yours to change`);
+        }
+        // Supplier and cost are left as they are for people who can't edit costs.
+        if (!can(session.actor, { type: "costs.edit", item: itemCtx(existing) })) {
+          d.supplier = undefined;
+          d.costEstimate = undefined;
+        }
       }
       // Unknown reference data is an error unless createMissing covers it.
       if (d.type && !byName(typeRows, d.type)) return rowError(`Unknown item type “${d.type}”`);
       if (d.sponsor && !byName(sponsorRows, d.sponsor))
         return rowError(`Unknown sponsor “${d.sponsor}”`);
       const hall = d.hall ? byName(hallRows, d.hall) : undefined;
-      if (d.hall && !hall && !createMissing) return rowError(`Unknown hall “${d.hall}”`);
+      if (d.hall && !hall && !makeHalls) return rowError(`Unknown hall “${d.hall}”`);
       if (d.location) {
         const loc = hall
           ? findLocation(d.location, hall.id)
@@ -270,11 +298,11 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
         if (loc === "ambiguous") {
           return rowError(`Location “${d.location}” is in more than one hall — add the hall`);
         }
-        if (!loc && !createMissing) return rowError(`Unknown location “${d.location}”`);
+        if (!loc && !makeHalls) return rowError(`Unknown location “${d.location}”`);
         if (!loc && !d.hall) return rowError(`Location “${d.location}” needs a hall`);
       }
       const supplier = d.supplier ? supplierByName(d.supplier) : undefined;
-      if (!createMissing && d.supplier && !supplier) {
+      if (!makeSuppliers && d.supplier && !supplier) {
         return rowError(`Unknown supplier “${d.supplier}”`);
       }
       // An archived supplier stays on an item that has it, but isn't picked anew.

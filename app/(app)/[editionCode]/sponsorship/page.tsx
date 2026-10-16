@@ -65,10 +65,14 @@ export default async function SponsorshipPage({
       .orderBy(sponsors.companyName),
   ]);
   const canExport = can(session.actor, { type: "export.run", kind: "sponsor_report" });
-  const canAdd =
-    can(session.actor, { type: "sponsorship.create" }) && !editionIsReadOnly(ed.edition.status);
+  const readOnly = editionIsReadOnly(ed.edition.status);
+  const canAdd = can(session.actor, { type: "sponsorship.create" }) && !readOnly;
+  // Recording sales and managing sponsors and packages is its own ability.
+  const canSell = can(session.actor, { type: "sponsorship.sell" }) && !readOnly;
+  // Prices, costs and sponsor spend only for people who see costs.
+  const canSeeCosts = can(session.actor, { type: "costs.view" });
   // What can be sold (lanyards, bags…) is a list kept in Settings → Item types.
-  const canManageTypes = can(session.actor, { type: "settings.manage" });
+  const canManageTypes = can(session.actor, { type: "lists.manage" });
 
   const today = todayInLondon();
   const totals = sponsorshipTotals(rows);
@@ -117,8 +121,8 @@ export default async function SponsorshipPage({
                 supplierName: r.supplierName,
                 waitingOn: r.waitingOn,
               }),
-              costEstimate: r.costEstimate,
-              salePrice: r.salePrice,
+              costEstimate: canSeeCosts ? r.costEstimate : null,
+              salePrice: canSeeCosts ? r.salePrice : null,
               imageUrl,
               orderByDate: r.orderByDate,
               orderByLabel: r.orderByDate ? formatDate(r.orderByDate) : null,
@@ -142,10 +146,12 @@ export default async function SponsorshipPage({
         ] as [string, string, string][])
       : []),
   ];
-  const moneyTiles: [string, string][] = [
-    ["Sales", formatMoney(totals.sales)],
-    ["Profit on sales", formatMoney(totals.profit)],
-  ];
+  const moneyTiles: [string, string][] = canSeeCosts
+    ? [
+        ["Sales", formatMoney(totals.sales)],
+        ["Profit on sales", formatMoney(totals.profit)],
+      ]
+    : [];
 
   return (
     <Page width="full" className="max-w-7xl gap-4">
@@ -178,7 +184,7 @@ export default async function SponsorshipPage({
               )}
             </>
           ) : (
-            canAdd && (
+            canSell && (
               <Button asChild size="sm">
                 <Link href={`/${editionCode}/sponsorship?tab=sponsors&add=1`} scroll={false}>
                   <Plus className="size-4" /> Add sponsor
@@ -257,7 +263,7 @@ export default async function SponsorshipPage({
             />
           ) : (
             <SponsorshipCards
-              canSell={canAdd}
+              canSell={canSell}
               sponsors={sponsorRows.map((s) => ({ id: s.id, name: s.companyName }))}
               cards={cards}
               today={today}
@@ -271,8 +277,9 @@ export default async function SponsorshipPage({
           editionId={ed.edition.id}
           editionCode={editionCode}
           sponsorRows={sponsorRows}
-          canEdit={canAdd}
-          canInvite={can(session.actor, { type: "users.manage" })}
+          canEdit={canSell}
+          canSeeCosts={canSeeCosts}
+          canInvite={can(session.actor, { type: "partners.invite" })}
         />
       )}
     </Page>
@@ -284,12 +291,14 @@ async function SponsorsTab({
   editionCode,
   sponsorRows,
   canEdit,
+  canSeeCosts,
   canInvite,
 }: {
   editionId: string;
   editionCode: string;
   sponsorRows: (typeof sponsors.$inferSelect)[];
   canEdit: boolean;
+  canSeeCosts: boolean;
   canInvite: boolean;
 }) {
   const ids = sponsorRows.map((sp) => sp.id);
@@ -354,7 +363,9 @@ async function SponsorsTab({
           itemCount: live.length,
           soldCount: states.filter((s) => s === "sold").length,
           inPackageCount: states.filter((s) => s === "in_package").length,
-          spend: live.reduce((n, i) => n + (i.salePrice ? Number(i.salePrice) : 0), 0),
+          spend: canSeeCosts
+            ? live.reduce((n, i) => n + (i.salePrice ? Number(i.salePrice) : 0), 0)
+            : 0,
           linked: all.length > 0 || theirGrants.length > 0,
           portal: theirGrants.some((g) => g.acceptedAt)
             ? "access"

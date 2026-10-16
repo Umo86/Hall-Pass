@@ -18,15 +18,21 @@ import {
   Truck,
   Wrench,
 } from "lucide-react";
-import { FEATURE_LABELS, type Feature, type StaffRole } from "@/lib/authz";
+import {
+  ABILITIES,
+  FEATURE_LABELS,
+  type AbilityKey,
+  type Feature,
+  type StaffRole,
+} from "@/lib/authz";
 import { ROLE_DESCRIPTIONS, roleLabel } from "@/lib/format";
 import {
-  ABILITY_FEATURE,
-  ABILITY_KEYS,
-  ABILITY_LABELS,
-  defaultAbilities,
+  abilityChanged,
+  abilityGroups,
+  EDITABLE_ABILITY_KEYS,
+  effectiveAbility,
   STAFF_ROLES,
-  type Abilities,
+  type AbilityChoices,
 } from "@/lib/users/rules";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -138,6 +144,7 @@ export function RoleCards({
   onChange,
   lockedReason,
   onlyAdmin,
+  allowed,
   error,
 }: {
   name: string;
@@ -147,6 +154,8 @@ export function RoleCards({
   lockedReason?: string | null;
   /** The last admin: every other role is off. */
   onlyAdmin?: boolean;
+  /** Roles the viewer may give (assignableRoles); the current one always shows. */
+  allowed?: readonly StaffRole[];
   error?: string | null;
 }) {
   return (
@@ -154,7 +163,9 @@ export function RoleCards({
       <legend className="text-sm font-medium">Role</legend>
       <div className="grid gap-2 sm:grid-cols-2">
         {/* Locked: only the role they have is worth showing. */}
-        {STAFF_ROLES.filter((r) => !lockedReason || r === value).map((role) => {
+        {STAFF_ROLES.filter(
+          (r) => (!lockedReason || r === value) && (!allowed || allowed.includes(r) || r === value),
+        ).map((role) => {
           const disabled = Boolean(lockedReason) || (onlyAdmin === true && role !== "admin");
           const checked = value === role;
           return (
@@ -188,7 +199,9 @@ export function RoleCards({
       {lockedReason ? (
         <p className="text-muted-foreground text-sm">{lockedReason}</p>
       ) : onlyAdmin ? (
-        <p className="text-muted-foreground text-sm">There must always be at least one admin.</p>
+        <p className="text-muted-foreground text-sm">
+          There must always be at least one super admin.
+        </p>
       ) : null}
       <FieldError id={`${name}-error`} message={error} />
     </fieldset>
@@ -283,21 +296,25 @@ export function AbilitiesFields({
   onChange,
   features,
   disabled,
+  assignable,
 }: {
   id: string;
   role: StaffRole;
-  value: Abilities;
-  onChange: (value: Abilities) => void;
+  /** Explicit choices; a key left out follows the role. */
+  value: AbilityChoices;
+  onChange: (value: AbilityChoices) => void;
   /** Sections they have (null = all): abilities in a switched-off section are hidden. */
   features: Feature[] | null;
   disabled?: boolean;
+  /** Abilities the viewer may give (assignableAbilities); others are hidden. */
+  assignable?: readonly AbilityKey[];
 }) {
-  const defaults = defaultAbilities(role);
-  const shown = ABILITY_KEYS.filter((k) => {
-    const f = ABILITY_FEATURE[k];
-    return !f || features === null || features.includes(f);
+  const shown = EDITABLE_ABILITY_KEYS.filter((k) => {
+    const f = ABILITIES[k].feature;
+    if (f && features !== null && !features.includes(f)) return false;
+    return !assignable || assignable.includes(k);
   });
-  const custom = ABILITY_KEYS.some((k) => value[k] !== defaults[k]);
+  const custom = EDITABLE_ABILITY_KEYS.some((k) => abilityChanged(role, value, k));
   return (
     <details className="group rounded-md border" open={custom || undefined}>
       <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium select-none [&::-webkit-details-marker]:hidden">
@@ -312,30 +329,44 @@ export function AbilitiesFields({
           aria-hidden
         />
       </summary>
-      <div className="space-y-2 border-t px-3 py-3">
+      <div className="space-y-3 border-t px-3 py-3">
         <p className="text-muted-foreground text-xs">
           These start from the {roleLabel(role)} role. Change one only when this person needs
           something different.
         </p>
-        <fieldset id={id} className="grid gap-1 sm:grid-cols-2" disabled={disabled}>
+        <fieldset id={id} className="space-y-3" disabled={disabled}>
           <legend className="sr-only">What they can do</legend>
-          {shown.map((k) => (
-            <label key={k} className="flex min-h-11 items-center gap-2 text-sm sm:min-h-8">
-              <input
-                type="checkbox"
-                className="accent-primary size-4"
-                checked={value[k]}
-                onChange={(e) => onChange({ ...value, [k]: e.target.checked })}
-              />
-              {ABILITY_LABELS[k]}
-              {value[k] !== defaults[k] && (
-                <span className="text-muted-foreground text-xs">(changed)</span>
-              )}
-            </label>
+          {abilityGroups(shown).map((g) => (
+            <div key={g.group} className="space-y-1">
+              <p className="text-muted-foreground text-xs font-medium">{g.label}</p>
+              <div className="grid gap-1 sm:grid-cols-2">
+                {g.keys.map((k) => {
+                  const level = effectiveAbility(role, value, k);
+                  const partial = ABILITIES[k].partial?.[role];
+                  return (
+                    <label key={k} className="flex min-h-11 items-center gap-2 text-sm sm:min-h-8">
+                      <input
+                        type="checkbox"
+                        className="accent-primary size-4"
+                        checked={level === "yes"}
+                        onChange={(e) => onChange({ ...value, [k]: e.target.checked })}
+                      />
+                      {ABILITIES[k].label}
+                      {level === "partial" && partial && (
+                        <span className="text-muted-foreground text-xs">({partial.label})</span>
+                      )}
+                      {abilityChanged(role, value, k) && (
+                        <span className="text-muted-foreground text-xs">(changed)</span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
           ))}
         </fieldset>
         {custom && !disabled && (
-          <button type="button" className="link text-xs" onClick={() => onChange(defaults)}>
+          <button type="button" className="link text-xs" onClick={() => onChange({})}>
             Back to {roleLabel(role)} defaults
           </button>
         )}

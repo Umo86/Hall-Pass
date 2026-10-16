@@ -29,7 +29,7 @@ export type TeamListRow = {
   sections: string;
   sectionsTitle: string;
   signsOffFor: { name: string; isMain: boolean }[];
-  status: "active" | "invited" | "expired";
+  status: "active" | "invited" | "expired" | "suspended" | "ended";
   statusText: string;
 };
 

@@ -6,7 +6,7 @@ import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { signageItems, sponsors } from "@/lib/db/schema";
-import { can } from "@/lib/authz";
+import { can, missingAbilityMessage } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession, type Session } from "@/lib/auth/actor";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
@@ -60,8 +60,8 @@ export async function markSold(input: unknown): Promise<ActionResult> {
   const parsed = soldSchema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "sponsorship.create" })) {
-    return fail("Only Sales, Operations and admins record sales");
+  if (!can(session.actor, { type: "sponsorship.sell" })) {
+    return fail(missingAbilityMessage("sponsorship.sell"));
   }
   const found = await editableItem(session, parsed.data.itemId);
   if (found.error !== undefined) return fail(found.error);
@@ -135,8 +135,8 @@ export async function markUnsold(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ itemId: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "sponsorship.create" })) {
-    return fail("Only Sales, Operations and admins record sales");
+  if (!can(session.actor, { type: "sponsorship.sell" })) {
+    return fail(missingAbilityMessage("sponsorship.sell"));
   }
   const found = await editableItem(session, parsed.data.itemId);
   if (found.error !== undefined) return fail(found.error);

@@ -46,6 +46,7 @@ export function EditionSwitcher({
   defaultCode,
   navCode,
   canSetup,
+  canCreate,
 }: {
   /** Already in display order within each group. */
   editions: SwitcherEvent[];
@@ -54,6 +55,8 @@ export function EditionSwitcher({
   /** The event the side navigation was worked out for (its setup progress). */
   navCode: string | null;
   canSetup: boolean;
+  /** "New event" (events.create); defaults to canSetup. */
+  canCreate?: boolean;
 }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -195,7 +198,7 @@ export function EditionSwitcher({
             <Layers aria-hidden /> All events
           </Link>
         </DropdownMenuItem>
-        {canSetup && (
+        {(canCreate ?? canSetup) && (
           <DropdownMenuItem asChild>
             <Link href="/start">
               <Plus aria-hidden /> New event

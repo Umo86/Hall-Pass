@@ -444,7 +444,7 @@ export default async function CalendarPage({
         actions={
           <AddToCalendar
             feedUrl={calendarFeedUrl(session.user.id)}
-            canSetUp={can(actor, { type: "users.manage" })}
+            canSetUp={can(actor, { type: "system.manage" })}
           />
         }
       />

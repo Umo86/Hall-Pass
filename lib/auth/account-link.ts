@@ -1,8 +1,10 @@
 import "server-only";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { externalGrants, memberships, staffInvites, users } from "@/lib/db/schema";
 import { appUrl } from "@/lib/app-url";
+import { writeAudit } from "@/lib/audit";
+import { activeMembership } from "@/lib/users/active";
 import { supabaseAdmin } from "./supabase-admin";
 import { createSupabaseServerClient } from "./supabase-server";
 
@@ -15,19 +17,21 @@ export type AccountEmailResult =
   | "not_sent";
 
 /**
- * Is this email allowed into Hall Pass? Only people with a team membership,
- * an open staff invitation or a live partner invitation. Everyone else is
- * turned away without an email — there is no sign-up.
+ * Is this email allowed into Hall Pass? Only people with an active team
+ * membership (not suspended, access not ended), an open staff invitation or
+ * a live partner invitation. Everyone else is turned away without an email
+ * — there is no sign-up. A suspended team member is refused even if an
+ * invitation for their email is still open.
  */
 export async function emailIsInvited(email: string): Promise<boolean> {
   const e = email.trim().toLowerCase();
   const [member] = await db
-    .select({ id: memberships.id })
+    .select({ id: memberships.id, active: sql<boolean>`${activeMembership()}` })
     .from(memberships)
     .innerJoin(users, eq(users.id, memberships.userId))
     .where(eq(users.email, e))
     .limit(1);
-  if (member) return true;
+  if (member) return Boolean(member.active);
   const [invite] = await db
     .select({ id: staffInvites.id })
     .from(staffInvites)
@@ -90,4 +94,43 @@ export async function sendAccountEmail(
     return "not_sent";
   }
   return "signin_sent";
+}
+
+/**
+ * Record a sign-in in the audit log (Users → access history and "last
+ * active"). Never fails the sign-in.
+ */
+export async function auditSignIn(
+  user: { id: string; email?: string | null },
+  how: "password" | "link",
+): Promise<void> {
+  try {
+    const email = user.email?.trim().toLowerCase() ?? null;
+    const [member] = await db
+      .select({ organisationId: memberships.organisationId })
+      .from(memberships)
+      .where(eq(memberships.userId, user.id))
+      .limit(1);
+    const [grant] = member
+      ? []
+      : await db
+          .select({ organisationId: externalGrants.organisationId })
+          .from(externalGrants)
+          .where(eq(externalGrants.userId, user.id))
+          .limit(1);
+    await db.transaction(async (tx) => {
+      await writeAudit(tx, {
+        organisationId: member?.organisationId ?? grant?.organisationId ?? null,
+        actorUserId: user.id,
+        entityType: "user",
+        entityId: user.id,
+        action: "login",
+        summary: `${email ?? "Someone"} signed in (${how === "password" ? "password" : "email link"})`,
+        subjectUserId: user.id,
+        subjectEmail: email,
+      });
+    });
+  } catch (err) {
+    console.error("auditSignIn", err);
+  }
 }

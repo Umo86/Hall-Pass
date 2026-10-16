@@ -53,6 +53,8 @@ export default async function SignagePage({
   const canSeeCosts = can(session.actor, { type: "costs.view" });
   const readOnly = editionIsReadOnly(ed.edition.status);
   const canCreate = can(session.actor, { type: "signage.create" }) && !readOnly;
+  const canBulk = can(session.actor, { type: "signage.bulk" }) && !readOnly;
+  const canImport = can(session.actor, { type: "signage.import" }) && !readOnly;
   const canRestore = can(session.actor, { type: "signage.restore" });
   const [allRows, supplierRows, deletedCount] = await Promise.all([
     listScheduleRows(ed.edition.id, {
@@ -84,7 +86,7 @@ export default async function SignagePage({
             <NewSignMenu
               editionCode={ed.edition.code}
               editionId={ed.edition.id}
-              canImport={canCreate}
+              canImport={canImport}
             />
           )
         }
@@ -98,6 +100,7 @@ export default async function SignagePage({
         stages={STAGES}
         canSeeCosts={canSeeCosts}
         canEdit={canCreate}
+        canBulk={canBulk}
         canEditCosts={can(session.actor, { type: "costs.edit" })}
         canDelete={can(session.actor, { type: "signage.delete" })}
         canClose={can(session.actor, { type: "signage.close" })}

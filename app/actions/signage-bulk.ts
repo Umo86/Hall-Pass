@@ -14,7 +14,7 @@ import {
   type BulkConfirmStep,
 } from "@/lib/domain/signage";
 import { editionIsReadOnly } from "@/lib/edition-lock";
-import { can, type ApprovalStepCtx } from "@/lib/authz";
+import { can, missingAbilityMessage, type ApprovalStepCtx } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -79,6 +79,10 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<Bu
   if (!parsed.success) return fail("Invalid bulk action");
   const session = await requireSession();
   if (session.actor.kind !== "staff") return fail("Not permitted");
+  // Bulk is its own ability; each item below still checks what may change on it.
+  if (!can(session.actor, { type: "signage.bulk" })) {
+    return fail(missingAbilityMessage("signage.bulk"));
+  }
   const { ids, action } = parsed.data;
   const failures: BulkFailure[] = [];
   let done = 0;
@@ -187,10 +191,8 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<Bu
   }
 
   // Field updates (supplier / install date + slot): checked and recorded
-  // item by item, so each item's History shows the change.
-  if (action === "set_supplier" && !can(session.actor, { type: "costs.edit" })) {
-    return fail("You cannot set suppliers");
-  }
+  // item by item, so each item's History shows the change. The supplier is
+  // part of costs: costs.edit, or a sponsorship item they may edit.
   if (action === "set_supplier" && parsed.data.supplierId) {
     const [own] = await db
       .select({ id: suppliers.id, name: suppliers.name, isArchived: suppliers.isArchived })
@@ -221,9 +223,12 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<Bu
             ? "the event is archived"
             : !can(session.actor, { type: "signage.edit", item: itemAuthzCtx(bundle) })
               ? "you can't change it"
-              : action === "set_install" && bundle.item.kind !== "signage"
-                ? "not a sign (no install date)"
-                : null;
+              : action === "set_supplier" &&
+                  !can(session.actor, { type: "costs.edit", item: itemAuthzCtx(bundle) })
+                ? "you can't set its supplier"
+                : action === "set_install" && bundle.item.kind !== "signage"
+                  ? "not a sign (no install date)"
+                  : null;
       if (!bundle || reason) {
         failures.push({ id, ref: bundle?.item.ref ?? "Unknown item", reason: reason! });
         continue;

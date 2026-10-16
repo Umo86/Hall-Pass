@@ -16,7 +16,8 @@ import {
   users,
 } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can, type ApprovalStepCtx } from "@/lib/authz";
+import { can, type ApprovalStepCtx, type PermissionOverrides, type StaffRole } from "@/lib/authz";
+import { accessLive, canReceiveSignoff } from "@/lib/access";
 import {
   itemAuthzCtx,
   itemProgress,
@@ -142,7 +143,15 @@ type Item = NonNullable<Awaited<ReturnType<typeof getItemByRef>>>;
 type Bundle = NonNullable<Awaited<ReturnType<typeof loadItemBundle>>>;
 type StaffSession = Awaited<ReturnType<typeof requireStaffSession>>;
 type InstanceRows = Awaited<ReturnType<typeof getItemInstances>>;
-type StaffRow = { id: string; fullName: string | null; email: string; role: string };
+type StaffRow = {
+  id: string;
+  fullName: string | null;
+  email: string;
+  role: StaffRole;
+  overrides: unknown;
+  suspendedAt: Date | null;
+  accessEndsAt: Date | null;
+};
 type Deadlines = Awaited<ReturnType<typeof editionForDeadlines>>;
 
 export default async function ItemDetailPage({
@@ -185,14 +194,17 @@ export default async function ItemDetailPage({
             .then((r) => r[0] ?? null)
         : null,
       getItemInstances(item.id),
-      // Everyone on the team (names on the sign-off list); sign-offs can be
-      // handed to anyone except viewers.
+      // Everyone on the team (names on the sign-off list, suspended people
+      // included); tasks and sign-offs go only to people with access.
       db
         .select({
           id: users.id,
           fullName: users.fullName,
           email: users.email,
           role: memberships.role,
+          overrides: memberships.permissionOverrides,
+          suspendedAt: memberships.suspendedAt,
+          accessEndsAt: memberships.accessEndsAt,
         })
         .from(memberships)
         .innerJoin(users, eq(memberships.userId, users.id))
@@ -235,7 +247,8 @@ export default async function ItemDetailPage({
   const readOnly = editionIsReadOnly(bundle.edition.status);
   const itemCtx = itemAuthzCtx(bundle);
   const canSeeCosts = can(session.actor, { type: "costs.view" });
-  const canEditCosts = can(session.actor, { type: "costs.edit" });
+  // Costs, PO and supplier: costs.edit, or a sponsorship item they may edit.
+  const canEditCosts = can(session.actor, { type: "costs.edit", item: itemCtx });
   const canEdit = can(session.actor, { type: "signage.edit", item: itemCtx }) && !readOnly;
   // Same rule as the server and the Onsite page: photos are for signs only.
   const requiresInstallPhoto =
@@ -450,7 +463,9 @@ export default async function ItemDetailPage({
           {!readOnly && (
             <AddTaskDialog
               currentUserId={session.user.id}
-              assignees={staffRows.map((u) => ({ id: u.id, name: u.fullName || u.email }))}
+              assignees={staffRows
+                .filter((u) => accessLive(u))
+                .map((u) => ({ id: u.id, name: u.fullName || u.email }))}
               canAssign={can(session.actor, { type: "task.assign" })}
               entity={{
                 type: "signage_item",
@@ -1185,8 +1200,9 @@ async function ArtworkAndSignOff({
       };
     }),
   );
+  // Sign-offs go only to people who can sign now (canReceiveSignoff).
   const delegatableUsers = staffRows
-    .filter((u) => u.role !== "viewer")
+    .filter((u) => canReceiveSignoff({ ...u, overrides: u.overrides as PermissionOverrides }))
     .map((u) => ({ id: u.id, name: u.fullName || u.email }));
   const noun =
     item.kind === "stand_design" ? "design" : item.kind === "stand_panel" ? "graphic" : "artwork";
@@ -1539,14 +1555,14 @@ async function sponsorshipContext({
   canEdit: boolean;
   readOnly: boolean;
 }) {
-  const isAdmin = can(session.actor, { type: "users.manage" });
+  const canInvite = can(session.actor, { type: "partners.invite" });
   const [sponsorRows, grants] = await Promise.all([
     db
       .select({ id: sponsorsTable.id, name: sponsorsTable.companyName })
       .from(sponsorsTable)
       .where(eq(sponsorsTable.editionId, bundle.edition.id))
       .orderBy(sponsorsTable.companyName),
-    isAdmin && item.sponsorId
+    canInvite && item.sponsorId
       ? db
           .select({ n: count() })
           .from(externalGrants)
@@ -1562,10 +1578,10 @@ async function sponsorshipContext({
   return {
     sponsors: sponsorRows,
     sponsorName: sponsorRows.find((sp) => sp.id === item.sponsorId)?.name ?? null,
-    canSell: can(session.actor, { type: "sponsorship.create" }) && canEdit,
-    // Admins invite the sponsor to the portal, unless someone there already has access.
+    canSell: can(session.actor, { type: "sponsorship.sell" }) && canEdit,
+    // Whoever invites partners invites the sponsor, unless someone there already has access.
     inviteHref:
-      isAdmin && !readOnly && item.sponsorId && Number(grants[0]?.n ?? 0) === 0
+      canInvite && !readOnly && item.sponsorId && Number(grants[0]?.n ?? 0) === 0
         ? `/users?tab=external&invite=1&role=sponsor&scopeId=${item.sponsorId}&edition=${bundle.edition.id}`
         : null,
   };

@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { LoginCard, type DevUser } from "@/components/auth/login-card";
 import { brandName } from "@/lib/config";
-import { demoEmailAllowed, devAuthEnabled, getSession } from "@/lib/auth/actor";
+import { demoEmailAllowed, devAuthEnabled, getAccessBlock, getSession } from "@/lib/auth/actor";
+import { accessBlockMessage } from "@/lib/access";
 import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
 import { supabaseUrl } from "@/lib/auth/supabase-config";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
@@ -59,10 +60,13 @@ export default async function LoginPage({
   const session = await getSession().catch(() => null);
   if (session) redirect(next ?? (session.actor.kind === "staff" ? STAFF_HOME : PORTAL_HOME));
 
+  // Suspended, or access ended: say so and who to ask, instead of looping.
+  const block = await getAccessBlock().catch(() => null);
+
   // Signed in with Supabase but not invited: explain instead of looping.
   let unprovisionedEmail: string | null = null;
   const supabase = await createSupabaseServerClient().catch(() => null);
-  if (supabase) {
+  if (supabase && !block) {
     const { data } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
     unprovisionedEmail = data.user?.email ?? null;
   }
@@ -91,7 +95,13 @@ export default async function LoginPage({
       devUsers={await devUserList()}
       photo={brandImage("login")}
       next={next}
-      notice={error ? (NOTICES[error] ?? "Sign-in didn't work — please try again.") : null}
+      notice={
+        block
+          ? `${accessBlockMessage(block)}.`
+          : error
+            ? (NOTICES[error] ?? "Sign-in didn't work — please try again.")
+            : null
+      }
       unprovisionedEmail={unprovisionedEmail}
       configStatus={{
         supabaseUrl: Boolean(supabaseUrl()),

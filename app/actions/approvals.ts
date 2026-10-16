@@ -11,8 +11,10 @@ import {
   signageItems,
   standSubmissions,
 } from "@/lib/db/schema";
-import { can, type ApprovalStepCtx } from "@/lib/authz";
+import { can, type ApprovalStepCtx, type PermissionOverrides } from "@/lib/authz";
+import { canReceiveSignoff } from "@/lib/access";
 import { writeAudit } from "@/lib/audit";
+import { activeMembership } from "@/lib/users/active";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { signageTransition } from "@/lib/status/signage";
@@ -272,6 +274,7 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
               and(
                 eq(memberships.organisationId, session.organisation.id),
                 eq(memberships.role, "ops"),
+                activeMembership(),
               ),
             );
           await notify(tx, {
@@ -486,7 +489,12 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
         throw new WorkflowError("You cannot delegate this step");
       }
       const [target] = await tx
-        .select({ role: memberships.role })
+        .select({
+          role: memberships.role,
+          overrides: memberships.permissionOverrides,
+          suspendedAt: memberships.suspendedAt,
+          accessEndsAt: memberships.accessEndsAt,
+        })
         .from(memberships)
         .where(
           and(
@@ -495,7 +503,11 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
           ),
         )
         .limit(1);
-      if (!target || target.role === "viewer") {
+      // Only someone who can sign now: active, not a viewer, sign-off not paused.
+      if (
+        !target ||
+        !canReceiveSignoff({ ...target, overrides: target.overrides as PermissionOverrides })
+      ) {
         throw new WorkflowError("Pick a team member who can sign off");
       }
       if (parsed.data.toUserId === (row.assignedUserId ?? session.user.id)) {

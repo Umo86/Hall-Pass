@@ -12,7 +12,7 @@ import {
   sortForGroup,
   type EventGroup,
 } from "@/lib/queries/editions";
-import { getSetupSummaries, setupContacts } from "@/lib/queries/setup";
+import { getSetupSummaries, setupContacts, setupPermissionsFor } from "@/lib/queries/setup";
 import { Page, PageHeader } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
 import { SegmentedLinks } from "@/components/ui/segmented";
@@ -47,8 +47,9 @@ export default async function EventsPage({
   const view: EventGroup = VIEWS.some((v) => v.id === rawView)
     ? (rawView as EventGroup)
     : "upcoming";
-  const canSetup = can(session.actor, { type: "settings.manage" });
-  const canArchive = can(session.actor, { type: "users.manage" });
+  const canCreate = can(session.actor, { type: "events.create" });
+  const canSetup = can(session.actor, { type: "event.setup" });
+  const canArchive = can(session.actor, { type: "events.archive" });
   const rows = await listEditions(orgId);
 
   if (rows.length === 0) {
@@ -58,7 +59,7 @@ export default async function EventsPage({
           title="Events"
           description="Each event has its own signage, sponsorship, sign-offs and deadlines."
         />
-        {canSetup ? (
+        {canCreate ? (
           <EmptyState
             icon={CalendarPlus}
             title="Create your first event"
@@ -92,11 +93,7 @@ export default async function EventsPage({
       ? getSetupSummaries(
           inView.filter((r) => r.edition.status !== "archived").map((r) => r.edition),
           orgId,
-          {
-            canSetup,
-            canUsers: canArchive,
-            canAddSigns: can(session.actor, { type: "signage.create" }),
-          },
+          setupPermissionsFor(session.actor),
         )
       : Promise.resolve(new Map<string, { done: number; total: number; complete: boolean }>()),
     Promise.all(inView.map((r) => showLogoUrl(r.edition.logoPath))),
@@ -127,7 +124,7 @@ export default async function EventsPage({
         title="Events"
         description="Each event has its own signage, sponsorship, sign-offs and deadlines."
         actions={
-          canSetup ? (
+          canCreate ? (
             <>
               <Button asChild variant="outline">
                 <Link href="/start?mode=copy">

@@ -27,6 +27,7 @@ import {
   type DeadlineKey,
 } from "@/lib/deadlines";
 import { formatDate, plural } from "@/lib/format";
+import { can, type Action, type Actor } from "@/lib/authz";
 
 /*
  * Event setup: the checklist on /CODE/setup, the "Setup 3/6" pill in the nav
@@ -102,14 +103,38 @@ export type EditionSetupFacts = {
   deadlines: { key: DeadlineKey; label: string; date: string | null }[];
 };
 
-export type SetupPermissions = {
-  /** settings.manage: event details, halls, deadlines, sign types, suppliers. */
-  canSetup: boolean;
-  /** users.manage: people and sign-off departments. */
-  canUsers: boolean;
-  /** signage.create: adding and importing signs. */
-  canAddSigns: boolean;
-};
+/** Whether this person can act on each step (each by its own ability). */
+export type SetupPermissions = Record<SetupStepKey, boolean>;
+
+/** The ability behind each setup step. */
+export const SETUP_STEP_ACTION = {
+  details: "events.edit",
+  halls: "halls.manage",
+  deadlines: "events.edit",
+  signoff: "departments.manage",
+  people: "people.manage",
+  types: "lists.manage",
+  suppliers: "suppliers.manage",
+  signs: "signage.create",
+  sponsorship: "sponsorship.create",
+} as const satisfies Record<SetupStepKey, Action["type"]>;
+
+/**
+ * What this person can do on each step. On an archived (read-only) event
+ * only the shared people and sign-off steps stay open.
+ */
+export function setupPermissionsFor(
+  actor: Actor,
+  opts: { readOnly?: boolean } = {},
+): SetupPermissions {
+  return Object.fromEntries(
+    SETUP_STEP_KEYS.map((key) => [
+      key,
+      (!opts.readOnly || key === "signoff" || key === "people") &&
+        can(actor, { type: SETUP_STEP_ACTION[key] } as Action),
+    ]),
+  ) as SetupPermissions;
+}
 
 function hasChecked(facts: EditionSetupFacts, key: ConfirmableStep) {
   return facts.setupChecked.includes(key);
@@ -221,7 +246,7 @@ export function buildSetupSteps(
         ? `Build-up from ${formatDate(facts.dates.buildStart)} · open ${formatDate(facts.dates.openStart)} – ${formatDate(facts.dates.openEnd)}`
         : "Build-up and breakdown dates were assumed — check them",
       href: `/${code}/setup#details`,
-      canAct: perms.canSetup,
+      canAct: perms.details,
       shared: false,
     },
     {
@@ -233,7 +258,7 @@ export function buildSetupSteps(
       state: state(halls.done, "essential"),
       detail: halls.detail,
       href: `/${code}/halls`,
-      canAct: perms.canSetup,
+      canAct: perms.halls,
       shared: false,
     },
     {
@@ -245,7 +270,7 @@ export function buildSetupSteps(
       state: state(hasChecked(facts, "deadlines"), "essential"),
       detail: deadlineDetail || "No deadlines set",
       href: `/${code}/setup#deadlines`,
-      canAct: perms.canSetup,
+      canAct: perms.deadlines,
       shared: false,
     },
     {
@@ -257,7 +282,7 @@ export function buildSetupSteps(
       state: signoff.state,
       detail: signoff.detail,
       href: "/users?tab=departments",
-      canAct: perms.canUsers,
+      canAct: perms.signoff,
       shared: true,
     },
     {
@@ -274,7 +299,7 @@ export function buildSetupSteps(
         .filter(Boolean)
         .join(" · "),
       href: "/users/new",
-      canAct: perms.canUsers,
+      canAct: perms.people,
       shared: true,
     },
     {
@@ -286,7 +311,7 @@ export function buildSetupSteps(
       state: state(org.signTypeCount >= 1, "essential"),
       detail: org.signTypeCount > 0 ? plural(org.signTypeCount, "sign type") : "No sign types yet",
       href: "/settings/item-types",
-      canAct: perms.canSetup,
+      canAct: perms.types,
       shared: true,
     },
     {
@@ -298,7 +323,7 @@ export function buildSetupSteps(
       state: state(org.supplierCount >= 1, "optional"),
       detail: org.supplierCount > 0 ? plural(org.supplierCount, "supplier") : "None yet",
       href: "/suppliers",
-      canAct: perms.canSetup,
+      canAct: perms.suppliers,
       shared: true,
     },
     {
@@ -315,7 +340,7 @@ export function buildSetupSteps(
             ? `${plural(facts.signCount, "sign")} copied as drafts — review them`
             : plural(facts.signCount, "sign"),
       href: `/${code}/signage/new`,
-      canAct: perms.canAddSigns,
+      canAct: perms.signs,
       shared: false,
     },
     {
@@ -327,7 +352,7 @@ export function buildSetupSteps(
       state: state(sponsorParts.length > 0, "optional"),
       detail: sponsorParts.length > 0 ? sponsorParts.join(" · ") : "None yet",
       href: `/${code}/sponsorship`,
-      canAct: perms.canAddSigns,
+      canAct: perms.sponsorship,
       shared: false,
     },
   ];

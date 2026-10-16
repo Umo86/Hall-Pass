@@ -8,13 +8,7 @@ import {
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
-import {
-  changeRequestStatus,
-  emailStatus,
-  entityType,
-  snagSeverity,
-  snagStatus,
-} from "./enums";
+import { changeRequestStatus, emailStatus, entityType, snagSeverity, snagStatus } from "./enums";
 import { editions } from "./events";
 import { contractors, suppliers } from "./parties";
 import { signageItems } from "./signage";
@@ -103,6 +97,8 @@ export const snags = pgTable(
     photoPath: text("photo_path"),
     severity: snagSeverity("severity").notNull().default("medium"),
     assignedUserId: uuid("assigned_user_id").references(() => users.id),
+    /** Who reported it (told when it is fixed). Null on snags raised before this was kept. */
+    raisedByUserId: uuid("raised_by_user_id").references(() => users.id),
     assignedSupplierId: uuid("assigned_supplier_id").references(() => suppliers.id),
     assignedContractorId: uuid("assigned_contractor_id").references(() => contractors.id),
     status: snagStatus("status").notNull().default("open"),
@@ -117,6 +113,7 @@ export const snags = pgTable(
     index("snags_signage_item_idx").on(t.signageItemId),
     index("snags_stand_submission_idx").on(t.standSubmissionId),
     index("snags_assigned_user_idx").on(t.assignedUserId),
+    index("snags_raised_by_user_idx").on(t.raisedByUserId),
     index("snags_assigned_supplier_idx").on(t.assignedSupplierId),
     index("snags_assigned_contractor_idx").on(t.assignedContractorId),
     index("snags_resolved_by_idx").on(t.resolvedBy),

@@ -38,6 +38,10 @@ export type AuditEntry = {
   summary: string;
   ip?: string | null;
   userAgent?: string | null;
+  /** The person a people change is about (Users → access history)… */
+  subjectUserId?: string | null;
+  /** …or their email while they are only invited. */
+  subjectEmail?: string | null;
 };
 
 export async function writeAudit(tx: Tx, entry: AuditEntry): Promise<void> {
@@ -54,5 +58,7 @@ export async function writeAudit(tx: Tx, entry: AuditEntry): Promise<void> {
     summary: entry.summary,
     ip: entry.ip ?? null,
     userAgent: entry.userAgent ?? null,
+    subjectUserId: entry.subjectUserId ?? null,
+    subjectEmail: entry.subjectEmail?.toLowerCase() ?? null,
   });
 }

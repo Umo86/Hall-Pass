@@ -5,7 +5,7 @@ import { z } from "zod";
 import { and, eq, max } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { itemTypes, supplierServices } from "@/lib/db/schema";
-import { can } from "@/lib/authz";
+import { can, missingAbilityMessage } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { defaultSignageWorkflowId } from "@/lib/domain/signage";
@@ -68,8 +68,8 @@ export async function saveItemType(input: unknown): Promise<ActionResult<{ id: s
   const parsed = itemTypeSchema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" }))
-    return fail("Only admins and Operations manage item types");
+  if (!can(session.actor, { type: "lists.manage" }))
+    return fail(missingAbilityMessage("lists.manage"));
   const orgId = session.organisation.id;
   const data = parsed.data;
   const values = {
@@ -153,8 +153,8 @@ export async function setItemTypeArchived(input: unknown): Promise<ActionResult>
   const parsed = archiveSchema.safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" }))
-    return fail("Only admins and Operations manage item types");
+  if (!can(session.actor, { type: "lists.manage" }))
+    return fail(missingAbilityMessage("lists.manage"));
   try {
     await db.transaction(async (tx) => {
       const [row] = await tx
@@ -194,8 +194,8 @@ export async function saveSupplierService(input: unknown): Promise<ActionResult<
   const parsed = serviceSchema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" }))
-    return fail("Only admins and Operations manage services");
+  if (!can(session.actor, { type: "lists.manage" }))
+    return fail(missingAbilityMessage("lists.manage"));
   const orgId = session.organisation.id;
   try {
     const id = await db.transaction(async (tx) => {
@@ -260,8 +260,8 @@ export async function setSupplierServiceArchived(input: unknown): Promise<Action
   const parsed = archiveSchema.safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" }))
-    return fail("Only admins and Operations manage services");
+  if (!can(session.actor, { type: "lists.manage" }))
+    return fail(missingAbilityMessage("lists.manage"));
   try {
     await db.transaction(async (tx) => {
       const [row] = await tx

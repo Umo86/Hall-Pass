@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { ChevronRight } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { settingsAccess } from "@/components/settings/access";
-import { legacySettingsRedirect, settingsSectionsFor } from "@/components/settings/sections";
+import { legacySettingsRedirect } from "@/components/settings/sections";
 import { SECTION_ICONS } from "@/components/settings/section-icons";
 
 export const metadata = { title: "Settings" };
@@ -19,8 +19,7 @@ export default async function SettingsPage({
   const target = legacySettingsRedirect(Array.isArray(tab) ? tab[0] : tab);
   if (target) redirect(target);
 
-  const { canManage, canUsers } = await settingsAccess();
-  const sections = settingsSectionsFor({ canManage, canUsers });
+  const { sections } = await settingsAccess();
 
   if (sections.length === 0) {
     return (

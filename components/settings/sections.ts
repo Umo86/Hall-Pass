@@ -5,6 +5,10 @@
 
 export type SettingsSectionId = "organisation" | "item-types" | "venues" | "recycle-bin" | "system";
 
+/** The ability (lib/authz.ts action) that opens each section. */
+export type SettingsNeed =
+  "organisation.manage" | "lists.manage" | "signage.delete" | "system.manage";
+
 export type SettingsSection = {
   id: SettingsSectionId;
   label: string;
@@ -13,8 +17,8 @@ export type SettingsSection = {
   /** A few words for the rail beside each section. */
   short: string;
   href: string;
-  /** settings.manage (admins and Operations) or users.manage (admins). */
-  needs: "settings" | "users";
+  /** Opened with this ability (Recycle bin: whoever may delete and restore items). */
+  needs: SettingsNeed;
 };
 
 export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
@@ -24,7 +28,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     short: "Name, currency, chasing rules",
     hint: "Your name, currency and company-wide rules such as chasing overdue sign-offs.",
     href: "/settings/organisation",
-    needs: "settings",
+    needs: "organisation.manage",
   },
   {
     id: "item-types",
@@ -32,7 +36,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     short: "Sign and sponsorship types",
     hint: "What people pick from when they add a sign or a sponsorship item.",
     href: "/settings/item-types",
-    needs: "settings",
+    needs: "lists.manage",
   },
   {
     id: "venues",
@@ -40,7 +44,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     short: "Places you run events",
     hint: "Places you run events. You choose one when you create an event.",
     href: "/settings/venues",
-    needs: "settings",
+    needs: "lists.manage",
   },
   {
     id: "recycle-bin",
@@ -48,7 +52,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     short: "Put deleted items back",
     hint: "Deleted signs, sponsorship items and stands from every event. Restore puts them back.",
     href: "/settings/recycle-bin",
-    needs: "settings",
+    needs: "signage.delete",
   },
   {
     id: "system",
@@ -56,24 +60,21 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     short: "File storage and email",
     hint: "Where files are kept and whether email works.",
     href: "/settings/system",
-    needs: "users",
+    needs: "system.manage",
   },
 ];
 
+/** What this person may do, as can() answers it (passed in so this stays pure). */
+export type SettingsAllows = (need: SettingsNeed) => boolean;
+
 /** The sections this person can open, in order. */
-export function settingsSectionsFor(p: {
-  canManage: boolean;
-  canUsers: boolean;
-}): SettingsSection[] {
-  return SETTINGS_SECTIONS.filter((s) => (s.needs === "users" ? p.canUsers : p.canManage));
+export function settingsSectionsFor(allows: SettingsAllows): SettingsSection[] {
+  return SETTINGS_SECTIONS.filter((s) => allows(s.needs));
 }
 
 /** Can this person open the section? */
-export function canOpenSection(
-  id: SettingsSectionId,
-  p: { canManage: boolean; canUsers: boolean },
-): boolean {
-  return settingsSectionsFor(p).some((s) => s.id === id);
+export function canOpenSection(id: SettingsSectionId, allows: SettingsAllows): boolean {
+  return settingsSectionsFor(allows).some((s) => s.id === id);
 }
 
 /**

@@ -25,7 +25,7 @@ export default async function AccountPage() {
       : Promise.resolve(undefined),
   ]);
   const feed = calendarFeedUrl(session.user.id);
-  const isAdmin = can(actor, { type: "users.manage" });
+  const isAdmin = can(actor, { type: "system.manage" });
   const emailOn = emailConfigured();
 
   return (

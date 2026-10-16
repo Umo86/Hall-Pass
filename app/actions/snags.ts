@@ -7,6 +7,7 @@ import { db, type Tx } from "@/lib/db/client";
 import { memberships, signageItems, snags } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
+import { activeMembership } from "@/lib/users/active";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { notify } from "@/lib/notify";
@@ -71,7 +72,13 @@ async function opsUserIds(organisationId: string): Promise<string[]> {
   const rows = await db
     .select({ userId: memberships.userId })
     .from(memberships)
-    .where(and(eq(memberships.organisationId, organisationId), eq(memberships.role, "ops")));
+    .where(
+      and(
+        eq(memberships.organisationId, organisationId),
+        eq(memberships.role, "ops"),
+        activeMembership(),
+      ),
+    );
   return rows.map((r) => r.userId);
 }
 
@@ -122,6 +129,7 @@ export async function raiseSnag(formData: FormData): Promise<ActionResult> {
         severity: parsed.data.severity,
         photoPath: photo.path,
         assignedUserId: item.ownerUserId,
+        raisedByUserId: session.user.id,
         assignedSupplierId: item.supplierId,
         assignedContractorId: item.installContractorId,
       })

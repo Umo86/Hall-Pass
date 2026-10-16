@@ -12,7 +12,7 @@ import {
   sponsorEntitlements,
   sponsors,
 } from "@/lib/db/schema";
-import { can } from "@/lib/authz";
+import { can, missingAbilityMessage } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -66,8 +66,8 @@ export async function saveSponsor(input: unknown): Promise<ActionResult<{ id: st
   const parsed = schema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "sponsorship.create" })) {
-    return fail("You cannot manage sponsors");
+  if (!can(session.actor, { type: "sponsorship.sell" })) {
+    return fail(missingAbilityMessage("sponsorship.sell"));
   }
   const data = parsed.data;
   const [row] = await db
@@ -192,8 +192,8 @@ export async function updateEntitlement(input: unknown): Promise<ActionResult> {
   const parsed = entitlementSchema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "sponsorship.create" })) {
-    return fail("You cannot manage sponsors");
+  if (!can(session.actor, { type: "sponsorship.sell" })) {
+    return fail(missingAbilityMessage("sponsorship.sell"));
   }
   const found = await loadEntitlement(parsed.data.entitlementId, session.organisation.id);
   if (found.error !== undefined) return fail(found.error);
@@ -222,8 +222,8 @@ export async function removeEntitlement(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ entitlementId: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "sponsorship.create" })) {
-    return fail("You cannot manage sponsors");
+  if (!can(session.actor, { type: "sponsorship.sell" })) {
+    return fail(missingAbilityMessage("sponsorship.sell"));
   }
   const found = await loadEntitlement(parsed.data.entitlementId, session.organisation.id);
   if (found.error !== undefined) return fail(found.error);
@@ -260,8 +260,8 @@ export async function removeSponsor(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ sponsorId: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "sponsorship.create" })) {
-    return fail("You cannot manage sponsors");
+  if (!can(session.actor, { type: "sponsorship.sell" })) {
+    return fail(missingAbilityMessage("sponsorship.sell"));
   }
   const found = await ownSponsor(parsed.data.sponsorId, session.organisation.id);
   if (found.error !== undefined) return fail(found.error);

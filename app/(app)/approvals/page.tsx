@@ -55,14 +55,13 @@ type Params = {
 type Session = Awaited<ReturnType<typeof requireStaffSession>>;
 type Show = { id: string; code: string; name: string };
 
-/** Admins and Operations chase everyone's sign-offs. */
-const canSeeTeam = (session: Session) =>
-  session.actor.role === "admin" || session.actor.role === "ops";
+/** Those who chase sign-offs (approval.chase: admins and Operations by default) see everyone's. */
+const canSeeTeam = (session: Session) => can(session.actor, { type: "approval.chase" });
 
 export default async function ApprovalsPage({ searchParams }: { searchParams: Promise<Params> }) {
   const session = await requireStaffSession();
   const params = await searchParams;
-  const canManage = can(session.actor, { type: "users.manage" });
+  const canManage = can(session.actor, { type: "departments.manage" });
   const mine = await countPendingForUser(session);
   // People who never sign anything off start on All artwork.
   const neverSigns =

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { UserPlus, Users as UsersIcon } from "lucide-react";
-import { FEATURE_LABELS } from "@/lib/authz";
+import { canManagePerson, FEATURE_LABELS, isSuperAdmin, type Actor } from "@/lib/authz";
 import { standsEnabled } from "@/lib/config";
 import { db } from "@/lib/db/client";
 import { filterTeam, listTeam, needsDepartment, type TeamFilters } from "@/lib/users/queries";
@@ -19,16 +19,35 @@ export async function TeamTab({
   organisationId,
   viewerId,
   isAdmin,
+  actor,
   params,
 }: {
   organisationId: string;
   viewerId: string;
+  /** Adds and changes people (people.manage): sees invitations, sections and status. */
   isAdmin: boolean;
+  /** The viewer: a manager sees only the invitations they may change. */
+  actor?: Actor;
   params: TeamFilters & { page?: string };
 }) {
   const { rows: all, departments } = await listTeam(db, organisationId, viewerId);
-  // Invitations, sections and status are admin business; everyone else sees a directory.
-  const everyone = isAdmin ? all : all.filter((r) => r.kind === "member");
+  // Invitations, sections and status are for people who manage the team;
+  // everyone else sees a directory.
+  const everyone = isAdmin
+    ? all.filter(
+        (r) =>
+          r.kind === "member" ||
+          !actor ||
+          isSuperAdmin(actor) ||
+          canManagePerson(actor, {
+            organisationId,
+            userId: null,
+            role: r.role,
+            departmentId: r.departmentId,
+            managerScope: r.managerScope,
+          }),
+      )
+    : all.filter((r) => r.kind === "member");
   const filters: TeamFilters = {
     q: params.q,
     dept: params.dept,

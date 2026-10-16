@@ -1,10 +1,14 @@
 import "server-only";
 /**
- * The database side of Users: invite, edit and remove people, and the
- * departments they sign off for. Each function runs inside the caller's
- * transaction and writes its own audit rows; app/actions/users.ts does the
- * parsing, authorisation and revalidation around them. Messages thrown as
- * UserError are safe to show.
+ * The database side of Users: invite, edit, suspend and remove people, end
+ * their access on a date, and the departments they sign off for. Each
+ * function runs inside the caller's transaction and writes its own audit
+ * rows (with the person as the subject, for access history);
+ * app/actions/users.ts does the parsing, the first authorisation check and
+ * revalidation around them. Who may change whom is decided here, after the
+ * person is loaded, by the pure people rules in lib/authz.ts
+ * (personChangeRefusal, canManagePerson, canSuspendPerson, canRemovePerson).
+ * Messages thrown as UserError are safe to show.
  */
 import { and, asc, count, eq, inArray, isNull, max, ne, or, sql } from "drizzle-orm";
 import type { Db, Tx } from "@/lib/db/client";
@@ -24,21 +28,43 @@ import {
   workflowSteps,
   workflows,
 } from "@/lib/db/schema";
-import type { Feature, StaffRole } from "@/lib/authz";
+import {
+  canManagePerson,
+  canRemovePerson,
+  canSuspendPerson,
+  parseFeatures,
+  personChangeRefusal,
+  signoffPaused,
+  type Feature,
+  type ManagerScope,
+  type PermissionOverrides,
+  type PersonAccess,
+  type PersonCtx,
+  type StaffActor,
+  type StaffRole,
+} from "@/lib/authz";
+import {
+  accessEndsAtFromLondonDate,
+  accessLive,
+  canReceiveSignoff,
+  londonDateOfAccessEnd,
+} from "@/lib/access";
 import { writeAudit } from "@/lib/audit";
 import { appUrl } from "@/lib/app-url";
-import { roleLabel } from "@/lib/format";
+import { formatDate, roleLabel } from "@/lib/format";
+import { todayInLondon } from "@/lib/today";
 import { createStaffInvite, STAFF_INVITE_DAYS } from "@/lib/auth/staff-invite";
 import { generateInviteToken, hashInviteToken } from "@/lib/auth/invite-token";
-import { syncDepartmentSteps } from "@/lib/domain/departments";
+import { departmentIdsForUser, syncDepartmentSteps } from "@/lib/domain/departments";
 import { applyDelegation } from "@/lib/workflow";
 import { loadRun, persistRun } from "@/lib/workflow/persist";
 import { notify } from "@/lib/notify";
+import { activeMembership } from "./active";
 import {
   normaliseFeatures,
   overridesFor,
   signoffChanges,
-  type Abilities,
+  type AbilityChoices,
   type Signoff,
 } from "./rules";
 import { externalAccountLabel } from "./external";
@@ -54,6 +80,11 @@ export class UserError extends Error {
   }
 }
 
+/**
+ * Who is acting. The actor's own access (role, abilities, manager scope,
+ * department, sign-off departments) is read again inside the transaction,
+ * so a decision never rests on a stale session.
+ */
 export type Ctx = { organisationId: string; actorUserId: string };
 
 /** What the Add user form and the person page both send. */
@@ -66,14 +97,115 @@ export type PersonInput = {
   role: StaffRole;
   /** Null = every section. */
   features: Feature[] | null;
-  abilities: Partial<Abilities>;
+  /** Explicit choices on top of the role (lib/users/rules.ts). */
+  abilities: AbilityChoices;
   /** Departments they sign off for. */
   signoffs: Signoff[];
+  /** Adds and changes people (super admins only set it); undefined = unchanged. */
+  managerScope?: ManagerScope | null;
+  /** Access ends at the end of this London date (YYYY-MM-DD); null = no end; undefined = unchanged. */
+  accessEndsOn?: string | null;
 };
 
 type DepartmentRow = typeof departments.$inferSelect;
+type MembershipRow = typeof memberships.$inferSelect;
 
 const DAY = 24 * 60 * 60 * 1000;
+
+/** The acting team member, read fresh in this transaction. */
+async function loadActor(tx: Tx, ctx: Ctx): Promise<StaffActor> {
+  const m = await tx.query.memberships.findFirst({
+    where: and(
+      eq(memberships.userId, ctx.actorUserId),
+      eq(memberships.organisationId, ctx.organisationId),
+    ),
+  });
+  if (!m || !accessLive(m)) throw new UserError("You can't change people's access");
+  return {
+    kind: "staff",
+    userId: m.userId,
+    organisationId: m.organisationId,
+    role: m.role,
+    overrides: m.permissionOverrides as PermissionOverrides,
+    departmentId: m.departmentId,
+    features: parseFeatures(m.features),
+    managerScope: m.role === "admin" ? null : m.managerScope,
+    signoffDepartmentIds: await departmentIdsForUser(tx, m.organisationId, m.userId),
+  };
+}
+
+function memberCtx(m: MembershipRow): PersonCtx {
+  return {
+    organisationId: m.organisationId,
+    userId: m.userId,
+    role: m.role,
+    departmentId: m.departmentId,
+    managerScope: m.managerScope,
+  };
+}
+
+function inviteCtx(i: typeof staffInvites.$inferSelect): PersonCtx {
+  return {
+    organisationId: i.organisationId,
+    userId: null,
+    role: i.role,
+    departmentId: i.departmentId,
+    managerScope: i.managerScope,
+  };
+}
+
+function refuse(message: string | null) {
+  if (message) throw new UserError(message);
+}
+
+/** A London date from the form as the moment access ends; it can't be in the past. */
+function accessEndFromInput(date: string | null | undefined): Date | null | undefined {
+  if (date === undefined) return undefined;
+  if (date === null || date === "") return null;
+  let at: Date;
+  try {
+    at = accessEndsAtFromLondonDate(date);
+  } catch {
+    throw new UserError("Enter the end date as a date");
+  }
+  if (date < todayInLondon()) throw new UserError("Choose today or a later date for access to end");
+  return at;
+}
+
+/** JSON with sorted keys, so stored jsonb and fresh objects compare equal. */
+function stable(value: unknown): string {
+  return JSON.stringify(value, (_k, v) =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(
+          Object.entries(v as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)),
+        )
+      : v,
+  );
+}
+
+/**
+ * Lock the organisation's super admins and say whether someone other than
+ * `exceptUserId` still has access — so two super admins can't demote,
+ * suspend or remove each other at the same moment and leave nobody.
+ */
+async function anotherActiveSuperAdmin(
+  tx: Tx,
+  organisationId: string,
+  exceptUserId: string,
+): Promise<boolean> {
+  const rows = await tx
+    .select({
+      userId: memberships.userId,
+      suspendedAt: memberships.suspendedAt,
+      accessEndsAt: memberships.accessEndsAt,
+    })
+    .from(memberships)
+    .where(and(eq(memberships.organisationId, organisationId), eq(memberships.role, "admin")))
+    .for("update");
+  return rows.some((r) => r.userId !== exceptUserId && accessLive(r));
+}
+
+const LAST_ADMIN = "There must always be at least one super admin with access";
 
 /**
  * The department chosen in the form: an existing one of this organisation,
@@ -207,6 +339,20 @@ export async function setSignoffs(
       }
     }
   }
+  // One main approver per department (a unique index): clear the others
+  // before this person becomes main.
+  for (const s of unique.filter((x) => x.isMain)) {
+    await tx
+      .update(approvers)
+      .set({ isMain: false })
+      .where(
+        and(
+          eq(approvers.organisationId, ctx.organisationId),
+          eq(approvers.departmentId, s.departmentId),
+          ne(approvers.email, person.email),
+        ),
+      );
+  }
   const where = personRows(ctx.organisationId, person);
   if (changes.remove.length > 0) {
     await tx.delete(approvers).where(and(where, inArray(approvers.departmentId, changes.remove)));
@@ -233,19 +379,6 @@ export async function setSignoffs(
       .update(approvers)
       .set({ isMain: u.isMain })
       .where(and(where, eq(approvers.departmentId, u.departmentId)));
-  }
-  // One main approver per department.
-  for (const s of unique.filter((x) => x.isMain)) {
-    await tx
-      .update(approvers)
-      .set({ isMain: false })
-      .where(
-        and(
-          eq(approvers.organisationId, ctx.organisationId),
-          eq(approvers.departmentId, s.departmentId),
-          ne(approvers.email, person.email),
-        ),
-      );
   }
   // Keep their name on the approver list in step with their profile.
   if (unique.length > 0) {
@@ -301,8 +434,10 @@ function cleanText(value: string | null | undefined): string | null {
 
 /**
  * Invite someone to the team with everything the form asked for: the
- * invitation carries their name, job title, department, role, sections and
- * abilities; sign-off rows wait (user id empty) until they accept.
+ * invitation carries their name, job title, department, role, sections,
+ * abilities, manager scope and access end date; sign-off rows wait (user id
+ * empty) until they accept. Managers may only add within their scope and
+ * give what they have themselves (personChangeRefusal).
  */
 export async function inviteUserTx(
   tx: Tx,
@@ -314,13 +449,28 @@ export async function inviteUserTx(
   expiresAt: Date;
   departmentName: string | null;
 }> {
+  const actor = await loadActor(tx, ctx);
   const email = input.email.trim().toLowerCase();
   const fullName = input.fullName.trim();
   const jobTitle = cleanText(input.jobTitle);
-  await assertEmailFree(tx, ctx, email);
-  const dept = await resolveDepartment(tx, ctx, input);
   const features = input.role === "admin" ? null : normaliseFeatures(input.features);
   const overrides = overridesFor(input.role, input.abilities);
+  const managerScope = input.role === "admin" ? null : (input.managerScope ?? null);
+  const accessEndsAt = accessEndFromInput(input.accessEndsOn) ?? null;
+  refuse(
+    personChangeRefusal(actor, null, null, {
+      role: input.role,
+      departmentId: input.departmentId,
+      newDepartmentName: input.newDepartmentName,
+      features,
+      overrides,
+      managerScope,
+      signoffs: input.signoffs,
+      accessEndsAt,
+    }),
+  );
+  await assertEmailFree(tx, ctx, email);
+  const dept = await resolveDepartment(tx, ctx, input);
   const invite = await createStaffInvite(tx, {
     organisationId: ctx.organisationId,
     email,
@@ -330,6 +480,8 @@ export async function inviteUserTx(
     jobTitle,
     departmentId: dept?.id ?? null,
     features,
+    managerScope,
+    accessEndsAt,
     invitedBy: ctx.actorUserId,
     summary: `Invited ${email} as ${roleLabel(input.role)}${dept ? ` (${dept.name})` : ""}`,
   });
@@ -348,18 +500,25 @@ export async function inviteUserTx(
       action: "create",
       after: { email, signsOffFor: signoff.after },
       summary: `${fullName || email} will sign off artwork once they accept`,
+      subjectEmail: email,
     });
     await syncDepartmentSteps(tx, ctx.organisationId);
   }
   return { ...invite, departmentName: dept?.name ?? null };
 }
 
-/** Change a team member: details, department, role, sections, sign-off and abilities. */
+/**
+ * Change a team member: details, department, role, sections, sign-off,
+ * abilities, manager scope and access end date — within what the actor may
+ * change (personChangeRefusal) and never leaving the organisation without a
+ * super admin who has access.
+ */
 export async function updateMemberTx(
   tx: Tx,
   ctx: Ctx,
   input: PersonInput & { userId: string; signoffPaused: boolean },
 ): Promise<{ name: string; changed: string[] }> {
+  const actor = await loadActor(tx, ctx);
   const membership = await tx.query.memberships.findFirst({
     where: and(
       eq(memberships.userId, input.userId),
@@ -371,30 +530,69 @@ export async function updateMemberTx(
   if (!user) throw new UserError("This person isn't on the team any more — reload the page");
   const isSelf = input.userId === ctx.actorUserId;
   if (isSelf && input.role !== membership.role) {
-    throw new UserError("You can't change your own role — ask another admin");
+    throw new UserError("You can't change your own role — ask another super admin");
   }
   const features = input.role === "admin" ? null : normaliseFeatures(input.features);
   if (isSelf && input.role !== "admin") {
     const mine = normaliseFeatures(membership.features);
     if (JSON.stringify(mine) !== JSON.stringify(features)) {
-      throw new UserError("You can't change your own sections — ask another admin");
+      throw new UserError("You can't change your own sections — ask another super admin");
     }
   }
-  if (membership.role === "admin" && input.role !== "admin") {
-    const [admins] = await tx
-      .select({ n: count() })
-      .from(memberships)
-      .where(
-        and(eq(memberships.organisationId, ctx.organisationId), eq(memberships.role, "admin")),
-      );
-    if (Number(admins.n) <= 1) throw new UserError("There must always be at least one admin");
+  const managerScope =
+    input.role === "admin"
+      ? null
+      : input.managerScope === undefined
+        ? membership.managerScope
+        : input.managerScope;
+  const endInput = accessEndFromInput(input.accessEndsOn);
+  const accessEndsAt = endInput === undefined ? membership.accessEndsAt : endInput;
+  if (
+    isSelf &&
+    (accessEndsAt?.getTime() ?? null) !== (membership.accessEndsAt?.getTime() ?? null)
+  ) {
+    throw new UserError("You can't set an end date on your own access — ask another super admin");
+  }
+  const overrides = overridesFor(input.role, input.abilities, {
+    signoffPaused: input.signoffPaused,
+  });
+  const beforeSignoffs = await currentSignoffs(tx, ctx.organisationId, {
+    userId: user.id,
+    email: user.email,
+  });
+  const before: PersonAccess = {
+    role: membership.role,
+    departmentId: membership.departmentId,
+    features: normaliseFeatures(membership.features),
+    overrides: membership.permissionOverrides as PermissionOverrides,
+    managerScope: membership.managerScope,
+    signoffs: beforeSignoffs,
+    accessEndsAt: membership.accessEndsAt,
+  };
+  refuse(
+    personChangeRefusal(actor, memberCtx(membership), before, {
+      role: input.role,
+      departmentId: input.departmentId,
+      newDepartmentName: input.newDepartmentName,
+      features,
+      overrides,
+      managerScope,
+      signoffs: input.signoffs,
+      accessEndsAt,
+    }),
+  );
+  const losesAdmin = membership.role === "admin" && input.role !== "admin";
+  const adminGetsEnd =
+    membership.role === "admin" && input.role === "admin" && accessEndsAt != null;
+  if (
+    (losesAdmin || adminGetsEnd) &&
+    !(await anotherActiveSuperAdmin(tx, ctx.organisationId, user.id))
+  ) {
+    throw new UserError(LAST_ADMIN);
   }
   const dept = await resolveDepartment(tx, ctx, input, membership.departmentId);
   const fullName = input.fullName.trim();
   const jobTitle = cleanText(input.jobTitle);
-  const overrides = overridesFor(input.role, input.abilities, {
-    signoffPaused: input.signoffPaused,
-  });
 
   const signoff = await setSignoffs(
     tx,
@@ -413,30 +611,39 @@ export async function updateMemberTx(
       departmentId: dept?.id ?? null,
       features,
       jobTitle,
+      managerScope,
+      accessEndsAt,
     })
     .where(eq(memberships.id, membership.id));
-  if (signoff.changed) await syncDepartmentSteps(tx, ctx.organisationId);
+  // Main approver routing skips people who can't sign: re-sync when that changes.
+  const pausedChanged =
+    signoffPaused(membership.permissionOverrides as PermissionOverrides) !== input.signoffPaused;
+  if (signoff.changed || pausedChanged) await syncDepartmentSteps(tx, ctx.organisationId);
 
-  const before = {
+  const beforeRow = {
     fullName: user.fullName,
     jobTitle: membership.jobTitle,
     departmentId: membership.departmentId,
     role: membership.role,
     features: normaliseFeatures(membership.features),
     overrides: membership.permissionOverrides,
+    managerScope: membership.managerScope,
+    accessEndsAt: membership.accessEndsAt?.toISOString() ?? null,
     signsOffFor: signoff.before,
   };
-  const after = {
+  const afterRow = {
     fullName: fullName || user.fullName,
     jobTitle,
     departmentId: dept?.id ?? null,
     role: input.role,
     features,
     overrides,
+    managerScope,
+    accessEndsAt: accessEndsAt?.toISOString() ?? null,
     signsOffFor: signoff.after,
   };
-  const changed = (Object.keys(before) as (keyof typeof before)[]).filter((k) =>
-    k === "signsOffFor" ? signoff.changed : JSON.stringify(before[k]) !== JSON.stringify(after[k]),
+  const changed = (Object.keys(beforeRow) as (keyof typeof beforeRow)[]).filter((k) =>
+    k === "signsOffFor" ? signoff.changed : stable(beforeRow[k]) !== stable(afterRow[k]),
   );
   if (changed.length > 0) {
     await writeAudit(tx, {
@@ -445,9 +652,11 @@ export async function updateMemberTx(
       entityType: "membership",
       entityId: membership.id,
       action: "settings_change",
-      before,
-      after,
+      before: beforeRow,
+      after: afterRow,
       summary: `${user.email}: ${changed.join(", ")} changed`,
+      subjectUserId: user.id,
+      subjectEmail: user.email,
     });
   }
   return { name: fullName || user.fullName || user.email, changed };
@@ -470,18 +679,66 @@ async function openInvite(tx: Tx, ctx: Ctx, inviteId: string): Promise<OpenInvit
   return invite;
 }
 
+/** The invitation, refused unless the actor may change it (canManagePerson). */
+async function managedInvite(tx: Tx, ctx: Ctx, inviteId: string) {
+  const actor = await loadActor(tx, ctx);
+  const invite = await openInvite(tx, ctx, inviteId);
+  if (!canManagePerson(actor, inviteCtx(invite))) {
+    throw new UserError("You can't change this invitation");
+  }
+  return { actor, invite };
+}
+
 /** Change what an invitation will give someone before they accept it. */
 export async function updateInviteTx(
   tx: Tx,
   ctx: Ctx,
   input: PersonInput & { inviteId: string },
 ): Promise<{ name: string }> {
+  const actor = await loadActor(tx, ctx);
   const invite = await openInvite(tx, ctx, input.inviteId);
-  const dept = await resolveDepartment(tx, ctx, input, invite.departmentId);
   const fullName = input.fullName.trim();
   const jobTitle = cleanText(input.jobTitle);
   const features = input.role === "admin" ? null : normaliseFeatures(input.features);
   const overrides = overridesFor(input.role, input.abilities);
+  const managerScope =
+    input.role === "admin"
+      ? null
+      : input.managerScope === undefined
+        ? invite.managerScope
+        : input.managerScope;
+  const endInput = accessEndFromInput(input.accessEndsOn);
+  const accessEndsAt = endInput === undefined ? invite.accessEndsAt : endInput;
+  const beforeSignoffs = await currentSignoffs(tx, ctx.organisationId, {
+    userId: null,
+    email: invite.invitedEmail,
+  });
+  refuse(
+    personChangeRefusal(
+      actor,
+      inviteCtx(invite),
+      {
+        role: invite.role,
+        departmentId: invite.departmentId,
+        features: normaliseFeatures(invite.features),
+        overrides: invite.permissionOverrides as PermissionOverrides,
+        managerScope: invite.managerScope,
+        signoffs: beforeSignoffs,
+        accessEndsAt: invite.accessEndsAt,
+      },
+      {
+        role: input.role,
+        departmentId: input.departmentId,
+        newDepartmentName: input.newDepartmentName,
+        features,
+        overrides,
+        managerScope,
+        signoffs: input.signoffs,
+        accessEndsAt,
+      },
+    ),
+  );
+  const dept = await resolveDepartment(tx, ctx, input, invite.departmentId);
   const signoff = await setSignoffs(
     tx,
     ctx,
@@ -497,35 +754,45 @@ export async function updateInviteTx(
       permissionOverrides: overrides,
       departmentId: dept?.id ?? null,
       features,
+      managerScope,
+      accessEndsAt,
     })
     .where(eq(staffInvites.id, invite.id));
   if (signoff.changed) await syncDepartmentSteps(tx, ctx.organisationId);
-  await writeAudit(tx, {
-    organisationId: ctx.organisationId,
-    actorUserId: ctx.actorUserId,
-    entityType: "staff_invite",
-    entityId: invite.id,
-    action: "settings_change",
-    before: {
-      fullName: invite.fullName,
-      jobTitle: invite.jobTitle,
-      role: invite.role,
-      departmentId: invite.departmentId,
-      features: invite.features,
-      overrides: invite.permissionOverrides,
-      signsOffFor: signoff.before,
-    },
-    after: {
-      fullName,
-      jobTitle,
-      role: input.role,
-      departmentId: dept?.id ?? null,
-      features,
-      overrides,
-      signsOffFor: signoff.after,
-    },
-    summary: `Invitation for ${invite.invitedEmail} changed`,
-  });
+  const beforeRow = {
+    fullName: invite.fullName,
+    jobTitle: invite.jobTitle,
+    role: invite.role,
+    departmentId: invite.departmentId,
+    features: normaliseFeatures(invite.features),
+    overrides: invite.permissionOverrides,
+    managerScope: invite.managerScope,
+    accessEndsAt: invite.accessEndsAt?.toISOString() ?? null,
+  };
+  const afterRow = {
+    fullName,
+    jobTitle,
+    role: input.role,
+    departmentId: dept?.id ?? null,
+    features,
+    overrides,
+    managerScope,
+    accessEndsAt: accessEndsAt?.toISOString() ?? null,
+  };
+  // Only real changes are recorded.
+  if (signoff.changed || stable(beforeRow) !== stable(afterRow)) {
+    await writeAudit(tx, {
+      organisationId: ctx.organisationId,
+      actorUserId: ctx.actorUserId,
+      entityType: "staff_invite",
+      entityId: invite.id,
+      action: "settings_change",
+      before: { ...beforeRow, signsOffFor: signoff.before },
+      after: { ...afterRow, signsOffFor: signoff.after },
+      summary: `Invitation for ${invite.invitedEmail} changed`,
+      subjectEmail: invite.invitedEmail,
+    });
+  }
   return { name: fullName || invite.invitedEmail };
 }
 
@@ -534,6 +801,7 @@ export async function updateInviteTx(
  * going to give them go back to the department.
  */
 export async function cancelInviteTx(tx: Tx, ctx: Ctx, inviteId: string): Promise<string> {
+  await managedInvite(tx, ctx, inviteId);
   const [invite] = await tx
     .update(staffInvites)
     .set({ revokedAt: new Date() })
@@ -568,6 +836,7 @@ export async function cancelInviteTx(tx: Tx, ctx: Ctx, inviteId: string): Promis
     action: "grant_revoke",
     before: { email: invite.invitedEmail, approverRows: dropped.length },
     summary: `Cancelled the invitation for ${invite.invitedEmail}`,
+    subjectEmail: invite.invitedEmail,
   });
   return invite.fullName || invite.invitedEmail;
 }
@@ -582,7 +851,7 @@ export async function renewInviteLinkTx(
   ctx: Ctx,
   inviteId: string,
 ): Promise<{ invite: OpenInvite; inviteUrl: string; expiresAt: Date }> {
-  const invite = await openInvite(tx, ctx, inviteId);
+  const { invite } = await managedInvite(tx, ctx, inviteId);
   const token = generateInviteToken();
   const expiresAt = new Date(Date.now() + STAFF_INVITE_DAYS * DAY);
   await tx
@@ -596,6 +865,7 @@ export async function renewInviteLinkTx(
     entityId: invite.id,
     action: "invite",
     summary: `New invitation link for ${invite.invitedEmail}`,
+    subjectEmail: invite.invitedEmail,
   });
   return { invite, inviteUrl: `${appUrl()}/invite/${token}`, expiresAt };
 }
@@ -695,21 +965,28 @@ async function stepsNaming(db: Db | Tx, organisationId: string, userId: string) 
     );
 }
 
-/** People who can take over sign-offs: anyone on the team except viewers. */
+/**
+ * People who can take over sign-offs: anyone who can sign now
+ * (canReceiveSignoff — active, not a viewer, sign-off not paused).
+ */
 export async function handoverCandidates(db: Db | Tx, organisationId: string, exceptId: string) {
   const rows = await db
-    .select({ userId: users.id, name: users.fullName, email: users.email, role: memberships.role })
+    .select({
+      userId: users.id,
+      name: users.fullName,
+      email: users.email,
+      role: memberships.role,
+      overrides: memberships.permissionOverrides,
+      suspendedAt: memberships.suspendedAt,
+      accessEndsAt: memberships.accessEndsAt,
+    })
     .from(memberships)
     .innerJoin(users, eq(users.id, memberships.userId))
-    .where(
-      and(
-        eq(memberships.organisationId, organisationId),
-        ne(memberships.role, "viewer"),
-        ne(memberships.userId, exceptId),
-      ),
-    )
+    .where(and(eq(memberships.organisationId, organisationId), ne(memberships.userId, exceptId)))
     .orderBy(asc(users.fullName));
-  return rows.map((r) => ({ userId: r.userId, name: r.name || r.email, role: r.role }));
+  return rows
+    .filter((r) => canReceiveSignoff({ ...r, overrides: r.overrides as PermissionOverrides }))
+    .map((r) => ({ userId: r.userId, name: r.name || r.email, role: r.role }));
 }
 
 export type RemovalImpact = {
@@ -723,7 +1000,7 @@ export type RemovalImpact = {
   candidates: { userId: string; name: string; role: StaffRole }[];
 };
 
-/** What removing someone would change, for the confirm dialog. */
+/** What removing (or suspending) someone would change, for the confirm dialog. */
 export async function getRemovalImpact(
   db: Db | Tx,
   organisationId: string,
@@ -769,27 +1046,35 @@ export async function getRemovalImpact(
     handoverCandidates(db, organisationId, userId),
   ]);
   const live = mine.filter((m) => !m.dept.isArchived && m.dept.signsOff);
+  // The others who would take the department's sign-offs: people who can sign now.
   const others = live.length
-    ? await db
-        .select({ departmentId: approvers.departmentId, name: approvers.fullName })
-        .from(approvers)
-        .innerJoin(
-          memberships,
-          and(
-            eq(memberships.userId, approvers.userId),
-            eq(memberships.organisationId, approvers.organisationId),
-          ),
-        )
-        .where(
-          and(
-            eq(approvers.organisationId, organisationId),
-            inArray(
-              approvers.departmentId,
-              live.map((m) => m.departmentId),
+    ? (
+        await db
+          .select({
+            departmentId: approvers.departmentId,
+            name: approvers.fullName,
+            overrides: memberships.permissionOverrides,
+          })
+          .from(approvers)
+          .innerJoin(
+            memberships,
+            and(
+              eq(memberships.userId, approvers.userId),
+              eq(memberships.organisationId, approvers.organisationId),
             ),
-            ne(approvers.userId, userId),
-          ),
-        )
+          )
+          .where(
+            and(
+              eq(approvers.organisationId, organisationId),
+              inArray(
+                approvers.departmentId,
+                live.map((m) => m.departmentId),
+              ),
+              ne(approvers.userId, userId),
+              activeMembership(),
+            ),
+          )
+      ).filter((o) => !signoffPaused(o.overrides as PermissionOverrides))
     : [];
   return {
     name: row.user.fullName || row.user.email,
@@ -808,11 +1093,92 @@ export async function getRemovalImpact(
 }
 
 /**
- * Remove someone who has left. Sign-offs waiting on them go to the person
- * picked; their open tasks and items move to the admin removing them; they
- * stop being an approver, so each department's step falls back to its next
- * main approver or the whole department. Refused only while a workflow step
- * names them directly (outside the departments).
+ * Hand the sign-offs waiting on someone by name to another person who can
+ * sign now (canReceiveSignoff), one audited delegation each, and tell them.
+ * Used when someone is removed or suspended.
+ */
+async function handOverWaitingTx(
+  tx: Tx,
+  ctx: Ctx & { actorName: string },
+  opts: { userId: string; who: string; handToUserId: string | null | undefined; why: string },
+): Promise<number> {
+  const orgId = ctx.organisationId;
+  const waiting = await signoffsWaitingOn(tx, orgId, opts.userId);
+  if (waiting.length === 0) return 0;
+  if (!opts.handToUserId) {
+    throw new UserError(
+      `${waiting.length === 1 ? "A sign-off is" : `${waiting.length} sign-offs are`} waiting on ${opts.who} — choose who takes ${waiting.length === 1 ? "it" : "them"} over`,
+    );
+  }
+  const [target] = await tx
+    .select({
+      role: memberships.role,
+      overrides: memberships.permissionOverrides,
+      suspendedAt: memberships.suspendedAt,
+      accessEndsAt: memberships.accessEndsAt,
+      name: users.fullName,
+      email: users.email,
+    })
+    .from(memberships)
+    .innerJoin(users, eq(users.id, memberships.userId))
+    .where(and(eq(memberships.userId, opts.handToUserId), eq(memberships.organisationId, orgId)))
+    .limit(1);
+  if (
+    !target ||
+    opts.handToUserId === opts.userId ||
+    !canReceiveSignoff({ ...target, overrides: target.overrides as PermissionOverrides })
+  ) {
+    throw new UserError("Pick a team member who can sign off");
+  }
+  for (const w of waiting) {
+    const run = await loadRun(tx, w.entityType, w.entityId, w.runNumber);
+    const updated = applyDelegation(run, {
+      instanceId: w.id,
+      toUserId: opts.handToUserId,
+      fromUserId: opts.userId,
+    });
+    await persistRun(tx, w.entityType, w.entityId, updated);
+    await writeAudit(tx, {
+      organisationId: orgId,
+      actorUserId: ctx.actorUserId,
+      entityType: w.entityType,
+      entityId: w.entityId,
+      action: "delegate",
+      after: { step: w.stepName, fromUserId: opts.userId, toUserId: opts.handToUserId },
+      summary: `${w.ref}: ${w.stepName} handed to ${target.name || target.email} after ${opts.who} ${opts.why}`,
+      subjectUserId: opts.userId,
+    });
+  }
+  await notify(tx, {
+    userIds: [opts.handToUserId],
+    kind: "delegation",
+    title:
+      waiting.length === 1
+        ? `A sign-off is now yours: ${waiting[0].ref}`
+        : `${waiting.length} sign-offs are now yours`,
+    body: `${opts.who} ${opts.why}; ${ctx.actorName} handed their sign-offs to you.`,
+    link: "/approvals",
+  });
+  return waiting.length;
+}
+
+/** The membership and user for someone on the team, or a refusal. */
+async function loadMember(tx: Tx, ctx: Ctx, userId: string) {
+  const membership = await tx.query.memberships.findFirst({
+    where: and(eq(memberships.userId, userId), eq(memberships.organisationId, ctx.organisationId)),
+  });
+  if (!membership) throw new UserError("This person isn't on the team any more — reload the page");
+  const user = await tx.query.users.findFirst({ where: eq(users.id, membership.userId) });
+  return { membership, user, who: user?.fullName || user?.email || "This person" };
+}
+
+/**
+ * Remove someone who has left (super admins only). Sign-offs waiting on them
+ * go to the person picked; their open tasks and items move to the super
+ * admin removing them; they stop being an approver, so each department's
+ * step falls back to its next main approver or the whole department.
+ * Refused only while a workflow step names them directly (outside the
+ * departments).
  */
 export async function removeMemberTx(
   tx: Tx,
@@ -820,22 +1186,20 @@ export async function removeMemberTx(
   input: { userId: string; handToUserId?: string | null },
 ): Promise<{ name: string; items: number; tasks: number; handedOver: number }> {
   const orgId = ctx.organisationId;
-  const membership = await tx.query.memberships.findFirst({
-    where: and(eq(memberships.userId, input.userId), eq(memberships.organisationId, orgId)),
-  });
-  if (!membership) throw new UserError("This person isn't on the team any more — reload the page");
+  const actor = await loadActor(tx, ctx);
+  const { membership, user: member, who } = await loadMember(tx, ctx, input.userId);
   if (membership.userId === ctx.actorUserId) {
-    throw new UserError("You can't remove yourself — ask another admin");
+    throw new UserError("You can't remove yourself — ask another super admin");
   }
-  if (membership.role === "admin") {
-    const [admins] = await tx
-      .select({ n: count() })
-      .from(memberships)
-      .where(and(eq(memberships.organisationId, orgId), eq(memberships.role, "admin")));
-    if (Number(admins.n) <= 1) throw new UserError("There must always be at least one admin");
+  if (!canRemovePerson(actor, memberCtx(membership))) {
+    throw new UserError("Only a super admin can remove people");
   }
-  const member = await tx.query.users.findFirst({ where: eq(users.id, membership.userId) });
-  const who = member?.fullName || member?.email || "This person";
+  if (
+    membership.role === "admin" &&
+    !(await anotherActiveSuperAdmin(tx, orgId, membership.userId))
+  ) {
+    throw new UserError(LAST_ADMIN);
+  }
 
   const named = await stepsNaming(tx, orgId, membership.userId);
   if (named.length > 0) {
@@ -845,51 +1209,12 @@ export async function removeMemberTx(
   }
 
   // Sign-offs waiting on them by name go to the person picked.
-  const waiting = await signoffsWaitingOn(tx, orgId, membership.userId);
-  if (waiting.length > 0) {
-    if (!input.handToUserId) {
-      throw new UserError(
-        `${waiting.length === 1 ? "A sign-off is" : `${waiting.length} sign-offs are`} waiting on ${who} — choose who takes ${waiting.length === 1 ? "it" : "them"} over`,
-      );
-    }
-    const [target] = await tx
-      .select({ role: memberships.role, name: users.fullName, email: users.email })
-      .from(memberships)
-      .innerJoin(users, eq(users.id, memberships.userId))
-      .where(and(eq(memberships.userId, input.handToUserId), eq(memberships.organisationId, orgId)))
-      .limit(1);
-    if (!target || target.role === "viewer" || input.handToUserId === membership.userId) {
-      throw new UserError("Pick a team member who can sign off");
-    }
-    for (const w of waiting) {
-      const run = await loadRun(tx, w.entityType, w.entityId, w.runNumber);
-      const updated = applyDelegation(run, {
-        instanceId: w.id,
-        toUserId: input.handToUserId,
-        fromUserId: membership.userId,
-      });
-      await persistRun(tx, w.entityType, w.entityId, updated);
-      await writeAudit(tx, {
-        organisationId: orgId,
-        actorUserId: ctx.actorUserId,
-        entityType: w.entityType,
-        entityId: w.entityId,
-        action: "delegate",
-        after: { step: w.stepName, fromUserId: membership.userId, toUserId: input.handToUserId },
-        summary: `${w.ref}: ${w.stepName} handed to ${target.name || target.email} after ${who} left the team`,
-      });
-    }
-    await notify(tx, {
-      userIds: [input.handToUserId],
-      kind: "delegation",
-      title:
-        waiting.length === 1
-          ? `A sign-off is now yours: ${waiting[0].ref}`
-          : `${waiting.length} sign-offs are now yours`,
-      body: `${who} has left the team; ${ctx.actorName} handed their sign-offs to you.`,
-      link: "/approvals",
-    });
-  }
+  const handedOver = await handOverWaitingTx(tx, ctx, {
+    userId: membership.userId,
+    who,
+    handToUserId: input.handToUserId,
+    why: "left the team",
+  });
 
   const movedTasks = await tx
     .update(tasks)
@@ -902,8 +1227,8 @@ export async function removeMemberTx(
       ),
     )
     .returning({ id: tasks.id });
-  // Their items pass to the admin doing the removal, and any sign-off on an
-  // item naming them personally falls back to the department.
+  // Their items pass to the super admin doing the removal, and any sign-off
+  // on an item naming them personally falls back to the department.
   const owned = await tx
     .select({ id: signageItems.id, ref: signageItems.ref, editionId: signageItems.editionId })
     .from(signageItems)
@@ -946,7 +1271,7 @@ export async function removeMemberTx(
       )
   `);
   if (member) {
-    await tx
+    const revoked = await tx
       .update(staffInvites)
       .set({ revokedAt: new Date() })
       .where(
@@ -956,7 +1281,20 @@ export async function removeMemberTx(
           isNull(staffInvites.acceptedAt),
           isNull(staffInvites.revokedAt),
         ),
-      );
+      )
+      .returning({ id: staffInvites.id });
+    for (const r of revoked) {
+      await writeAudit(tx, {
+        organisationId: orgId,
+        actorUserId: ctx.actorUserId,
+        entityType: "staff_invite",
+        entityId: r.id,
+        action: "grant_revoke",
+        summary: `Invitation for ${member.email} cancelled when they were removed`,
+        subjectUserId: member.id,
+        subjectEmail: member.email,
+      });
+    }
   }
   // They no longer sign off for anyone: each department's step falls back.
   const dropped = await tx
@@ -990,9 +1328,174 @@ export async function removeMemberTx(
     after: {
       tasksMovedTo: ctx.actorUserId,
       itemsMovedTo: ctx.actorUserId,
-      signoffsHandedTo: waiting.length > 0 ? input.handToUserId : null,
+      signoffsHandedTo: handedOver > 0 ? input.handToUserId : null,
     },
     summary: `Removed ${member?.email ?? "a team member"} from the team`,
+    subjectUserId: membership.userId,
+    subjectEmail: member?.email ?? null,
   });
-  return { name: who, items: owned.length, tasks: movedTasks.length, handedOver: waiting.length };
+  return { name: who, items: owned.length, tasks: movedTasks.length, handedOver };
+}
+
+/** Why the actor can't suspend, reactivate or end this person's access, or null. */
+async function suspendRefusal(
+  tx: Tx,
+  ctx: Ctx,
+  actor: StaffActor,
+  membership: MembershipRow,
+  opts: { removesAccess: boolean },
+): Promise<string | null> {
+  if (membership.userId === ctx.actorUserId) {
+    return "You can't change your own access — ask another super admin";
+  }
+  const lastActiveAdmin =
+    opts.removesAccess &&
+    membership.role === "admin" &&
+    !(await anotherActiveSuperAdmin(tx, ctx.organisationId, membership.userId));
+  if (lastActiveAdmin) return LAST_ADMIN;
+  if (!canSuspendPerson(actor, memberCtx(membership), { lastActiveAdmin: false })) {
+    return "You can't change this person's access";
+  }
+  return null;
+}
+
+/**
+ * Suspend someone: they can't sign in, aren't told about anything and
+ * aren't offered anywhere until reactivated. Sign-offs waiting on them by
+ * name go to someone who can sign (required when there are any); their
+ * approver rows, tasks and items stay, so reactivating restores everything.
+ * Refused while a workflow step names them directly.
+ */
+export async function suspendMemberTx(
+  tx: Tx,
+  ctx: Ctx & { actorName: string },
+  input: { userId: string; handToUserId?: string | null },
+): Promise<{ name: string; handedOver: number }> {
+  const actor = await loadActor(tx, ctx);
+  const { membership, user, who } = await loadMember(tx, ctx, input.userId);
+  refuse(await suspendRefusal(tx, ctx, actor, membership, { removesAccess: true }));
+  if (membership.suspendedAt) throw new UserError(`${who} is already suspended`);
+  const named = await stepsNaming(tx, ctx.organisationId, membership.userId);
+  if (named.length > 0) {
+    throw new UserError(
+      `${who} is the named approver for ${named.map((n) => `“${n.step}”`).join(", ")} — pick someone else in that workflow first`,
+    );
+  }
+  const handedOver = await handOverWaitingTx(tx, ctx, {
+    userId: membership.userId,
+    who,
+    handToUserId: input.handToUserId,
+    why: "is suspended",
+  });
+  const now = new Date();
+  await tx
+    .update(memberships)
+    .set({ suspendedAt: now, suspendedBy: ctx.actorUserId })
+    .where(eq(memberships.id, membership.id));
+  // A main approver who is suspended isn't named on new sign-offs.
+  await syncDepartmentSteps(tx, ctx.organisationId);
+  await writeAudit(tx, {
+    organisationId: ctx.organisationId,
+    actorUserId: ctx.actorUserId,
+    entityType: "membership",
+    entityId: membership.id,
+    action: "grant_revoke",
+    before: { suspendedAt: null },
+    after: {
+      suspendedAt: now.toISOString(),
+      suspendedBy: ctx.actorUserId,
+      signoffsHandedTo: handedOver > 0 ? input.handToUserId : null,
+    },
+    summary: `Suspended ${user?.email ?? who}`,
+    subjectUserId: membership.userId,
+    subjectEmail: user?.email ?? null,
+  });
+  return { name: who, handedOver };
+}
+
+/** Give a suspended person their access back, exactly as it was. */
+export async function reactivateMemberTx(
+  tx: Tx,
+  ctx: Ctx,
+  input: { userId: string },
+): Promise<{ name: string; accessEnded: boolean }> {
+  const actor = await loadActor(tx, ctx);
+  const { membership, user, who } = await loadMember(tx, ctx, input.userId);
+  refuse(await suspendRefusal(tx, ctx, actor, membership, { removesAccess: false }));
+  if (!membership.suspendedAt) throw new UserError(`${who} isn't suspended`);
+  await tx
+    .update(memberships)
+    .set({ suspendedAt: null, suspendedBy: null })
+    .where(eq(memberships.id, membership.id));
+  await syncDepartmentSteps(tx, ctx.organisationId);
+  await writeAudit(tx, {
+    organisationId: ctx.organisationId,
+    actorUserId: ctx.actorUserId,
+    entityType: "membership",
+    entityId: membership.id,
+    action: "settings_change",
+    before: { suspendedAt: membership.suspendedAt.toISOString() },
+    after: { suspendedAt: null },
+    summary: `Reactivated ${user?.email ?? who}`,
+    subjectUserId: membership.userId,
+    subjectEmail: user?.email ?? null,
+  });
+  // Reactivating doesn't move an end date that has already passed.
+  return { name: who, accessEnded: !accessLive({ accessEndsAt: membership.accessEndsAt }) };
+}
+
+/**
+ * Set or clear the date someone's access ends (the end of that London day),
+ * for a team member or an open invitation. Today or later only.
+ */
+export async function setAccessEndTx(
+  tx: Tx,
+  ctx: Ctx,
+  input: { userId?: string; inviteId?: string; date: string | null },
+): Promise<{ name: string; endsAt: Date | null }> {
+  const endsAt = accessEndFromInput(input.date) ?? null;
+  const summaryFor = (email: string) =>
+    endsAt
+      ? `Access for ${email} ends ${formatDate(londonDateOfAccessEnd(endsAt))}`
+      : `End date cleared for ${email}`;
+  if (input.inviteId) {
+    const { invite } = await managedInvite(tx, ctx, input.inviteId);
+    await tx
+      .update(staffInvites)
+      .set({ accessEndsAt: endsAt })
+      .where(eq(staffInvites.id, invite.id));
+    await writeAudit(tx, {
+      organisationId: ctx.organisationId,
+      actorUserId: ctx.actorUserId,
+      entityType: "staff_invite",
+      entityId: invite.id,
+      action: "settings_change",
+      before: { accessEndsAt: invite.accessEndsAt?.toISOString() ?? null },
+      after: { accessEndsAt: endsAt?.toISOString() ?? null },
+      summary: summaryFor(invite.invitedEmail),
+      subjectEmail: invite.invitedEmail,
+    });
+    return { name: invite.fullName || invite.invitedEmail, endsAt };
+  }
+  if (!input.userId) throw new UserError("Choose a person");
+  const actor = await loadActor(tx, ctx);
+  const { membership, user, who } = await loadMember(tx, ctx, input.userId);
+  refuse(await suspendRefusal(tx, ctx, actor, membership, { removesAccess: endsAt != null }));
+  await tx
+    .update(memberships)
+    .set({ accessEndsAt: endsAt })
+    .where(eq(memberships.id, membership.id));
+  await writeAudit(tx, {
+    organisationId: ctx.organisationId,
+    actorUserId: ctx.actorUserId,
+    entityType: "membership",
+    entityId: membership.id,
+    action: "settings_change",
+    before: { accessEndsAt: membership.accessEndsAt?.toISOString() ?? null },
+    after: { accessEndsAt: endsAt?.toISOString() ?? null },
+    summary: summaryFor(user?.email ?? who),
+    subjectUserId: membership.userId,
+    subjectEmail: user?.email ?? null,
+  });
+  return { name: who, endsAt };
 }

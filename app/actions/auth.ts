@@ -11,7 +11,7 @@ import { writeAudit } from "@/lib/audit";
 import { DEV_COOKIE, demoEmailAllowed, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
 import { supabaseUrl } from "@/lib/auth/supabase-config";
-import { emailIsInvited, sendAccountEmail } from "@/lib/auth/account-link";
+import { auditSignIn, emailIsInvited, sendAccountEmail } from "@/lib/auth/account-link";
 import { signInErrorMessage, supabaseProjectRef } from "@/lib/auth/supabase-diagnostics";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 
@@ -35,7 +35,7 @@ export async function signInWithPassword(input: unknown): Promise<AuthResult> {
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
   const supabase = await createSupabaseServerClient();
   if (!supabase) return { ok: false, error: "Authentication is not configured" };
-  const { error } = await supabase.auth.signInWithPassword({
+  const { data: signedIn, error } = await supabase.auth.signInWithPassword({
     email: parsed.data.email.trim().toLowerCase(),
     password: parsed.data.password,
   });
@@ -59,6 +59,7 @@ export async function signInWithPassword(input: unknown): Promise<AuthResult> {
       error: "This account doesn't have access to Hall Pass — ask your admin for an invitation.",
     };
   }
+  if (signedIn.user) await auditSignIn(signedIn.user, "password");
   redirect(safeNext(parsed.data.next) ?? "/");
 }
 

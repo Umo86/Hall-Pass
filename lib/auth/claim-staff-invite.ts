@@ -53,6 +53,9 @@ export async function claimStaffInvite(invite: StaffInvite, userId: string, full
         departmentId: invite.departmentId,
         features: invite.features,
         jobTitle: invite.jobTitle,
+        // Users v2: a manager's scope and an access end date come across too.
+        managerScope: invite.role === "admin" ? null : invite.managerScope,
+        accessEndsAt: invite.accessEndsAt,
       })
       .onConflictDoNothing();
     // Approver entries waiting for this person now point at their account.
@@ -79,6 +82,8 @@ export async function claimStaffInvite(invite: StaffInvite, userId: string, full
       entityId: invite.id,
       action: "invite",
       summary: `Staff invitation accepted (${invite.role})`,
+      subjectUserId: userId,
+      subjectEmail: invite.invitedEmail,
     });
   });
 }

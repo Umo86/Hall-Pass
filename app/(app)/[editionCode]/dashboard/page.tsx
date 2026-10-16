@@ -9,7 +9,7 @@ import { dashboardData } from "@/lib/queries/dashboard";
 import { plural } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import { editionIsReadOnly } from "@/lib/edition-lock";
-import { getSetupStatus } from "@/lib/queries/setup";
+import { getSetupStatus, setupPermissionsFor } from "@/lib/queries/setup";
 import { todayInLondon } from "@/lib/today";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
@@ -69,19 +69,22 @@ export default async function DashboardPage({
   const code = edition.code;
   const today = todayInLondon();
   const archived = editionIsReadOnly(edition.status);
-  const canSetup = can(actor, { type: "settings.manage" }) && !archived;
+  // Setup progress for anyone who gets events ready; each step by its own ability.
+  const canSetup = can(actor, { type: "event.setup" }) && !archived;
+  const canEditEvent = can(actor, { type: "events.edit" }) && !archived;
   const canAddSigns = can(actor, { type: "signage.create" }) && !archived;
+  const canSeeCosts = can(actor, { type: "costs.view" });
   const has = (f: Feature) => hasFeature(actor, f);
   const [data, logoUrl, setup] = await Promise.all([
     dashboardData({ edition, actor, today }),
     showLogoUrl(edition.logoPath),
     // Admins and Operations see how far setup has got until it's finished.
     canSetup && !(edition.setupChecked ?? []).includes("dismissed") && edition.breakdownEnd >= today
-      ? getSetupStatus(edition, session.organisation.id, {
-          canSetup,
-          canUsers: can(actor, { type: "users.manage" }),
-          canAddSigns,
-        })
+      ? getSetupStatus(
+          edition,
+          session.organisation.id,
+          setupPermissionsFor(actor, { readOnly: archived }),
+        )
       : Promise.resolve(null),
   ]);
   const progress = signageProgress(data.statusCounts);
@@ -99,9 +102,9 @@ export default async function DashboardPage({
     onsite: has("onsite") && can(actor, { type: "snag.manage" }) ? data.next.onsite : null,
   });
 
-  // Admins and Operations chase from the team view (each line opens that
-  // person's or team's sign-offs); everyone else sees the artwork.
-  const team = actor.role === "admin" || actor.role === "ops";
+  // Those who chase sign-offs (approval.chase) work from the team view (each
+  // line opens that person's or team's sign-offs); everyone else sees the artwork.
+  const team = can(actor, { type: "approval.chase" });
   const sittingHref = team
     ? `/approvals?tab=mine&all=1&event=${code}`
     : `/approvals?tab=artwork&event=${code}&filter=waiting`;
@@ -119,7 +122,7 @@ export default async function DashboardPage({
 
   const venue = `${ed.venue.name}${ed.venue.address ? `, ${ed.venue.address}` : ""}`;
   const showSignage = has("signage");
-  const showBudget = showSignage && can(actor, { type: "costs.view" });
+  const showBudget = showSignage && canSeeCosts;
   const showSponsorship = has("sponsorship");
 
   return (
@@ -154,9 +157,9 @@ export default async function DashboardPage({
             </span>
           }
           actions={
-            canSetup || canAddSigns ? (
+            canEditEvent || canAddSigns ? (
               <>
-                {canSetup && (
+                {canEditEvent && (
                   <Button asChild variant="outline" size="sm">
                     <Link href={`/${code}/setup#details`}>
                       <Pencil aria-hidden /> Edit event details
@@ -246,13 +249,14 @@ export default async function DashboardPage({
                   summary={budgetSummary(data.budget)}
                   estimate={data.budget.estimate}
                   actual={data.budget.actual}
-                  canSetBudget={canSetup}
+                  canSetBudget={canEditEvent}
                 />
               )}
               {showSponsorship && (
                 <SponsorshipCard
                   code={code}
-                  summary={data.sponsorship}
+                  // Sales figures only for people who see prices.
+                  summary={canSeeCosts ? data.sponsorship : { ...data.sponsorship, sales: 0 }}
                   canAdd={can(actor, { type: "sponsorship.create" }) && !archived}
                 />
               )}

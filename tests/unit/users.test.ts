@@ -5,10 +5,14 @@
 import { describe, expect, it } from "vitest";
 import { FEATURES } from "@/lib/authz";
 import {
-  ABILITY_KEYS,
+  abilityChanged,
+  abilityChoices,
+  abilityGroups,
   defaultAbilities,
   departmentFallbackText,
+  EDITABLE_ABILITY_KEYS,
   effectiveAbilities,
+  effectiveAbility,
   featuresSummary,
   firstName,
   inviteStatusText,
@@ -23,36 +27,75 @@ import {
 } from "@/lib/users/rules";
 
 describe("abilities", () => {
-  it("start from the role's defaults", () => {
-    expect(defaultAbilities("ops")).toEqual({
-      "signage.create": true,
-      "sponsorship.create": true,
-      "costs.edit": true,
-      "settings.manage": true,
-    });
-    expect(defaultAbilities("viewer")).toEqual({
-      "signage.create": false,
-      "sponsorship.create": false,
-      "costs.edit": false,
-      "settings.manage": false,
-    });
-    expect(defaultAbilities("marketing")["signage.create"]).toBe(true);
-    expect(defaultAbilities("sales")["sponsorship.create"]).toBe(true);
+  it("start from the role's defaults: nothing chosen", () => {
+    expect(defaultAbilities("ops")).toEqual({});
+    const ops = effectiveAbilities("ops", {});
+    expect(ops["costs.edit"]).toBe("yes");
+    expect(ops["halls.manage"]).toBe("yes");
+    const viewer = effectiveAbilities("viewer", {});
+    expect(viewer["signage.create"]).toBe("no");
+    expect(viewer["costs.view"]).toBe("yes");
+    expect(effectiveAbilities("marketing", {})["signage.create"]).toBe("yes");
+    expect(effectiveAbilities("sales", {})["sponsorship.create"]).toBe("yes");
+    expect(effectiveAbilities("sales", {})["reports.download"]).toBe("partial");
   });
 
   it("apply stored differences", () => {
-    expect(effectiveAbilities("sales", { "costs.edit": true })["costs.edit"]).toBe(true);
-    expect(effectiveAbilities("ops", { "costs.edit": false })["costs.edit"]).toBe(false);
+    expect(effectiveAbilities("sales", { "costs.edit": true })["costs.edit"]).toBe("yes");
+    expect(effectiveAbilities("ops", { "costs.edit": false })["costs.edit"]).toBe("no");
+    expect(effectiveAbility("sales", { "reports.download": true }, "reports.download")).toBe("yes");
   });
 
   it("store only what differs from the role", () => {
-    expect(overridesFor("ops", defaultAbilities("ops"))).toEqual({});
-    expect(overridesFor("sales", { ...defaultAbilities("sales"), "costs.edit": true })).toEqual({
-      "costs.edit": true,
+    expect(overridesFor("ops", {})).toEqual({});
+    expect(overridesFor("ops", { "costs.edit": true, "halls.manage": true })).toEqual({});
+    expect(overridesFor("sales", { "costs.edit": true })).toEqual({ "costs.edit": true });
+    expect(overridesFor("ops", { "halls.manage": false })).toEqual({ "halls.manage": false });
+    // A partial default is a difference either way.
+    expect(overridesFor("sales", { "reports.download": true })).toEqual({
+      "reports.download": true,
     });
-    expect(overridesFor("ops", { "settings.manage": false })).toEqual({
-      "settings.manage": false,
+    expect(overridesFor("sales", { "reports.download": false })).toEqual({
+      "reports.download": false,
     });
+  });
+
+  it("an ability that follows another stores only a real difference", () => {
+    // Bulk follows "Add signage": with it taken away, bulk goes too.
+    expect(overridesFor("marketing", { "signage.create": false, "signage.bulk": false })).toEqual({
+      "signage.create": false,
+    });
+    expect(overridesFor("sales", { "signage.create": true, "signage.bulk": true })).toEqual({
+      "signage.create": true,
+    });
+    expect(overridesFor("marketing", { "signage.bulk": false })).toEqual({ "signage.bulk": false });
+    expect(
+      abilityChanged(
+        "marketing",
+        { "signage.create": false, "signage.bulk": false },
+        "signage.bulk",
+      ),
+    ).toBe(false);
+  });
+
+  it("older stored keys are read through and written out as the new ones", () => {
+    const choices = abilityChoices({ "settings.manage": true });
+    expect(choices["halls.manage"]).toBe(true);
+    expect(choices["organisation.manage"]).toBe(true);
+    const o = overridesFor("marketing", choices);
+    expect(o).not.toHaveProperty("settings.manage");
+    expect(o["events.create"]).toBe(true);
+    expect(o["lists.manage"]).toBe(true);
+    // Operations with settings.manage off keep all six off.
+    expect(overridesFor("ops", abilityChoices({ "settings.manage": false }))).toEqual({
+      "events.create": false,
+      "events.edit": false,
+      "halls.manage": false,
+      "suppliers.manage": false,
+      "lists.manage": false,
+      "organisation.manage": false,
+    });
+    expect(abilityChoices({ "sponsorship.create": true })["sponsorship.sell"]).toBe(true);
   });
 
   it("never store anything for admins", () => {
@@ -60,12 +103,19 @@ describe("abilities", () => {
   });
 
   it("keep a paused sign-off, and only that one approval key", () => {
-    const o = overridesFor("marketing", defaultAbilities("marketing"), { signoffPaused: true });
+    const o = overridesFor("marketing", {}, { signoffPaused: true });
     expect(o).toEqual({ "approval.decide": false });
     expect(signoffPaused(o)).toBe(true);
     expect(signoffPaused({})).toBe(false);
     expect(signoffPaused(null)).toBe(false);
-    expect(ABILITY_KEYS).not.toContain("approval.decide");
+    expect(EDITABLE_ABILITY_KEYS).not.toContain("approval.decide");
+  });
+
+  it("group the form's abilities, every editable one once", () => {
+    const groups = abilityGroups();
+    expect(groups.map((g) => g.label)[0]).toBe("Signage and artwork");
+    expect(groups.flatMap((g) => g.keys).sort()).toEqual([...EDITABLE_ABILITY_KEYS].sort());
+    expect(abilityGroups(["costs.edit"]).map((g) => g.group)).toEqual(["money"]);
   });
 });
 

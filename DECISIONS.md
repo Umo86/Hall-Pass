@@ -465,3 +465,102 @@ useful fields for every item.
   the demo puts at Sent to print or later have those steps confirmed. Re-seeding
   confirms them on demo items still as seeded (same status, first round) and
   leaves anything that has moved since alone.
+
+## Users v2 core: abilities, managers, account access (Oct 2026)
+
+- **One abilities registry.** `ABILITIES` in `lib/authz.ts` lists every ability a
+  person can be given or refused (23 keys, grouped as the person form shows
+  them) with its role defaults; `OVERRIDE_KEYS`/`OVERRIDE_ROLE_DEFAULTS` and the
+  second table in `lib/users/rules.ts` are gone (a deprecated `OVERRIDE_KEYS`
+  alias stays for the v1 tests). can() runs tenancy → partners → sections →
+  abilities → the role, item or step rule. A stored false always blocks; a
+  stored true grants a "grant" ability and only switches on a "gate" one
+  (sign-off, delegation, bulk), so the step or item rule still applies.
+- **Frozen behaviour.** `tests/unit/fixtures/authz-v1-snapshot.json` records
+  can() before the registry (91 actors × 153 actions plus cost-on-item cases);
+  the new can() must give the same answers. The one deliberate change: a stored
+  `costs.edit: false` now also stops costs, PO and supplier on sponsorship items
+  the person can edit (before, the item action let them through).
+- **No data rewrite.** The six setup abilities (events.create, events.edit,
+  halls.manage, suppliers.manage, lists.manage, organisation.manage) read a
+  stored `settings.manage` when nothing newer is stored; `sponsorship.sell`
+  reads `sponsorship.create`; `signage.bulk` follows `signage.create`
+  (granted ones included). Saving a person writes only the new keys and drops
+  `settings.manage`. `{type: "settings.manage"}` is now "any of the six" and
+  `{type: "event.setup"}` is dates, halls, lists or suppliers (nav, Setup,
+  dashboard).
+- **Super admin only, never stored:** `users.manage` (grant super admin or
+  manager, remove people), `system.manage` (storage, email, calendar feeds) and
+  `events.archive`. Partner invitations (`partners.invite`) and departments
+  (`departments.manage`) are abilities that default to super admins, and only
+  a super admin can give them (also `organisation.manage`).
+- **Settings sections** open by their ability: Organisation →
+  organisation.manage, Item types and Venues → lists.manage, Recycle bin →
+  signage.delete (restore needs it anyway), System → system.manage. Each setup
+  step uses its own ability (`setupPermissionsFor`); on an archived event only
+  People and Who signs off stay open.
+- **Confirm print, delivery and install** (`signage.confirm`, Operations by
+  default) is decided in one place: steps with no named person assigned to the
+  supplier or to Operations. `confirmsForSuppliers()` feeds Approvals, Mine and
+  notifications, so whoever holds the ability is asked and nobody else; a
+  paused sign-off counts as none. Admins can confirm anything but aren't asked.
+- **Chase overdue sign-offs** (`approval.chase`) is the team view on Approvals,
+  My Work and the dashboard and the Remind button (approval.remind reads it:
+  Operations and admins any, others where they could send it for sign-off).
+  My Work's Everyone's tasks are for super admins.
+- **Import and bulk.** Import needs "Add signage" and "Import from Excel and bulk
+  actions"; creating halls and locations needs halls.manage, suppliers
+  suppliers.manage (otherwise the row says Unknown hall/supplier); an update by
+  ref needs signage.edit on that item, and its supplier and cost columns are
+  ignored without costs.edit on it. Bulk checks signage.bulk on the server and
+  "Set supplier" checks costs per item.
+- **Copying an event** copies each part only for someone who could make it:
+  items by kind, sponsors with sponsorship.sell, partner access with
+  partners.invite. Directory entries check their own ability (event series →
+  events.create, venues → lists.manage, suppliers and contractors →
+  suppliers.manage); "Manage what they do" on Suppliers is lists.manage.
+- **Prices.** Sponsorship prices, profit tiles, sponsor spend and the
+  dashboard's sales figure need costs.view; selling requires it too.
+- **Managers** are `memberships.manager_scope` ('department' | 'everyone',
+  null otherwise; a database check keeps it null for super admins), carried on
+  invitations and copied when one is accepted — not an override, so nothing a
+  manager submits can write it. Managers add and change people in their scope
+  (never themselves, super admins or other managers; a department manager with
+  no department manages nobody), give only roles, sections and abilities they
+  fully have themselves (role powers that aren't abilities — editing, artwork,
+  stand reviews — count too), sign-off only for departments they sign off for
+  and never the main approver without departments.manage, and can't remove
+  anyone. The rules are pure (`personChangeRefusal` and friends in
+  lib/authz.ts) and checked in the transaction after the person is loaded, with
+  the actor's own access read fresh there.
+- **Suspension and access end dates.** `suspended_at`/`suspended_by` and
+  `access_ends_at` on memberships (end dates entered as a London date mean the
+  end of that day). Only active people sign in (a blocked person is turned away
+  before any partner invitation is claimed, and /login says "Your access is
+  paused / has ended — ask {name}"), get the iCal feed, pass emailIsInvited,
+  are told anything (notify() and email dispatch drop everyone without an
+  active membership or a live partner grant), are offered in pickers or count
+  as signers. Suspending hands sign-offs waiting on them by name to someone who
+  can sign and keeps approver rows, tasks and items; reactivating restores it
+  all. The daily job records "Access ended" once, re-routes department steps,
+  tells super admins and the person's managers about sign-offs still waiting on
+  them, and warns them a week ahead.
+- **Who can be handed a sign-off** (`canReceiveSignoff`): active, not a viewer
+  (as before), sign-off not paused. Used for delegation, hand-over on removal
+  or suspension, and adding an approver from Departments. Main approver routing
+  skips anyone who can't sign now, so the step goes to the whole department.
+- **One main approver per department** is a unique index; saves clear the
+  other main first (the migration kept the oldest where there were two).
+- **Last super admin.** Demoting, suspending, ending or removing counts only
+  super admins with access, under a row lock.
+- **Access history.** `audit_log.subject_user_id`/`subject_email` name the
+  person a people change is about (also sign-ins, written on password sign-in
+  and the email-link callback); `accessHistory()` finds those and older rows by
+  membership, invitation, approver and user. Saves that change nothing no
+  longer log "overrides changed". `users.last_seen_at` is written at most every
+  15 minutes after a signed-in page load (not from the iCal feed).
+- **Snags** record who raised them (`snags.raised_by_user_id`, backfilled from
+  the audit log where it says).
+- **Words.** The admin role is shown as "Super admin" ("Everything, including
+  people, managers and system settings"). Refusals for a missing ability name
+  it: "You need “Manage suppliers” for that — ask a super admin".

@@ -41,7 +41,7 @@ export default async function StartPage({
 }) {
   const session = await requireStaffSession();
   const orgId = session.organisation.id;
-  if (!can(session.actor, { type: "settings.manage" })) {
+  if (!can(session.actor, { type: "events.create" })) {
     const [active, contacts] = await Promise.all([countActiveEvents(orgId), setupContacts(orgId)]);
     return (
       <Page width="narrow">
@@ -71,7 +71,7 @@ export default async function StartPage({
     copySourceCounts(orgId),
   ]);
   const today = todayInLondon();
-  const canCopyAccess = can(session.actor, { type: "users.manage" });
+  const canCopyAccess = can(session.actor, { type: "partners.invite" });
 
   // Newest first; archived events can still be copied, after the others.
   const sources: CopySource[] = [...rows]

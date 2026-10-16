@@ -6,7 +6,8 @@ import { z } from "zod";
 import { and, asc, eq, max, ne } from "drizzle-orm";
 import { db, type Tx } from "@/lib/db/client";
 import { approvers, departments, memberships, users } from "@/lib/db/schema";
-import { can } from "@/lib/authz";
+import { can, missingAbilityMessage, type PermissionOverrides } from "@/lib/authz";
+import { canReceiveSignoff } from "@/lib/access";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { ensureSignageWorkflow, syncDepartmentSteps } from "@/lib/domain/departments";
@@ -18,13 +19,16 @@ import { fail, success, type ActionResult } from "@/lib/actions/result";
  * approvers) or is a team for grouping people only.
  */
 
-const NOT_ALLOWED = "Only admins manage departments";
+const NOT_ALLOWED = missingAbilityMessage("departments.manage");
 
 function refresh() {
   revalidatePath("/users", "layout");
   revalidatePath("/approvals");
   revalidatePath("/", "layout");
 }
+
+/** A refusal whose message is safe to show as it is. */
+class SafeError extends Error {}
 
 function isUniqueViolation(err: unknown): boolean {
   const e = err as { code?: string; cause?: { code?: string } };
@@ -62,7 +66,7 @@ export async function saveDepartment(input: unknown): Promise<ActionResult> {
   const parsed = departmentSchema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) return fail(NOT_ALLOWED);
+  if (!can(session.actor, { type: "departments.manage" })) return fail(NOT_ALLOWED);
   const orgId = session.organisation.id;
   const data = parsed.data;
 
@@ -132,6 +136,7 @@ export async function saveDepartment(input: unknown): Promise<ActionResult> {
   } catch (err) {
     unstable_rethrow(err);
     if (isUniqueViolation(err)) return fail("There is already a department with that name");
+    if (err instanceof SafeError) return fail(err.message);
     if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
     console.error("saveDepartment", err);
     return fail("Could not save — please try again");
@@ -147,7 +152,7 @@ export async function setDepartmentArchived(input: unknown): Promise<ActionResul
   const parsed = z.object({ id: z.string().uuid(), archived: z.boolean() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) return fail(NOT_ALLOWED);
+  if (!can(session.actor, { type: "departments.manage" })) return fail(NOT_ALLOWED);
   const orgId = session.organisation.id;
   try {
     const name = await db.transaction(async (tx) => {
@@ -176,6 +181,7 @@ export async function setDepartmentArchived(input: unknown): Promise<ActionResul
     );
   } catch (err) {
     unstable_rethrow(err);
+    if (err instanceof SafeError) return fail(err.message);
     if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
     console.error("setDepartmentArchived", err);
     return fail("Could not save — please try again");
@@ -194,7 +200,7 @@ export async function setDepartmentSignsOff(input: unknown): Promise<ActionResul
     .safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) return fail(NOT_ALLOWED);
+  if (!can(session.actor, { type: "departments.manage" })) return fail(NOT_ALLOWED);
   const orgId = session.organisation.id;
   try {
     const name = await db.transaction(async (tx) => {
@@ -226,6 +232,7 @@ export async function setDepartmentSignsOff(input: unknown): Promise<ActionResul
     );
   } catch (err) {
     unstable_rethrow(err);
+    if (err instanceof SafeError) return fail(err.message);
     if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
     console.error("setDepartmentSignsOff", err);
     return fail("Could not save — please try again");
@@ -243,7 +250,7 @@ export async function moveDepartment(input: unknown): Promise<ActionResult> {
     .safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) return fail(NOT_ALLOWED);
+  if (!can(session.actor, { type: "departments.manage" })) return fail(NOT_ALLOWED);
   const orgId = session.organisation.id;
   try {
     await db.transaction(async (tx) => {
@@ -304,7 +311,7 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
   const parsed = addApproverSchema.safeParse(input);
   if (!parsed.success) return fail("Pick a person from the list");
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) return fail(NOT_ALLOWED);
+  if (!can(session.actor, { type: "departments.manage" })) return fail(NOT_ALLOWED);
   const orgId = session.organisation.id;
   const data = parsed.data;
   try {
@@ -314,21 +321,40 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
         throw new Error(`${dept.name} doesn't sign off artwork — reload the page`);
       }
       const [member] = await tx
-        .select({ user: users, jobTitle: memberships.jobTitle })
+        .select({ user: users, membership: memberships })
         .from(memberships)
         .innerJoin(users, eq(users.id, memberships.userId))
         .where(and(eq(memberships.userId, data.userId), eq(memberships.organisationId, orgId)))
         .limit(1);
       if (!member) throw new Error("That person isn't on the team — reload the page");
       const who = member.user.fullName || member.user.email;
+      // Only someone who can sign now: active, not a viewer, sign-off not paused.
+      if (
+        !canReceiveSignoff({
+          role: member.membership.role,
+          overrides: member.membership.permissionOverrides as PermissionOverrides,
+          suspendedAt: member.membership.suspendedAt,
+          accessEndsAt: member.membership.accessEndsAt,
+        })
+      ) {
+        throw new SafeError(`${who} can't sign off at the moment — pick someone else`);
+      }
+      const email = member.user.email.toLowerCase();
+      if (data.isMain) {
+        // One main approver per department: clear the others first.
+        await tx
+          .update(approvers)
+          .set({ isMain: false })
+          .where(and(eq(approvers.departmentId, dept.id), ne(approvers.email, email)));
+      }
       const [row] = await tx
         .insert(approvers)
         .values({
           organisationId: orgId,
           departmentId: dept.id,
           fullName: who,
-          jobTitle: member.jobTitle,
-          email: member.user.email.toLowerCase(),
+          jobTitle: member.membership.jobTitle,
+          email,
           userId: member.user.id,
           isMain: data.isMain,
         })
@@ -337,13 +363,6 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
           set: { userId: member.user.id, fullName: who, isMain: data.isMain },
         })
         .returning();
-      if (data.isMain) {
-        // One main approver per department.
-        await tx
-          .update(approvers)
-          .set({ isMain: false })
-          .where(and(eq(approvers.departmentId, dept.id), ne(approvers.id, row.id)));
-      }
       await writeAudit(tx, {
         organisationId: orgId,
         actorUserId: session.user.id,
@@ -351,6 +370,8 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
         entityId: row.id,
         action: "create",
         after: { userId: member.user.id, department: dept.name, isMain: data.isMain },
+        subjectUserId: member.user.id,
+        subjectEmail: email,
         summary: `${who} added as an approver for ${dept.name}`,
       });
       await syncDepartmentSteps(tx, orgId);
@@ -360,6 +381,7 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
     return success(undefined, name);
   } catch (err) {
     unstable_rethrow(err);
+    if (err instanceof SafeError) return fail(err.message);
     if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
     console.error("addApprover", err);
     return fail("Could not save — please try again");
@@ -371,7 +393,7 @@ export async function setMainApprover(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid(), isMain: z.boolean() }).strict().safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) return fail(NOT_ALLOWED);
+  if (!can(session.actor, { type: "departments.manage" })) return fail(NOT_ALLOWED);
   const orgId = session.organisation.id;
   try {
     const message = await db.transaction(async (tx) => {
@@ -380,16 +402,17 @@ export async function setMainApprover(input: unknown): Promise<ActionResult> {
       });
       if (!row) throw new Error("Approver not found — reload the page");
       const dept = await orgDepartment(tx, orgId, row.departmentId);
-      await tx
-        .update(approvers)
-        .set({ isMain: parsed.data.isMain })
-        .where(eq(approvers.id, row.id));
       if (parsed.data.isMain) {
+        // One main approver per department: clear the others first.
         await tx
           .update(approvers)
           .set({ isMain: false })
           .where(and(eq(approvers.departmentId, dept.id), ne(approvers.id, row.id)));
       }
+      await tx
+        .update(approvers)
+        .set({ isMain: parsed.data.isMain })
+        .where(eq(approvers.id, row.id));
       await writeAudit(tx, {
         organisationId: orgId,
         actorUserId: session.user.id,
@@ -397,7 +420,9 @@ export async function setMainApprover(input: unknown): Promise<ActionResult> {
         entityId: row.id,
         action: "settings_change",
         before: { isMain: row.isMain },
-        after: { isMain: parsed.data.isMain },
+        after: { isMain: parsed.data.isMain, userId: row.userId, email: row.email },
+        subjectUserId: row.userId,
+        subjectEmail: row.email,
         summary: parsed.data.isMain
           ? `${row.fullName} is now the main approver for ${dept.name}`
           : `${row.fullName} is no longer the main approver for ${dept.name}`,
@@ -411,6 +436,7 @@ export async function setMainApprover(input: unknown): Promise<ActionResult> {
     return success(undefined, message);
   } catch (err) {
     unstable_rethrow(err);
+    if (err instanceof SafeError) return fail(err.message);
     if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
     console.error("setMainApprover", err);
     return fail("Could not save — please try again");
@@ -426,7 +452,7 @@ export async function removeApprover(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "users.manage" })) return fail(NOT_ALLOWED);
+  if (!can(session.actor, { type: "departments.manage" })) return fail(NOT_ALLOWED);
   const orgId = session.organisation.id;
   try {
     const name = await db.transaction(async (tx) => {
@@ -442,7 +468,14 @@ export async function removeApprover(input: unknown): Promise<ActionResult> {
         entityType: "approver",
         entityId: row.id,
         action: "grant_revoke",
-        before: { fullName: row.fullName, email: row.email, department: dept.name },
+        before: {
+          fullName: row.fullName,
+          email: row.email,
+          userId: row.userId,
+          department: dept.name,
+        },
+        subjectUserId: row.userId,
+        subjectEmail: row.email,
         summary: `${row.fullName} removed from ${dept.name} approvers`,
       });
       await syncDepartmentSteps(tx, orgId);
@@ -452,6 +485,7 @@ export async function removeApprover(input: unknown): Promise<ActionResult> {
     return success(undefined, `${name} removed`);
   } catch (err) {
     unstable_rethrow(err);
+    if (err instanceof SafeError) return fail(err.message);
     if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
     console.error("removeApprover", err);
     return fail("Could not save — please try again");

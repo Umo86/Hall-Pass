@@ -13,7 +13,7 @@ import {
   supplierServices,
   suppliers,
 } from "@/lib/db/schema";
-import { can } from "@/lib/authz";
+import { can, missingAbilityMessage } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -57,8 +57,8 @@ export async function saveSupplier(input: unknown): Promise<ActionResult<{ id: s
   const parsed = supplierSchema.safeParse(input);
   if (!parsed.success) return fail(parsed.error.issues[0].message);
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and Operations can change suppliers");
+  if (!can(session.actor, { type: "suppliers.manage" })) {
+    return fail(missingAbilityMessage("suppliers.manage"));
   }
   const orgId = session.organisation.id;
   const { id, serviceIds, newServices, ...values } = parsed.data;
@@ -204,8 +204,8 @@ export async function setSupplierArchived(input: unknown): Promise<ActionResult>
   const parsed = z.object({ id: z.string().uuid(), archived: z.boolean() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and Operations can change suppliers");
+  if (!can(session.actor, { type: "suppliers.manage" })) {
+    return fail(missingAbilityMessage("suppliers.manage"));
   }
   const { id, archived } = parsed.data;
   try {
@@ -247,8 +247,8 @@ export async function deleteSupplier(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return fail("Only admins and Operations can change suppliers");
+  if (!can(session.actor, { type: "suppliers.manage" })) {
+    return fail(missingAbilityMessage("suppliers.manage"));
   }
   try {
     const name = await db.transaction(async (tx) => {

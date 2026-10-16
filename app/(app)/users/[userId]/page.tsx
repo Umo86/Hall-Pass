@@ -2,13 +2,20 @@ import { notFound } from "next/navigation";
 import { Mail } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can, FEATURE_LABELS } from "@/lib/authz";
+import {
+  assignableAbilities,
+  assignableRoles,
+  can,
+  FEATURE_LABELS,
+  isSuperAdmin,
+  type PersonCtx,
+} from "@/lib/authz";
 import { standsEnabled } from "@/lib/config";
 import { formatDate, roleLabel } from "@/lib/format";
 import { departmentOptions, loadPerson } from "@/lib/users/queries";
 import { getRemovalImpact } from "@/lib/users/manage";
 import { invitesCanBeEmailed } from "@/lib/users/email";
-import { effectiveAbilities, signoffPaused, visibleFeatures } from "@/lib/users/rules";
+import { abilityChoices, signoffPaused, visibleFeatures } from "@/lib/users/rules";
 import { Page, PageHeader } from "@/components/page-header";
 import { DepartmentChip } from "@/components/users/person-fields";
 import { PersonEditor } from "@/components/users/person-editor";
@@ -24,15 +31,25 @@ export default async function PersonPage({ params }: { params: Promise<{ userId:
   const session = await requireStaffSession();
   const { userId } = await params;
   if (!UUID.test(userId)) notFound();
-  const isAdmin = can(session.actor, { type: "users.manage" });
   const orgId = session.organisation.id;
   const found = await loadPerson(db, orgId, userId, session.user.id);
-  // Invitations are admin business; everyone else only sees team members.
-  if (!found || (found.person.kind === "invite" && !isAdmin)) notFound();
+  if (!found) notFound();
   const { person } = found;
+  const target: PersonCtx = {
+    organisationId: orgId,
+    userId: person.kind === "member" ? person.id : null,
+    role: person.role,
+    departmentId: person.departmentId,
+    managerScope: person.managerScope,
+  };
+  // Super admins and managers in scope change people (person.edit); a super
+  // admin also sees their own page as an editor (the self rules apply).
+  const canEdit = can(session.actor, { type: "person.edit", person: target });
+  // Invitations are for whoever may change them; everyone else only sees team members.
+  if (person.kind === "invite" && !canEdit) notFound();
   const title = person.name || person.email;
 
-  if (!isAdmin) {
+  if (!canEdit) {
     return (
       <Page width="narrow">
         <PageHeader
@@ -134,6 +151,15 @@ export default async function PersonPage({ params }: { params: Promise<{ userId:
         departments={departments}
         visible={visible}
         owned={person.owned}
+        // Managers give only what they have themselves (checked again on the server).
+        access={
+          isSuperAdmin(session.actor)
+            ? undefined
+            : {
+                roles: assignableRoles(session.actor),
+                abilities: assignableAbilities(session.actor),
+              }
+        }
         initial={{
           fullName: person.name,
           jobTitle: person.jobTitle ?? "",
@@ -141,15 +167,17 @@ export default async function PersonPage({ params }: { params: Promise<{ userId:
           newDepartment: "",
           role: person.role,
           features: person.features,
-          abilities: effectiveAbilities(person.role, person.overrides),
+          abilities: abilityChoices(person.overrides),
           signoffs: person.allSignoffs,
           paused: signoffPaused(person.overrides),
         }}
       />
-      {impact && <RemoveUser userId={person.id} impact={impact} currentUserId={session.user.id} />}
+      {impact && can(session.actor, { type: "person.remove", person: target }) && (
+        <RemoveUser userId={person.id} impact={impact} currentUserId={session.user.id} />
+      )}
       {person.isSelf && (
         <p className="text-muted-foreground text-sm">
-          You can&apos;t remove yourself from the team — ask another admin.
+          You can&apos;t remove yourself from the team — ask another super admin.
         </p>
       )}
     </Page>

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { and, count, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 import { db, type Tx } from "@/lib/db/client";
 import { editions, events, halls, locations, signageItems } from "@/lib/db/schema";
-import { can } from "@/lib/authz";
+import { can, missingAbilityMessage } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession, type Session } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -29,8 +29,8 @@ type Guarded =
 
 async function guard(editionId: string): Promise<Guarded> {
   const session = await requireSession();
-  if (!can(session.actor, { type: "settings.manage" })) {
-    return { error: "Only admins and Operations can change halls and locations" };
+  if (!can(session.actor, { type: "halls.manage" })) {
+    return { error: missingAbilityMessage("halls.manage") };
   }
   const edition = await ownEdition(session, editionId);
   if (!edition) return { error: "Event not found" };

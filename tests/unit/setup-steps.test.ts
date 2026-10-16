@@ -9,10 +9,32 @@ import {
   summariseSetup,
   type EditionSetupFacts,
   type OrgSetupFacts,
+  setupPermissionsFor,
   type SetupPermissions,
 } from "@/lib/queries/setup";
+import type { StaffActor, StaffRole } from "@/lib/authz";
 
-const everyone: SetupPermissions = { canSetup: true, canUsers: true, canAddSigns: true };
+const everyone: SetupPermissions = {
+  details: true,
+  halls: true,
+  deadlines: true,
+  signoff: true,
+  people: true,
+  types: true,
+  suppliers: true,
+  signs: true,
+  sponsorship: true,
+};
+const nobody: SetupPermissions = Object.fromEntries(
+  Object.keys(everyone).map((k) => [k, false]),
+) as SetupPermissions;
+const staff = (role: StaffRole, overrides: StaffActor["overrides"] = {}): StaffActor => ({
+  kind: "staff",
+  userId: "u-1",
+  organisationId: "o-1",
+  role,
+  overrides,
+});
 
 function facts(over: Partial<EditionSetupFacts> = {}): EditionSetupFacts {
   return {
@@ -205,26 +227,40 @@ describe("people", () => {
 });
 
 describe("who can act on each step", () => {
-  it("follows the permissions: setup, users and signs separately", () => {
+  it("follows each step's own ability", () => {
     const ops = byKey(
-      buildSetupSteps({ code: "X" }, facts(), org(), {
-        canSetup: true,
-        canUsers: false,
-        canAddSigns: true,
-      }),
+      buildSetupSteps({ code: "X" }, facts(), org(), setupPermissionsFor(staff("ops"))),
     );
     expect(ops.details.canAct).toBe(true);
     expect(ops.halls.canAct).toBe(true);
     expect(ops.signoff.canAct).toBe(false);
     expect(ops.people.canAct).toBe(false);
-    const viewer = byKey(
-      buildSetupSteps({ code: "X" }, facts(), org(), {
-        canSetup: false,
-        canUsers: false,
-        canAddSigns: false,
-      }),
-    );
+    expect(ops.sponsorship.canAct).toBe(true);
+    const viewer = byKey(buildSetupSteps({ code: "X" }, facts(), org(), nobody));
     expect(Object.values(viewer).every((s) => !s.canAct)).toBe(true);
+    expect(Object.values(setupPermissionsFor(staff("viewer"))).some(Boolean)).toBe(false);
+  });
+
+  it("maps steps to abilities: halls only, or a manager's People", () => {
+    const halls = setupPermissionsFor(staff("marketing", { "halls.manage": true }));
+    expect(halls.halls).toBe(true);
+    expect(halls.details).toBe(false);
+    expect(halls.signs).toBe(true);
+    expect(halls.sponsorship).toBe(false);
+    const manager = setupPermissionsFor({ ...staff("marketing"), managerScope: "department" });
+    expect(manager.people).toBe(true);
+    expect(manager.signoff).toBe(false);
+    const admin = setupPermissionsFor(staff("admin"));
+    expect(Object.values(admin).every(Boolean)).toBe(true);
+  });
+
+  it("an archived event keeps only the shared people and sign-off steps", () => {
+    const admin = setupPermissionsFor(staff("admin"), { readOnly: true });
+    expect(admin.signoff).toBe(true);
+    expect(admin.people).toBe(true);
+    expect(admin.details).toBe(false);
+    expect(admin.types).toBe(false);
+    expect(admin.signs).toBe(false);
   });
 });
 

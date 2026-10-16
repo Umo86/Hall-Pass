@@ -6,7 +6,8 @@ import { X } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { memberships, users } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, isSuperAdmin } from "@/lib/authz";
+import { accessLive } from "@/lib/access";
 import {
   countPendingForUser,
   oldestPendingForUser,
@@ -42,10 +43,11 @@ export default async function MyWorkPage({
   const session = await requireStaffSession();
   // A brand-new organisation starts by creating its first event.
   const activeEvents = await countActiveEvents(session.organisation.id);
-  if (activeEvents === 0 && can(session.actor, { type: "settings.manage" })) redirect("/start");
+  if (activeEvents === 0 && can(session.actor, { type: "events.create" })) redirect("/start");
   const contacts = activeEvents === 0 ? await setupContacts(session.organisation.id) : [];
   const { view, event, due } = await searchParams;
-  const isAdmin = session.actor.role === "admin";
+  // Everyone's tasks are for super admins.
+  const isAdmin = isSuperAdmin(session.actor);
   const canAssign = can(session.actor, { type: "task.assign" });
   const scope: BoardScope =
     (view === "given" && canAssign) || (view === "everyone" && isAdmin)
@@ -70,7 +72,7 @@ export default async function MyWorkPage({
     { lastCode: cookieStore.get(LAST_EVENT_COOKIE)?.value ?? null, today },
   );
   const defaultEvent = filterEvent ?? live.find((e) => e.edition.code === defaultCode) ?? null;
-  const canChase = isAdmin || session.actor.role === "ops";
+  const canChase = can(session.actor, { type: "approval.chase" });
 
   const [signoffs, oldest, team, taskSummary, board, staff] = await Promise.all([
     countPendingForUser(session),
@@ -85,13 +87,24 @@ export default async function MyWorkPage({
       editionId: filterEvent?.edition.id ?? null,
     }),
     db
-      .select({ id: users.id, name: users.fullName, email: users.email })
+      .select({
+        id: users.id,
+        name: users.fullName,
+        email: users.email,
+        suspendedAt: memberships.suspendedAt,
+        accessEndsAt: memberships.accessEndsAt,
+      })
       .from(memberships)
       .innerJoin(users, eq(memberships.userId, users.id))
       .where(eq(memberships.organisationId, orgId))
       .orderBy(users.fullName),
   ]);
-  const people = staff.map((s) => ({ id: s.id, name: s.name || s.email }));
+  // Tasks go to people with access; someone suspended still shows on the
+  // tasks they already have, so opening one never reassigns it by accident.
+  const holding = new Set(board.map((t) => t.assignedToUserId));
+  const people = staff
+    .filter((s) => accessLive(s) || holding.has(s.id))
+    .map((s) => ({ id: s.id, name: s.name || s.email }));
   const overdueOnly = due === "overdue";
   const tasks = overdueOnly
     ? board.filter((t) => t.status !== "done" && (t.overdue || t.overdueSubtasks > 0))

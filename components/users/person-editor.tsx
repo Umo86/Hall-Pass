@@ -4,9 +4,9 @@ import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { PauseCircle, Star } from "lucide-react";
 import { toast } from "sonner";
-import type { Feature, StaffRole } from "@/lib/authz";
+import type { AbilityKey, Feature, StaffRole } from "@/lib/authz";
 import { roleLabel } from "@/lib/format";
-import { defaultAbilities, firstName, type Abilities, type Signoff } from "@/lib/users/rules";
+import { defaultAbilities, firstName, type AbilityChoices, type Signoff } from "@/lib/users/rules";
 import { updateInvitation, updateUser } from "@/app/actions/users";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,7 +30,7 @@ export type PersonFormState = {
   newDepartment: string;
   role: StaffRole;
   features: Feature[] | null;
-  abilities: Abilities;
+  abilities: AbilityChoices;
   signoffs: Signoff[];
   paused: boolean;
 };
@@ -63,6 +63,8 @@ export function PersonEditor({
   departments,
   visible,
   owned,
+  access,
+  readOnlyReason,
 }: {
   kind: "member" | "invite";
   /** The user id (member) or invitation id. */
@@ -74,6 +76,10 @@ export function PersonEditor({
   departments: DepartmentOption[];
   visible: Feature[];
   owned: Partial<Record<Feature, number>>;
+  /** What the viewer may give (managers); omitted for super admins. */
+  access?: { roles: StaffRole[]; abilities: AbilityKey[] };
+  /** Set when the viewer can see but not change this person's access. */
+  readOnlyReason?: string | null;
 }) {
   const [baseline, setBaseline] = useState(initial);
   const [form, setForm] = useState(initial);
@@ -270,8 +276,12 @@ export function PersonEditor({
           name="p-role"
           value={form.role}
           onChange={pickRole}
-          lockedReason={isSelf ? "You can't change your own access — ask another admin." : null}
+          lockedReason={
+            readOnlyReason ??
+            (isSelf ? "You can't change your own access — ask another super admin." : null)
+          }
           onlyAdmin={isOnlyAdmin && !isSelf}
+          allowed={access?.roles}
         />
         {roleChanged && form.role !== "admin" && (
           <p className="text-muted-foreground rounded-md bg-muted/50 px-3 py-2 text-sm">
@@ -287,7 +297,7 @@ export function PersonEditor({
             value={form.features}
             onChange={(v) => set("features", v)}
             visible={visible}
-            disabled={isSelf}
+            disabled={isSelf || Boolean(readOnlyReason)}
             owned={kind === "member" ? owned : undefined}
             personName={name}
           />
@@ -297,12 +307,14 @@ export function PersonEditor({
             value={form.abilities}
             onChange={(v) => set("abilities", v)}
             features={form.features}
-            disabled={isSelf}
+            disabled={isSelf || Boolean(readOnlyReason)}
+            assignable={access?.abilities}
           />
         </section>
       ) : (
         <p className="text-muted-foreground rounded-lg border p-4 text-sm">
-          Admins use every section and can change anything, including users and settings.
+          Super admins use every section and can change anything, including people, managers and
+          system settings.
         </p>
       )}
 

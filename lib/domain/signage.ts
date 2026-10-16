@@ -24,7 +24,20 @@ import {
 } from "@/lib/db/schema";
 import { notify } from "@/lib/notify";
 import { departmentSignerIds } from "@/lib/domain/departments";
-import type { SignageItemCtx, StaffActor } from "@/lib/authz";
+import {
+  confirmsForSuppliers,
+  signoffPaused,
+  STAFF_ROLES,
+  type PermissionOverrides,
+  type SignageItemCtx,
+  type StaffActor,
+  type StaffRole,
+} from "@/lib/authz";
+import {
+  activeMembership,
+  activeSignersWithRole,
+  productionConfirmerIds,
+} from "@/lib/users/active";
 import type { SignageStatus } from "@/lib/status/signage";
 import { formatDate, statusLabel } from "@/lib/format";
 import {
@@ -222,7 +235,7 @@ export async function resolveItemCreationRecipients(
   const members = await db
     .select({ userId: memberships.userId, role: memberships.role })
     .from(memberships)
-    .where(eq(memberships.organisationId, organisationId));
+    .where(and(eq(memberships.organisationId, organisationId), activeMembership()));
   return itemCreationRecipients(members, item, creatorUserId);
 }
 
@@ -237,6 +250,8 @@ export async function resolveAssigneeUserIds(
     assignedRole: string | null;
     assignedUserId: string | null;
     assignedDepartmentId?: string | null;
+    stepKind?: string | null;
+    stepKindSnapshot?: string | null;
   },
 ): Promise<string[]> {
   if (instance.assignedUserId) return [instance.assignedUserId];
@@ -245,21 +260,12 @@ export async function resolveAssigneeUserIds(
   }
   const role = instance.assignedRole;
   if (!role) return [];
-  const staffRoles = ["admin", "ops", "marketing", "sales", "event_director", "viewer"];
-  if (staffRoles.includes(role)) {
-    const rows = await db
-      .select({ userId: memberships.userId, overrides: memberships.permissionOverrides })
-      .from(memberships)
-      .where(
-        and(
-          eq(memberships.organisationId, organisationId),
-          eq(memberships.role, role as (typeof memberships.$inferSelect)["role"]),
-        ),
-      );
-    // People whose sign-off right is switched off aren't asked to sign off.
-    return rows
-      .filter((r) => (r.overrides as Record<string, unknown> | null)?.["approval.decide"] !== false)
-      .map((r) => r.userId);
+  const kind = instance.stepKindSnapshot ?? instance.stepKind;
+  // Installed and the build check: whoever confirms production (signage.confirm).
+  if (role === "ops" && kind === "confirmation") return productionConfirmerIds(db, organisationId);
+  if ((STAFF_ROLES as readonly string[]).includes(role)) {
+    // Active people with the role whose sign-off isn't paused.
+    return activeSignersWithRole(db, organisationId, role as StaffRole);
   }
   const grants = await db
     .select()
@@ -397,25 +403,17 @@ export async function notifyPendingAssignees(
       // No supplier chosen at all: Operations were already told the item is
       // approved without one (decideApproval), so say nothing misleading here.
       if (!item.supplierId) continue;
-      // A supplier with no portal login: tell Operations, who can confirm it
-      // themselves on the item (only admins invite partners, users.manage).
-      const [ops, [supplier]] = await Promise.all([
-        tx
-          .select({ userId: memberships.userId })
-          .from(memberships)
-          .where(
-            and(
-              eq(memberships.organisationId, bundle.organisation.id),
-              eq(memberships.role, "ops"),
-            ),
-          ),
+      // A supplier with no portal login: tell those who confirm for suppliers
+      // (Operations by default), who can confirm it themselves on the item.
+      const [confirmers, [supplier]] = await Promise.all([
+        productionConfirmerIds(tx, bundle.organisation.id),
         tx
           .select({ name: suppliers.name })
           .from(suppliers)
           .where(eq(suppliers.id, item.supplierId))
           .limit(1),
       ]);
-      assignees = ops.map((m) => m.userId);
+      assignees = confirmers;
       const who = supplier?.name ?? "the supplier";
       await notify(tx, {
         userIds: assignees,
@@ -662,6 +660,7 @@ export async function normaliseSignoffs(
         and(
           eq(memberships.organisationId, opts.organisationId),
           inArray(memberships.userId, userIds),
+          activeMembership(),
         ),
       );
     const byUser = new Map(members.map((m) => [m.userId, m]));
@@ -669,8 +668,12 @@ export async function normaliseSignoffs(
       if (!entry.userId) continue;
       const m = byUser.get(entry.userId);
       const step = byId.get(entry.stepId)!;
-      if (!m) throw new Error("A chosen person is no longer on the team — pick someone else");
-      if ((m.overrides as Record<string, unknown>)?.["approval.decide"] === false) {
+      if (!m) {
+        throw new Error(
+          "A chosen person is no longer on the team or their access is paused — pick someone else",
+        );
+      }
+      if (signoffPaused(m.overrides as PermissionOverrides)) {
         throw new Error("A chosen person can't sign off — pick someone else");
       }
       if (step.departmentId) {
@@ -949,21 +952,24 @@ type MineStep = {
   assignedDepartmentId: string | null;
 };
 
+type MineActor = Pick<StaffActor, "userId" | "role" | "signoffDepartmentIds" | "overrides">;
+
 /**
  * Is this waiting step mine to decide as its assignee — named for me, for a
- * department I sign off for, or for my role (operations also confirm a
- * supplier's steps)? An admin's power to decide anything doesn't count.
+ * department I sign off for, or for my role? Print, delivery and install
+ * confirmations are mine when I confirm them for suppliers (signage.confirm:
+ * Operations by default). An admin's power to decide anything doesn't count.
  */
-export function stepIsMine(
-  s: MineStep,
-  actor: Pick<StaffActor, "userId" | "role" | "signoffDepartmentIds">,
-): boolean {
+export function stepIsMine(s: MineStep, actor: MineActor): boolean {
   if (s.assignedUserId) return s.assignedUserId === actor.userId;
   if (s.assignedDepartmentId) {
     return actor.signoffDepartmentIds?.includes(s.assignedDepartmentId) ?? false;
   }
-  if (s.stepKind === "confirmation" && s.assignedRole === "supplier") {
-    return actor.role === "ops";
+  if (
+    s.stepKind === "confirmation" &&
+    (s.assignedRole === "supplier" || s.assignedRole === "ops")
+  ) {
+    return actor.role !== "admin" && confirmsForSuppliers(actor);
   }
   return Boolean(s.assignedRole) && s.assignedRole === actor.role;
 }
@@ -971,7 +977,7 @@ export function stepIsMine(
 /** "Mine" on the list: I own it, or one of its waiting steps is mine (stepIsMine). */
 export function isMineRow(
   row: { ownerUserId: string | null; pendingSteps: MineStep[] },
-  actor: Pick<StaffActor, "userId" | "role" | "signoffDepartmentIds">,
+  actor: MineActor,
 ): boolean {
   if (row.ownerUserId === actor.userId) return true;
   return row.pendingSteps.some((s) => stepIsMine(s, actor));

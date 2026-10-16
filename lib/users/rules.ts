@@ -5,88 +5,136 @@
  * be unit tested (tests/unit/users.test.ts).
  */
 import {
+  ABILITIES,
+  ABILITY_GROUP_LABELS,
+  ABILITY_GROUPS,
+  ABILITY_KEYS,
+  abilityLevel,
   FEATURES,
-  OVERRIDE_ROLE_DEFAULTS,
+  STAFF_ROLES,
+  storedAbility,
+  type AbilityGroup,
+  type AbilityKey,
+  type AbilityLevel,
   type Feature,
-  type OverrideKey,
   type PermissionOverrides,
   type StaffRole,
 } from "@/lib/authz";
 import { formatDayMonth, ROLE_LABELS } from "@/lib/format";
 
-/** Staff roles in the order they are offered. */
-export const STAFF_ROLES: readonly StaffRole[] = [
-  "admin",
-  "ops",
-  "marketing",
-  "sales",
-  "event_director",
-  "viewer",
-];
+export { signoffPaused, STAFF_ROLES } from "@/lib/authz";
+export type { AbilityKey, AbilityLevel } from "@/lib/authz";
 
 /**
- * What an admin can fine-tune per person on top of their role. Sign-off
- * (approval.decide) is not one of them any more: it is "Signs off artwork".
+ * What can be fine-tuned per person on top of their role, in the form's
+ * order. Sign-off (approval.decide) is not one of them: it is "Signs off
+ * artwork", and a stored false shows as "Sign-off paused".
  */
-export const ABILITY_KEYS = [
-  "signage.create",
-  "sponsorship.create",
-  "costs.edit",
-  "settings.manage",
-] as const satisfies readonly OverrideKey[];
-export type AbilityKey = (typeof ABILITY_KEYS)[number];
-export type Abilities = Record<AbilityKey, boolean>;
+export const EDITABLE_ABILITY_KEYS: readonly AbilityKey[] = ABILITY_KEYS.filter(
+  (k) => !ABILITIES[k].hidden,
+);
 
-export const ABILITY_LABELS: Record<AbilityKey, string> = {
-  "signage.create": "Add and edit signage",
-  "sponsorship.create": "Add sponsorship items",
-  "costs.edit": "Edit costs and PO numbers",
-  "settings.manage": "Set up events, halls, suppliers and lists",
-};
+export const ABILITY_LABELS = Object.fromEntries(
+  ABILITY_KEYS.map((k) => [k, ABILITIES[k].label]),
+) as Record<AbilityKey, string>;
 
 /** The section an ability belongs to: it is only offered while that section is on. */
-export const ABILITY_FEATURE: Record<AbilityKey, Feature | null> = {
-  "signage.create": "signage",
-  "sponsorship.create": "sponsorship",
-  "costs.edit": null,
-  "settings.manage": null,
-};
+export const ABILITY_FEATURE = Object.fromEntries(
+  ABILITY_KEYS.map((k) => [k, ABILITIES[k].feature]),
+) as Record<AbilityKey, Feature | null>;
 
-export function roleHasByDefault(key: OverrideKey, role: StaffRole): boolean {
-  return OVERRIDE_ROLE_DEFAULTS[key].includes(role);
-}
-
-/** What the person can do now: their stored differences over the role defaults. */
-export function effectiveAbilities(role: StaffRole, overrides: PermissionOverrides): Abilities {
-  return Object.fromEntries(
-    ABILITY_KEYS.map((k) => [k, overrides[k] ?? roleHasByDefault(k, role)]),
-  ) as Abilities;
-}
-
-/** The role's own defaults, for when the role changes. */
-export function defaultAbilities(role: StaffRole): Abilities {
-  return effectiveAbilities(role, {});
-}
-
-/** A stored "approval.decide: false" — their sign-off has been paused. */
-export function signoffPaused(overrides: PermissionOverrides | null | undefined): boolean {
-  return overrides?.["approval.decide"] === false;
+/** The editable abilities by group, in the form's order (empty groups left out). */
+export function abilityGroups(
+  keys: readonly AbilityKey[] = EDITABLE_ABILITY_KEYS,
+): { group: AbilityGroup; label: string; keys: AbilityKey[] }[] {
+  return ABILITY_GROUPS.map((group) => ({
+    group,
+    label: ABILITY_GROUP_LABELS[group],
+    keys: keys.filter((k) => ABILITIES[k].group === group),
+  })).filter((g) => g.keys.length > 0);
 }
 
 /**
- * The overrides to store: only abilities that differ from the role's
- * defaults, plus a paused sign-off. Admins never have overrides.
+ * The form's choices: an explicit on or off per ability; a key left out
+ * follows the role (and, for abilities that derive from another, that one).
+ */
+export type AbilityChoices = Partial<Record<AbilityKey, boolean>>;
+/** @deprecated Use AbilityChoices. */
+export type Abilities = AbilityChoices;
+
+/** The choices stored for someone, older keys read through (settings.manage → the six). */
+export function abilityChoices(overrides: PermissionOverrides | null | undefined): AbilityChoices {
+  const out: AbilityChoices = {};
+  for (const k of EDITABLE_ABILITY_KEYS) {
+    const v = storedAbility(overrides, k);
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+/** The role's own defaults, for when the role changes: nothing chosen. */
+export function defaultAbilities(role: StaffRole): AbilityChoices {
+  void role;
+  return {};
+}
+
+/** Whether they would have the ability: "yes", "partial" or "no". */
+export function effectiveAbility(
+  role: StaffRole,
+  choices: AbilityChoices,
+  key: AbilityKey,
+): AbilityLevel {
+  return abilityLevel({ role, overrides: choices }, key);
+}
+
+/** Every ability's level for someone with this role and what is stored for them. */
+export function effectiveAbilities(
+  role: StaffRole,
+  overrides: PermissionOverrides | null | undefined,
+): Record<AbilityKey, AbilityLevel> {
+  return Object.fromEntries(
+    ABILITY_KEYS.map((k) => [k, abilityLevel({ role, overrides: overrides ?? {} }, k)]),
+  ) as Record<AbilityKey, AbilityLevel>;
+}
+
+/** What the ability would be with nothing chosen for it (other choices kept). */
+export function abilityDefault(
+  role: StaffRole,
+  choices: AbilityChoices,
+  key: AbilityKey,
+): AbilityLevel {
+  const rest = { ...choices };
+  delete rest[key];
+  return abilityLevel({ role, overrides: rest }, key);
+}
+
+/** Does this choice differ from what the role would give anyway? */
+export function abilityChanged(role: StaffRole, choices: AbilityChoices, key: AbilityKey): boolean {
+  const v = choices[key];
+  if (typeof v !== "boolean") return false;
+  return abilityDefault(role, choices, key) !== (v ? "yes" : "no");
+}
+
+/** Does the role have this ability by default (fully)? */
+export function roleHasByDefault(key: AbilityKey, role: StaffRole): boolean {
+  return abilityLevel({ role }, key) === "yes";
+}
+
+/**
+ * The overrides to store: only choices that differ from the role's
+ * defaults, plus a paused sign-off. Only the registry's keys are written;
+ * an older settings.manage is dropped (its six abilities are written out
+ * when they differ). Admins never have overrides.
  */
 export function overridesFor(
   role: StaffRole,
-  abilities: Partial<Abilities>,
+  choices: AbilityChoices,
   opts: { signoffPaused?: boolean } = {},
 ): PermissionOverrides {
   if (role === "admin") return {};
   const out: PermissionOverrides = {};
-  for (const k of ABILITY_KEYS) {
-    const v = abilities[k];
-    if (typeof v === "boolean" && v !== roleHasByDefault(k, role)) out[k] = v;
+  for (const k of EDITABLE_ABILITY_KEYS) {
+    if (abilityChanged(role, choices, k)) out[k] = choices[k];
   }
   if (opts.signoffPaused) out["approval.decide"] = false;
   return out;

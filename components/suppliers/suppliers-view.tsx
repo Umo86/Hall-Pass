@@ -67,6 +67,7 @@ export function SuppliersView({
   services,
   serviceRows,
   canEdit,
+  canEditServices = canEdit,
   canInvite,
   emailOn,
   currentEvent,
@@ -80,6 +81,8 @@ export function SuppliersView({
   /** Every service including archived ones, for "Manage what they do". */
   serviceRows: ServiceRow[];
   canEdit: boolean;
+  /** "Manage what they do" (lists.manage); defaults to canEdit. */
+  canEditServices?: boolean;
   canInvite: boolean;
   emailOn: boolean;
   currentEvent: { code: string; name: string } | null;
@@ -94,7 +97,7 @@ export function SuppliersView({
   const [limit, setLimit] = useState(PAGE);
   const [editing, setEditing] = useState<SupplierRow | "new" | null>(null);
   const [portalFor, setPortalFor] = useState<SupplierRow | null>(null);
-  const [manageOpen, setManageOpen] = useState(openManage && canEdit);
+  const [manageOpen, setManageOpen] = useState(openManage && canEditServices);
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
@@ -141,14 +144,18 @@ export function SuppliersView({
         title="Suppliers"
         description="The companies you work with, what each one does and how to reach them."
         actions={
-          canEdit && (
+          (canEdit || canEditServices) && (
             <>
-              <Button variant="outline" onClick={() => setManageOpen(true)}>
-                Manage what they do
-              </Button>
-              <Button onClick={() => setEditing("new")}>
-                <Plus aria-hidden /> Add supplier
-              </Button>
+              {canEditServices && (
+                <Button variant="outline" onClick={() => setManageOpen(true)}>
+                  Manage what they do
+                </Button>
+              )}
+              {canEdit && (
+                <Button onClick={() => setEditing("new")}>
+                  <Plus aria-hidden /> Add supplier
+                </Button>
+              )}
             </>
           )
         }
@@ -386,7 +393,7 @@ export function SuppliersView({
               supplier; archiving hides it until you restore it.
             </DialogDescription>
           </DialogHeader>
-          <ServicesEditor rows={serviceRows} canEdit={canEdit} />
+          <ServicesEditor rows={serviceRows} canEdit={canEditServices} />
         </DialogContent>
       </Dialog>
     </>

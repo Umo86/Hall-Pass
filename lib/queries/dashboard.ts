@@ -18,7 +18,7 @@ import { standsEnabled } from "@/lib/config";
 import { SIGNAGE_KINDS, deadlineHref, itemPath } from "@/lib/edition-path";
 import { orderByKind } from "@/lib/calendar";
 import { stepIsMine } from "@/lib/domain/signage";
-import type { Feature, StaffActor } from "@/lib/authz";
+import { signoffPaused, type Feature, type StaffActor } from "@/lib/authz";
 import { daysOverdue } from "@/components/approvals/step-words";
 import { signoffGroupKey } from "@/lib/queries/approvals";
 import {
@@ -275,7 +275,7 @@ export async function dashboardData(opts: {
 
   // Mine as the assignee, as the navigation count and Approvals "Waiting on
   // me" count them; someone whose sign-off is paused decides nothing.
-  const paused = actor.role !== "admin" && actor.overrides?.["approval.decide"] === false;
+  const paused = actor.role !== "admin" && signoffPaused(actor.overrides);
   const mine = paused
     ? []
     : signoffs.filter((p) =>

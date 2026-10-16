@@ -96,7 +96,7 @@ export function plural(n: number, one: string, many = `${one}s`): string {
 
 /** Plain names for staff and external roles, as people say them. */
 export const ROLE_LABELS: Record<string, string> = {
-  admin: "Admin",
+  admin: "Super admin",
   ops: "Operations",
   marketing: "Marketing",
   sales: "Sales",
@@ -118,7 +118,7 @@ export function roleLabel(role: string | null | undefined): string {
 
 /** One line per staff role, shown under each choice when adding or editing a user. */
 export const ROLE_DESCRIPTIONS: Record<string, string> = {
-  admin: "Everything, including users and settings",
+  admin: "Everything, including people, managers and system settings",
   ops: "Runs events: signage, stands, onsite, costs and setup",
   marketing: "Adds signage and uploads artwork",
   sales: "Sponsorship items and sponsor signage",

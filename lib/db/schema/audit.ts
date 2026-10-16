@@ -17,6 +17,10 @@ export const auditLog = pgTable(
     before: jsonb("before"),
     after: jsonb("after"),
     summary: text("summary").notNull(),
+    /** The person a people change is about (access history), by account… */
+    subjectUserId: uuid("subject_user_id"),
+    /** …or by email, for invitations nobody has accepted yet. */
+    subjectEmail: text("subject_email"),
     ip: text("ip"),
     userAgent: text("user_agent"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -27,5 +31,7 @@ export const auditLog = pgTable(
     index("audit_log_actor_idx").on(t.actorUserId),
     index("audit_log_entity_idx").on(t.entityType, t.entityId),
     index("audit_log_created_at_idx").on(t.createdAt),
+    index("audit_log_subject_user_idx").on(t.organisationId, t.subjectUserId),
+    index("audit_log_subject_email_idx").on(t.organisationId, t.subjectEmail),
   ],
 );

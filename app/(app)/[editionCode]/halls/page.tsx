@@ -18,7 +18,7 @@ export default async function HallsPage({ params }: { params: Promise<{ editionC
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
 
-  const canSetup = can(session.actor, { type: "settings.manage" });
+  const canSetup = can(session.actor, { type: "halls.manage" });
   const canEdit = canSetup && !editionIsReadOnly(ed.edition.status);
   const [data, sources] = await Promise.all([
     hallsEditorData(ed.edition.id),

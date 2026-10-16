@@ -13,6 +13,7 @@ import { canWorkOnTask } from "@/lib/domain/tasks";
 import { loadItemBundle, ownEdition } from "@/lib/domain/signage";
 import { loadStandBundle } from "@/lib/domain/stand";
 import { writeAudit } from "@/lib/audit";
+import { activeMembership } from "@/lib/users/active";
 import { requireSession } from "@/lib/auth/actor";
 import { notify } from "@/lib/notify";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -135,9 +136,14 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
   }
 }
 
+/** On the team with access now (suspended or ended people can't be given tasks). */
 async function isTeamMember(userId: string, organisationId: string) {
   const row = await db.query.memberships.findFirst({
-    where: and(eq(memberships.userId, userId), eq(memberships.organisationId, organisationId)),
+    where: and(
+      eq(memberships.userId, userId),
+      eq(memberships.organisationId, organisationId),
+      activeMembership(),
+    ),
   });
   return Boolean(row);
 }

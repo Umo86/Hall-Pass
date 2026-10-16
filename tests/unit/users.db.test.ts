@@ -282,7 +282,8 @@ d("users", () => {
         departmentId: mkt.id,
         role: "marketing",
         features: ["signage", "reports"],
-        abilities: { "signage.create": true, "settings.manage": true },
+        // Add signage is a Marketing default (not stored); halls is a real difference.
+        abilities: { "signage.create": true, "halls.manage": true },
         signoffs: [
           { departmentId: mkt.id, isMain: false },
           { departmentId: sales.id, isMain: true },
@@ -302,7 +303,7 @@ d("users", () => {
       departmentId: mkt.id,
       features: ["signage", "reports"],
       jobTitle: "Account manager",
-      permissionOverrides: { "settings.manage": true },
+      permissionOverrides: { "halls.manage": true },
     });
     expect((await deptStep(sales.id)).approverUserId).toBe(userId);
     const audits = await db
@@ -331,7 +332,8 @@ d("users", () => {
       .where(eq(schema.memberships.userId, userId));
     expect(after.permissionOverrides).toEqual({ "approval.decide": false });
 
-    // The only admin can't stop being one, or change their own role.
+    // Someone who isn't a super admin or manager can't change a super admin;
+    // a super admin can't change their own role.
     const last = await run((tx) =>
       manage.updateMemberTx(
         tx,
@@ -346,7 +348,7 @@ d("users", () => {
         },
       ),
     ).catch((e) => e);
-    expect(last.message).toBe("There must always be at least one admin");
+    expect(last.message).toBe("You can't change this person's access");
     const self = await run((tx) =>
       manage.updateMemberTx(tx, ctx, {
         ...person,

@@ -2,7 +2,7 @@ import "server-only";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Tx } from "@/lib/db/client";
 import { staffInvites } from "@/lib/db/schema";
-import type { Feature, PermissionOverrides, StaffRole } from "@/lib/authz";
+import type { Feature, ManagerScope, PermissionOverrides, StaffRole } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { appUrl } from "@/lib/app-url";
 import { brandName } from "@/lib/config";
@@ -36,6 +36,9 @@ export async function createStaffInvite(
     departmentId?: string | null;
     /** Sections they will have; null or missing = every section. */
     features?: Feature[] | null;
+    /** Copied onto the membership when accepted. */
+    managerScope?: ManagerScope | null;
+    accessEndsAt?: Date | null;
     invitedBy: string;
     summary: string;
   },
@@ -65,6 +68,8 @@ export async function createStaffInvite(
       jobTitle: opts.jobTitle?.trim() || null,
       departmentId: opts.departmentId ?? null,
       features: opts.features ?? null,
+      managerScope: opts.role === "admin" ? null : (opts.managerScope ?? null),
+      accessEndsAt: opts.accessEndsAt ?? null,
       expiresAt,
       invitedBy: opts.invitedBy,
       inviteTokenHash: hashInviteToken(token),
@@ -81,8 +86,11 @@ export async function createStaffInvite(
       role: opts.role,
       departmentId: opts.departmentId ?? null,
       features: opts.features ?? null,
+      managerScope: opts.managerScope ?? null,
+      accessEndsAt: opts.accessEndsAt ?? null,
     },
     summary: opts.summary,
+    subjectEmail: email,
   });
   return { inviteId: invite.id, inviteUrl: `${appUrl()}/invite/${token}`, expiresAt };
 }
