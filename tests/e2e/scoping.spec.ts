@@ -17,6 +17,28 @@ test.describe("external scoping", () => {
     await expect(page.getByText("SIG-BIRM27-002")).toHaveCount(0);
   });
 
+  test("venue sign-offs open the artwork; the decision sits under it", async ({
+    page,
+    context,
+    baseURL,
+  }) => {
+    await signInAs(context, "venue@nec.test", baseURL!);
+    await page.goto("/portal/approvals");
+    await expect(page.getByRole("heading", { name: "My Sign-offs" })).toBeVisible();
+    // No approving from the list: each row opens the item.
+    await expect(page.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
+    const row = page.locator("li", { hasText: "SIG-BIRM27-007" });
+    await expect(row.getByRole("link", { name: "SIG-BIRM27-007", exact: true })).toBeVisible();
+    await row.getByRole("link", { name: "Review artwork" }).click();
+    await page.waitForURL("**/portal/items/SIG-BIRM27-007");
+    const artwork = page.getByRole("heading", { name: "Artwork", exact: true });
+    const decision = page.getByRole("heading", { name: "Your sign-off" });
+    await expect(decision).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
+    const [a, d] = [await artwork.boundingBox(), await decision.boundingBox()];
+    expect(d!.y).toBeGreaterThan(a!.y);
+  });
+
   test("supplier sees PO but venue does not", async ({ browser, baseURL }) => {
     const supplierCtx = await browser.newContext();
     await signInAs(supplierCtx, "print@bigprint.test", baseURL!);
@@ -33,7 +55,11 @@ test.describe("external scoping", () => {
     await venueCtx.close();
   });
 
-  test("exhibitor sees their submission with questionnaire and documents", async ({ page, context, baseURL }) => {
+  test("exhibitor sees their submission with questionnaire and documents", async ({
+    page,
+    context,
+    baseURL,
+  }) => {
     await signInAs(context, "stand@exhibitorco.test", baseURL!);
     await page.goto("/portal/submission");
     await expect(page.getByText("Stand A10 — Exhibitor Co")).toBeVisible();

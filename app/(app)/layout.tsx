@@ -26,28 +26,42 @@ import { dateRangeWithYear } from "@/components/setup/format";
 import { can, FEATURES, hasFeature } from "@/lib/authz";
 import { standsEnabled } from "@/lib/config";
 import { roleLabel } from "@/lib/format";
+import { countPendingForUser, pendingEntityIdsForUser } from "@/lib/queries/approvals";
+import { myTaskSummary } from "@/lib/queries/tasks";
+import { isApprovalRequestKind } from "@/lib/notification-kinds";
 
 export const dynamic = "force-dynamic";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await requireStaffSession();
   const actor = session.actor;
-  const [editions, recentNotifications, [unread], department] = await Promise.all([
-    listEditions(session.organisation.id),
-    db
-      .select()
-      .from(notifications)
-      .where(eq(notifications.userId, session.user.id))
-      .orderBy(desc(notifications.createdAt))
-      .limit(12),
-    db
-      .select({ n: count() })
-      .from(notifications)
-      .where(and(eq(notifications.userId, session.user.id), isNull(notifications.readAt))),
-    actor.departmentId
-      ? db.query.departments.findFirst({ where: eq(departments.id, actor.departmentId) })
-      : Promise.resolve(undefined),
-  ]);
+  const [editions, recentNotifications, [unread], department, signoffs, myTasks] =
+    await Promise.all([
+      listEditions(session.organisation.id),
+      db
+        .select()
+        .from(notifications)
+        .where(eq(notifications.userId, session.user.id))
+        .orderBy(desc(notifications.createdAt))
+        .limit(12),
+      db
+        .select({ n: count() })
+        .from(notifications)
+        .where(and(eq(notifications.userId, session.user.id), isNull(notifications.readAt))),
+      actor.departmentId
+        ? db.query.departments.findFirst({ where: eq(departments.id, actor.departmentId) })
+        : Promise.resolve(undefined),
+      // Counts next to Approvals and My Work: two small SQL counts, no bundles.
+      countPendingForUser(session),
+      myTaskSummary({ organisationId: session.organisation.id, userId: session.user.id }),
+    ]);
+  // "Please sign off" notifications whose step is no longer yours show as Done.
+  const stillMine = await pendingEntityIdsForUser(
+    session,
+    recentNotifications
+      .filter((n) => isApprovalRequestKind(n.kind) && n.entityId)
+      .map((n) => n.entityId!),
+  );
 
   const cookieStore = await cookies();
   const sidebarHidden = cookieStore.get(SIDEBAR_COOKIE)?.value === "hidden";
@@ -120,6 +134,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           }
         : null,
     canSettings: canSetup || can(actor, { type: "users.manage" }),
+    counts: {
+      approvals: signoffs.total,
+      approvalsOverdue: signoffs.overdue > 0,
+      myWork: myTasks.overdue + myTasks.dueToday,
+    },
     showStands: standsEnabled,
     // Null = every section; otherwise the sections this person can use.
     features:
@@ -161,9 +180,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             notifications={recentNotifications.map((n) => ({
               id: n.id,
               title: n.title,
+              body: n.body,
+              kind: n.kind,
               link: n.link,
               createdAt: n.createdAt.toISOString(),
               unread: !n.readAt,
+              done:
+                isApprovalRequestKind(n.kind) && Boolean(n.entityId) && !stillMine.has(n.entityId!),
             }))}
           />
           <span className="text-muted-foreground hidden text-xs lg:inline">

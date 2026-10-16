@@ -6,8 +6,8 @@
  */
 import { after } from "next/server";
 import { notifications, users } from "@/lib/db/schema";
-import type { Tx } from "@/lib/db/client";
-import { inArray } from "drizzle-orm";
+import type { Db, Tx } from "@/lib/db/client";
+import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
 
 export type NotifyInput = {
   userIds: string[];
@@ -16,12 +16,7 @@ export type NotifyInput = {
   body?: string;
   link?: string;
   entityType?:
-    | "signage_item"
-    | "stand_submission"
-    | "exhibitor"
-    | "contractor"
-    | "supplier"
-    | "edition";
+    "signage_item" | "stand_submission" | "exhibitor" | "contractor" | "supplier" | "edition";
   entityId?: string;
 };
 
@@ -53,4 +48,37 @@ export async function notify(tx: Tx, input: NotifyInput): Promise<void> {
   } catch {
     // Outside a request (seed, tests): the daily cron sends these instead.
   }
+}
+
+/**
+ * Mark a record's notifications read for everyone except `exceptUserIds` —
+ * used when the thing they asked for has been done (a sign-off decided,
+ * delegated or no longer needed). Returns how many were settled. A settled
+ * notification is also never emailed late (lib/email/dispatch skips read ones).
+ */
+export async function resolveNotifications(
+  exec: Db | Tx,
+  opts: {
+    entityType: NonNullable<NotifyInput["entityType"]>;
+    entityId: string;
+    kinds: readonly string[];
+    exceptUserIds?: string[];
+  },
+): Promise<number> {
+  if (opts.kinds.length === 0) return 0;
+  const keep = [...new Set(opts.exceptUserIds ?? [])].filter(Boolean);
+  const rows = await exec
+    .update(notifications)
+    .set({ readAt: new Date() })
+    .where(
+      and(
+        eq(notifications.entityType, opts.entityType),
+        eq(notifications.entityId, opts.entityId),
+        inArray(notifications.kind, [...opts.kinds]),
+        isNull(notifications.readAt),
+        keep.length > 0 ? notInArray(notifications.userId, keep) : undefined,
+      ),
+    )
+    .returning({ id: notifications.id });
+  return rows.length;
 }

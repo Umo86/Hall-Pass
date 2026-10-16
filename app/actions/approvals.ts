@@ -2,9 +2,15 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { approvalInstances, memberships, signageItems, standSubmissions } from "@/lib/db/schema";
+import {
+  approvalInstances,
+  memberships,
+  reminderLog,
+  signageItems,
+  standSubmissions,
+} from "@/lib/db/schema";
 import { can, type ApprovalStepCtx } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
@@ -36,6 +42,10 @@ import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { buildStoragePath, putObject } from "@/lib/storage";
 import { itemPath } from "@/lib/edition-path";
 import { todayInLondon } from "@/lib/today";
+import { statusLabel } from "@/lib/format";
+import { settleApprovalNotifications, stepHolderIds } from "@/lib/domain/notifications";
+import { reminderMessages, type ManualReminder } from "@/lib/domain/notifications-digest";
+import { daysOverdue } from "@/components/approvals/step-words";
 
 const decideSchema = z.object({
   instanceId: z.string().uuid(),
@@ -149,6 +159,25 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
                 ? { type: "reject", comment: data.comment ?? "" }
                 : { type: "confirm", comment: data.comment };
 
+      // Who the step was with, to tell them when someone else decides it.
+      const holdersBefore =
+        row.stepKindSnapshot === "approval"
+          ? await stepHolderIds(
+              tx,
+              {
+                organisationId: bundle.organisation.id,
+                editionId: bundle.edition.id,
+                venueId: bundle.venue.id,
+                item: isSignage
+                  ? (bundle as { item: typeof signageItems.$inferSelect }).item
+                  : null,
+              },
+              row,
+            )
+          : [];
+      const onBehalf = holdersBefore.length > 0 && !holdersBefore.includes(session.user.id);
+      const deciderName = session.user.fullName || session.user.email;
+
       const run = await loadRun(tx, row.entityType, row.entityId, row.runNumber);
       const currentVersionId = isSignage
         ? ((bundle as { item: { currentArtworkVersionId: string | null } }).item
@@ -222,25 +251,74 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
             }
           }
           await tx.update(signageItems).set(set).where(eq(signageItems.id, item.id));
-          statusNote = ` — item now ${next.replace(/_/g, " ")}`;
+          statusNote = ` — item now ${statusLabel(next)}`;
+        }
+        // Signed off with nobody to print it: tell Operations now, not at "Sent to print".
+        const needsPrint = res.instances.some(
+          (i) =>
+            i.stepKind === "confirmation" &&
+            i.stepName === "Sent to print" &&
+            i.status !== "skipped" &&
+            i.status !== "invalidated",
+        );
+        if (
+          (event === "run_approved" || event === "run_approved_with_conditions") &&
+          !item.supplierId &&
+          needsPrint
+        ) {
+          const ops = await tx
+            .select({ userId: memberships.userId })
+            .from(memberships)
+            .where(
+              and(
+                eq(memberships.organisationId, session.organisation.id),
+                eq(memberships.role, "ops"),
+              ),
+            );
+          await notify(tx, {
+            userIds: ops.map((o) => o.userId),
+            kind: "supplier_needed",
+            title: `${item.ref} is approved but has no supplier — set one before it can go to print`,
+            body: `${item.name}, ${edition.code}. Choose the supplier on the item's Details tab.`,
+            link: itemPath(edition.code, item),
+            entityType: "signage_item",
+            entityId: item.id,
+          });
         }
         // Notify the owner of the decision; notify next assignees.
         if (item.ownerUserId) {
           await notify(tx, {
             userIds: [item.ownerUserId],
             kind: "decision_made",
-            title: `${row.stepNameSnapshot}: ${data.decision.replace(/_/g, " ")} — ${item.ref}`,
+            title: `${row.stepNameSnapshot}: ${DECISION_WORDS[data.decision] ?? data.decision} — ${item.ref}`,
             body: data.comment || data.conditionsText || undefined,
             link: itemPath(edition.code, item),
             entityType: "signage_item",
             entityId: item.id,
           });
         }
+        // "Please sign off" for this item is done for everyone whose turn is
+        // over; then the people whose turn starts now are told.
+        const started = newlyPending(run, res.instances);
+        await settleApprovalNotifications(tx, "signage_item", item.id, {
+          newlyPending: started.map((i) => i.id),
+        });
         await notifyPendingAssignees(
           tx,
           b as NonNullable<Awaited<ReturnType<typeof loadItemBundle>>>,
-          newlyPending(run, res.instances),
+          started,
         );
+        if (onBehalf) {
+          await notify(tx, {
+            userIds: holdersBefore,
+            kind: "decision_made",
+            title: `${deciderName} decided ${row.stepNameSnapshot} on ${item.ref} for you: ${DECISION_WORDS[data.decision]}`,
+            body: data.comment || data.conditionsText || undefined,
+            link: `${itemPath(edition.code, item)}?tab=artwork`,
+            entityType: "signage_item",
+            entityId: item.id,
+          });
+        }
         await writeAudit(tx, {
           organisationId: session.organisation.id,
           editionId: edition.id,
@@ -307,8 +385,11 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
             .update(standSubmissions)
             .set({ status: next })
             .where(eq(standSubmissions.id, sub.id));
-          statusNote = ` — submission now ${next.replace(/_/g, " ")}`;
+          statusNote = ` — submission now ${statusLabel(next)}`;
         }
+        await settleApprovalNotifications(tx, "stand_submission", sub.id, {
+          newlyPending: newlyPending(run, res.instances).map((i) => i.id),
+        });
         for (const inst of res.instances.filter(
           (x) => x.status === "pending" && x.id !== data.instanceId,
         )) {
@@ -325,6 +406,17 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
             kind: "approval_requested",
             title: `Stand review requested: ${sub.ref}`,
             body: inst.stepName,
+            link: `/${edition.code}/stands/${sub.ref}`,
+            entityType: "stand_submission",
+            entityId: sub.id,
+          });
+        }
+        if (onBehalf) {
+          await notify(tx, {
+            userIds: holdersBefore,
+            kind: "decision_made",
+            title: `${deciderName} decided ${row.stepNameSnapshot} on ${sub.ref} for you: ${DECISION_WORDS[data.decision]}`,
+            body: data.comment || data.conditionsText || undefined,
             link: `/${edition.code}/stands/${sub.ref}`,
             entityType: "stand_submission",
             entityId: sub.id,
@@ -417,11 +509,20 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
         fromUserId: session.user.id,
       });
       await persistRun(tx, row.entityType, row.entityId, updated);
+      // The step left everyone it was with; their requests are settled
+      // before the delegate is told (so theirs stays unread).
+      await settleApprovalNotifications(tx, row.entityType, row.entityId);
+      const ref = isSignage
+        ? (bundle as { item: { ref: string } }).item.ref
+        : (bundle as { sub: { ref: string } }).sub.ref;
       await notify(tx, {
         userIds: [parsed.data.toUserId, session.user.id],
         kind: "delegation",
-        title: `Step delegated: ${row.stepNameSnapshot}`,
+        title: `Step delegated: ${row.stepNameSnapshot} on ${ref}`,
         body: `Delegated by ${session.user.fullName || session.user.email}`,
+        link: isSignage
+          ? `${itemPath(bundle.edition.code, (bundle as { item: { kind: string; ref: string } }).item)}?tab=artwork`
+          : `/${bundle.edition.code}/stands/${ref}`,
         entityType: row.entityType,
         entityId: row.entityId,
       });
@@ -599,5 +700,143 @@ function assertItemOpen(bundle: object) {
   if (item.deletedAt) throw new WorkflowError("This item has been deleted");
   if (item.status === "on_hold") {
     throw new WorkflowError("This item is on hold — decisions resume when it is resumed");
+  }
+}
+
+const remindSchema = z.union([
+  z.object({ instanceId: z.string().uuid() }),
+  z.object({ instanceIds: z.array(z.string().uuid()).min(1).max(200) }),
+]);
+
+export type RemindResult = { reminded: number; alreadyToday: number; nobody: number };
+
+/**
+ * Chase sign-offs by hand ("Remind" / "Remind all" on Approvals →
+ * Everyone's): tells whoever each step is waiting on, at most once a day per
+ * step (the reminder log), and records it in the item's History. Whoever can
+ * send an item for sign-off can chase it (signage.submit; stands:
+ * stand.review).
+ */
+export async function remindApproval(input: unknown): Promise<ActionResult<RemindResult>> {
+  const parsed = remindSchema.safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const ids = [
+    ...new Set("instanceId" in parsed.data ? [parsed.data.instanceId] : parsed.data.instanceIds),
+  ];
+  const session = await requireSession();
+  if (session.actor.kind !== "staff") return fail("You cannot send reminders");
+  const today = todayInLondon();
+  const from = session.user.fullName || session.user.email;
+  try {
+    const result = await db.transaction(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(approvalInstances)
+        .where(inArray(approvalInstances.id, ids));
+      if (rows.length !== ids.length) throw new WorkflowError("Approval step not found");
+      const reminders: ManualReminder[] = [];
+      let alreadyToday = 0;
+      let nobody = 0;
+      for (const row of rows) {
+        if (row.status !== "pending") {
+          throw new WorkflowError(`${row.stepNameSnapshot} has already been decided`);
+        }
+        const isSignage = row.entityType === "signage_item";
+        const bundle = isSignage
+          ? await loadItemBundle(tx, row.entityId, { organisationId: session.organisation.id })
+          : await loadStandBundle(tx, row.entityId, { organisationId: session.organisation.id });
+        if (!bundle) throw new WorkflowError("Record not found");
+        if (editionIsReadOnly(bundle.edition.status))
+          throw new WorkflowError(EDITION_LOCKED_MESSAGE);
+        assertItemOpen(bundle);
+        const allowed = isSignage
+          ? can(session.actor, {
+              type: "signage.submit",
+              item: itemAuthzCtx(bundle as NonNullable<Awaited<ReturnType<typeof loadItemBundle>>>),
+            })
+          : can(session.actor, { type: "stand.review" });
+        if (!allowed) throw new WorkflowError("You cannot chase this sign-off");
+        const item = isSignage ? (bundle as { item: typeof signageItems.$inferSelect }).item : null;
+        const ref = item ? item.ref : (bundle as { sub: { ref: string } }).sub.ref;
+        const holders = (
+          await stepHolderIds(
+            tx,
+            {
+              organisationId: bundle.organisation.id,
+              editionId: bundle.edition.id,
+              venueId: bundle.venue.id,
+              item,
+            },
+            row,
+          )
+        ).filter((id) => id !== session.user.id);
+        if (holders.length === 0) {
+          nobody++;
+          continue;
+        }
+        // Once a day per step, whoever presses Remind.
+        const logged = await tx
+          .insert(reminderLog)
+          .values({
+            targetType: "approval_instance",
+            targetId: row.id,
+            kind: "chaser",
+            sentOn: today,
+          })
+          .onConflictDoNothing()
+          .returning({ id: reminderLog.id });
+        if (logged.length === 0) {
+          alreadyToday++;
+          continue;
+        }
+        reminders.push({
+          instanceId: row.id,
+          ref,
+          stepName: row.stepNameSnapshot,
+          overdueDays:
+            row.dueAt && row.dueAt.getTime() < Date.now() ? daysOverdue(row.dueAt, today) : 0,
+          link: item
+            ? `${itemPath(bundle.edition.code, item)}?tab=artwork`
+            : `/${bundle.edition.code}/stands/${ref}`,
+          entityType: row.entityType,
+          entityId: row.entityId,
+          assigneeIds: holders,
+        });
+        await writeAudit(tx, {
+          organisationId: session.organisation.id,
+          editionId: bundle.edition.id,
+          actorUserId: session.user.id,
+          entityType: row.entityType,
+          entityId: row.entityId,
+          action: "escalate",
+          after: { step: row.stepNameSnapshot, instanceId: row.id, reminded: holders },
+          summary: `Reminder sent for ${row.stepNameSnapshot} (${holders.length} ${holders.length === 1 ? "person" : "people"})`,
+        });
+      }
+      for (const msg of reminderMessages(from, reminders, { listLink: "/approvals" })) {
+        await notify(tx, {
+          userIds: [msg.userId],
+          kind: "approval_reminder",
+          title: msg.title,
+          body: msg.body,
+          link: msg.link,
+          ...(msg.entity ? { entityType: msg.entity.type, entityId: msg.entity.id } : {}),
+        });
+      }
+      return { reminded: reminders.length, alreadyToday, nobody };
+    });
+    revalidatePath("/approvals");
+    const parts = [
+      result.reminded > 0
+        ? `${result.reminded === 1 ? "Reminder" : `${result.reminded} reminders`} sent`
+        : null,
+      result.alreadyToday > 0 ? `${result.alreadyToday} already reminded today` : null,
+      result.nobody > 0 ? `${result.nobody} with nobody who can sign yet` : null,
+    ].filter(Boolean);
+    return success(result, parts.join(" · ") || "Nothing to remind");
+  } catch (err) {
+    if (err instanceof WorkflowError) return fail(err.message);
+    console.error("remindApproval", err);
+    return fail("Could not send the reminder — please try again");
   }
 }

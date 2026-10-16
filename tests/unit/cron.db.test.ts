@@ -4,7 +4,7 @@
  * reminder_log). Skips when no test database is configured.
  */
 import { randomUUID } from "node:crypto";
-import { and, count, eq, gte } from "drizzle-orm";
+import { and, count, eq, gte, ne, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
@@ -207,16 +207,36 @@ d("daily cron jobs", () => {
   });
 
   it("a second run the same day sends nothing new", async () => {
-    const before = await db.select({ n: count() }).from(schema.reminderLog);
-    const results = await jobs.runDailyJobs(TODAY);
-    const after = await db.select({ n: count() }).from(schema.reminderLog);
-    expect(Number(after[0].n)).toBe(Number(before[0].n));
-    const relevant = results.filter((r) =>
-      ["approval_reminders", "escalation", "stand_chasers", "document_expiry"].includes(r.job),
-    );
-    for (const r of relevant) {
-      expect(r.sent, r.job).toBe(0);
-    }
+    // Only this event's sends: other test files add (overdue) work in parallel.
+    const sentToday = async () => {
+      const rows = await db.execute<{ n: number }>(sql`
+        select count(*)::int as n from reminder_log where sent_on = ${TODAY} and target_id in (
+          select ai.id from approval_instances ai
+            join signage_items si on si.id = ai.entity_id where si.edition_id = ${editionId}
+          union select id from signage_items where edition_id = ${editionId}
+          union select id from exhibitors where edition_id = ${editionId}
+          union select id from documents where edition_id = ${editionId})`);
+      return Number(rows[0].n);
+    };
+    const toOps = async () =>
+      (
+        await db
+          .select({ n: count() })
+          .from(schema.notifications)
+          .where(
+            and(
+              eq(schema.notifications.userId, opsUserId),
+              // The ops digest goes out on every run by design.
+              ne(schema.notifications.kind, "daily_digest"),
+            ),
+          )
+      )[0].n;
+    const before = await sentToday();
+    const notesBefore = await toOps();
+    await jobs.runDailyJobs(TODAY);
+    expect(await sentToday()).toBe(before);
+    // Nobody here is told anything twice (reminders, overdue digest, escalation).
+    expect(await toOps()).toBe(notesBefore);
     // Still exactly one chaser email in the log.
     const [{ n }] = await db
       .select({ n: count() })
@@ -280,6 +300,132 @@ d("daily cron jobs", () => {
     expect(first.sent).toBeGreaterThanOrEqual(1);
     const second = await jobs.taskReminders(TODAY);
     expect(second.sent).toBe(0);
+  });
+
+  it("overdue sign-offs come as one digest per person a day, not one per item", async () => {
+    const day = "2027-08-26";
+    const digests = () =>
+      db
+        .select()
+        .from(schema.notifications)
+        .where(
+          and(
+            eq(schema.notifications.userId, opsUserId),
+            eq(schema.notifications.kind, "approval_reminder"),
+          ),
+        );
+    const before = await digests();
+    await jobs.approvalReminders(day);
+    const after = await digests();
+    const added = after.filter((a) => !before.some((b) => b.id === a.id));
+    expect(added.map((a) => a.title)).toEqual(["You have 1 sign-off overdue (5 days)"]);
+    expect(added[0].link).toBe("/approvals?overdue=1");
+    expect(added[0].body).toMatch(/^SIG-CRN\d+-001\. Open Approvals/);
+    // The old per-item "Overdue: …" message is gone.
+    expect(after.some((a) => a.title.startsWith("Overdue:"))).toBe(false);
+    // Again the same day: nothing new.
+    await jobs.approvalReminders(day);
+    expect((await digests()).length).toBe(after.length);
+  });
+
+  it("reminders before a step is due point at the item", async () => {
+    const [inst] = await db
+      .select()
+      .from(schema.approvalInstances)
+      .where(eq(schema.approvalInstances.id, instanceId));
+    const [item] = await db
+      .insert(schema.signageItems)
+      .values({
+        editionId,
+        ref: `SIG-REM-${Date.now() % 100000}`,
+        seq: 901,
+        name: "Due in a week",
+        ownerUserId: opsUserId,
+        status: "in_review",
+        currentRunNumber: 1,
+        createdBy: opsUserId,
+      })
+      .returning();
+    await db.insert(schema.approvalInstances).values({
+      entityType: "signage_item",
+      entityId: item.id,
+      runNumber: 1,
+      workflowStepId: inst.workflowStepId,
+      stepNameSnapshot: "Ops technical check",
+      stepKindSnapshot: "approval",
+      sortOrderSnapshot: 1,
+      status: "pending",
+      assignedRole: "ops",
+      pendingSince: new Date("2027-08-20T09:00:00Z"),
+      dueAt: new Date("2027-09-03T09:00:00Z"),
+    });
+    await jobs.approvalReminders("2027-08-27");
+    const [note] = await db
+      .select()
+      .from(schema.notifications)
+      .where(
+        and(
+          eq(schema.notifications.userId, opsUserId),
+          eq(schema.notifications.entityId, item.id),
+          eq(schema.notifications.kind, "approval_reminder"),
+        ),
+      );
+    expect(note.title).toBe(`Reminder: Ops technical check on ${item.ref} is due in 7 days`);
+    expect(note.entityType).toBe("signage_item");
+  });
+
+  it("settles sign-off requests whose step has ended", async () => {
+    const [item] = await db
+      .insert(schema.signageItems)
+      .values({
+        editionId,
+        ref: `SIG-STALE-${Date.now() % 100000}`,
+        seq: 902,
+        name: "Already decided",
+        ownerUserId: opsUserId,
+        status: "approved",
+        createdBy: opsUserId,
+      })
+      .returning();
+    const [note] = await db
+      .insert(schema.notifications)
+      .values({
+        userId: opsUserId,
+        kind: "approval_requested",
+        title: `Please sign off: ${item.ref}`,
+        entityType: "signage_item",
+        entityId: item.id,
+      })
+      .returning();
+    const res = await jobs.staleApprovalNotifications(TODAY);
+    expect(res.sent).toBeGreaterThanOrEqual(1);
+    const [after] = await db
+      .select()
+      .from(schema.notifications)
+      .where(eq(schema.notifications.id, note.id));
+    expect(after.readAt).not.toBeNull();
+    // The overdue step still waiting on ops keeps its requests.
+    const [stillOpen] = await db
+      .insert(schema.notifications)
+      .values({
+        userId: opsUserId,
+        kind: "approval_requested",
+        title: "Please sign off: the overdue one",
+        entityType: "signage_item",
+        entityId: (
+          await db
+            .select()
+            .from(schema.approvalInstances)
+            .where(eq(schema.approvalInstances.id, instanceId))
+        )[0].entityId,
+      })
+      .returning();
+    await jobs.staleApprovalNotifications(TODAY);
+    const [kept] = await db
+      .select()
+      .from(schema.notifications)
+      .where(eq(schema.notifications.id, stillOpen.id));
+    expect(kept.readAt).toBeNull();
   });
 
   it("reminder_log rows exist for the instance and exhibitor", async () => {

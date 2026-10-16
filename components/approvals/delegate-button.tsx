@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -37,13 +38,17 @@ export function DelegateButton({
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Delegate this step</DialogTitle>
+          <DialogTitle>Delegate this sign-off</DialogTitle>
           <DialogDescription>
             The delegate decides as themselves; you are both notified and the delegation is
             recorded.
           </DialogDescription>
         </DialogHeader>
-        <SelectNative value={toUserId} onChange={(e) => setToUserId(e.target.value)}>
+        <SelectNative
+          aria-label="Delegate to"
+          value={toUserId}
+          onChange={(e) => setToUserId(e.target.value)}
+        >
           <option value="">— Choose a person —</option>
           {users.map((u) => (
             <option key={u.id} value={u.id}>
@@ -62,12 +67,16 @@ export function DelegateButton({
                 if (!res.ok) setError(res.error);
                 else {
                   setOpen(false);
+                  toast.success(
+                    `Delegated to ${users.find((u) => u.id === toUserId)?.name ?? "them"}`,
+                    { description: "You are both notified." },
+                  );
                   router.refresh();
                 }
               });
             }}
           >
-            Delegate
+            {pending ? "Delegating…" : "Delegate"}
           </Button>
         </DialogFooter>
       </DialogContent>

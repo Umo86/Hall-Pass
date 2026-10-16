@@ -19,6 +19,7 @@ import { getDownloadUrl, getInlineUrl } from "@/lib/storage";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import { DecideButtons } from "@/components/approvals/decide-buttons";
+import { StepStateBadge } from "@/components/approvals/chain";
 
 export const metadata = { title: "Item" };
 export const dynamic = "force-dynamic";
@@ -104,37 +105,6 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
         </p>
       </div>
 
-      {mine.length > 0 && (
-        <section className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
-          <h2 className="text-sm font-semibold">Waiting on you</h2>
-          {mine.map(({ instance }) => (
-            <div key={instance.id} className="space-y-2">
-              <p className="text-sm">
-                {instance.stepNameSnapshot}
-                {instance.dueAt ? (
-                  <span className="text-muted-foreground">
-                    {" "}
-                    · due {formatDateTime(instance.dueAt)}
-                  </span>
-                ) : null}
-              </p>
-              <DecideButtons
-                instanceId={instance.id}
-                stepKind={instance.stepKindSnapshot}
-                stepName={instance.stepNameSnapshot}
-                expectedStatus="pending"
-                expectedLockedVersionId={item.currentArtworkVersionId ?? null}
-                requiresPhoto={
-                  instance.stepNameSnapshot === "Installed" &&
-                  item.kind === "signage" &&
-                  session.organisation.settings.install_photo_required
-                }
-              />
-            </div>
-          ))}
-        </section>
-      )}
-
       <section className="space-y-2">
         <h2 className="text-sm font-semibold">Artwork</h2>
         {!current ? (
@@ -187,6 +157,45 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
         )}
       </section>
 
+      {/* The decision sits under the artwork it is about. */}
+      {mine.length > 0 && (
+        <section
+          aria-labelledby="your-signoff"
+          className="space-y-3 rounded-lg border border-sky-300 bg-sky-50/60 p-4 dark:border-sky-900 dark:bg-sky-950/30"
+        >
+          <h2 id="your-signoff" className="text-sm font-semibold">
+            Your sign-off
+          </h2>
+          {mine.map(({ instance }) => (
+            <div key={instance.id} className="space-y-2">
+              <p className="text-sm">
+                {instance.stepNameSnapshot}
+                {instance.dueAt ? (
+                  <span className="text-muted-foreground">
+                    {" "}
+                    · due {formatDateTime(instance.dueAt)}
+                  </span>
+                ) : null}
+              </p>
+              <DecideButtons
+                instanceId={instance.id}
+                stepKind={instance.stepKindSnapshot}
+                stepName={instance.stepNameSnapshot}
+                expectedStatus="pending"
+                expectedLockedVersionId={item.currentArtworkVersionId ?? null}
+                requiresPhoto={
+                  instance.stepNameSnapshot === "Installed" &&
+                  item.kind === "signage" &&
+                  session.organisation.settings.install_photo_required
+                }
+                itemRef={item.ref}
+                compact
+              />
+            </div>
+          ))}
+        </section>
+      )}
+
       <section className="space-y-2">
         <h2 className="text-sm font-semibold">Details</h2>
         {where && <p className="text-base font-semibold">{where}</p>}
@@ -237,7 +246,10 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
           <ol className="space-y-1 text-sm">
             {run.map(({ instance, decider }) => (
               <li key={instance.id} className="flex flex-wrap items-center gap-2">
-                <StatusBadge status={instance.status} />
+                <StepStateBadge
+                  status={instance.status}
+                  who={mine.some((m) => m.instance.id === instance.id) ? "you" : null}
+                />
                 <span>{instance.stepNameSnapshot}</span>
                 {instance.decidedAt && (
                   <span className="text-muted-foreground text-xs">

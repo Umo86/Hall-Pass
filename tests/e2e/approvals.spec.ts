@@ -96,51 +96,63 @@ test.describe("Approvals", () => {
     const ops = await as(browser, "ops@media10.test", baseURL!);
     await ops.goto(`${baseURL}/BIRM27/signage/new`);
     await ops.getByLabel("Name", { exact: true }).fill(`Legal notice ${n}`);
-    await ops.getByLabel("Item type").selectOption({ label: "Foamex board" });
-    await ops.getByLabel("Hall", { exact: true }).selectOption({ label: "Hall 1" });
-    await ops.getByLabel("Location").selectOption({ label: "Registration" });
-    await ops.getByLabel("Width (mm)").fill("600");
-    await ops.getByLabel("Height (mm)").fill("400");
-    await ops.getByLabel("Fixing method").selectOption("wall_mounted");
-    for (const step of ["Operations sign-off", "Marketing sign-off", "Senior management sign-off"]) {
+    await ops.getByRole("button", { name: "Change who signs off" }).click();
+    for (const step of [
+      "Operations sign-off",
+      "Marketing sign-off",
+      "Senior management sign-off",
+    ]) {
       await ops.getByLabel(`Needs ${step}`).uncheck();
     }
     await ops.getByLabel(`Needs ${dept} sign-off`).check();
     const who = ops.getByLabel(`Who signs ${dept} sign-off`);
     await expect(who.locator("option", { hasText: `${person} — Legal Counsel` })).toHaveCount(1);
     await who.selectOption({ label: `${person} — Legal Counsel (main approver)` });
+    await ops.getByLabel("Item type").selectOption({ label: "Foamex board" });
+    await ops.getByLabel("Hall", { exact: true }).selectOption({ label: "Hall 1" });
+    await ops.getByLabel("Location").selectOption({ label: "Registration" });
+    await ops.getByLabel("Width (mm)").fill("600");
+    await ops.getByLabel("Height (mm)").fill("400");
+    await ops.getByLabel("Fixing method").selectOption("wall_mounted");
     await ops.getByRole("button", { name: "Create item" }).click();
     await ops.waitForURL("**/signage/SIG-BIRM27-*");
     const ref = new URL(ops.url()).pathname.split("/").pop()!;
+    // Upload and send for sign-off in one step.
     await ops.goto(`${baseURL}/BIRM27/signage/${ref}?tab=artwork`);
     await ops.setInputFiles('input[type="file"]', {
       name: "notice.pdf",
       mimeType: "application/pdf",
       buffer: PDF,
     });
-    await ops.getByRole("button", { name: "Upload" }).click();
+    await expect(ops.getByLabel("Send for sign-off after upload")).toBeChecked();
+    await ops.getByRole("button", { name: "Upload", exact: true }).click();
     await expect(ops.getByText("v1 — notice.pdf")).toBeVisible();
-    await ops.goto(`${baseURL}/BIRM27/signage/${ref}`);
-    await ops.getByRole("button", { name: "Submit for review" }).click();
-    await expect(ops.getByText("In review", { exact: true })).toBeVisible();
+    await expect(ops.getByText("In sign-off", { exact: true }).first()).toBeVisible();
 
     // All artwork: waiting on Lara by name.
     await ops.goto(`${baseURL}/approvals?tab=artwork&filter=waiting&q=${ref}`);
     const tile = ops.getByRole("listitem").filter({ hasText: ref });
     await expect(tile.getByText(`${dept} sign-off:`)).toBeVisible();
-    await expect(tile.getByText(`waiting on ${person}`)).toBeVisible();
+    await expect(tile.getByText(`Waiting on ${person}`)).toBeVisible();
 
-    // 4. Lara sees it waiting on her and approves with a comment.
+    // 4. Lara sees it waiting on her (the count is in the navigation) and
+    // approves with a comment.
     await lara.goto(`${baseURL}/approvals`);
-    const row = lara.locator("li", { hasText: ref });
+    await expect(lara.getByRole("link", { name: /^Approvals\s*\d+$/ }).first()).toBeVisible();
+    const row = lara.getByRole("main").locator("li", { hasText: ref });
     await expect(row).toBeVisible();
     await expect(row.getByText(`${dept} sign-off`)).toBeVisible();
+    await expect(row.getByText("Artwork v1, uploaded")).toBeVisible();
     await row.getByRole("button", { name: "Approve", exact: true }).click();
     const dialog = lara.getByRole("dialog");
     await dialog.getByLabel(/Comment/).fill("Wording checked");
     await dialog.getByRole("button", { name: "Approve", exact: true }).click();
     await expect(dialog).toHaveCount(0);
+    await expect(lara.getByText(`Approved — ${dept} sign-off`)).toBeVisible();
     await expect(row).toHaveCount(0);
+    // Her "Please sign off" is settled once she has decided.
+    await lara.goto(`${baseURL}/notifications`);
+    await expect(lara.getByText("Done", { exact: true }).first()).toBeVisible();
 
     // The item is signed off; the decision and comment show under All artwork.
     await ops.goto(`${baseURL}/approvals?tab=artwork&filter=approved&q=${ref}`);
@@ -173,9 +185,10 @@ test.describe("Approvals", () => {
     await expect(mkt.getByRole("form", { name: "Add a department" })).toHaveCount(0);
     await expect(mkt.getByRole("switch")).toHaveCount(0);
     await mkt.goto(`${baseURL}/my-work`);
-    await expect(mkt.getByRole("heading", { name: "Sign-offs" })).toBeVisible();
+    await expect(mkt.getByRole("heading", { name: "Needs you" })).toBeVisible();
+    await expect(mkt.getByRole("link", { name: /Sign-offs\s*\d+ waiting on you/ })).toBeVisible();
     // The old Settings tab now points here.
     await mkt.goto(`${baseURL}/settings?tab=signoff`);
-    await mkt.waitForURL("**/approvals?tab=approvers");
+    await mkt.waitForURL("**/users?tab=departments");
   });
 });

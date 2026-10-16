@@ -18,6 +18,7 @@ import {
   notifications,
   standSubmissions,
   tasks,
+  users,
 } from "@/lib/db/schema";
 import { artworkDue, diffDaysIso, standDesignDue } from "@/lib/deadlines";
 import { editionForDeadlines } from "@/lib/queries/editions";
@@ -29,6 +30,13 @@ import { editionIsReadOnly } from "@/lib/edition-lock";
 import { writeAudit } from "@/lib/audit";
 import { formatDate } from "@/lib/format";
 import { itemPath } from "@/lib/edition-path";
+import { todayInLondon } from "@/lib/today";
+import {
+  dueReminderTitle,
+  overdueDigestLines,
+  overdueDigestText,
+} from "@/lib/domain/notifications-digest";
+import { settleStaleApprovalNotifications } from "@/lib/domain/notifications";
 
 export type JobResult = { job: string; sent: number; skipped: number };
 
@@ -144,39 +152,34 @@ async function pendingWithContext(): Promise<PendingRow[]> {
   return out;
 }
 
-/** Job 1 — approval reminders at due−7, due−2, due, then daily overdue (cap 10). */
+/**
+ * Job 1 — approval reminders: one per step at due−7, due−2 and on the day,
+ * then a single daily digest per person for everything overdue ("You have 5
+ * sign-offs overdue (oldest 21 days)") instead of one message per step.
+ * Idempotent per day through the reminder log (every overdue step is logged
+ * once a day; a person gets the digest when any of theirs was logged today).
+ */
 export async function approvalReminders(today: string): Promise<JobResult> {
   let sent = 0;
   let skipped = 0;
   const rows = await pendingWithContext();
+  const overdueRows: PendingRow[] = [];
+  const freshOverdue = new Set<string>();
   for (const row of rows) {
     const { instance } = row;
     if (!instance.dueAt) continue;
-    const dueIso = instance.dueAt.toISOString().slice(0, 10);
+    const dueIso = londonDate(instance.dueAt);
     const diff = diffDaysIso(dueIso, today); // positive = due in the future
-    let kind: ReminderKind | null = null;
-    if (diff === 7) kind = "minus7";
-    else if (diff === 2) kind = "minus2";
-    else if (diff === 0) kind = "due";
-    else if (diff < 0) kind = "overdue";
-    if (!kind) continue;
-
-    if (kind === "overdue") {
-      const [{ n }] = await db
-        .select({ n: count() })
-        .from(reminderLog)
-        .where(
-          and(
-            eq(reminderLog.targetType, "approval_instance"),
-            eq(reminderLog.targetId, instance.id),
-            eq(reminderLog.kind, "overdue"),
-          ),
-        );
-      if (Number(n) >= 10) {
-        skipped++;
-        continue;
+    if (diff < 0) {
+      overdueRows.push(row);
+      if (await recordSend("approval_instance", instance.id, "overdue", today)) {
+        freshOverdue.add(instance.id);
       }
+      continue;
     }
+    const kind: "minus7" | "minus2" | "due" | null =
+      diff === 7 ? "minus7" : diff === 2 ? "minus2" : diff === 0 ? "due" : null;
+    if (!kind) continue;
     if (!(await recordSend("approval_instance", instance.id, kind, today))) {
       skipped++;
       continue;
@@ -185,19 +188,70 @@ export async function approvalReminders(today: string): Promise<JobResult> {
       await notify(tx, {
         userIds: row.assigneeIds,
         kind: "approval_reminder",
-        title:
-          kind === "overdue"
-            ? `Overdue: ${instance.stepNameSnapshot} on ${row.ref}`
-            : `Reminder: ${instance.stepNameSnapshot} on ${row.ref} is due ${
-                kind === "due" ? "today" : kind === "minus2" ? "in 2 days" : "in 7 days"
-              }`,
+        title: dueReminderTitle(kind, instance.stepNameSnapshot, row.ref),
         body: `The ${instance.stepNameSnapshot} step is waiting on you.`,
         link: row.link,
+        entityType: instance.entityType,
+        entityId: instance.entityId,
+      });
+    });
+    sent++;
+  }
+
+  // One overdue digest per person (only on the first run of the day).
+  const lines = overdueDigestLines(
+    overdueRows.map((r) => ({
+      instanceId: r.instance.id,
+      ref: r.ref,
+      dueIso: londonDate(r.instance.dueAt!),
+      assigneeIds: r.assigneeIds,
+    })),
+    today,
+  );
+  const external = await externalUserIds(lines.map((l) => l.userId));
+  for (const line of lines) {
+    if (!line.instanceIds.some((id) => freshOverdue.has(id))) {
+      skipped++;
+      continue;
+    }
+    const { title, body } = overdueDigestText(line);
+    await db.transaction(async (tx) => {
+      await notify(tx, {
+        userIds: [line.userId],
+        kind: "approval_reminder",
+        title,
+        body,
+        link: external.has(line.userId) ? "/portal/approvals" : "/approvals?overdue=1",
       });
     });
     sent++;
   }
   return { job: "approval_reminders", sent, skipped };
+}
+
+/** The London calendar date of a timestamp. */
+function londonDate(at: Date): string {
+  return todayInLondon(at);
+}
+
+async function externalUserIds(ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(inArray(users.id, ids), eq(users.isExternal, true)));
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Job 1b — settle "Please sign off" notifications whose step ended
+ * somewhere that doesn't settle them itself (a new version, a hold, a
+ * delete). Decisions and delegations settle theirs straight away.
+ */
+export async function staleApprovalNotifications(today: string): Promise<JobResult> {
+  void today;
+  const { records, settled } = await settleStaleApprovalNotifications(db);
+  return { job: "stale_approval_notifications", sent: settled, skipped: records };
 }
 
 /** Job 2 — escalation of instances overdue by escalate_after_days. */
@@ -439,7 +493,7 @@ export async function documentExpiry(today: string): Promise<JobResult> {
       await notify(tx, {
         userIds: ops,
         kind: "document_expiry",
-        title: `Insurance expires before the show: ${doc.fileName}`,
+        title: `Insurance expires before the event: ${doc.fileName}`,
         body: `Expires ${doc.expiresAt} — build ends ${edition.buildEnd}.`,
         link: `/${edition.code}/stands`,
       });
@@ -453,8 +507,9 @@ export async function documentExpiry(today: string): Promise<JobResult> {
 export async function dailyDigest(today: string): Promise<JobResult> {
   let sent = 0;
   const orgs = await db.select().from(organisations);
+  // Loaded once for every organisation (it resolves each step's assignees).
+  const pending = await pendingWithContext();
   for (const org of orgs) {
-    const pending = await pendingWithContext();
     const orgPending = pending.filter((p) => p.organisationId === org.id);
     const overdue = orgPending.filter(
       (p) => p.instance.dueAt && p.instance.dueAt.toISOString().slice(0, 10) < today,
@@ -759,6 +814,7 @@ export async function orphanArtworkSweep(today: string): Promise<JobResult> {
 export async function runDailyJobs(today: string): Promise<JobResult[]> {
   const results: JobResult[] = [];
   results.push(await approvalReminders(today));
+  results.push(await staleApprovalNotifications(today));
   results.push(await escalation(today));
   results.push(await missingArtwork(today));
   // Stand chasers and stand-document expiry only run while Stands is on.

@@ -1,258 +1,440 @@
 import Link from "next/link";
 import { and, eq, ne } from "drizzle-orm";
+import { CheckCircle2, ImageOff, SearchX } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { editions, events } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
-import { pendingInstancesForUser } from "@/lib/queries/approvals";
+import {
+  countPendingForUser,
+  openSignoffsForTeam,
+  pendingInstancesForUser,
+} from "@/lib/queries/approvals";
 import {
   ARTWORK_FILTERS,
+  countItemsInSignoff,
   listArtworkApprovals,
+  reviewArtworkForItems,
   type ArtworkFilter,
 } from "@/lib/queries/artwork-approvals";
 import { listDepartmentCards } from "@/lib/users/queries";
-import { formatDate, formatDateTime, statusLabel } from "@/lib/format";
+import { formatDate } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
-import { DecideButtons } from "@/components/approvals/decide-buttons";
 import { WhoSignsOff } from "@/components/approvals/approvers-editor";
-import { Scene } from "@/components/scene";
-import { brandImage } from "@/lib/brand-images";
-import { Input } from "@/components/ui/input";
-import { SelectNative } from "@/components/ui/select-native";
+import { Page, PageHeader } from "@/components/page-header";
+import { EmptyState } from "@/components/empty-state";
+import { SegmentedLinks } from "@/components/ui/segmented";
 import { Button } from "@/components/ui/button";
+import { ListFilters } from "@/components/approvals/queue-filters";
+import { ReviewQueue } from "@/components/approvals/review-queue";
+import { TeamView } from "@/components/approvals/team-view";
+import type { QueueRow } from "@/components/approvals/queue-types";
+import { STEP_STATE_TONE, daysOverdue, stepStateLabel } from "@/components/approvals/step-words";
 import { itemPath } from "@/lib/edition-path";
+import { cn } from "@/lib/utils";
 
 export const metadata = { title: "Approvals" };
 export const dynamic = "force-dynamic";
 
 type Tab = "mine" | "artwork" | "approvers";
+type Params = {
+  tab?: string;
+  overdue?: string;
+  all?: string;
+  event?: string;
+  /** Older links say show= for the event. */
+  show?: string;
+  filter?: string;
+  q?: string;
+  review?: string;
+};
+type Session = Awaited<ReturnType<typeof requireStaffSession>>;
+type Show = { id: string; code: string; name: string };
 
-export default async function ApprovalsPage({
-  searchParams,
-}: {
-  searchParams: Promise<{
-    tab?: string;
-    overdue?: string;
-    all?: string;
-    show?: string;
-    filter?: string;
-    q?: string;
-  }>;
-}) {
+/** Admins and Operations chase everyone's sign-offs. */
+const canSeeTeam = (session: Session) =>
+  session.actor.role === "admin" || session.actor.role === "ops";
+
+export default async function ApprovalsPage({ searchParams }: { searchParams: Promise<Params> }) {
   const session = await requireStaffSession();
   const params = await searchParams;
-  const tab: Tab =
-    params.tab === "artwork" || params.tab === "approvers" ? params.tab : "mine";
   const canManage = can(session.actor, { type: "users.manage" });
+  const mine = await countPendingForUser(session);
+  // People who never sign anything off start on All artwork.
+  const neverSigns =
+    mine.total === 0 &&
+    (session.actor.signoffDepartmentIds ?? []).length === 0 &&
+    !canSeeTeam(session);
+  const tab: Tab =
+    params.tab === "artwork" || params.tab === "approvers"
+      ? params.tab
+      : params.tab === "mine" || params.all === "1" || params.overdue === "1" || params.review
+        ? "mine"
+        : neverSigns
+          ? "artwork"
+          : "mine";
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: "mine", label: "Waiting on me" },
-    { id: "artwork", label: "All artwork" },
-    { id: "approvers", label: "Who signs off" },
+  const tabs: { id: Tab; label: string; href: string; count?: number }[] = [
+    { id: "mine", label: "Waiting on me", href: "/approvals?tab=mine", count: mine.total },
+    { id: "artwork", label: "All artwork", href: "/approvals?tab=artwork" },
+    { id: "approvers", label: "Who signs off", href: "/approvals?tab=approvers" },
   ];
+  const shows: Show[] = await db
+    .select({ id: editions.id, code: editions.code, name: editions.name })
+    .from(editions)
+    .innerJoin(events, eq(editions.eventId, events.id))
+    .where(and(eq(events.organisationId, session.organisation.id), ne(editions.status, "archived")))
+    .orderBy(editions.openStart);
+  const eventCode = (params.event ?? params.show)?.toUpperCase();
+  const show = shows.find((s) => s.code === eventCode) ?? null;
 
   return (
-    <div className="flex max-w-6xl flex-col gap-6 p-4 sm:p-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Approvals</h1>
-        <p className="text-muted-foreground text-sm">
-          Signage artwork and who needs to sign it off. Every decision and comment is kept in the
-          item&apos;s History.
-        </p>
-      </div>
-      <nav className="flex gap-1 overflow-x-auto border-b" aria-label="Approvals sections">
+    <Page>
+      <PageHeader
+        title="Approvals"
+        description="Review and sign off artwork, and confirm print, delivery and installation. Every decision and comment is kept in the item's History."
+      />
+      <nav className="-mt-2 flex gap-1 overflow-x-auto border-b" aria-label="Approvals sections">
         {tabs.map((t) => (
           <Link
             key={t.id}
-            href={t.id === "mine" ? "/approvals" : `/approvals?tab=${t.id}`}
-            className={`px-3 py-2 text-sm whitespace-nowrap ${
+            href={t.href}
+            className={cn(
+              "inline-flex min-h-11 items-center gap-1.5 px-3 text-sm whitespace-nowrap sm:min-h-9",
               tab === t.id
                 ? "border-primary text-foreground border-b-2 font-medium"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
+                : "text-muted-foreground hover:text-foreground",
+            )}
             aria-current={tab === t.id ? "page" : undefined}
           >
             {t.label}
+            {t.count !== undefined && t.count > 0 && (
+              <span
+                className={cn(
+                  "rounded-full px-1.5 text-xs tabular-nums",
+                  mine.overdue > 0 ? "bg-destructive text-white" : "bg-muted text-foreground",
+                )}
+              >
+                {t.count}
+              </span>
+            )}
           </Link>
         ))}
       </nav>
 
-      {tab === "mine" && <WaitingOnMe session={session} params={params} />}
-      {tab === "artwork" && <AllArtwork organisationId={session.organisation.id} params={params} />}
+      {tab === "mine" &&
+        (params.all === "1" && canSeeTeam(session) ? (
+          <Everyone session={session} params={params} shows={shows} show={show} />
+        ) : (
+          <WaitingOnMe session={session} params={params} shows={shows} show={show} />
+        ))}
+      {tab === "artwork" && (
+        <AllArtwork
+          organisationId={session.organisation.id}
+          params={params}
+          shows={shows}
+          show={show}
+        />
+      )}
       {tab === "approvers" && (
         <ApproversTab organisationId={session.organisation.id} canManage={canManage} />
+      )}
+    </Page>
+  );
+}
+
+/** /approvals?… with these parameters (empty ones dropped). */
+function hrefWith(params: Record<string, string | undefined | null>) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v) q.set(k, v);
+  const s = q.toString();
+  return s ? `/approvals?${s}` : "/approvals";
+}
+
+function ScopeBar({
+  session,
+  params,
+  show,
+  all,
+  counts,
+}: {
+  session: Session;
+  params: Params;
+  show: Show | null;
+  all: boolean;
+  counts: { total: number; overdue: number };
+}) {
+  const keep = { tab: "mine", event: show?.code, q: params.q, all: all ? "1" : undefined };
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <SegmentedLinks
+        label="Which sign-offs"
+        items={[
+          {
+            label: "Everything",
+            href: hrefWith({ ...keep, overdue: undefined }),
+            active: params.overdue !== "1",
+            count: counts.total,
+          },
+          {
+            label: "Overdue",
+            href: hrefWith({ ...keep, overdue: "1" }),
+            active: params.overdue === "1",
+            count: counts.overdue,
+          },
+        ]}
+      />
+      {canSeeTeam(session) && (
+        <SegmentedLinks
+          label="Whose sign-offs"
+          items={[
+            {
+              label: "Waiting on me",
+              href: hrefWith({ ...keep, all: undefined, overdue: params.overdue }),
+              active: !all,
+            },
+            {
+              label: "Everyone's",
+              href: hrefWith({ ...keep, all: "1", overdue: params.overdue }),
+              active: all,
+            },
+          ]}
+        />
       )}
     </div>
   );
 }
 
-type Session = Awaited<ReturnType<typeof requireStaffSession>>;
+function matches(search: string | undefined, ...fields: string[]) {
+  const q = search?.trim().toLowerCase();
+  if (!q) return true;
+  return fields.some((f) => f.toLowerCase().includes(q));
+}
+
+type PendingBundle = {
+  item?: {
+    id: string;
+    ref: string;
+    name: string;
+    kind: string;
+    currentArtworkVersionId: string | null;
+  };
+  sub?: { ref: string; submissionVersion: number };
+  exhibitor?: { companyName: string; standNumber: string };
+  edition: { id: string; code: string; name: string };
+};
 
 async function WaitingOnMe({
   session,
   params,
+  shows,
+  show,
 }: {
   session: Session;
-  params: { overdue?: string; all?: string };
+  params: Params;
+  shows: Show[];
+  show: Show | null;
 }) {
-  const isAdmin = session.actor.role === "admin";
-  const showAll = isAdmin && params.all === "1";
-  const rows = await pendingInstancesForUser(session, { all: showAll });
-  const filtered = params.overdue === "1" ? rows.filter((r) => r.isOverdue) : rows;
-  const base = showAll ? "/approvals?all=1" : "/approvals";
-  const join = showAll ? "&" : "?";
+  const all = await pendingInstancesForUser(session);
+  const install = session.organisation.settings.install_photo_required;
 
+  const base = all.map(({ raw, bundle, isSignage, isOverdue }) => {
+    const b = bundle as never as PendingBundle;
+    const ref = isSignage ? b.item!.ref : b.sub!.ref;
+    const kindLabel =
+      b.item?.kind === "stand_design"
+        ? "Stand design: "
+        : b.item?.kind === "stand_panel"
+          ? "Stand panel: "
+          : "";
+    const row: QueueRow = {
+      instanceId: raw.id,
+      kind: raw.stepKindSnapshot,
+      entity: isSignage ? "signage" : "stand",
+      ref,
+      title: isSignage
+        ? `${kindLabel}${b.item!.name}`
+        : `${b.exhibitor!.companyName} — stand ${b.exhibitor!.standNumber}`,
+      href: isSignage
+        ? `${itemPath(b.edition.code, b.item!)}?tab=artwork`
+        : `/${b.edition.code}/stands/${ref}`,
+      eventCode: b.edition.code,
+      eventName: b.edition.name,
+      stepName: raw.stepNameSnapshot,
+      dueAt: raw.dueAt ? raw.dueAt.toISOString() : null,
+      overdueDays: isOverdue && raw.dueAt ? daysOverdue(raw.dueAt) : null,
+      expectedLockedVersionId: isSignage
+        ? (b.item!.currentArtworkVersionId ?? null)
+        : String(b.sub!.submissionVersion),
+      requiresPhoto: Boolean(
+        raw.stepNameSnapshot === "Installed" && isSignage && b.item!.kind === "signage" && install,
+      ),
+      artwork: null,
+      others: [],
+    };
+    return { b, isSignage, row };
+  });
+  const scoped = base.filter(
+    (r) => (!show || r.b.edition.id === show.id) && matches(params.q, r.row.ref, r.row.title),
+  );
+  const counts = {
+    total: scoped.length,
+    overdue: scoped.filter((r) => r.row.overdueDays !== null).length,
+  };
+  const shown = params.overdue === "1" ? scoped.filter((r) => r.row.overdueDays !== null) : scoped;
+
+  // The artwork, the version before it and the other sign-offs, for artwork rows.
+  const artwork = await reviewArtworkForItems(
+    session.organisation.id,
+    shown.filter((r) => r.isSignage && r.row.kind === "approval").map((r) => r.b.item!.id),
+  );
+  const rows: QueueRow[] = shown.map(({ row, b, isSignage }) => {
+    const art = isSignage && row.kind === "approval" ? artwork.get(b.item!.id) : undefined;
+    if (!art) return row;
+    return {
+      ...row,
+      artwork: { current: art.current, previous: art.previous },
+      others: art.signoffs
+        .filter((s) => s.id !== row.instanceId && s.stepKind === "approval")
+        .map((s) => ({ id: s.id, stepName: s.stepName, status: s.status, who: s.who })),
+    };
+  });
+
+  const filtered = Boolean(show || params.q || params.overdue === "1");
   return (
-    <section className="space-y-3">
-      <div className="flex flex-wrap items-center gap-3">
-        <h2 className="text-sm font-semibold">
-          {showAll ? "Every open sign-off" : "Sign-offs waiting on you"}
-        </h2>
-        <span className="text-muted-foreground text-sm">{filtered.length}</span>
-        <div className="ml-auto flex flex-wrap gap-3 text-sm">
-          <Link
-            href={base}
-            className={
-              params.overdue !== "1"
-                ? "font-medium underline"
-                : "text-muted-foreground hover:underline"
-            }
-          >
-            Everything
-          </Link>
-          <Link
-            href={`${base}${join}overdue=1`}
-            className={
-              params.overdue === "1"
-                ? "font-medium underline"
-                : "text-muted-foreground hover:underline"
-            }
-          >
-            Overdue only
-          </Link>
-          {isAdmin && (
-            <Link
-              href={showAll ? "/approvals" : "/approvals?all=1"}
-              className="text-muted-foreground hover:underline"
-            >
-              {showAll ? "Just mine" : "Everyone's (admin)"}
-            </Link>
-          )}
-        </div>
+    <section className="space-y-4" aria-label="Waiting on me">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <ScopeBar session={session} params={params} show={show} all={false} counts={counts} />
+        <ListFilters
+          events={shows}
+          eventCode={show?.code ?? null}
+          search={params.q ?? ""}
+          keep={{ tab: "mine", overdue: params.overdue }}
+        />
       </div>
-
-      {filtered.length === 0 ? (
-        <div className="border-border flex flex-col items-center gap-4 rounded-lg border border-dashed p-8">
-          <Scene
-            kind="office"
-            photo={brandImage("office")}
-            alt="Event operations team planning at a schedule wall"
-            className="w-full max-w-md"
+      {rows.length === 0 ? (
+        filtered && all.length > 0 ? (
+          <EmptyState
+            icon={SearchX}
+            title="Nothing matches these filters"
+            description="Try another event, or clear the search."
+            action={
+              <Button asChild variant="outline">
+                <Link href="/approvals?tab=mine">Clear filters</Link>
+              </Button>
+            }
           />
-          <p className="text-muted-foreground text-sm">
-            Nothing is waiting on you.{" "}
-            <Link href="/approvals?tab=artwork" className="underline">
-              See all artwork
-            </Link>
-          </p>
-        </div>
+        ) : (
+          <NothingWaiting organisationId={session.organisation.id} />
+        )
       ) : (
-        <ol className="space-y-2">
-          {filtered.map(({ raw, bundle, isSignage, isOverdue }) => {
-            const b = bundle as never as {
-              item?: {
-                ref: string;
-                name: string;
-                kind: string;
-                currentArtworkVersionId: string | null;
-              };
-              sub?: { ref: string; submissionVersion: number };
-              exhibitor?: { companyName: string; standNumber: string };
-              edition: { code: string; name: string };
-            };
-            const ref = isSignage ? b.item!.ref : b.sub!.ref;
-            const kindLabel =
-              b.item?.kind === "stand_design"
-                ? "Stand design: "
-                : b.item?.kind === "stand_panel"
-                  ? "Stand panel: "
-                  : "";
-            const title = isSignage
-              ? `${kindLabel}${b.item!.name}`
-              : `${b.exhibitor!.companyName} — stand ${b.exhibitor!.standNumber}`;
-            const href = isSignage
-              ? `${itemPath(b.edition.code, b.item!)}?tab=artwork`
-              : `/${b.edition.code}/stands/${ref}`;
-            return (
-              <li key={raw.id} className="flex flex-wrap items-center gap-3 rounded-lg border p-3">
-                <StatusBadge status="pending" />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm">
-                    <Link href={href} className="font-medium hover:underline">
-                      {ref}
-                    </Link>{" "}
-                    — {title}
-                  </p>
-                  <p
-                    className={`text-xs ${isOverdue ? "text-destructive font-medium" : "text-muted-foreground"}`}
-                  >
-                    {raw.stepNameSnapshot} · {b.edition.name}
-                    {raw.dueAt ? ` · due ${formatDateTime(raw.dueAt)}` : ""}
-                    {isOverdue ? " — overdue" : ""}
-                  </p>
-                </div>
-                <Link href={href} className="text-sm underline">
-                  View artwork
-                </Link>
-                <DecideButtons
-                  instanceId={raw.id}
-                  stepKind={raw.stepKindSnapshot}
-                  stepName={raw.stepNameSnapshot}
-                  expectedStatus="pending"
-                  expectedLockedVersionId={
-                    isSignage
-                      ? (b.item!.currentArtworkVersionId ?? null)
-                      : String(b.sub!.submissionVersion)
-                  }
-                  requiresPhoto={
-                    raw.stepNameSnapshot === "Installed" &&
-                    isSignage &&
-                    b.item!.kind === "signage" &&
-                    session.organisation.settings.install_photo_required
-                  }
-                  compact
-                />
-              </li>
-            );
-          })}
-        </ol>
+        <ReviewQueue
+          approvals={rows.filter((r) => r.kind === "approval")}
+          confirmations={rows.filter((r) => r.kind === "confirmation")}
+          initialReviewId={params.review ?? null}
+        />
       )}
     </section>
   );
 }
 
-const SIGNOFF_TONE: Record<string, string> = {
-  approved: "text-emerald-700 dark:text-emerald-400",
-  approved_with_conditions: "text-teal-700 dark:text-teal-400",
-  changes_requested: "text-orange-700 dark:text-orange-400",
-  rejected: "text-destructive",
-  pending: "text-sky-700 dark:text-sky-400",
-};
+async function NothingWaiting({ organisationId }: { organisationId: string }) {
+  const others = await countItemsInSignoff(organisationId);
+  return (
+    <EmptyState
+      icon={CheckCircle2}
+      title="Nothing is waiting on you"
+      description={
+        others > 0
+          ? `${others} item${others === 1 ? " is" : "s are"} in sign-off with other people.`
+          : "When artwork needs your sign-off it appears here, and the bell tells you."
+      }
+      action={
+        <Button asChild variant="outline">
+          <Link href="/approvals?tab=artwork">See all artwork</Link>
+        </Button>
+      }
+    />
+  );
+}
+
+async function Everyone({
+  session,
+  params,
+  shows,
+  show,
+}: {
+  session: Session;
+  params: Params;
+  shows: Show[];
+  show: Show | null;
+}) {
+  const rows = await openSignoffsForTeam(session, {
+    editionId: show?.id ?? null,
+    search: params.q,
+  });
+  const counts = { total: rows.length, overdue: rows.filter((r) => r.isOverdue).length };
+  const shown = params.overdue === "1" ? rows.filter((r) => r.isOverdue) : rows;
+  return (
+    <section className="space-y-4" aria-label="Everyone's sign-offs">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <ScopeBar session={session} params={params} show={show} all counts={counts} />
+        <ListFilters
+          events={shows}
+          eventCode={show?.code ?? null}
+          search={params.q ?? ""}
+          keep={{ tab: "mine", all: "1", overdue: params.overdue }}
+        />
+      </div>
+      <p className="text-muted-foreground text-sm">
+        Every open sign-off, by who it is waiting on. Remind tells them now (once a day per
+        sign-off); the nightly reminders carry on as usual.
+      </p>
+      {shown.length === 0 ? (
+        <EmptyState
+          icon={CheckCircle2}
+          title={params.overdue === "1" ? "Nothing is overdue" : "No sign-offs are open"}
+          description="Nobody is waiting to decide anything here."
+        />
+      ) : (
+        <TeamView
+          rows={shown.map((r) => ({
+            instanceId: r.instanceId,
+            ref: r.ref,
+            name: r.name,
+            href: r.href,
+            eventName: r.eventName,
+            stepName: r.stepName,
+            stepKind: r.stepKind,
+            dueAt: r.dueAt ? r.dueAt.toISOString() : null,
+            overdueDays: r.isOverdue && r.dueAt ? daysOverdue(r.dueAt) : null,
+            waitingOn: r.waitingOn,
+            groupKey: r.groupKey,
+            people: r.people,
+            expectedLockedVersionId: r.expectedLockedVersionId,
+            canRemind: r.canRemind,
+            remindedToday: r.remindedToday,
+            isMine: r.isMine,
+            canDecide: r.canDecide,
+            requiresPhoto: r.requiresPhoto,
+          }))}
+        />
+      )}
+    </section>
+  );
+}
 
 async function AllArtwork({
   organisationId,
   params,
+  shows,
+  show,
 }: {
   organisationId: string;
-  params: { show?: string; filter?: string; q?: string };
+  params: Params;
+  shows: Show[];
+  show: Show | null;
 }) {
-  const shows = await db
-    .select({ id: editions.id, code: editions.code, name: editions.name })
-    .from(editions)
-    .innerJoin(events, eq(editions.eventId, events.id))
-    .where(and(eq(events.organisationId, organisationId), ne(editions.status, "archived")))
-    .orderBy(editions.openStart);
-  const show = shows.find((s) => s.code === params.show) ?? null;
   const filter: ArtworkFilter =
     params.filter && (params.filter === "all" || params.filter in ARTWORK_FILTERS)
       ? (params.filter as ArtworkFilter)
@@ -263,69 +445,42 @@ async function AllArtwork({
     filter,
     search: params.q,
   });
-
-  const hrefFor = (f: string) => {
-    const q = new URLSearchParams({ tab: "artwork", filter: f });
-    if (show) q.set("show", show.code);
-    if (params.q) q.set("q", params.q);
-    return `/approvals?${q.toString()}`;
-  };
   const filters: [string, string][] = [
     ...Object.entries(ARTWORK_FILTERS).map(([k, v]) => [k, v.label] as [string, string]),
     ["all", "Everything"],
   ];
 
   return (
-    <section className="space-y-4">
-      <form className="flex flex-wrap items-end gap-2" action="/approvals">
-        <input type="hidden" name="tab" value="artwork" />
-        <input type="hidden" name="filter" value={filter} />
-        <label className="grid gap-1 text-xs">
-          Show
-          <SelectNative name="show" defaultValue={show?.code ?? ""} className="h-9 w-56">
-            <option value="">All shows</option>
-            {shows.map((s) => (
-              <option key={s.id} value={s.code}>
-                {s.name}
-              </option>
-            ))}
-          </SelectNative>
-        </label>
-        <label className="grid gap-1 text-xs">
-          Search
-          <Input
-            name="q"
-            defaultValue={params.q ?? ""}
-            placeholder="Name or ref"
-            className="h-9 w-56"
-          />
-        </label>
-        <Button type="submit" variant="outline" className="h-9">
-          Apply
-        </Button>
-      </form>
-
-      <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by sign-off">
-        {filters.map(([key, label]) => (
-          <Link
-            key={key}
-            href={hrefFor(key)}
-            className={`rounded-full border px-3 py-1 text-sm ${
-              filter === key
-                ? "bg-foreground text-background border-foreground"
-                : "hover:bg-muted"
-            }`}
-            aria-current={filter === key ? "true" : undefined}
-          >
-            {label} <span className="opacity-70">({counts[key] ?? 0})</span>
-          </Link>
-        ))}
+    <section className="space-y-4" aria-label="All artwork">
+      <div className="flex flex-col gap-3">
+        <ListFilters
+          events={shows}
+          eventCode={show?.code ?? null}
+          search={params.q ?? ""}
+          keep={{ tab: "artwork", filter }}
+        />
+        <SegmentedLinks
+          label="Filter by sign-off"
+          className="w-fit"
+          items={filters.map(([key, label]) => ({
+            label,
+            href: hrefWith({ tab: "artwork", filter: key, event: show?.code, q: params.q }),
+            active: filter === key,
+            count: counts[key] ?? 0,
+          }))}
+        />
       </div>
 
       {rows.length === 0 ? (
-        <p className="text-muted-foreground rounded-lg border border-dashed p-8 text-center text-sm">
-          No artwork here. Artwork appears once it&apos;s uploaded to a signage item.
-        </p>
+        <EmptyState
+          icon={ImageOff}
+          title="No artwork here"
+          description={
+            show || params.q
+              ? "Nothing matches — try another event, filter or search."
+              : "Artwork appears once it's uploaded to a signage item."
+          }
+        />
       ) : (
         <ul className="grid gap-3 md:grid-cols-2" aria-label="Artwork">
           {rows.map((r) => (
@@ -344,7 +499,7 @@ async function AllArtwork({
               </Link>
               <div className="min-w-0 flex-1 space-y-1.5">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Link href={r.href} className="font-medium hover:underline">
+                  <Link href={r.href} className="link font-medium">
                     {r.ref}
                   </Link>
                   <StatusBadge status={r.status} />
@@ -362,12 +517,8 @@ async function AllArtwork({
                     {r.signoffs.map((s) => (
                       <li key={s.id}>
                         <span className="font-medium">{s.stepName}:</span>{" "}
-                        <span className={SIGNOFF_TONE[s.status] ?? "text-muted-foreground"}>
-                          {s.status === "pending"
-                            ? `waiting on ${s.who ?? "someone"}`
-                            : s.status === "waiting"
-                              ? "not yet (after the others)"
-                              : statusLabel(s.status)}
+                        <span className={STEP_STATE_TONE[s.status] ?? "text-muted-foreground"}>
+                          {stepStateLabel(s.status, s.who)}
                         </span>
                         {s.deciderName && s.decidedAt && (
                           <span className="text-muted-foreground">
@@ -375,9 +526,7 @@ async function AllArtwork({
                             — {s.deciderName}, {formatDate(s.decidedAt)}
                           </span>
                         )}
-                        {s.comment && (
-                          <span className="text-muted-foreground"> “{s.comment}”</span>
-                        )}
+                        {s.comment && <span className="text-muted-foreground"> “{s.comment}”</span>}
                       </li>
                     ))}
                   </ul>
@@ -389,7 +538,7 @@ async function AllArtwork({
       )}
       {truncated && (
         <p className="text-muted-foreground text-xs">
-          Showing the newest 150 — pick a show or search to narrow it down.
+          Showing the newest 150 — pick an event or search to narrow it down.
         </p>
       )}
     </section>

@@ -3,64 +3,120 @@
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SelectNative } from "@/components/ui/select-native";
 import { createTask } from "@/app/actions/tasks";
+import { cn } from "@/lib/utils";
 
 export type Assignee = { id: string; name: string };
+export type TaskEvent = { id: string; code: string; name: string };
 
-/** Inline add-a-task row: title, optional due date, optional assignee. */
+/**
+ * Add a task: title, then (optionally) a due date, who it is for and the
+ * event it belongs to. Pass `entity` to tie it to an item (the item page's
+ * "Add task"); its event is then fixed.
+ */
 export function TaskForm({
   currentUserId,
   assignees,
   canAssign,
+  events = [],
+  defaultEventId = null,
+  entity,
+  placeholder = "Add a task…",
+  onAdded,
+  className,
 }: {
   currentUserId: string;
   assignees: Assignee[];
   canAssign: boolean;
+  /** Events to choose from; none hides the picker. */
+  events?: TaskEvent[];
+  /** The event picked to start with (the one last opened). */
+  defaultEventId?: string | null;
+  /** The record the task is about (fixes the event). */
+  entity?: {
+    type: "signage_item" | "stand_submission";
+    id: string;
+    editionId: string;
+    label: string;
+  };
+  placeholder?: string;
+  onAdded?: () => void;
+  className?: string;
 }) {
   const formRef = useRef<HTMLFormElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
+  const showEvents = !entity && events.length > 0;
+  // On a phone the fields sit two to a row under the title; Add takes a
+  // whole row when it would otherwise be left on its own.
+  const middle = 1 + (canAssign ? 1 : 0) + (showEvents ? 1 : 0);
+  const addSpans = middle % 2 === 0;
 
   return (
     <form
       ref={formRef}
-      className="flex flex-wrap items-center gap-2"
+      aria-label="Add a task"
+      className={cn("grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap", className)}
       onSubmit={(e) => {
         e.preventDefault();
         const fd = new FormData(e.currentTarget);
+        const title = String(fd.get("title") ?? "").trim();
+        const assignedTo = (fd.get("assignedToUserId") as string | null) || null;
         setError(null);
         start(async () => {
           const res = await createTask({
-            title: fd.get("title"),
+            title,
             dueDate: fd.get("dueDate") || null,
-            assignedToUserId: fd.get("assignedToUserId") || null,
+            assignedToUserId: assignedTo,
+            editionId: entity ? entity.editionId : (fd.get("editionId") as string | null) || null,
+            entityType: entity?.type ?? null,
+            entityId: entity?.id ?? null,
           });
-          if (!res.ok) setError(res.error);
-          else {
-            formRef.current?.reset();
-            router.refresh();
+          if (!res.ok) {
+            setError(res.error);
+            return;
           }
+          const forWhom =
+            assignedTo && assignedTo !== currentUserId
+              ? assignees.find((a) => a.id === assignedTo)?.name
+              : null;
+          toast.success(`Task added: ${title}`, {
+            description: forWhom ? `For ${forWhom} — they are told.` : entity?.label,
+          });
+          formRef.current?.reset();
+          titleRef.current?.focus();
+          onAdded?.();
+          router.refresh();
         });
       }}
     >
       <Input
+        ref={titleRef}
         name="title"
-        placeholder="Add a task…"
+        placeholder={placeholder}
         required
+        maxLength={300}
         aria-label="Task title"
-        className="h-9 min-w-40 flex-1"
+        className="col-span-2 h-9 sm:min-w-56 sm:flex-1"
       />
-      <Input name="dueDate" type="date" aria-label="Due date" className="h-9 w-36" />
+      <Input
+        name="dueDate"
+        type="date"
+        aria-label="Due date"
+        className="h-9 w-full min-w-0 sm:w-40"
+      />
       {canAssign && (
         <SelectNative
           name="assignedToUserId"
           aria-label="Assign to"
           defaultValue={currentUserId}
-          className="h-9 w-40"
+          className="h-9 w-full min-w-0 sm:w-44"
         >
           {assignees.map((a) => (
             <option key={a.id} value={a.id}>
@@ -69,10 +125,29 @@ export function TaskForm({
           ))}
         </SelectNative>
       )}
-      <Button type="submit" size="sm" disabled={pending}>
-        <Plus className="size-4" /> Add
+      {showEvents && (
+        <SelectNative
+          name="editionId"
+          aria-label="Event"
+          defaultValue={defaultEventId ?? ""}
+          className="h-9 w-full min-w-0 sm:w-52"
+        >
+          <option value="">No event</option>
+          {events.map((ev) => (
+            <option key={ev.id} value={ev.id}>
+              {ev.name}
+            </option>
+          ))}
+        </SelectNative>
+      )}
+      <Button type="submit" className={cn("h-9", addSpans && "col-span-2")} disabled={pending}>
+        <Plus className="size-4" aria-hidden /> {pending ? "Adding…" : "Add"}
       </Button>
-      {error && <p className="text-destructive w-full text-sm">{error}</p>}
+      {error && (
+        <p role="alert" className="text-destructive col-span-2 w-full text-sm">
+          {error}
+        </p>
+      )}
     </form>
   );
 }

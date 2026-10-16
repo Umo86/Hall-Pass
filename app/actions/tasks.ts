@@ -41,23 +41,33 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
   const session = await requireSession();
   if (!can(session.actor, { type: "task.create" })) return fail("You cannot create tasks");
 
-  // A show or record the task points at must be this organisation's.
+  // An event or record the task points at must be this organisation's.
+  if (Boolean(parsed.data.entityType) !== Boolean(parsed.data.entityId)) {
+    return fail("Invalid request");
+  }
   if (parsed.data.editionId) {
     if (!(await ownEdition(db, session.organisation.id, parsed.data.editionId))) {
-      return fail("Show not found");
+      return fail("Event not found");
     }
   }
+  // A task about an item belongs to the item's event.
+  let entityEditionId: string | null = null;
   if (parsed.data.entityType === "signage_item" && parsed.data.entityId) {
     const item = await loadItemBundle(db, parsed.data.entityId, {
       organisationId: session.organisation.id,
     });
-    if (!item) return fail("Item not found");
+    if (!item || item.item.deletedAt) return fail("Item not found");
+    entityEditionId = item.edition.id;
   }
   if (parsed.data.entityType === "stand_submission" && parsed.data.entityId) {
     const sub = await loadStandBundle(db, parsed.data.entityId, {
       organisationId: session.organisation.id,
     });
     if (!sub) return fail("Stand not found");
+    entityEditionId = sub.edition.id;
+  }
+  if (entityEditionId && parsed.data.editionId && parsed.data.editionId !== entityEditionId) {
+    return fail("That item belongs to another event");
   }
   let parent: Task | undefined;
   if (parsed.data.parentTaskId) {
@@ -84,7 +94,7 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
         .insert(tasks)
         .values({
           organisationId: session.organisation.id,
-          editionId: parsed.data.editionId ?? parent?.editionId ?? null,
+          editionId: entityEditionId ?? parsed.data.editionId ?? parent?.editionId ?? null,
           parentTaskId: parent?.id ?? null,
           title: parsed.data.title,
           notes: parsed.data.notes?.trim() ? parsed.data.notes.trim() : null,
@@ -97,7 +107,7 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
         .returning();
       await writeAudit(tx, {
         organisationId: session.organisation.id,
-        editionId: parsed.data.editionId ?? undefined,
+        editionId: task.editionId ?? undefined,
         actorUserId: session.user.id,
         entityType: "task",
         entityId: task.id,
@@ -138,10 +148,10 @@ async function loadOwnTask(id: string, organisationId: string) {
   });
 }
 
-const STATUS_WORDS = { open: "To do", in_progress: "In progress", done: "Complete" } as const;
+const STATUS_WORDS = { open: "To do", in_progress: "In progress", done: "Done" } as const;
 
 /**
- * Move a task between To do, In progress and Complete (the board columns);
+ * Move a task between To do, In progress and Done (the board columns);
  * subtasks are ticked off the same way.
  */
 export async function setTaskStatus(input: unknown): Promise<ActionResult> {
