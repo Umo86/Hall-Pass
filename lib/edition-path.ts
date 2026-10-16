@@ -57,6 +57,31 @@ export function switchShowPath(pathname: string, code: string): string {
   return `/${code}/${section === "stand-panels" ? "stand-designs" : section}`;
 }
 
+/**
+ * Where an event deadline's work is (dashboard and calendar): the items it
+ * is about, never the calendar or dashboard, which would only send people
+ * round in a circle. Unknown keys fall back to the calendar.
+ */
+export function deadlineHref(editionCode: string, key: string): string {
+  const base = `/${editionCode}`;
+  switch (key) {
+    case "artwork_due":
+      return `${base}/signage?show=needs_artwork`;
+    case "print_deadline":
+      return `${base}/signage?show=ready_to_print`;
+    case "delivery":
+      return `${base}/onsite`;
+    case "venue_rigging_submission":
+      return `${base}/reports#venue`;
+    case "stand_design_due":
+      return `${base}/stand-designs`;
+    case "insurance_due":
+      return `${base}/stands`;
+    default:
+      return `${base}/calendar`;
+  }
+}
+
 /** Kinds shown in the Signage and Sponsorship sections (not stands or panels). */
 export const SIGNAGE_KINDS = ["signage", "sponsorship_item"] as const;
 

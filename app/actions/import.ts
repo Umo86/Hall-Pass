@@ -93,18 +93,25 @@ export type ImportOutcome = {
   created: number;
   updated: number;
   errors: { row: number; message: string }[];
+  /** A check only (dryRun): nothing was written. */
+  dryRun?: boolean;
+  /** Halls, locations and suppliers the sheet adds (when createMissing is ticked). */
+  adds?: { halls: number; locations: number; suppliers: number };
 };
 
 /**
  * Excel import (brief §10): parse → validate each row with the shared
  * schema, resolving names case-insensitively → commit in one transaction.
  * Upserts by ref when present, otherwise creates. When createMissing is
- * ticked, unknown suppliers and locations are created on the fly.
+ * ticked, unknown suppliers and locations are created on the fly. With
+ * dryRun ("on") the sheet is checked the same way and the outcome (new,
+ * updated, errors) returned without writing anything.
  */
 export async function importSchedule(formData: FormData): Promise<ActionResult<ImportOutcome>> {
   const editionId = formData.get("editionId");
   const file = formData.get("file");
   const createMissing = formData.get("createMissing") === "on";
+  const dryRun = formData.get("dryRun") === "on";
   if (typeof editionId !== "string" || !(file instanceof File)) return fail("Invalid import");
   const session = await requireSession();
   if (!can(session.actor, { type: "signage.create" })) return fail("You cannot import items");
@@ -267,9 +274,51 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
   });
 
   if (errors.length > 0) {
-    return success({ created: 0, updated: 0, errors }, "Fix the highlighted rows and re-upload");
+    return success(
+      { created: 0, updated: 0, errors, ...(dryRun ? { dryRun: true } : {}) },
+      "Fix the highlighted rows and re-upload",
+    );
   }
   if (parsed.length === 0) return fail("No rows found to import");
+
+  if (dryRun) {
+    // What the import would do, worked out the same way as below.
+    const updated = parsed.filter((p) => p.data.ref).length;
+    const newSuppliers = new Set<string>();
+    const newHalls = new Set<string>();
+    const newLocations = new Set<string>();
+    for (const { data } of parsed) {
+      if (data.supplier && !byName(supplierRows, data.supplier)) {
+        newSuppliers.add(data.supplier.toLowerCase());
+      }
+      const hall = data.hall ? byName(hallRows, data.hall) : undefined;
+      if (data.hall && !hall) newHalls.add(data.hall.toLowerCase());
+      if (data.location) {
+        const found = hall
+          ? findLocation(data.location, hall.id)
+          : data.hall
+            ? undefined
+            : findLocation(data.location, undefined);
+        if (!found && data.hall) {
+          newLocations.add(`${data.hall.toLowerCase()}\u0000${data.location.toLowerCase().trim()}`);
+        }
+      }
+    }
+    return success(
+      {
+        created: parsed.length - updated,
+        updated,
+        errors: [],
+        dryRun: true,
+        adds: {
+          halls: newHalls.size,
+          locations: newLocations.size,
+          suppliers: newSuppliers.size,
+        },
+      },
+      `Checked: ${parsed.length - updated} new, ${updated} updated, nothing imported yet`,
+    );
+  }
 
   try {
     let created = 0;
