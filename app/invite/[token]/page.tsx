@@ -1,12 +1,44 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
+import { eq, sql } from "drizzle-orm";
 import { InviteForm } from "@/components/auth/invite-form";
-import { inviteDetails } from "@/lib/users/invite-lookup";
+import { findValidGrant, inviteDetails } from "@/lib/users/invite-lookup";
+import { grantScopeName } from "@/lib/users/external";
+import { db } from "@/lib/db/client";
+import { editions, users } from "@/lib/db/schema";
 import { brandName } from "@/lib/config";
-import { roleLabel } from "@/lib/format";
+import { formatDate, roleLabel } from "@/lib/format";
 import { getSession } from "@/lib/auth/actor";
+import { signOut } from "@/app/actions/auth";
+import { PORTAL_HOME } from "@/lib/edition-path";
 import { AccentRule, Wordmark } from "@/components/wordmark";
 import { Button } from "@/components/ui/button";
+
+/**
+ * A partner invitation in words: which event, for which company, until
+ * when — and whether the invited email already has an account (they sign
+ * in, and the new access is added to it).
+ */
+async function partnerContext(token: string) {
+  const { grant } = await findValidGrant(token);
+  if (!grant) return null;
+  const [[edition], scopeName, [account]] = await Promise.all([
+    db.select({ name: editions.name }).from(editions).where(eq(editions.id, grant.editionId)),
+    grantScopeName(db, grant.organisationId, grant),
+    db
+      .select({ id: users.id })
+      .from(users)
+      .where(sql`lower(${users.email}) = ${grant.invitedEmail.toLowerCase()}`)
+      .limit(1),
+  ]);
+  return {
+    eventName: edition?.name ?? null,
+    scopeName,
+    endsAt: grant.expiresAt,
+    hasAccount: Boolean(account),
+    claimed: Boolean(grant.userId && grant.acceptedAt),
+  };
+}
 
 export const metadata = { title: "Accept invitation" };
 export const dynamic = "force-dynamic";
@@ -89,9 +121,75 @@ export default async function InvitePage({
     details.kind === "staff"
       ? `You're invited to join ${brand} as ${role}${details.departmentName ? ` in ${details.departmentName}` : ""}`
       : `You're invited to ${brand} as ${article(role)} ${role.toLowerCase()}`;
+  const partner = details.kind === "external" ? await partnerContext(token) : null;
+  const forWhat = partner ? [partner.eventName, partner.scopeName].filter(Boolean).join(" · ") : "";
+  const what = partner && (
+    <p className="text-sm">
+      {forWhat && <span className="font-medium">{forWhat}</span>}
+      {partner.endsAt && (
+        <span className="text-muted-foreground">
+          {forWhat ? " · " : ""}access until the end of {formatDate(partner.endsAt)}
+        </span>
+      )}
+    </p>
+  );
+
+  // Already on their account (signing in claimed it): straight to the portal.
+  if (partner?.claimed && signedInAsInvitee && session?.actor.kind === "external") {
+    return (
+      <InviteShell heading="This access is on your account">
+        {what}
+        <p className="text-muted-foreground text-sm">
+          You can see it in the portal now — nothing else to do.
+        </p>
+        <Button asChild className="w-full">
+          <Link href={PORTAL_HOME}>Open the portal</Link>
+        </Button>
+      </InviteShell>
+    );
+  }
+
+  // Signed in as someone else: sign out first (signing in again would loop back here).
+  if (partner && session && !signedInAsInvitee) {
+    return (
+      <InviteShell heading={heading}>
+        {what}
+        <p className="text-muted-foreground text-sm">
+          This invitation is for <span className="font-medium">{details.invitedEmail}</span>, but
+          you&apos;re signed in as <span className="font-medium">{session.user.email}</span>. Sign
+          out, then open the link again.
+        </p>
+        <form action={signOut}>
+          <Button type="submit" className="w-full">
+            Sign out
+          </Button>
+        </form>
+      </InviteShell>
+    );
+  }
+
+  // They have an account already: signing in with it adds this access.
+  if (partner && (partner.hasAccount || partner.claimed) && !signedInAsInvitee) {
+    return (
+      <InviteShell heading={heading}>
+        {what}
+        <p className="text-muted-foreground text-sm">
+          You already have an account with{" "}
+          <span className="font-medium">{details.invitedEmail}</span>. Sign in with it and this
+          access is added straight away.
+        </p>
+        <Button asChild className="w-full">
+          <Link href={`/login?next=${encodeURIComponent(`/invite/${token}`)}`}>
+            Sign in to accept
+          </Link>
+        </Button>
+      </InviteShell>
+    );
+  }
 
   return (
     <InviteShell heading={heading}>
+      {what}
       {details.kind === "staff" && details.signsOff && (
         <p className="text-muted-foreground text-sm">
           You&apos;ll also sign off signage artwork — you&apos;ll get an email whenever something

@@ -28,11 +28,11 @@ function statusText(g: GrantRow): string {
     case "revoked":
       return `Revoked ${formatDayMonth(g.revokedAt)}`;
     case "expired":
-      return "Expired";
+      return g.endsOn ? `Access ended ${formatDate(g.endsOn)}` : "Access ended";
     case "active":
-      return g.expiresAt ? `Active · ends ${formatDate(g.expiresAt)}` : "Active";
+      return g.endsOn ? `Active · ends ${formatDate(g.endsOn)}` : "Active";
     default:
-      return g.expiresAt ? `Invited · ends ${formatDate(g.expiresAt)}` : "Invited";
+      return `Invited ${formatDayMonth(g.createdAt)}${g.endsOn ? ` · ends ${formatDate(g.endsOn)}` : ""}`;
   }
 }
 
@@ -89,7 +89,8 @@ function GrantTable({ rows, emailOn }: { rows: GrantRow[]; emailOn: boolean }) {
                       grantId={g.id}
                       who={g.name || g.email}
                       eventName={g.eventName}
-                      pendingInvite={g.status === "invited"}
+                      status={g.status}
+                      endsOn={g.endsOn}
                       emailOn={emailOn}
                     />
                   )}
@@ -114,7 +115,8 @@ function GrantTable({ rows, emailOn }: { rows: GrantRow[]; emailOn: boolean }) {
                   grantId={g.id}
                   who={g.name || g.email}
                   eventName={g.eventName}
-                  pendingInvite={g.status === "invited"}
+                  status={g.status}
+                  endsOn={g.endsOn}
                   emailOn={emailOn}
                 />
               )}
@@ -148,6 +150,9 @@ export async function ExternalTab({
     label: `${e.name} · ${formatDate(e.openStart)}`,
     upcoming: e.upcoming,
   }));
+  // Archived events take no new invitations (the server refuses them too).
+  const archived = new Set(eventList.filter((e) => e.archived).map((e) => e.id));
+  const inviteEvents = events.filter((e) => !archived.has(e.id));
   const filter =
     params.event === "all"
       ? "all"
@@ -167,10 +172,13 @@ export async function ExternalTab({
       </p>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         {events.length > 0 ? <EventFilter events={events} value={filter} /> : <span />}
-        {events.length > 0 && (
+        {inviteEvents.length > 0 && (
           <ExternalInvite
-            events={events}
-            defaultEventId={filter !== "all" ? filter : current}
+            events={inviteEvents}
+            defaultEventId={
+              [filter, current].find((id) => id && id !== "all" && !archived.has(id)) ?? null
+            }
+            emailOn={emailOn}
             venues={scopes.venues}
             suppliers={scopes.suppliers}
             sponsors={scopes.sponsors}

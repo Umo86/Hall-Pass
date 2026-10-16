@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 
 import { desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { artworkVersions, signageItems } from "@/lib/db/schema";
+import { artworkVersions, signageItems, sponsors } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession, type Session } from "@/lib/auth/actor";
@@ -217,11 +217,17 @@ async function recordArtworkVersion(
   },
 ): Promise<ActionResult<UploadOutcome>> {
   const item = bundle.item;
+  const ctx = itemAuthzCtx(bundle);
+  // A sponsor uploading in the portal (P4.2): the upload is how they hand the
+  // artwork over, so it sends their own item for sign-off when it is ready —
+  // they have no separate "send" (signage.submit stays staff-only).
+  const sponsorUpload =
+    session.actor.kind === "external" && can(session.actor, { type: "artwork.upload", item: ctx });
   // Sending it on needs the right to submit as well as to upload.
   const mayAlsoSend =
-    Boolean(fileMeta.sendForSignoff) &&
+    (Boolean(fileMeta.sendForSignoff) || sponsorUpload) &&
     ["draft", "changes_requested"].includes(item.status) &&
-    can(session.actor, { type: "signage.submit", item: itemAuthzCtx(bundle) });
+    (sponsorUpload || can(session.actor, { type: "signage.submit", item: ctx }));
   try {
     const outcome = await db.transaction(async (tx) => {
       const [latest] = await tx
@@ -325,6 +331,41 @@ async function recordArtworkVersion(
         }
       }
 
+      // A sponsor hears plainly what happened (no internal names or errors),
+      // and the team hears that the sponsor has delivered.
+      if (sponsorUpload) {
+        const detailsMissing = item.status === "draft" && missingSubmitFields(item).length > 0;
+        note = reviewStarted
+          ? " and sent for sign-off"
+          : detailsMissing
+            ? " — the team will send it for sign-off once its details are complete"
+            : " — the team will send it for sign-off";
+        const [sponsor] = item.sponsorId
+          ? await tx
+              .select({ name: sponsors.companyName })
+              .from(sponsors)
+              .where(eq(sponsors.id, item.sponsorId))
+              .limit(1)
+          : [];
+        const uploader = session.user.fullName || session.user.email;
+        const who = sponsor?.name ?? uploader;
+        await notify(tx, {
+          userIds: [item.ownerUserId ?? item.createdBy].filter((id): id is string => Boolean(id)),
+          kind: "artwork_uploaded",
+          title: `${who} uploaded artwork for ${item.name} (${item.ref})`,
+          body: `${uploader} uploaded v${versionNumber} (${fileMeta.fileName})${
+            reviewStarted
+              ? " and it has gone for sign-off."
+              : detailsMissing
+                ? ". It goes for sign-off once its details are complete — open the item to finish them."
+                : ". Open the item to send it for sign-off."
+          }`,
+          link: `${itemPath(bundle.edition.code, item)}?tab=artwork`,
+          entityType: "signage_item",
+          entityId: item.id,
+        });
+      }
+
       // Approvers with pending instances hear about new artwork.
       if (!reviewStarted && item.currentRunNumber > 0) {
         const run = await loadRun(tx, "signage_item", item.id, item.currentRunNumber);
@@ -356,7 +397,7 @@ async function recordArtworkVersion(
         entityId: item.id,
         action: "upload",
         after: { version: versionNumber, sha256: fileMeta.sha256, fileName: fileMeta.fileName },
-        summary: `Artwork v${versionNumber} uploaded for ${item.ref}${summarySuffix}`,
+        summary: `Artwork v${versionNumber} uploaded for ${item.ref}${sponsorUpload ? " by the sponsor" : ""}${summarySuffix}`,
       });
       return { version: versionNumber, status, note };
     });

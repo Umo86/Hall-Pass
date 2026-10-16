@@ -18,7 +18,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { CopyField } from "@/components/copy-field";
-import { GrantActions } from "@/components/users/external-access";
+import { GrantActions, londonToday, SameAccessNotice } from "@/components/users/external-access";
+import type { SameAccess } from "@/app/actions/settings";
 import { cn } from "@/lib/utils";
 import { formatDate } from "@/lib/format";
 import { GRANT_STATUS_LABELS, portalSummary } from "./summary";
@@ -34,9 +35,11 @@ type Props = {
   /** The events an invitation can be for (for a venue: its own events). */
   events: PortalEvent[];
   defaultEventId: string | null;
-  /** Admins invite and revoke; everyone else who sees this reads it. */
+  /** Whoever may invite partners invites and revokes; everyone else who sees this reads it. */
   canInvite: boolean;
   emailOn: boolean;
+  /** The contact on the supplier's or venue's record, to fill the invitation in. */
+  contact?: { name: string | null; email: string | null } | null;
 };
 
 const TONE: Record<PortalGrant["status"], string> = {
@@ -109,6 +112,7 @@ function PortalAccessPanel({
   defaultEventId,
   canInvite,
   emailOn,
+  contact,
 }: Props) {
   const [inviting, setInviting] = useState(false);
   return (
@@ -126,7 +130,9 @@ function PortalAccessPanel({
                 {g.name && <p className="text-muted-foreground text-xs break-all">{g.email}</p>}
                 <p className="text-muted-foreground text-xs">
                   {g.eventName} ({g.eventCode})
-                  {g.expiresAt ? ` · ends ${formatDate(g.expiresAt)}` : ""}
+                  {g.endsOn
+                    ? ` · ${g.status === "expired" ? "ended" : "ends"} ${formatDate(g.endsOn)}`
+                    : ""}
                 </p>
                 <span
                   className={cn(
@@ -142,7 +148,8 @@ function PortalAccessPanel({
                   grantId={g.id}
                   who={g.name || g.email}
                   eventName={g.eventName}
-                  pendingInvite={g.status === "invited"}
+                  status={g.status}
+                  endsOn={g.endsOn}
                   emailOn={emailOn}
                 />
               )}
@@ -159,6 +166,8 @@ function PortalAccessPanel({
             scopeName={scopeName}
             events={events}
             defaultEventId={defaultEventId}
+            contact={grants.length === 0 ? contact : null}
+            emailOn={emailOn}
             onDone={() => setInviting(false)}
           />
         ) : events.length === 0 ? (
@@ -175,7 +184,8 @@ function PortalAccessPanel({
         )
       ) : (
         <p className="text-muted-foreground text-sm">
-          Only an admin can invite people or take access away.
+          Inviting people or taking access away needs &ldquo;Invite partners&rdquo; — ask a super
+          admin.
         </p>
       )}
       {canInvite && (
@@ -197,6 +207,8 @@ function InviteForm({
   scopeName,
   events,
   defaultEventId,
+  contact,
+  emailOn,
   onDone,
 }: {
   scopeType: "supplier" | "venue";
@@ -204,30 +216,39 @@ function InviteForm({
   scopeName: string;
   events: PortalEvent[];
   defaultEventId: string | null;
+  /** Filled in from the record until typed over (only while nobody there has access). */
+  contact?: { name: string | null; email: string | null } | null;
+  emailOn: boolean;
   onDone: () => void;
 }) {
   const ids = useId();
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(contact?.email ?? "");
+  const [name, setName] = useState(contact?.name ?? "");
   const [editionId, setEditionId] = useState(
     events.find((e) => e.id === defaultEventId)?.id ?? events[0]?.id ?? "",
   );
   const [expires, setExpires] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [same, setSame] = useState<{ same: SameAccess; message: string } | null>(null);
   const [link, setLink] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
   const upcoming = events.filter((e) => e.upcoming);
   const past = events.filter((e) => !e.upcoming);
   const errorId = `${ids}-error`;
+  const today = londonToday();
+  const fromRecord = Boolean(contact?.email) && email === contact?.email;
 
   if (link) {
     return (
       <div className="space-y-3 rounded-lg border p-3" role="status">
         <p className="text-sm">
-          Email isn&rsquo;t set up here, so send them this link yourself. Only send it to them — it
-          creates their account.
+          Email isn&rsquo;t set up here, so send them this link yourself. Only send it to them.
         </p>
-        <CopyField value={link} label="Invitation link" />
+        <CopyField
+          value={link.startsWith("/") ? `${window.location.origin}${link}` : link}
+          label="Invitation link"
+        />
         <div className="flex flex-wrap gap-2">
           <Button
             type="button"
@@ -235,6 +256,8 @@ function InviteForm({
             onClick={() => {
               setLink(null);
               setEmail("");
+              setName("");
+              setSame(null);
             }}
           >
             Invite someone else
@@ -254,9 +277,11 @@ function InviteForm({
       onSubmit={(e) => {
         e.preventDefault();
         setError(null);
+        setSame(null);
         start(async () => {
           const res = await inviteExternal({
             email,
+            fullName: name || null,
             editionId,
             role: scopeType,
             scopeType,
@@ -267,15 +292,17 @@ function InviteForm({
             setError(res.error);
             return;
           }
+          if (res.data?.same) {
+            setSame({
+              same: res.data.same,
+              message: res.message ?? "They already have this access",
+            });
+            return;
+          }
           toast.success(res.message ?? `Invitation sent to ${email}`);
           router.refresh();
-          if (res.data?.inviteUrl) {
-            setLink(
-              res.data.inviteUrl.startsWith("/")
-                ? `${window.location.origin}${res.data.inviteUrl}`
-                : res.data.inviteUrl,
-            );
-          } else onDone();
+          if (res.data?.inviteUrl) setLink(res.data.inviteUrl);
+          else onDone();
         });
       }}
     >
@@ -288,9 +315,33 @@ function InviteForm({
           required
           autoFocus
           value={email}
-          onChange={(e) => setEmail(e.target.value)}
+          onChange={(e) => {
+            setEmail(e.target.value);
+            setSame(null);
+          }}
           aria-invalid={error ? true : undefined}
-          aria-describedby={error ? errorId : undefined}
+          aria-describedby={
+            [error ? errorId : null, fromRecord ? `${ids}-hint` : null].filter(Boolean).join(" ") ||
+            undefined
+          }
+          className="h-11 sm:h-9"
+        />
+        {fromRecord && (
+          <p id={`${ids}-hint`} className="text-muted-foreground text-xs">
+            The contact on {scopeName}&rsquo;s record — change it if someone else should have
+            access.
+          </p>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor={`${ids}-name`}>
+          Their name <span className="text-muted-foreground font-normal">(optional)</span>
+        </Label>
+        <Input
+          id={`${ids}-name`}
+          value={name}
+          autoComplete="off"
+          onChange={(e) => setName(e.target.value)}
           className="h-11 sm:h-9"
         />
       </div>
@@ -299,7 +350,10 @@ function InviteForm({
         <SelectNative
           id={`${ids}-event`}
           value={editionId}
-          onChange={(e) => setEditionId(e.target.value)}
+          onChange={(e) => {
+            setEditionId(e.target.value);
+            setSame(null);
+          }}
           className="h-11 sm:h-9"
         >
           {upcoming.length > 0 && (
@@ -329,11 +383,24 @@ function InviteForm({
         <Input
           id={`${ids}-expires`}
           type="date"
+          min={today}
           value={expires}
           onChange={(e) => setExpires(e.target.value)}
           className="h-11 sm:h-9"
         />
+        <p className="text-muted-foreground text-xs">They keep access until the end of that day.</p>
       </div>
+      {same && (
+        <SameAccessNotice
+          same={same.same}
+          message={same.message}
+          who={name || email}
+          emailOn={emailOn}
+          suggestedEnd={expires || null}
+          onLink={setLink}
+          onDone={onDone}
+        />
+      )}
       {error && (
         <p id={errorId} role="alert" className="text-destructive text-sm">
           {error}
@@ -343,7 +410,7 @@ function InviteForm({
         <Button type="button" variant="outline" onClick={onDone} disabled={pending}>
           Cancel
         </Button>
-        <Button type="submit" disabled={pending || !editionId}>
+        <Button type="submit" disabled={pending || !editionId || Boolean(same)}>
           {pending ? "Sending…" : "Send invitation"}
         </Button>
       </div>

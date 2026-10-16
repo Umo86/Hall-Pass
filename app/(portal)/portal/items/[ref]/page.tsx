@@ -13,9 +13,11 @@ import {
 } from "@/lib/queries/signage";
 import { statusLabel } from "@/lib/format";
 import { labelWhen, labelWhere, specLabelFields } from "@/lib/exports/label-fields";
-import { APPROVED_OR_LATER } from "@/lib/status/signage";
-import { isVideoArtwork } from "@/lib/artwork-rules";
-import { getDownloadUrl, getInlineUrl } from "@/lib/storage";
+import { artworkBlockedReason, isVideoArtwork } from "@/lib/artwork-rules";
+import { blobEnabled, directUploadMode, getDownloadUrl, getInlineUrl } from "@/lib/storage";
+import { editionIsReadOnly } from "@/lib/edition-lock";
+import { externalSeesArtwork } from "@/lib/users/external";
+import { PortalArtworkUpload } from "@/components/portal/artwork-upload";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import { DecideButtons } from "@/components/approvals/decide-buttons";
@@ -49,9 +51,15 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
   const openSnags = snags.filter((s) => s.status === "open" || s.status === "in_progress");
 
   // Suppliers only get artwork once it is signed off (the locked version);
-  // everyone else sees the version currently under review.
-  const isSupplierOnly = session.actor.grants.every((g) => g.role === "supplier");
-  const artworkReleased = !isSupplierOnly || APPROVED_OR_LATER.includes(item.status);
+  // whoever is shown this item by another grant (its venue or sponsor) sees
+  // the version under review. Decided by the grants that show this item.
+  const itemCtx = itemAuthzCtx(bundle);
+  const artworkReleased = externalSeesArtwork(session.actor, { ...itemCtx, status: item.status });
+  // Sponsors upload their own artwork while the item waits for it (P4.2).
+  const canUpload =
+    can(session.actor, { type: "artwork.upload", item: itemCtx }) &&
+    !editionIsReadOnly(bundle.edition.status) &&
+    !artworkBlockedReason(item.status);
   const current = versions.find((v) => v.version.id === item.currentArtworkVersionId)?.version;
   const isSeed = current?.filePath.startsWith("seed/") ?? false;
   const [artworkUrl, previewUrl] =
@@ -70,7 +78,15 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
     .filter(({ instance }) => instance.runNumber === item.currentRunNumber)
     .filter(({ instance }) => instance.status !== "invalidated" && instance.status !== "skipped")
     .sort((a, b) => a.instance.sortOrderSnapshot - b.instance.sortOrderSnapshot);
-  const itemCtx = itemAuthzCtx(bundle);
+  const asked =
+    item.status === "changes_requested"
+      ? run
+          .filter(({ instance }) => instance.status === "changes_requested")
+          .sort(
+            (a, b) =>
+              (b.instance.decidedAt?.getTime() ?? 0) - (a.instance.decidedAt?.getTime() ?? 0),
+          )[0]
+      : undefined;
   const mine = run.filter(
     ({ instance }) =>
       instance.status === "pending" &&
@@ -93,8 +109,8 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-5 p-4 sm:p-6">
       <div>
-        <Link href="/portal/approvals" className="text-muted-foreground text-sm hover:underline">
-          ← My Sign-offs
+        <Link href="/portal/items" className="text-muted-foreground text-sm hover:underline">
+          ← My items
         </Link>
         <div className="mt-1 flex flex-wrap items-center gap-2">
           <h1 className="text-xl font-semibold tracking-tight">{item.name}</h1>
@@ -108,7 +124,9 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
       <section className="space-y-2">
         <h2 className="text-sm font-semibold">Artwork</h2>
         {!current ? (
-          <p className="text-muted-foreground text-sm">No artwork uploaded yet.</p>
+          <p className="text-muted-foreground text-sm">
+            {canUpload ? "No artwork yet — upload it below." : "No artwork uploaded yet."}
+          </p>
         ) : !artworkReleased ? (
           <p className="text-muted-foreground text-sm">
             Artwork is released to suppliers once it is signed off.
@@ -156,6 +174,27 @@ export default async function PortalItemPage({ params }: { params: Promise<{ ref
           </div>
         )}
       </section>
+
+      {canUpload && (
+        <PortalArtworkUpload
+          itemId={item.id}
+          status={item.status}
+          directUpload={directUploadMode()}
+          uploadPrefix={
+            blobEnabled()
+              ? `artwork/${bundle.organisation.id}/${bundle.edition.id}/signage_item/${item.id}/`
+              : null
+          }
+          changeRequest={
+            asked
+              ? {
+                  stepName: asked.instance.stepNameSnapshot,
+                  comment: asked.instance.decisionComment ?? null,
+                }
+              : null
+          }
+        />
+      )}
 
       {/* The decision sits under the artwork it is about. */}
       {mine.length > 0 && (

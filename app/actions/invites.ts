@@ -5,15 +5,17 @@ import { randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { externalGrants, staffInvites, users } from "@/lib/db/schema";
+import { externalGrants, memberships, staffInvites, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
 import { DEV_COOKIE, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
 import { claimStaffInvite } from "@/lib/auth/claim-staff-invite";
 import { findValidGrant, findValidStaffInvite } from "@/lib/users/invite-lookup";
-import { STAFF_HOME } from "@/lib/edition-path";
+import { PORTAL_HOME, STAFF_HOME } from "@/lib/edition-path";
+import { grantAuditPayload, grantLive, liveGrantSql } from "@/lib/users/external";
+import { roleLabel } from "@/lib/format";
 import { supabaseAdmin } from "@/lib/auth/supabase-admin";
 
 export type InviteResult = { ok: true; message?: string } | { ok: false; error: string };
@@ -100,8 +102,16 @@ export async function acceptInvite(input: unknown): Promise<InviteResult> {
     if (session.user.email.toLowerCase() !== grant.invitedEmail.toLowerCase()) {
       return { ok: false, error: "This invitation was sent to a different email address." };
     }
-    await claimGrant(grant.id, session.user.id, fullName);
-    redirect("/portal/approvals");
+    if (session.actor.kind === "staff") {
+      // A team member already sees everything; partner access would only confuse it.
+      return {
+        ok: false,
+        error: "You're signed in as a team member, so you don't need this portal invitation.",
+      };
+    }
+    const claimed = await claimGrant(grant.id, session.user.id, fullName);
+    if (!claimed) return { ok: false, error: CLAIM_FAILED };
+    redirect(PORTAL_HOME);
   }
 
   // With real sign-in configured, invitees always get an email link.
@@ -114,18 +124,20 @@ export async function acceptInvite(input: unknown): Promise<InviteResult> {
         .values({ id: randomUUID(), email: grant.invitedEmail, fullName, isExternal: true })
         .returning();
     }
-    await claimGrant(grant.id, user.id, fullName);
+    const claimed = await claimGrant(grant.id, user.id, fullName);
+    if (!claimed) return { ok: false, error: CLAIM_FAILED };
     const store = await cookies();
     store.set(DEV_COOKIE, user.email, { httpOnly: true, sameSite: "lax", path: "/" });
-    redirect("/portal/approvals");
+    redirect(PORTAL_HOME);
   }
 
   // Production: create their account with the password they chose.
   const created = await createAccount(grant.invitedEmail, fullName, true, account);
   if (created) {
     if (created.error !== undefined) return { ok: false, error: created.error };
-    await claimGrant(grant.id, created.userId, fullName);
-    redirect("/portal/approvals");
+    const claimed = await claimGrant(grant.id, created.userId, fullName);
+    if (!claimed) return { ok: false, error: CLAIM_FAILED };
+    redirect(PORTAL_HOME);
   }
 
   // No service key: send a magic link to the invited address; the grant is
@@ -197,22 +209,83 @@ async function acceptStaffInvite(
   return { ok: true, message: `A sign-in link has been sent to ${invite.invitedEmail}.` };
 }
 
-async function claimGrant(grantId: string, userId: string, fullName: string) {
-  await db.transaction(async (tx) => {
+const CLAIM_FAILED =
+  "This invitation can't be used any more — it was withdrawn, has ended or belongs to another account. Ask whoever invited you.";
+
+/**
+ * Link one partner invitation to the account that opened it, with its
+ * audit row (who, what for, when). Only a live grant nobody else has
+ * claimed, and never for someone on a team (they would be marked as a
+ * partner and lose staff-only content). False when nothing was claimed.
+ */
+async function claimGrant(grantId: string, userId: string, fullName: string): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [member] = await tx
+      .select({ id: memberships.id })
+      .from(memberships)
+      .where(eq(memberships.userId, userId))
+      .limit(1);
+    if (member) return false;
+    const now = new Date();
+    const [current] = await tx
+      .select()
+      .from(externalGrants)
+      .where(eq(externalGrants.id, grantId))
+      .for("update");
+    // Opened again after signing in (which already claimed it): only the name
+    // they typed is new, kept when their account has none yet.
+    if (current?.userId === userId && current.acceptedAt && grantLive(current, now)) {
+      const [user] = await tx
+        .select({ fullName: users.fullName })
+        .from(users)
+        .where(eq(users.id, userId));
+      if (user && !user.fullName.trim() && fullName.trim()) {
+        await tx
+          .update(users)
+          .set({ fullName: fullName.trim(), updatedAt: now })
+          .where(eq(users.id, userId));
+        await writeAudit(tx, {
+          organisationId: current.organisationId,
+          actorUserId: userId,
+          entityType: "user",
+          entityId: userId,
+          action: "update",
+          after: { fullName: fullName.trim() },
+          summary: `${current.invitedEmail} added their name`,
+          subjectUserId: userId,
+          subjectEmail: current.invitedEmail,
+        });
+      }
+      return true;
+    }
     const [grant] = await tx
       .update(externalGrants)
-      .set({ userId, acceptedAt: new Date() })
-      .where(and(eq(externalGrants.id, grantId), isNull(externalGrants.revokedAt)))
+      .set({ userId, acceptedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(externalGrants.id, grantId),
+          or(isNull(externalGrants.userId), eq(externalGrants.userId, userId)),
+          liveGrantSql(now),
+        ),
+      )
       .returning();
-    await tx.update(users).set({ fullName, isExternal: true }).where(eq(users.id, userId));
+    if (!grant) return false;
+    await tx
+      .update(users)
+      .set({ fullName, isExternal: true, updatedAt: now })
+      .where(eq(users.id, userId));
     await writeAudit(tx, {
-      organisationId: grant?.organisationId,
-      editionId: grant?.editionId,
+      organisationId: grant.organisationId,
+      editionId: grant.editionId,
       actorUserId: userId,
       entityType: "external_grant",
-      entityId: grantId,
+      entityId: grant.id,
       action: "invite",
-      summary: `Invitation accepted (${grant?.role ?? "external"})`,
+      after: { ...grantAuditPayload(grant), acceptedAt: now.toISOString(), how: "link" },
+      summary: `${grant.invitedEmail} accepted their invitation as ${roleLabel(grant.role)}`,
+      subjectUserId: userId,
+      subjectEmail: grant.invitedEmail,
     });
+    return true;
   });
 }

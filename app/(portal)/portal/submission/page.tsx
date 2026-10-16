@@ -1,5 +1,7 @@
+import { eq, inArray } from "drizzle-orm";
 import { requirePortalSession } from "@/lib/auth/actor";
 import { db } from "@/lib/db/client";
+import { editions, exhibitors } from "@/lib/db/schema";
 import { loadStandBundle, standAuthzCtx, stepActiveFlags } from "@/lib/domain/stand";
 import { getStandDocuments, getSubmissionForExhibitor } from "@/lib/queries/stands";
 import { getEntityComments } from "@/lib/queries/signage";
@@ -8,6 +10,7 @@ import { can } from "@/lib/authz";
 import { getDownloadUrl } from "@/lib/storage";
 import { formatDateTime } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
+import { SegmentedLinks } from "@/components/ui/segmented";
 import { CommentThread } from "@/components/comments/thread";
 import { DocumentsPanel, type DocRow } from "@/components/stands/documents-panel";
 import { QuestionnaireForm } from "@/components/stands/questionnaire-form";
@@ -16,24 +19,49 @@ import { SubmitStandButton } from "@/components/stands/submit-button";
 export const metadata = { title: "My Submission" };
 export const dynamic = "force-dynamic";
 
-type Grant = Awaited<ReturnType<typeof requirePortalSession>>["actor"]["grants"][number];
-
-/** Only live invitations count: revoked or expired ones show nothing. */
-function liveExhibitorGrant(grants: Grant[]): Grant | undefined {
-  const now = Date.now();
-  return grants.find(
-    (g) =>
-      (g.role === "exhibitor" || g.role === "contractor") &&
-      g.scopeType === "exhibitor" &&
-      !g.revokedAt &&
-      (!g.expiresAt || g.expiresAt.getTime() > now),
+/**
+ * The stands this partner submits for: one per live exhibitor or
+ * contractor grant (a contractor often builds several), each with its
+ * company, stand number and event. Session grants are live ones only.
+ */
+async function myStands(
+  grants: Awaited<ReturnType<typeof requirePortalSession>>["actor"]["grants"],
+) {
+  const mine = grants.filter(
+    (g) => (g.role === "exhibitor" || g.role === "contractor") && g.scopeType === "exhibitor",
   );
+  const ids = [...new Set(mine.map((g) => g.scopeId).filter((id): id is string => Boolean(id)))];
+  if (ids.length === 0) return [];
+  const rows = await db
+    .select({
+      id: exhibitors.id,
+      companyName: exhibitors.companyName,
+      standNumber: exhibitors.standNumber,
+      editionId: exhibitors.editionId,
+      eventName: editions.name,
+    })
+    .from(exhibitors)
+    .innerJoin(editions, eq(editions.id, exhibitors.editionId))
+    .where(inArray(exhibitors.id, ids));
+  return rows
+    .filter((x) => mine.some((g) => g.scopeId === x.id && g.editionId === x.editionId))
+    .sort(
+      (a, b) =>
+        a.eventName.localeCompare(b.eventName) ||
+        a.standNumber.localeCompare(b.standNumber, "en-GB", { numeric: true }),
+    );
 }
 
-export default async function PortalSubmissionPage() {
+export default async function PortalSubmissionPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ exhibitor?: string }>;
+}) {
   const session = await requirePortalSession();
-  const grant = liveExhibitorGrant(session.actor.grants);
-  if (!grant?.scopeId) {
+  const { exhibitor } = await searchParams;
+  const stands = await myStands(session.actor.grants);
+  const chosen = stands.find((x) => x.id === exhibitor) ?? stands[0];
+  if (!chosen) {
     return (
       <div className="p-4 sm:p-6">
         <p className="text-muted-foreground text-sm">
@@ -43,13 +71,29 @@ export default async function PortalSubmissionPage() {
       </div>
     );
   }
+  const picker =
+    stands.length > 1 ? (
+      <SegmentedLinks
+        label="Stand"
+        items={stands.map((x) => ({
+          label: `Stand ${x.standNumber} · ${x.companyName}${
+            new Set(stands.map((s) => s.editionId)).size > 1 ? ` · ${x.eventName}` : ""
+          }`,
+          href: `/portal/submission?exhibitor=${x.id}`,
+          active: x.id === chosen.id,
+        }))}
+      />
+    ) : null;
+  const grant = { scopeId: chosen.id };
 
   const row = await getSubmissionForExhibitor(grant.scopeId);
   if (!row) {
     return (
-      <div className="p-4 sm:p-6">
+      <div className="mx-auto flex max-w-3xl flex-col gap-4 p-4 sm:p-6">
+        {picker}
         <p className="text-muted-foreground text-sm">
-          Your submission record has not been created yet — the organiser will set it up.
+          The submission for stand {chosen.standNumber} has not been created yet — the organiser
+          will set it up.
         </p>
       </div>
     );
@@ -62,6 +106,13 @@ export default async function PortalSubmissionPage() {
       ? await loadRun(db, "stand_submission", row.sub.id, row.sub.currentRunNumber)
       : [];
   const ctx = standAuthzCtx(bundle, stepActiveFlags(run));
+  if (!can(session.actor, { type: "stand.view", sub: ctx })) {
+    return (
+      <div className="p-4 sm:p-6">
+        <p className="text-muted-foreground text-sm">This stand isn&rsquo;t shared with you.</p>
+      </div>
+    );
+  }
   const canSubmit = can(session.actor, { type: "stand.submit", sub: ctx });
   const editable = ["not_submitted", "changes_requested", "rejected"].includes(row.sub.status);
 
@@ -90,6 +141,7 @@ export default async function PortalSubmissionPage() {
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6 p-4 sm:p-6">
+      {picker}
       <div className="flex flex-wrap items-center gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">

@@ -3,7 +3,8 @@ import { CheckCircle2, FileText } from "lucide-react";
 import { requirePortalSession } from "@/lib/auth/actor";
 import { pendingInstancesForUser } from "@/lib/queries/approvals";
 import { reviewArtworkForItems } from "@/lib/queries/artwork-approvals";
-import { APPROVED_OR_LATER } from "@/lib/status/signage";
+import { itemAuthzCtx, type ItemBundle } from "@/lib/domain/signage";
+import { externalSeesArtwork } from "@/lib/users/external";
 import { formatDateTime } from "@/lib/format";
 import { DecideButtons } from "@/components/approvals/decide-buttons";
 import { OverduePill } from "@/components/approvals/review-sheet";
@@ -23,15 +24,15 @@ export const dynamic = "force-dynamic";
 export default async function PortalApprovalsPage() {
   const session = await requirePortalSession();
   const rows = await pendingInstancesForUser(session);
-  // Suppliers only see artwork once it is signed off (as on the item page).
-  const supplierOnly = session.actor.grants.every((g) => g.role === "supplier");
+  // Suppliers only see artwork once it is signed off (as on the item page),
+  // decided per item by the grants that show it.
   const itemIds = rows
     .filter(({ isSignage, bundle }) => {
       if (!isSignage) return false;
-      const status = (bundle as { item: { status: string } }).item.status;
-      return !supplierOnly || (APPROVED_OR_LATER as readonly string[]).includes(status);
+      const b = bundle as ItemBundle;
+      return externalSeesArtwork(session.actor, { ...itemAuthzCtx(b), status: b.item.status });
     })
-    .map(({ bundle }) => (bundle as { item: { id: string } }).item.id);
+    .map(({ bundle }) => (bundle as ItemBundle).item.id);
   const artwork = await reviewArtworkForItems(session.organisation.id, itemIds);
 
   return (

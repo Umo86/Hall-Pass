@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { externalGrants, memberships, staffInvites, users } from "@/lib/db/schema";
 import { appUrl } from "@/lib/app-url";
@@ -17,7 +17,7 @@ export type AccountEmailResult =
   | "not_sent";
 
 /**
- * Is this email allowed into Hall Pass? Only people with an active team
+ * Is this email allowed in? Only people with an active team
  * membership (not suspended, access not ended), an open staff invitation or
  * a live partner invitation. Everyone else is turned away without an email
  * — there is no sign-up. A suspended team member is refused even if an
@@ -55,19 +55,24 @@ export async function emailIsInvited(email: string): Promise<boolean> {
  * Email an invited person the way in, through Supabase: a link to create
  * their account (name and password) the first time, or a sign-in link if
  * they already have one. The link only works from their inbox, so only the
- * invited email can create the account.
+ * invited email can create the account. `reason` ("Media10 has given you
+ * access to … as a sponsor") goes into the account's metadata, so the
+ * Supabase email template can say what the invitation is for.
  */
 export async function sendAccountEmail(
   email: string,
-  opts: { fullName?: string | null } = {},
+  opts: { fullName?: string | null; reason?: string | null } = {},
 ): Promise<AccountEmailResult> {
   const e = email.trim().toLowerCase();
   const base = appUrl();
   const admin = supabaseAdmin();
   if (admin) {
+    const data: Record<string, string> = {};
+    if (opts.fullName) data.full_name = opts.fullName;
+    if (opts.reason) data.invite_reason = opts.reason;
     const { error } = await admin.auth.admin.inviteUserByEmail(e, {
       redirectTo: `${base}/auth/accept`,
-      data: opts.fullName ? { full_name: opts.fullName } : undefined,
+      data: Object.keys(data).length ? data : undefined,
     });
     if (!error) return "invite_sent";
     const exists = error.status === 422 || /already|registered|exists/i.test(error.message);
@@ -111,12 +116,22 @@ export async function auditSignIn(
       .from(memberships)
       .where(eq(memberships.userId, user.id))
       .limit(1);
+    // A partner's organisation is that of their newest live grant (as their
+    // session picks it), never an arbitrary or revoked one.
+    const now = new Date();
     const [grant] = member
       ? []
       : await db
           .select({ organisationId: externalGrants.organisationId })
           .from(externalGrants)
-          .where(eq(externalGrants.userId, user.id))
+          .where(
+            and(
+              eq(externalGrants.userId, user.id),
+              isNull(externalGrants.revokedAt),
+              or(isNull(externalGrants.expiresAt), gt(externalGrants.expiresAt, now)),
+            ),
+          )
+          .orderBy(desc(externalGrants.createdAt))
           .limit(1);
     await db.transaction(async (tx) => {
       await writeAudit(tx, {

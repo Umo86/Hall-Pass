@@ -6,6 +6,7 @@ import "server-only";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { editions, externalGrants, users } from "@/lib/db/schema";
+import { londonDateOfAccessEnd } from "@/lib/access";
 import { grantStatus, type GrantStatus } from "./summary";
 
 export type PortalGrant = {
@@ -17,6 +18,8 @@ export type PortalGrant = {
   eventName: string;
   status: Exclude<GrantStatus, "revoked">;
   expiresAt: string | null;
+  /** The London date access ends (or ended) on. */
+  endsOn: string | null;
 };
 
 /**
@@ -61,6 +64,7 @@ export async function portalGrantsByScope(
       eventName: eventName ?? "an event that no longer exists",
       status,
       expiresAt: g.expiresAt ? g.expiresAt.toISOString() : null,
+      endsOn: g.expiresAt ? londonDateOfAccessEnd(g.expiresAt) : null,
     });
     out.set(g.scopeId, list);
   }

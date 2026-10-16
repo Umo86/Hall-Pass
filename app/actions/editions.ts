@@ -5,7 +5,7 @@ import { ownEdition } from "@/lib/domain/signage";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { z } from "zod";
-import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db, type Tx } from "@/lib/db/client";
 import {
   editionCounters,
@@ -42,6 +42,8 @@ import { ensureSignageWorkflow } from "@/lib/domain/departments";
 import { LAST_EVENT_COOKIE, LAST_EVENT_COOKIE_MAX_AGE } from "@/lib/queries/editions";
 import { CONFIRMABLE_STEPS } from "@/lib/queries/setup";
 import { seriesNameFor } from "@/components/setup/naming";
+import { loadTeam, ownerRefusal, ownerRoleOf } from "@/lib/people";
+import { copiedAccessEnd, grantAuditPayload } from "@/lib/users/external";
 
 const DATE_ORDER: Array<keyof EventDates> = [
   "buildStart",
@@ -361,6 +363,10 @@ export type CloneCounts = {
   access: number;
   /** Partner access left behind because it was for a sponsor or exhibitor of the old event. */
   accessSkipped: number;
+  /** Partner access left behind because its end date, moved to the new event, has passed. */
+  accessEnded: number;
+  /** Items whose owner is no longer active (or can't work them): the copier owns them now. */
+  ownersReplaced: number;
 };
 
 /**
@@ -430,6 +436,8 @@ export async function cloneEdition(
     items: 0,
     access: 0,
     accessSkipped: 0,
+    accessEnded: 0,
+    ownersReplaced: 0,
   };
 
   try {
@@ -530,6 +538,25 @@ export async function cloneEdition(
       let standNo = 0;
       let standSeq = 0;
       const idMap = new Map<string, { id: string; ref: string; panels: number }>();
+      // Owners come across only while they are active and can still work the
+      // item; otherwise the person copying owns the copy (P0.12).
+      const team = items.length > 0 ? await loadTeam(tx, orgId) : [];
+      const byUser = new Map(team.map((m) => [m.userId, m]));
+      const copier = byUser.get(session.user.id);
+      const ownerFor = (item: (typeof items)[number], sponsorId: string | null) => {
+        if (!item.ownerUserId) return { ownerUserId: null, ownerRole: item.ownerRole };
+        const refusal = ownerRefusal(
+          byUser.get(item.ownerUserId),
+          { kind: item.kind, sponsored: Boolean(sponsorId) },
+          { organisationId: orgId },
+        );
+        if (!refusal) return { ownerUserId: item.ownerUserId, ownerRole: item.ownerRole };
+        counts.ownersReplaced += 1;
+        return {
+          ownerUserId: session.user.id,
+          ownerRole: (copier && ownerRoleOf(copier)) ?? item.ownerRole,
+        };
+      };
       // Stands before their panels, whatever order they were made in.
       const ordered = [
         ...items.filter((i) => i.kind !== "stand_panel"),
@@ -561,6 +588,7 @@ export async function cloneEdition(
         const forSale = item.kind === "sponsorship_item";
         const sponsorId =
           forSale || !item.sponsorId ? null : (sponsorMap.get(item.sponsorId) ?? null);
+        const owner = ownerFor(item, sponsorId);
         const [created] = await tx
           .insert(signageItems)
           .values({
@@ -576,8 +604,8 @@ export async function cloneEdition(
             hallId: item.hallId ? (hallMap.get(item.hallId) ?? null) : null,
             locationId: item.locationId ? (locMap.get(item.locationId) ?? null) : null,
             standNumber: item.standNumber,
-            ownerRole: item.ownerRole,
-            ownerUserId: item.ownerUserId,
+            ownerRole: owner.ownerRole,
+            ownerUserId: owner.ownerUserId,
             sponsorId,
             sponsorEntitlementId: null,
             isSponsorDeliverable: Boolean(sponsorId),
@@ -615,6 +643,8 @@ export async function cloneEdition(
       // Partner portal access: the venue, suppliers, engineers and H&S keep
       // their way in. Sponsor and exhibitor access belonged to the old
       // event's records, so it stays behind (and is counted, to say so).
+      // Revoked access stays behind; access that ended with the old event
+      // comes across with its end date moved to the new one.
       if (copyAccess) {
         const grants = await tx
           .select()
@@ -624,7 +654,6 @@ export async function cloneEdition(
               eq(externalGrants.editionId, source.id),
               eq(externalGrants.organisationId, orgId),
               isNull(externalGrants.revokedAt),
-              or(isNull(externalGrants.expiresAt), gt(externalGrants.expiresAt, new Date())),
             ),
           );
         const liveSuppliers = new Set(
@@ -648,20 +677,42 @@ export async function cloneEdition(
             if (g.scopeType === "sponsor" || g.scopeType === "exhibitor") counts.accessSkipped += 1;
             continue;
           }
-          await tx.insert(externalGrants).values({
-            userId: g.userId,
-            invitedEmail: g.invitedEmail,
+          // An end date moves with the event (same distance from its last
+          // breakdown day); one that has still passed isn't copied (P4.7).
+          const expiresAt = copiedAccessEnd(g.expiresAt, source.breakdownEnd, target.breakdownEnd);
+          if (expiresAt && expiresAt.getTime() <= Date.now()) {
+            counts.accessEnded += 1;
+            continue;
+          }
+          const [copy] = await tx
+            .insert(externalGrants)
+            .values({
+              userId: g.userId,
+              invitedEmail: g.invitedEmail,
+              organisationId: orgId,
+              editionId: target.id,
+              role: g.role,
+              scopeType: g.scopeType,
+              scopeId: g.scopeId,
+              expiresAt,
+              invitedBy: session.user.id,
+              // A fresh token nobody is sent: people who already signed up keep
+              // their account; anyone who hadn't yet gets it at their next sign-in.
+              inviteTokenHash: hashInviteToken(generateInviteToken()),
+              acceptedAt: g.acceptedAt,
+            })
+            .returning();
+          await writeAudit(tx, {
             organisationId: orgId,
             editionId: target.id,
-            role: g.role,
-            scopeType: g.scopeType,
-            scopeId: g.scopeId,
-            expiresAt: g.expiresAt,
-            invitedBy: session.user.id,
-            // A fresh token nobody is sent: people who already signed up keep
-            // their account; anyone who hadn't yet signs in with their email.
-            inviteTokenHash: hashInviteToken(generateInviteToken()),
-            acceptedAt: g.acceptedAt,
+            actorUserId: session.user.id,
+            entityType: "external_grant",
+            entityId: copy.id,
+            action: "invite",
+            after: { ...grantAuditPayload(copy), copiedFrom: g.id, fromEvent: source.code },
+            summary: `Copied ${g.invitedEmail}'s access (${g.role}) from ${source.code} to ${code}`,
+            subjectUserId: copy.userId,
+            subjectEmail: copy.invitedEmail,
           });
           counts.access += 1;
         }
@@ -685,7 +736,18 @@ export async function cloneEdition(
   }
   await rememberEvent(code);
   revalidatePath("/", "layout");
-  return success({ code, counts }, `${data.name} created from ${source.name}`);
+  const notes = [
+    counts.ownersReplaced > 0
+      ? `${counts.ownersReplaced} ${counts.ownersReplaced === 1 ? "item was" : "items were"} owned by people no longer able to work them, so ${counts.ownersReplaced === 1 ? "it's" : "they're"} yours now`
+      : null,
+    counts.accessEnded > 0
+      ? `${counts.accessEnded} partner ${counts.accessEnded === 1 ? "access" : "accesses"} had already ended and stayed behind`
+      : null,
+  ].filter(Boolean);
+  return success(
+    { code, counts },
+    `${data.name} created from ${source.name}${notes.length ? ` — ${notes.join("; ")}` : ""}`,
+  );
 }
 
 /** Copy one event's halls and locations to another; returns old → new ids. */

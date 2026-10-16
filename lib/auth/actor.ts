@@ -3,7 +3,7 @@ import { cache } from "react";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { after } from "next/server";
-import { and, asc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   externalGrants,
@@ -25,6 +25,7 @@ import { createSupabaseServerClient, supabaseConfigured } from "./supabase-serve
 import { claimStaffInvite, openStaffInviteFor } from "./claim-staff-invite";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 import { departmentIdsForUser } from "@/lib/domain/departments";
+import { claimOpenGrants, partnerSessionGrants } from "@/lib/users/external";
 
 export const DEV_COOKIE = "hp-dev-user";
 
@@ -208,21 +209,25 @@ async function loadForUser(
     };
   }
 
-  let grants = await db.query.externalGrants.findMany({
+  // Partners. Every sign-in claims invitations still open for this email —
+  // not only the first — so a returning partner gets later invitations too
+  // (each claim audited; the account marked external).
+  const now = new Date();
+  await claimOpenGrants(user, { now });
+  const all = await db.query.externalGrants.findMany({
     where: eq(externalGrants.userId, user.id),
+    orderBy: desc(externalGrants.createdAt),
   });
-  if (grants.length === 0) {
-    // Claim invitations sent to this email on first sign-in.
-    const claimed = await db
-      .update(externalGrants)
-      .set({ userId: user.id, acceptedAt: new Date() })
-      .where(and(eq(externalGrants.invitedEmail, user.email), isNull(externalGrants.userId)))
-      .returning();
-    grants = claimed;
+  if (all.length === 0) return null;
+  // Only live grants count, in the organisation of the newest one.
+  const picked = partnerSessionGrants(all, now);
+  if (!picked) {
+    // Everything was revoked or has ended: say so at sign-in, not an empty portal.
+    return { blocked: { state: "ended", askName: await partnerInviterName(all[0].invitedBy) } };
   }
-  if (grants.length === 0) return null;
+  const grants = picked.grants;
   const org = await db.query.organisations.findFirst({
-    where: eq(organisations.id, grants[0].organisationId),
+    where: eq(organisations.id, picked.organisationId),
   });
   if (!org) return null;
   if (opts.touch !== false) touchLastSeen(user);
@@ -246,6 +251,13 @@ async function loadForUser(
       organisation: { id: org.id, brandName: org.brandName, settings: org.settings },
     },
   };
+}
+
+/** Who a partner whose access is over should ask: whoever invited them. */
+async function partnerInviterName(invitedBy: string | null): Promise<string | null> {
+  if (!invitedBy) return null;
+  const inviter = await db.query.users.findFirst({ where: eq(users.id, invitedBy) });
+  return inviter ? inviter.fullName || inviter.email : null;
 }
 
 /** Who is signed in on this request (cached), or why they are turned away. */

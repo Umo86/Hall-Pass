@@ -13,8 +13,41 @@ test.describe("external scoping", () => {
     await signInAs(context, "venue@nec.test", baseURL!);
     await page.goto("/portal/items");
     // Flagged item visible; a plain unflagged item is not.
-    await expect(page.getByText("SIG-BIRM27-001")).toBeVisible();
+    await expect(
+      page.getByRole("table").getByRole("link", { name: "SIG-BIRM27-001", exact: true }),
+    ).toBeVisible();
     await expect(page.getByText("SIG-BIRM27-002")).toHaveCount(0);
+  });
+
+  test("a supplier sees artwork only once it is signed off", async ({ page, context, baseURL }) => {
+    await signInAs(context, "print@bigprint.test", baseURL!);
+    // SIG-BIRM27-002 is in sign-off, SIG-BIRM27-008 approved; Big Print supplies both.
+    await page.goto("/portal/items/SIG-BIRM27-002");
+    await expect(
+      page.getByText("Artwork is released to suppliers once it is signed off."),
+    ).toBeVisible();
+    await page.goto("/portal/items/SIG-BIRM27-008");
+    await expect(page.getByRole("heading", { level: 2, name: "Artwork" })).toBeVisible();
+    await expect(
+      page.getByText("Artwork is released to suppliers once it is signed off."),
+    ).toHaveCount(0);
+    // A supplier never uploads.
+    await expect(page.getByRole("region", { name: /Upload/ })).toHaveCount(0);
+  });
+
+  test("a sponsor can't upload once an item is in sign-off, nor see another sponsor's", async ({
+    page,
+    context,
+    baseURL,
+  }) => {
+    await signInAs(context, "sponsor@buildco.test", baseURL!);
+    // SIG-BIRM27-001 is BuildCo's and in sign-off: they see it, under review, but upload nothing.
+    await page.goto("/portal/items/SIG-BIRM27-001");
+    await expect(page.getByRole("heading", { level: 2, name: "Artwork" })).toBeVisible();
+    await expect(page.getByRole("region", { name: /Upload/ })).toHaveCount(0);
+    // SIG-BIRM27-004 is ToolMart's.
+    const res = await page.request.get(`${baseURL}/portal/items/SIG-BIRM27-004`);
+    expect(res.status()).toBe(404);
   });
 
   test("venue sign-offs open the artwork; the decision sits under it", async ({

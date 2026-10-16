@@ -728,6 +728,36 @@ function externalCanViewStand(actor: ExternalActor, sub: StandSubmissionCtx, now
   );
 }
 
+/**
+ * Where an item waits for artwork, so a sponsor may provide their own
+ * (P4.2): not yet sent, sent but waiting for artwork, or changes asked for.
+ * Once it is in sign-off or beyond, new artwork is the team's call.
+ */
+export const SPONSOR_UPLOAD_STATUSES = ["draft", "awaiting_artwork", "changes_requested"] as const;
+
+/**
+ * A sponsor uploads artwork for their own items: a live sponsor grant for
+ * the item's event, scoped to the item's sponsor, while the item waits for
+ * artwork. Never stands or panels. Nothing else follows from it (no edit,
+ * delete, costs or sending other items).
+ */
+function externalSponsorCanUpload(actor: ExternalActor, item: SignageItemCtx, now = new Date()) {
+  if (item.kind === "stand_design" || item.kind === "stand_panel") return false;
+  if (!item.sponsorId) return false;
+  if (!item.status || !(SPONSOR_UPLOAD_STATUSES as readonly string[]).includes(item.status)) {
+    return false;
+  }
+  return hasGrant(
+    actor,
+    (g) =>
+      g.role === "sponsor" &&
+      g.scopeType === "sponsor" &&
+      g.scopeId === item.sponsorId &&
+      g.editionId === item.editionId,
+    now,
+  );
+}
+
 /** Can this external actor decide a role-assigned step? */
 function externalCanDecide(actor: ExternalActor, step: ApprovalStepCtx, now = new Date()) {
   const role = step.assignedRole;
@@ -924,6 +954,8 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
             g.scopeId === action.sub.exhibitorId,
           now,
         );
+      case "artwork.upload":
+        return externalSponsorCanUpload(actor, action.item, now);
       case "approval.decide":
         return externalCanDecide(actor, action.step, now);
       case "approval.delegate":
@@ -934,7 +966,8 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
         if ("exhibitorId" in entity) return externalCanViewStand(actor, entity, now);
         return externalCanViewSignage(actor, entity, now);
       }
-      // Externals never: costs, internal comments, settings, exports, people, CRUD…
+      // Externals never: costs, internal comments, settings, exports, people, CRUD,
+      // sending for sign-off (a sponsor's upload sends their own item itself)…
       default:
         return false;
     }
