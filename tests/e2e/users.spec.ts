@@ -26,14 +26,15 @@ test.describe("Users", () => {
     const admin = await as(browser, "admin@media10.test", baseURL!);
     await admin.goto(`${baseURL}/users`);
     await expect(admin.getByRole("heading", { name: "Users", exact: true })).toBeVisible();
-    await admin.getByRole("link", { name: "Add user" }).first().click();
+    await admin.getByRole("button", { name: "Add people" }).first().click();
+    await admin.getByRole("menuitem", { name: "Add one person" }).click();
     await admin.waitForURL("**/users/new");
 
     await admin.getByLabel("Full name").fill(sam);
     await admin.getByLabel("Email").fill(samEmail);
     await admin.getByLabel("Department", { exact: true }).selectOption({ label: "Marketing" });
     // The role with the department's name is suggested.
-    await expect(admin.getByRole("radio", { name: /^Marketing/ })).toBeChecked();
+    await expect(admin.getByRole("radio", { name: /^Marketing Adds/ })).toBeChecked();
     await admin.getByRole("checkbox", { name: "All sections" }).uncheck();
     await admin.getByRole("checkbox", { name: "Signage", exact: true }).check();
     await admin.getByRole("checkbox", { name: "Signs off Marketing artwork" }).check();
@@ -115,7 +116,8 @@ test.describe("Users", () => {
 
     await admin.goto(`${baseURL}/users?q=${samEmail}`);
     const row = admin.getByRole("row").filter({ hasText: samEmail });
-    await expect(row.getByRole("cell").nth(1)).toHaveText("Sales");
+    // The first cell is the checkbox for the bulk bar.
+    await expect(row.getByRole("cell").nth(2)).toHaveText("Sales");
     await expect(row.getByText(/^2 of \d$/)).toBeVisible();
     await admin.context().close();
   });
@@ -200,8 +202,9 @@ test.describe("Users", () => {
     await expect(dialog.getByText(`Sam signs off for ${legal} (main approver).`)).toBeVisible();
     await dialog.getByRole("button", { name: "Remove Sam" }).click();
     await expect(dialog.getByRole("alert")).toHaveText(/Choose who takes over/);
+    // Sam is Legal's only approver, so someone must be picked for its sign-offs.
     await dialog
-      .getByLabel(/A sign-off is waiting on Sam/)
+      .getByLabel(new RegExp(`^${legal} sign-offs`))
       .selectOption({ label: "Olivia Ops — Operations" });
     await dialog.getByRole("button", { name: "Remove Sam" }).click();
     await admin.waitForURL(/\/users$/);
@@ -226,9 +229,9 @@ test.describe("Users", () => {
     const ops = await as(browser, "ops@media10.test", baseURL!);
     await ops.goto(`${baseURL}/users`);
     await expect(ops.getByRole("heading", { name: "Users", exact: true })).toBeVisible();
-    await expect(ops.getByRole("link", { name: "Add user" })).toHaveCount(0);
+    await expect(ops.getByRole("button", { name: "Add people" })).toHaveCount(0);
     await expect(ops.getByRole("link", { name: "External" })).toHaveCount(0);
-    await expect(ops.getByText("Only admins can invite partners.")).toHaveCount(0);
+    await expect(ops.getByText(/Inviting partners needs/)).toHaveCount(0);
     await expect(ops.getByRole("columnheader", { name: "Email" })).toBeVisible();
     const dana = ops.getByRole("row").filter({ hasText: "director@media10.test" });
     await expect(dana.getByRole("link", { name: "director@media10.test" })).toHaveAttribute(
@@ -247,7 +250,9 @@ test.describe("Users", () => {
     // A link to invite a partner says who can, instead of quietly showing Team.
     await ops.goto(`${baseURL}/users?tab=external&invite=1&role=supplier`);
     await ops.waitForURL(/\/users\?from=external$/);
-    await expect(ops.getByRole("note")).toHaveText(/^Only admins can invite partners\. Ask .+\.$/);
+    await expect(ops.getByRole("note")).toHaveText(
+      /^Inviting partners needs “Invite partners”\. Ask .+\.$/,
+    );
     await expect(ops.getByRole("note").getByRole("link", { name: "Alex Admin" })).toHaveAttribute(
       "href",
       "mailto:admin@media10.test",

@@ -1,20 +1,42 @@
 import Link from "next/link";
-import { UserPlus, Users as UsersIcon } from "lucide-react";
-import { canManagePerson, FEATURE_LABELS, isSuperAdmin, type Actor } from "@/lib/authz";
+import { Users as UsersIcon } from "lucide-react";
+import { canManagePerson, FEATURE_LABELS, managerScope, type Actor } from "@/lib/authz";
 import { standsEnabled } from "@/lib/config";
 import { db } from "@/lib/db/client";
 import { filterTeam, listTeam, needsDepartment, type TeamFilters } from "@/lib/users/queries";
 import { featuresSummary, visibleFeatures } from "@/lib/users/rules";
+import {
+  lastActiveText,
+  managerBadgeText,
+  parseStatusFilter,
+  personStatus,
+} from "@/lib/users/list";
 import { invitesCanBeEmailed } from "@/lib/users/email";
-import { plural } from "@/lib/format";
+import { formatDateTime, plural, roleLabel } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/empty-state";
 import { TeamFilters as Filters } from "./team-filters";
 import { TeamList, type TeamListRow } from "./team-list";
+import { AddPeopleMenu } from "./add-menu";
 
 const PAGE_SIZE = 50;
 
-/** Users → Team: everyone on the team (and, for admins, open invitations). */
+export type TeamParams = {
+  q?: string;
+  dept?: string;
+  role?: string;
+  status?: string;
+  activity?: string;
+  page?: string;
+};
+
+/**
+ * Users → Team: everyone on the team. Super admins and managers also see
+ * open invitations (the ones they may change), sections, status and last
+ * active, and can select the people they manage for a bulk change; a
+ * department manager starts on their own department. Everyone else sees a
+ * directory.
+ */
 export async function TeamTab({
   organisationId,
   viewerId,
@@ -26,41 +48,47 @@ export async function TeamTab({
   viewerId: string;
   /** Adds and changes people (people.manage): sees invitations, sections and status. */
   isAdmin: boolean;
-  /** The viewer: a manager sees only the invitations they may change. */
-  actor?: Actor;
-  params: TeamFilters & { page?: string };
+  actor: Actor;
+  params: TeamParams;
 }) {
-  const { rows: all, departments } = await listTeam(db, organisationId, viewerId);
+  const now = new Date();
+  const { rows: all, departments } = await listTeam(db, organisationId, viewerId, now);
+  const manages = (r: (typeof all)[number]) =>
+    !r.isSelf &&
+    canManagePerson(actor, {
+      organisationId,
+      userId: r.kind === "member" ? r.id : null,
+      role: r.role,
+      departmentId: r.departmentId,
+      managerScope: r.managerScope,
+    });
   // Invitations, sections and status are for people who manage the team;
-  // everyone else sees a directory.
+  // everyone else sees a directory. Managers see the invitations they may change.
   const everyone = isAdmin
-    ? all.filter(
-        (r) =>
-          r.kind === "member" ||
-          !actor ||
-          isSuperAdmin(actor) ||
-          canManagePerson(actor, {
-            organisationId,
-            userId: null,
-            role: r.role,
-            departmentId: r.departmentId,
-            managerScope: r.managerScope,
-          }),
-      )
+    ? all.filter((r) => r.kind === "member" || manages(r))
     : all.filter((r) => r.kind === "member");
+  // A department manager starts on their own department ("all" shows everyone).
+  const ownDept =
+    actor.kind === "staff" && managerScope(actor) === "department"
+      ? (actor.departmentId ?? null)
+      : null;
+  const dept = params.dept === "all" ? undefined : (params.dept ?? ownDept ?? undefined);
   const filters: TeamFilters = {
     q: params.q,
-    dept: params.dept,
+    dept,
     role: params.role,
-    status: isAdmin ? params.status : undefined,
+    status: isAdmin ? parseStatusFilter(params.status) : undefined,
+    activity: isAdmin && params.activity === "stale" ? "stale" : undefined,
   };
-  const filtered = filterTeam(everyone, filters);
+  const filtered = filterTeam(everyone, filters, now);
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const page = Math.min(pages, Math.max(1, Number(params.page) || 1));
   const shown = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const invited = filtered.filter((r) => r.kind === "invite").length;
   const noDept = everyone.filter(needsDepartment).length;
-  const filtering = Boolean(filters.q || filters.dept || filters.role || filters.status);
+  const filtering = Boolean(
+    filters.q || filters.dept || filters.role || filters.status || filters.activity,
+  );
   const visible = visibleFeatures(standsEnabled);
 
   const rows: TeamListRow[] = shown.map((r) => {
@@ -73,6 +101,8 @@ export async function TeamTab({
       isSelf: r.isSelf,
       jobTitle: r.jobTitle,
       role: r.role,
+      roleText: roleLabel(r.role),
+      managerBadge: managerBadgeText(r, r.departmentName),
       departmentName: r.departmentName,
       departmentArchived: r.departmentArchived,
       sections: featuresSummary(features, visible),
@@ -84,14 +114,18 @@ export async function TeamTab({
               .map((f) => FEATURE_LABELS[f])
               .join(", ") || "No sections",
       signsOffFor: r.signsOffFor.map((s) => ({ name: s.name, isMain: s.isMain })),
-      status: r.status,
+      status: personStatus(r),
       statusText: r.statusText,
+      lastActive: r.kind === "member" ? lastActiveText(r.lastSeenAt, now) : null,
+      lastActiveTitle: r.lastSeenAt ? formatDateTime(r.lastSeenAt) : null,
+      manageable: isAdmin && manages(r),
     };
   });
 
   const pageHref = (p: number) => {
     const q = new URLSearchParams();
-    for (const [k, v] of Object.entries(filters)) if (v) q.set(k, v);
+    const keep = { ...filters, dept: params.dept };
+    for (const [k, v] of Object.entries(keep)) if (v) q.set(k, v);
     if (p > 1) q.set("page", String(p));
     const s = q.toString();
     return s ? `/users?${s}` : "/users";
@@ -105,25 +139,18 @@ export async function TeamTab({
         description={
           isAdmin
             ? "Add the people you work with — they'll get an email to set up their account."
-            : "An admin adds the people you work with here."
+            : "A super admin adds the people you work with here."
         }
-        action={
-          isAdmin && (
-            <Button asChild>
-              <Link href="/users/new">
-                <UserPlus aria-hidden />
-                Add user
-              </Link>
-            </Button>
-          )
-        }
+        action={isAdmin && <AddPeopleMenu />}
       />
     );
   }
 
+  const ownDeptName = ownDept ? departments.find((d) => d.id === ownDept)?.name : null;
+
   return (
     <section className="space-y-4" aria-label="Team">
-      {isAdmin && noDept > 0 && filters.dept !== "none" && (
+      {isAdmin && noDept > 0 && filters.dept !== "none" && !ownDept && (
         <p className="flex flex-wrap items-center gap-x-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
           {noDept === 1 ? "1 person has" : `${noDept} people have`} no department yet.
           <Link href="/users?dept=none" className="font-medium underline underline-offset-2">
@@ -134,10 +161,20 @@ export async function TeamTab({
       <Filters
         departments={departments.map((d) => ({ id: d.id, name: d.name, isArchived: d.isArchived }))}
         showStatus={isAdmin}
+        defaultDept={ownDept}
       />
       <p className="text-muted-foreground text-sm" aria-live="polite">
         {plural(filtered.length, "person", "people")}
         {isAdmin && invited > 0 ? ` · ${invited} invited` : ""}
+        {ownDeptName && dept === ownDept ? (
+          <>
+            {" "}
+            in {ownDeptName} ·{" "}
+            <Link href="/users?dept=all" className="link">
+              Show everyone
+            </Link>
+          </>
+        ) : null}
       </p>
       {filtered.length === 0 ? (
         <EmptyState
@@ -146,7 +183,7 @@ export async function TeamTab({
           description="Try another name, or clear the filters to see everyone."
           action={
             <Button asChild variant="outline">
-              <Link href="/users">Clear filters</Link>
+              <Link href={ownDept ? "/users?dept=all" : "/users"}>Clear filters</Link>
             </Button>
           }
         />

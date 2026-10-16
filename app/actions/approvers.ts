@@ -10,13 +10,21 @@ import { can, missingAbilityMessage, type PermissionOverrides } from "@/lib/auth
 import { canReceiveSignoff } from "@/lib/access";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
-import { ensureSignageWorkflow, syncDepartmentSteps } from "@/lib/domain/departments";
+import {
+  departmentSignerIds,
+  ensureSignageWorkflow,
+  syncDepartmentSteps,
+} from "@/lib/domain/departments";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
+import { stopSigningTx, UserError } from "@/lib/users/manage";
 
 /**
  * Departments and who signs off for each (Users → Departments). A
  * department either signs off artwork (it gets a sign-off step and
- * approvers) or is a team for grouping people only.
+ * approvers) or is a team for grouping people only. Every action needs
+ * "Manage departments and who signs off" (departments.manage). Refusals are
+ * UserError (lib/users/manage.ts), whose words are safe to show; anything
+ * else is logged and shown as "Could not save".
  */
 
 const NOT_ALLOWED = missingAbilityMessage("departments.manage");
@@ -27,9 +35,6 @@ function refresh() {
   revalidatePath("/", "layout");
 }
 
-/** A refusal whose message is safe to show as it is. */
-class SafeError extends Error {}
-
 function isUniqueViolation(err: unknown): boolean {
   const e = err as { code?: string; cause?: { code?: string } };
   return e?.code === "23505" || e?.cause?.code === "23505";
@@ -39,7 +44,7 @@ async function orgDepartment(tx: Tx, organisationId: string, id: string) {
   const dept = await tx.query.departments.findFirst({
     where: and(eq(departments.id, id), eq(departments.organisationId, organisationId)),
   });
-  if (!dept) throw new Error("Department not found — reload the page");
+  if (!dept) throw new UserError("Department not found — reload the page");
   return dept;
 }
 
@@ -136,8 +141,7 @@ export async function saveDepartment(input: unknown): Promise<ActionResult> {
   } catch (err) {
     unstable_rethrow(err);
     if (isUniqueViolation(err)) return fail("There is already a department with that name");
-    if (err instanceof SafeError) return fail(err.message);
-    if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
+    if (err instanceof UserError) return fail(err.message);
     console.error("saveDepartment", err);
     return fail("Could not save — please try again");
   }
@@ -181,8 +185,7 @@ export async function setDepartmentArchived(input: unknown): Promise<ActionResul
     );
   } catch (err) {
     unstable_rethrow(err);
-    if (err instanceof SafeError) return fail(err.message);
-    if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
+    if (err instanceof UserError) return fail(err.message);
     console.error("setDepartmentArchived", err);
     return fail("Could not save — please try again");
   }
@@ -221,19 +224,23 @@ export async function setDepartmentSignsOff(input: unknown): Promise<ActionResul
       });
       if (parsed.data.signsOff) await ensureSignageWorkflow(tx, orgId);
       await syncDepartmentSteps(tx, orgId);
-      return dept.name;
+      const signers = parsed.data.signsOff
+        ? (await departmentSignerIds(tx, orgId, dept.id)).length
+        : 0;
+      return { name: dept.name, signers };
     });
     refresh();
     return success(
       undefined,
       parsed.data.signsOff
-        ? `${name} now signs off artwork`
-        : `${name} no longer signs off artwork — sign-offs already waiting can still be decided`,
+        ? name.signers > 0
+          ? `${name.name} now signs off artwork`
+          : `${name.name} now signs off artwork — add who signs off for it, or its sign-offs will wait`
+        : `${name.name} no longer signs off artwork — sign-offs already waiting can still be decided`,
     );
   } catch (err) {
     unstable_rethrow(err);
-    if (err instanceof SafeError) return fail(err.message);
-    if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
+    if (err instanceof UserError) return fail(err.message);
     console.error("setDepartmentSignsOff", err);
     return fail("Could not save — please try again");
   }
@@ -318,7 +325,7 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
     const name = await db.transaction(async (tx) => {
       const dept = await orgDepartment(tx, orgId, data.departmentId);
       if (dept.isArchived || !dept.signsOff) {
-        throw new Error(`${dept.name} doesn't sign off artwork — reload the page`);
+        throw new UserError(`${dept.name} doesn't sign off artwork — reload the page`);
       }
       const [member] = await tx
         .select({ user: users, membership: memberships })
@@ -326,7 +333,7 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
         .innerJoin(users, eq(users.id, memberships.userId))
         .where(and(eq(memberships.userId, data.userId), eq(memberships.organisationId, orgId)))
         .limit(1);
-      if (!member) throw new Error("That person isn't on the team — reload the page");
+      if (!member) throw new UserError("That person isn't on the team — reload the page");
       const who = member.user.fullName || member.user.email;
       // Only someone who can sign now: active, not a viewer, sign-off not paused.
       if (
@@ -337,7 +344,7 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
           accessEndsAt: member.membership.accessEndsAt,
         })
       ) {
-        throw new SafeError(`${who} can't sign off at the moment — pick someone else`);
+        throw new UserError(`${who} can't sign off at the moment — pick someone else`);
       }
       const email = member.user.email.toLowerCase();
       if (data.isMain) {
@@ -381,8 +388,7 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
     return success(undefined, name);
   } catch (err) {
     unstable_rethrow(err);
-    if (err instanceof SafeError) return fail(err.message);
-    if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
+    if (err instanceof UserError) return fail(err.message);
     console.error("addApprover", err);
     return fail("Could not save — please try again");
   }
@@ -400,8 +406,22 @@ export async function setMainApprover(input: unknown): Promise<ActionResult> {
       const row = await tx.query.approvers.findFirst({
         where: and(eq(approvers.id, parsed.data.id), eq(approvers.organisationId, orgId)),
       });
-      if (!row) throw new Error("Approver not found — reload the page");
+      if (!row) throw new UserError("Approver not found — reload the page");
       const dept = await orgDepartment(tx, orgId, row.departmentId);
+      if (parsed.data.isMain && !row.userId) {
+        // Someone only invited doesn't take over from a main approver who can sign now.
+        const signers = await departmentSignerIds(tx, orgId, dept.id);
+        const [current] = await tx
+          .select({ userId: approvers.userId, name: approvers.fullName })
+          .from(approvers)
+          .where(and(eq(approvers.departmentId, dept.id), eq(approvers.isMain, true)))
+          .limit(1);
+        if (current?.userId && signers.includes(current.userId)) {
+          throw new UserError(
+            `${row.fullName} hasn't accepted their invitation yet — ${current.name} stays main approver until they have`,
+          );
+        }
+      }
       if (parsed.data.isMain) {
         // One main approver per department: clear the others first.
         await tx
@@ -436,17 +456,18 @@ export async function setMainApprover(input: unknown): Promise<ActionResult> {
     return success(undefined, message);
   } catch (err) {
     unstable_rethrow(err);
-    if (err instanceof SafeError) return fail(err.message);
-    if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
+    if (err instanceof UserError) return fail(err.message);
     console.error("setMainApprover", err);
     return fail("Could not save — please try again");
   }
 }
 
 /**
- * Take someone off a department's approvers. Sign-offs already waiting on
- * them by name stay with them (hand them on from the item if needed). Their
- * team membership is untouched.
+ * Take someone off a department's approvers. Sign-offs for that department
+ * that name them (waiting now or later in the round) go back to the
+ * department when someone else there can sign; otherwise they stay with
+ * them, named, to be handed on from the item. Their team membership is
+ * untouched.
  */
 export async function removeApprover(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
@@ -459,7 +480,7 @@ export async function removeApprover(input: unknown): Promise<ActionResult> {
       const row = await tx.query.approvers.findFirst({
         where: and(eq(approvers.id, parsed.data.id), eq(approvers.organisationId, orgId)),
       });
-      if (!row) throw new Error("Approver not found — reload the page");
+      if (!row) throw new UserError("Approver not found — reload the page");
       const dept = await orgDepartment(tx, orgId, row.departmentId);
       await tx.delete(approvers).where(eq(approvers.id, row.id));
       await writeAudit(tx, {
@@ -479,14 +500,43 @@ export async function removeApprover(input: unknown): Promise<ActionResult> {
         summary: `${row.fullName} removed from ${dept.name} approvers`,
       });
       await syncDepartmentSteps(tx, orgId);
-      return row.fullName;
+      const handed = row.userId
+        ? await stopSigningTx(
+            tx,
+            {
+              organisationId: orgId,
+              actorUserId: session.user.id,
+              actorName: session.user.fullName || session.user.email,
+            },
+            {
+              userId: row.userId,
+              who: row.fullName,
+              why: `was taken off the ${dept.name} approvers`,
+              departmentIds: [dept.id],
+            },
+          )
+        : { moved: 0, kept: 0 };
+      const left = (await departmentSignerIds(tx, orgId, dept.id)).length;
+      return [
+        `${row.fullName} removed from ${dept.name} approvers`,
+        handed.moved > 0
+          ? `${handed.moved} sign-off${handed.moved === 1 ? "" : "s"} went back to ${dept.name}`
+          : null,
+        handed.kept > 0
+          ? `${handed.kept} sign-off${handed.kept === 1 ? " still names" : "s still name"} them — hand ${handed.kept === 1 ? "it" : "them"} on from the item`
+          : null,
+        left === 0 && dept.signsOff && !dept.isArchived
+          ? `Nobody can sign off for ${dept.name} now — add someone, or its sign-offs will wait`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(". ");
     });
     refresh();
-    return success(undefined, `${name} removed`);
+    return success(undefined, name);
   } catch (err) {
     unstable_rethrow(err);
-    if (err instanceof SafeError) return fail(err.message);
-    if (err instanceof Error && err.message.includes("reload")) return fail(err.message);
+    if (err instanceof UserError) return fail(err.message);
     console.error("removeApprover", err);
     return fail("Could not save — please try again");
   }

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowUp, Building2, Star, UserPlus } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Building2, Star, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import {
   addApprover,
@@ -30,6 +30,11 @@ export type DepartmentCardData = {
   defaultFor: string[];
   isArchived: boolean;
   memberCount: number;
+  suspendedCount: number;
+  endedCount: number;
+  managers: { userId: string; name: string }[];
+  /** Approvers who can sign off now. */
+  signersNow: number;
   approvers: {
     id: string;
     userId: string | null;
@@ -38,6 +43,8 @@ export type DepartmentCardData = {
     email: string;
     isMain: boolean;
     state: "active" | "paused" | "invited" | "none";
+    /** Why they can't sign now, in a few words. */
+    stateText: string | null;
     href: string | null;
   }[];
 };
@@ -45,13 +52,6 @@ export type DepartmentCardData = {
 export type MemberOption = { userId: string; name: string; email: string };
 
 type Result = { ok: true; message?: string } | { ok: false; error: string };
-
-const STATE_TEXT: Record<DepartmentCardData["approvers"][number]["state"], string | null> = {
-  active: null,
-  paused: "Sign-off paused",
-  invited: "Invited — not set up yet",
-  none: "No account yet",
-};
 
 function Switch({
   checked,
@@ -93,15 +93,22 @@ function Switch({
   );
 }
 
-/** Users → Departments: one card per department; admins edit, others read. */
+/**
+ * Users → Departments: one card per department. People who manage
+ * departments edit them; everyone else reads them, and managers get "Add
+ * person to {department}" on the departments they add people to.
+ */
 export function DepartmentsPanel({
   departments,
   members,
   canEdit,
+  addTo = [],
 }: {
   departments: DepartmentCardData[];
   members: MemberOption[];
   canEdit: boolean;
+  /** Departments the viewer adds people to ("all", or ids). */
+  addTo?: "all" | string[];
 }) {
   const [pending, start] = useTransition();
   const [confirmDialog, confirm] = useConfirm();
@@ -129,7 +136,7 @@ export function DepartmentsPanel({
         <span className="text-foreground font-medium">sign off artwork</span> get a sign-off step on
         signage; the <span className="text-foreground font-medium">main approver</span> gets every
         item unless someone else is picked, otherwise anyone listed can sign.
-        {canEdit ? "" : " Only admins can change departments."}
+        {canEdit ? "" : " Changing them needs “Manage departments and who signs off”."}
       </p>
 
       {live.length === 0 && (
@@ -152,6 +159,7 @@ export function DepartmentsPanel({
             last={signing[signing.length - 1]?.id === d.id}
             run={run}
             confirm={confirm}
+            canAdd={addTo === "all" || addTo.includes(d.id)}
           />
         ))}
       </div>
@@ -261,6 +269,7 @@ function DepartmentCard({
   last,
   run,
   confirm,
+  canAdd,
 }: {
   dept: DepartmentCardData;
   members: MemberOption[];
@@ -270,11 +279,22 @@ function DepartmentCard({
   last: boolean;
   run: (fn: () => Promise<Result>, after?: () => void) => void;
   confirm: ReturnType<typeof useConfirm>[1];
+  /** The viewer adds people to this department. */
+  canAdd: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState("");
   const [addMain, setAddMain] = useState(false);
   const people = `${dept.memberCount} ${dept.memberCount === 1 ? "person" : "people"}`;
+  const counts = [
+    people,
+    dept.suspendedCount > 0 ? `${dept.suspendedCount} suspended` : null,
+    dept.endedCount > 0 ? `${dept.endedCount} access ended` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  // Approvers listed, but none of them can sign now (paused, suspended, ended…).
+  const nobodySigns = dept.signsOff && dept.approvers.length > 0 && dept.signersNow === 0;
   const rules = [
     dept.defaultFor.includes("organiser") && "organiser signage",
     dept.defaultFor.includes("sponsor") && "sponsor signage",
@@ -302,8 +322,13 @@ function DepartmentCard({
         <div className="min-w-0 flex-1">
           <h3 className="font-semibold">{dept.name}</h3>
           <Link href={`/users?dept=${dept.id}`} className="link text-sm">
-            {people}
+            {counts}
           </Link>
+          {dept.managers.length > 0 && (
+            <p className="text-muted-foreground text-xs">
+              Managed by {dept.managers.map((m) => m.name).join(", ")}
+            </p>
+          )}
         </div>
         {canEdit ? (
           <Switch
@@ -428,13 +453,26 @@ function DepartmentCard({
         )
       )}
 
+      {nobodySigns && (
+        <p
+          role="note"
+          className="flex gap-2 border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200"
+        >
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>
+            Nobody can sign off for {dept.name} now — items sent for sign-off will wait.
+            {canEdit ? " Add someone who can below." : " Ask whoever manages departments."}
+          </span>
+        </p>
+      )}
+
       {dept.signsOff && (
         <div className="flex-1">
           <ul className="divide-y" aria-label={`${dept.name} approvers`}>
             {dept.approvers.length === 0 && (
-              <li className="text-muted-foreground px-4 py-3 text-sm">
-                Nobody signs off for {dept.name} yet
-                {canEdit ? " — add someone below." : "."}
+              <li className="px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
+                Nobody signs off for {dept.name} yet — items sent for sign-off will wait
+                {canEdit ? ". Add someone below." : "."}
               </li>
             )}
             {dept.approvers.map((a) => (
@@ -485,7 +523,7 @@ function DepartmentCard({
                     )}
                   </p>
                   <p className="text-muted-foreground truncate text-xs">
-                    {[a.jobTitle, a.email, STATE_TEXT[a.state]].filter(Boolean).join(" · ")}
+                    {[a.jobTitle, a.email, a.stateText].filter(Boolean).join(" · ")}
                   </p>
                 </div>
                 {canEdit && (
@@ -497,9 +535,20 @@ function DepartmentCard({
                     disabled={pending}
                     aria-label={`Remove ${a.name} from ${dept.name} approvers`}
                     onClick={async () => {
+                      const others = dept.signersNow - (a.state === "active" ? 1 : 0);
                       const ok = await confirm({
                         title: `Remove ${a.name} from ${dept.name} approvers?`,
-                        description: `They stay on the team. Sign-offs already waiting on them stay with them.${a.isMain ? ` ${dept.name} will have no main approver, so everyone left in it is asked.` : ""}`,
+                        description: [
+                          "They stay on the team.",
+                          others > 0
+                            ? `${dept.name} sign-offs that name them go back to everyone who signs off for ${dept.name}.`
+                            : `Nobody else can sign off for ${dept.name}, so sign-offs that name them stay with them, and new ones will wait until you add someone.`,
+                          a.isMain && others > 0
+                            ? `${dept.name} will have no main approver, so everyone left in it is asked.`
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" "),
                         confirmLabel: "Remove",
                         destructive: true,
                       });
@@ -570,6 +619,18 @@ function DepartmentCard({
             </form>
           )}
         </div>
+      )}
+
+      {canAdd && !canEdit && (
+        <footer className="border-t px-4 py-2">
+          <Link
+            href={`/users/new?department=${dept.id}`}
+            className="link inline-flex min-h-11 items-center gap-1 text-sm sm:min-h-0"
+          >
+            <UserPlus className="size-3.5" aria-hidden />
+            Add person to {dept.name}
+          </Link>
+        </footer>
       )}
 
       {canEdit && !editing && (

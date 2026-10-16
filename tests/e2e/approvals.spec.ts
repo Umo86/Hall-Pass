@@ -57,7 +57,8 @@ test.describe("Approvals", () => {
     await admin.getByLabel("Full name").fill(person);
     await admin.getByLabel("Email").fill(email);
     await admin.getByLabel("Job title").fill("Legal Counsel");
-    await admin.getByRole("radio", { name: /^Viewer/ }).check();
+    // Viewers can't sign off (Users v2), so the approver gets a role that can.
+    await admin.getByRole("radio", { name: /^Senior management/ }).check();
     await expect(admin.getByRole("checkbox", { name: `Signs off ${dept} artwork` })).toBeChecked();
     // Nobody is the main approver yet, so they are.
     await expect(admin.getByRole("checkbox", { name: /^Main approver/ })).toBeChecked();

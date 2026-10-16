@@ -23,6 +23,7 @@ import {
   FEATURE_LABELS,
   type AbilityKey,
   type Feature,
+  type ManagerScope,
   type StaffRole,
 } from "@/lib/authz";
 import { ROLE_DESCRIPTIONS, roleLabel } from "@/lib/format";
@@ -50,6 +51,8 @@ export type DepartmentOption = {
   mainApprover: string | null;
   /** The main approver is this person. */
   mainIsThisPerson?: boolean;
+  /** The main approver can sign off now (an invitee doesn't replace them). */
+  mainCanSign?: boolean;
 };
 
 export const FEATURE_ICONS: Record<Feature, React.ComponentType<{ className?: string }>> = {
@@ -82,6 +85,9 @@ export function DepartmentField({
   onNewName,
   error,
   disabled,
+  allowNew = true,
+  allowNone = true,
+  hint,
 }: {
   id: string;
   departments: DepartmentOption[];
@@ -92,6 +98,12 @@ export function DepartmentField({
   onNewName: (name: string) => void;
   error?: string | null;
   disabled?: boolean;
+  /** "+ New department…" (needs departments.manage). */
+  allowNew?: boolean;
+  /** "No department" (a department manager's people always have theirs). */
+  allowNone?: boolean;
+  /** A line under the field, e.g. "You add people to Marketing". */
+  hint?: string | null;
 }) {
   const live = departments.filter((d) => !d.isArchived);
   const current = departments.find((d) => d.id === value && d.isArchived);
@@ -105,15 +117,16 @@ export function DepartmentField({
         onChange={(e) => onChange(e.target.value)}
         className="h-11 sm:h-9"
       >
-        <option value="">No department</option>
+        {allowNone && <option value="">No department</option>}
         {live.map((d) => (
           <option key={d.id} value={d.id}>
             {d.name}
           </option>
         ))}
         {current && <option value={current.id}>{current.name} (archived)</option>}
-        <option value={NEW_DEPARTMENT}>+ New department…</option>
+        {allowNew && <option value={NEW_DEPARTMENT}>+ New department…</option>}
       </SelectNative>
+      {hint && <p className="text-muted-foreground text-xs">{hint}</p>}
       {value === NEW_DEPARTMENT && (
         <div className="space-y-1.5 pt-1">
           <Label htmlFor={`${id}-new`}>New department name</Label>
@@ -216,6 +229,7 @@ export function SectionsPicker({
   disabled,
   owned,
   personName,
+  allowAll = true,
 }: {
   id: string;
   /** Null = every section. */
@@ -226,6 +240,8 @@ export function SectionsPicker({
   /** Items they own, by section, for the "still get updates" note. */
   owned?: Partial<Record<Feature, number>>;
   personName?: string;
+  /** "All sections" may be given (a manager without every section gives them one by one). */
+  allowAll?: boolean;
 }) {
   const all = value === null;
   const offWithItems =
@@ -235,16 +251,23 @@ export function SectionsPicker({
   return (
     <fieldset className="space-y-2" disabled={disabled}>
       <legend className="text-sm font-medium">Sections they can use</legend>
-      <label className="flex min-h-11 items-center gap-2 text-sm sm:min-h-0">
-        <input
-          type="checkbox"
-          className="accent-primary size-4"
-          checked={all}
-          onChange={(e) => onChange(e.target.checked ? null : [])}
-          aria-controls={`${id}-list`}
-        />
-        All sections
-      </label>
+      {(allowAll || all) && (
+        <label className="flex min-h-11 items-center gap-2 text-sm sm:min-h-0">
+          <input
+            type="checkbox"
+            className="accent-primary size-4"
+            checked={all}
+            onChange={(e) => onChange(e.target.checked ? null : allowAll ? [] : [...visible])}
+            aria-controls={`${id}-list`}
+          />
+          All sections
+        </label>
+      )}
+      {!allowAll && (
+        <p className="text-muted-foreground text-xs">
+          You can give the sections you have yourself.
+        </p>
+      )}
       {all ? (
         <p className="text-muted-foreground text-xs">
           Untick to choose. My Work, Events, Users and their own sign-offs are always there.
@@ -289,6 +312,25 @@ export function SectionsPicker({
   );
 }
 
+/** Why someone can't give an ability, or null when they can. */
+export function abilityLockReason(
+  key: AbilityKey,
+  assignable: readonly AbilityKey[] | undefined,
+): string | null {
+  if (!assignable || assignable.includes(key)) return null;
+  return ABILITIES[key].superAdminGrants
+    ? "Only a super admin can give this"
+    : "You don't have this yourself, so you can't give it";
+}
+
+/**
+ * What they can do beyond their role, grouped as the registry groups them.
+ * Each row says whether it is the role's default or changed from it; each
+ * group says how many are changed and can go back to the role's defaults.
+ * Partial defaults show what part (Sales: "Sponsorship report only").
+ * Rows the viewer can't give are locked with the reason (they can still be
+ * switched off, and back on to what was saved).
+ */
 export function AbilitiesFields({
   id,
   role,
@@ -297,6 +339,8 @@ export function AbilitiesFields({
   features,
   disabled,
   assignable,
+  baseline,
+  collapsible = true,
 }: {
   id: string;
   role: StaffRole;
@@ -306,22 +350,142 @@ export function AbilitiesFields({
   /** Sections they have (null = all): abilities in a switched-off section are hidden. */
   features: Feature[] | null;
   disabled?: boolean;
-  /** Abilities the viewer may give (assignableAbilities); others are hidden. */
+  /** Abilities the viewer may give (assignableAbilities); undefined = all. */
   assignable?: readonly AbilityKey[];
+  /** What is saved for them now (rows locked for the viewer may go back to it). */
+  baseline?: AbilityChoices;
+  /** Add person folds it away; the person page shows it open. */
+  collapsible?: boolean;
 }) {
   const shown = EDITABLE_ABILITY_KEYS.filter((k) => {
     const f = ABILITIES[k].feature;
-    if (f && features !== null && !features.includes(f)) return false;
-    return !assignable || assignable.includes(k);
+    return !(f && features !== null && !features.includes(f));
   });
-  const custom = EDITABLE_ABILITY_KEYS.some((k) => abilityChanged(role, value, k));
+  const changedKeys = shown.filter((k) => abilityChanged(role, value, k));
+  const custom = changedKeys.length > 0;
+
+  function set(key: AbilityKey, on: boolean) {
+    const next = { ...value, [key]: on };
+    // Back to the role's default: store nothing for it.
+    if (!abilityChanged(role, next, key)) delete next[key];
+    onChange(next);
+  }
+
+  function reset(keys: readonly AbilityKey[]) {
+    const next = { ...value };
+    for (const k of keys) delete next[k];
+    onChange(next);
+  }
+
+  const body = (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-muted-foreground text-xs">
+          These start from the {roleLabel(role)} role. Change one only when this person needs
+          something different.
+        </p>
+        {custom && !disabled && (
+          <button type="button" className="link text-xs" onClick={() => reset(shown)}>
+            Back to {roleLabel(role)} defaults
+          </button>
+        )}
+      </div>
+      <div id={id} className="space-y-4">
+        {abilityGroups(shown).map((g) => {
+          const changedHere = g.keys.filter((k) => abilityChanged(role, value, k));
+          const legendId = `${id}-${g.group}`;
+          return (
+            <fieldset
+              key={g.group}
+              className="space-y-1.5"
+              disabled={disabled}
+              aria-labelledby={legendId}
+            >
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <p id={legendId} className="text-sm font-medium">
+                  {g.label}
+                </p>
+                {changedHere.length > 0 && (
+                  <span className="text-muted-foreground text-xs">
+                    {changedHere.length} changed
+                  </span>
+                )}
+                {changedHere.length > 0 && !disabled && (
+                  <button
+                    type="button"
+                    className="link text-xs"
+                    onClick={() => reset(g.keys)}
+                    aria-label={`${g.label}: back to ${roleLabel(role)} defaults`}
+                  >
+                    Back to defaults
+                  </button>
+                )}
+              </div>
+              <ul className="divide-y rounded-md border">
+                {g.keys.map((k) => {
+                  const def = ABILITIES[k];
+                  const level = effectiveAbility(role, value, k);
+                  const partial = def.partial?.[role];
+                  const changed = abilityChanged(role, value, k);
+                  const lock = abilityLockReason(k, assignable);
+                  const savedLevel = effectiveAbility(role, baseline ?? {}, k);
+                  const needs = def.requires?.find(
+                    (r) => effectiveAbility(role, value, r) !== "yes",
+                  );
+                  // Turning on: only what the viewer can give, or back to what was saved.
+                  const canTurnOn = !needs && (!lock || savedLevel === "yes");
+                  const rowDisabled = disabled || (level !== "yes" && !canTurnOn);
+                  const rowId = `${id}-${k}`;
+                  return (
+                    <li key={k} className="flex items-start gap-3 px-3 py-2">
+                      <input
+                        id={rowId}
+                        type="checkbox"
+                        className="accent-primary mt-0.5 size-4 shrink-0"
+                        checked={level === "yes"}
+                        ref={(el) => {
+                          if (el) el.indeterminate = level === "partial";
+                        }}
+                        disabled={rowDisabled}
+                        onChange={(e) => set(k, e.target.checked)}
+                        aria-describedby={`${rowId}-note`}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <label htmlFor={rowId} className="block text-sm">
+                          {def.label}
+                        </label>
+                        <p id={`${rowId}-note`} className="text-muted-foreground text-xs">
+                          {def.description}{" "}
+                          <span className={cn(changed && "text-foreground font-medium")}>
+                            {changed ? "Changed from role default" : "Role default"}
+                            {level === "partial" && partial ? ` · ${partial.label}` : ""}
+                          </span>
+                          {needs && level !== "yes"
+                            ? ` · Needs “${ABILITIES[needs].label}”`
+                            : lock && level !== "yes"
+                              ? ` · ${lock}`
+                              : ""}
+                        </p>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </fieldset>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  if (!collapsible) return body;
   return (
     <details className="group rounded-md border" open={custom || undefined}>
       <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium select-none [&::-webkit-details-marker]:hidden">
         <span>
           Fine-tune what they can do{" "}
           <span className="text-muted-foreground font-normal">
-            {custom ? "(changed from the role)" : "(optional)"}
+            {custom ? `(${changedKeys.length} changed from the role)` : "(optional)"}
           </span>
         </span>
         <ChevronDown
@@ -329,49 +493,117 @@ export function AbilitiesFields({
           aria-hidden
         />
       </summary>
-      <div className="space-y-3 border-t px-3 py-3">
-        <p className="text-muted-foreground text-xs">
-          These start from the {roleLabel(role)} role. Change one only when this person needs
-          something different.
-        </p>
-        <fieldset id={id} className="space-y-3" disabled={disabled}>
-          <legend className="sr-only">What they can do</legend>
-          {abilityGroups(shown).map((g) => (
-            <div key={g.group} className="space-y-1">
-              <p className="text-muted-foreground text-xs font-medium">{g.label}</p>
-              <div className="grid gap-1 sm:grid-cols-2">
-                {g.keys.map((k) => {
-                  const level = effectiveAbility(role, value, k);
-                  const partial = ABILITIES[k].partial?.[role];
-                  return (
-                    <label key={k} className="flex min-h-11 items-center gap-2 text-sm sm:min-h-8">
-                      <input
-                        type="checkbox"
-                        className="accent-primary size-4"
-                        checked={level === "yes"}
-                        onChange={(e) => onChange({ ...value, [k]: e.target.checked })}
-                      />
-                      {ABILITIES[k].label}
-                      {level === "partial" && partial && (
-                        <span className="text-muted-foreground text-xs">({partial.label})</span>
-                      )}
-                      {abilityChanged(role, value, k) && (
-                        <span className="text-muted-foreground text-xs">(changed)</span>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </fieldset>
-        {custom && !disabled && (
-          <button type="button" className="link text-xs" onClick={() => onChange({})}>
-            Back to {roleLabel(role)} defaults
-          </button>
-        )}
-      </div>
+      <div className="border-t px-3 py-3">{body}</div>
     </details>
+  );
+}
+
+/** The manager choices, with what each means. */
+const MANAGER_CHOICES: { value: ManagerScope | null; label: string; text: string }[] = [
+  {
+    value: null,
+    label: "Not a manager",
+    text: "They can't add or change anyone else's access.",
+  },
+  {
+    value: "department",
+    label: "Their department",
+    text: "They add people to their department and change, suspend or give an end date to people in it — giving only what they have themselves, never to super admins or other managers.",
+  },
+  {
+    value: "everyone",
+    label: "Everyone",
+    text: "They add and change people in any department — giving only what they have themselves, never to super admins or other managers.",
+  },
+];
+
+/** "Manager · Marketing", "Manager · everyone" or "Not a manager". */
+export function managerSummary(scope: ManagerScope | null, departmentName: string | null) {
+  if (!scope) return "Not a manager";
+  return scope === "everyone"
+    ? "Manager · everyone"
+    : `Manager · ${departmentName ?? "their department"}`;
+}
+
+/**
+ * Whether they manage people, and whom. Only super admins change it, and
+ * never for a super admin (they manage everyone already).
+ */
+export function ManagerField({
+  name,
+  value,
+  onChange,
+  role,
+  departmentName,
+  editable,
+  person,
+}: {
+  name: string;
+  value: ManagerScope | null;
+  onChange: (value: ManagerScope | null) => void;
+  role: StaffRole | null;
+  /** Their department (a department manager needs one). */
+  departmentName: string | null;
+  /** Super admins (canGrantManager). */
+  editable: boolean;
+  person: string;
+}) {
+  if (role === "admin") {
+    return (
+      <p className="text-muted-foreground text-sm">
+        Super admins manage everyone, so they aren&apos;t made managers.
+      </p>
+    );
+  }
+  if (!editable) {
+    const current = MANAGER_CHOICES.find((c) => c.value === value) ?? MANAGER_CHOICES[0];
+    return (
+      <div className="space-y-1 text-sm">
+        <p className="font-medium">{managerSummary(value, departmentName)}</p>
+        <p className="text-muted-foreground">{current.text}</p>
+        <p className="text-muted-foreground text-xs">Only a super admin makes someone a manager.</p>
+      </div>
+    );
+  }
+  return (
+    <fieldset className="space-y-2">
+      <legend className="sr-only">Does {person} manage people?</legend>
+      <div className="grid gap-2 sm:grid-cols-3">
+        {MANAGER_CHOICES.map((c) => {
+          const needsDept = c.value === "department" && !departmentName;
+          const checked = value === c.value;
+          return (
+            <label
+              key={c.label}
+              className={cn(
+                "flex min-h-11 cursor-pointer items-start gap-3 rounded-md border p-3 text-sm transition-colors",
+                checked ? "border-primary bg-primary/5 ring-primary ring-1" : "hover:bg-muted/40",
+                needsDept && "cursor-not-allowed opacity-60",
+              )}
+            >
+              <input
+                type="radio"
+                name={name}
+                checked={checked}
+                disabled={needsDept}
+                onChange={() => onChange(c.value)}
+                className="accent-primary mt-0.5 size-4 shrink-0"
+              />
+              <span className="min-w-0">
+                <span className="block font-medium">
+                  {c.value === "department" && departmentName
+                    ? `Their department (${departmentName})`
+                    : c.label}
+                </span>
+                <span className="text-muted-foreground block text-xs">
+                  {needsDept ? "Give them a department first." : c.text}
+                </span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
   );
 }
 

@@ -2,27 +2,41 @@
 
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Search, SlidersHorizontal, X } from "lucide-react";
+import { Search, SlidersHorizontal } from "lucide-react";
 import { roleLabel } from "@/lib/format";
 import { STAFF_ROLES } from "@/lib/users/rules";
+import { STALE_DAYS, STATUS_FILTERS } from "@/lib/users/list";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SelectNative } from "@/components/ui/select-native";
-import { segmentClass, SegmentGroup } from "@/components/ui/segmented";
-import { cn } from "@/lib/utils";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+
+type Dept = { id: string; name: string; isArchived: boolean };
 
 /**
  * Search and filters for Users → Team. Everything lives in the address
- * (?q, ?dept, ?role, ?status), so the back button and shared links work.
- * On a phone the filters fold behind a "Filters" button.
+ * (?q, ?dept, ?role — "manager" for managers — ?status and ?activity=stale),
+ * so the back button and shared links work. A department manager's list
+ * starts on their own department; "All departments" is ?dept=all for them.
+ * On a phone the filters open in a dialog behind a "Filters" button.
  */
 export function TeamFilters({
   departments,
   showStatus,
+  defaultDept = null,
 }: {
-  departments: { id: string; name: string; isArchived: boolean }[];
-  /** Admins also filter by Active / Invited. */
+  departments: Dept[];
+  /** People who manage the team also filter by status and last active. */
   showStatus: boolean;
+  /** The department the list starts on (a department manager's own). */
+  defaultDept?: string | null;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -30,10 +44,14 @@ export function TeamFilters({
   const [q, setQ] = useState(params.get("q") ?? "");
   const [open, setOpen] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dept = params.get("dept") ?? "";
+  const rawDept = params.get("dept");
+  const dept = rawDept ?? defaultDept ?? "";
   const role = params.get("role") ?? "";
   const status = params.get("status") ?? "";
-  const active = [dept, role, status].filter(Boolean).length;
+  const stale = params.get("activity") === "stale";
+  const allValue = defaultDept ? "all" : "";
+  const deptFiltered = dept !== "" && dept !== "all" && dept !== defaultDept;
+  const active = [deptFiltered, role, status, stale].filter(Boolean).length;
 
   /** Typing replaces the history entry, so Back doesn't step through every letter. */
   function go(changes: Record<string, string>, mode: "push" | "replace" = "push") {
@@ -60,12 +78,85 @@ export function TeamFilters({
     timer.current = setTimeout(() => go({ q: value.trim() }, "replace"), 300);
   }
 
+  function clear() {
+    setQ("");
+    go({ dept: "", role: "", status: "", activity: "", q: "" });
+  }
+
   const live = departments.filter((d) => !d.isArchived);
   const archived = departments.filter((d) => d.isArchived);
 
+  const fields = (idPrefix: string) => (
+    <>
+      <SelectNative
+        id={`${idPrefix}-dept`}
+        aria-label="Department"
+        value={dept === "all" ? allValue : dept}
+        onChange={(e) =>
+          go({ dept: e.target.value === "" && defaultDept ? "all" : e.target.value })
+        }
+        className="h-11 w-full sm:h-9 sm:w-48"
+      >
+        <option value={allValue}>All departments</option>
+        {live.map((d) => (
+          <option key={d.id} value={d.id}>
+            {d.name}
+          </option>
+        ))}
+        {archived.map((d) => (
+          <option key={d.id} value={d.id}>
+            {d.name} (archived)
+          </option>
+        ))}
+        <option value="none">No department</option>
+      </SelectNative>
+      <SelectNative
+        id={`${idPrefix}-role`}
+        aria-label="Role"
+        value={role}
+        onChange={(e) => go({ role: e.target.value })}
+        className="h-11 w-full sm:h-9 sm:w-44"
+      >
+        <option value="">All roles</option>
+        {STAFF_ROLES.map((r) => (
+          <option key={r} value={r}>
+            {roleLabel(r)}
+          </option>
+        ))}
+        <option value="manager">Managers</option>
+      </SelectNative>
+      {showStatus && (
+        <>
+          <SelectNative
+            id={`${idPrefix}-status`}
+            aria-label="Status"
+            value={status}
+            onChange={(e) => go({ status: e.target.value })}
+            className="h-11 w-full sm:h-9 sm:w-40"
+          >
+            {STATUS_FILTERS.map((s) => (
+              <option key={s.label} value={s.value}>
+                {s.value ? s.label : "All statuses"}
+              </option>
+            ))}
+          </SelectNative>
+          <label className="flex min-h-11 items-center gap-2 text-sm sm:min-h-0">
+            <input
+              type="checkbox"
+              className="accent-primary size-4"
+              checked={stale}
+              onChange={(e) => go({ activity: e.target.checked ? "stale" : "" })}
+            />
+            Not active for {STALE_DAYS} days
+          </label>
+        </>
+      )}
+    </>
+  );
+
   return (
     <div className="space-y-3">
-      <div className="flex gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <form
           role="search"
           className="relative min-w-0 flex-1 sm:max-w-xs"
@@ -82,8 +173,8 @@ export function TeamFilters({
             type="search"
             value={q}
             onChange={(e) => typed(e.target.value)}
-            placeholder="Search name or email"
-            aria-label="Search name or email"
+            placeholder="Search name, email or job title"
+            aria-label="Search name, email or job title"
             className="h-11 pl-9 sm:h-9"
           />
         </form>
@@ -91,101 +182,40 @@ export function TeamFilters({
           type="button"
           variant="outline"
           className="h-11 sm:hidden"
-          aria-expanded={open}
-          aria-controls="team-filters"
-          onClick={() => setOpen((o) => !o)}
+          aria-haspopup="dialog"
+          onClick={() => setOpen(true)}
         >
           <SlidersHorizontal aria-hidden />
           Filters{active ? ` (${active})` : ""}
         </Button>
-        <div
-          id="team-filters"
-          className={cn(
-            "flex-wrap items-center gap-2",
-            open
-              ? "fixed inset-x-0 bottom-0 z-50 flex border-t bg-background p-4 shadow-lg"
-              : "hidden",
-            "sm:static sm:z-auto sm:flex sm:border-0 sm:bg-transparent sm:p-0 sm:shadow-none",
-          )}
-        >
-          <div className="flex w-full items-center justify-between sm:hidden">
-            <p className="text-sm font-medium">Filters</p>
-            <Button
-              type="button"
-              variant="ghost"
-              size="touch"
-              aria-label="Close filters"
-              onClick={() => setOpen(false)}
-            >
-              <X aria-hidden />
-            </Button>
-          </div>
-          <SelectNative
-            aria-label="Department"
-            value={dept}
-            onChange={(e) => go({ dept: e.target.value })}
-            className="h-11 w-full sm:h-9 sm:w-48"
-          >
-            <option value="">All departments</option>
-            {live.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-            {archived.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name} (archived)
-              </option>
-            ))}
-            <option value="none">No department</option>
-          </SelectNative>
-          <SelectNative
-            aria-label="Role"
-            value={role}
-            onChange={(e) => go({ role: e.target.value })}
-            className="h-11 w-full sm:h-9 sm:w-44"
-          >
-            <option value="">All roles</option>
-            {STAFF_ROLES.map((r) => (
-              <option key={r} value={r}>
-                {roleLabel(r)}
-              </option>
-            ))}
-          </SelectNative>
-          {showStatus && (
-            <SegmentGroup label="Status" className="w-full sm:w-auto">
-              {[
-                ["", "All"],
-                ["active", "Active"],
-                ["invited", "Invited"],
-              ].map(([value, label]) => (
-                <button
-                  key={label}
-                  type="button"
-                  className={cn(segmentClass(status === value), "h-11 flex-1 sm:h-9 sm:flex-none")}
-                  aria-pressed={status === value}
-                  onClick={() => go({ status: value })}
-                >
-                  {label}
-                </button>
-              ))}
-            </SegmentGroup>
-          )}
+        <div className="hidden flex-wrap items-center gap-2 sm:flex">
+          {fields("tf")}
           {active > 0 && (
-            <Button
-              type="button"
-              variant="ghost"
-              className="h-11 sm:h-9"
-              onClick={() => {
-                setQ("");
-                go({ dept: "", role: "", status: "", q: "" });
-              }}
-            >
+            <Button type="button" variant="ghost" className="h-9" onClick={clear}>
               Clear filters
             </Button>
           )}
         </div>
       </div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:hidden">
+          <DialogHeader>
+            <DialogTitle>Filters</DialogTitle>
+            <DialogDescription>The list changes as you choose.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">{fields("tfm")}</div>
+          <DialogFooter className="gap-2">
+            {active > 0 && (
+              <Button type="button" variant="ghost" className="h-11" onClick={clear}>
+                Clear filters
+              </Button>
+            )}
+            <Button type="button" className="h-11" onClick={() => setOpen(false)}>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

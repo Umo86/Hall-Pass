@@ -262,12 +262,30 @@ d("users", () => {
           email: `lou-${n}@users.test`,
           fullName: "Lou",
           departmentId: events.id,
-          role: "viewer",
+          role: "event_director",
           signoffs: [{ departmentId: events.id, isMain: false }],
         },
       ),
     ).catch((e) => e);
     expect(err.message).toMatch(/doesn't sign off artwork/);
+    // Viewers never sign off (canReceiveSignoff), whatever the department.
+    const viewer = await run((tx) =>
+      manage.inviteUserTx(
+        tx,
+        { organisationId: orgId, actorUserId: adminId },
+        {
+          ...person,
+          email: `lou-${n}@users.test`,
+          fullName: "Lou",
+          departmentId: mkt.id,
+          role: "viewer",
+          signoffs: [{ departmentId: mkt.id, isMain: false }],
+        },
+      ),
+    ).catch((e) => e);
+    expect(viewer.message).toBe(
+      "Viewers can't sign off artwork — choose another role or untick sign-off",
+    );
   });
 
   it("edits a member in one audited change and keeps at least one admin", async () => {

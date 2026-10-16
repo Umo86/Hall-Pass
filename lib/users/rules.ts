@@ -260,3 +260,23 @@ export function departmentFallbackText(dept: {
       : `${dept.others.slice(0, 2).join(", ")} and ${dept.others.length - 2} more`;
   return `Sign-offs for ${dept.name} will go to ${names}.`;
 }
+
+/**
+ * The choices someone who isn't a super admin starts from for a role:
+ * abilities only a super admin gives (Organisation settings, Invite
+ * partners, Manage departments) are switched off, so a manager can give
+ * the role at all (personChangeRefusal rule 7).
+ */
+export function startingChoices(
+  role: StaffRole,
+  choices: AbilityChoices,
+  opts: { superAdmin: boolean },
+): AbilityChoices {
+  if (opts.superAdmin || role === "admin") return choices;
+  const out: AbilityChoices = { ...choices };
+  for (const k of EDITABLE_ABILITY_KEYS) {
+    if (!ABILITIES[k].superAdminGrants) continue;
+    if (abilityLevel({ role, overrides: out }, k) !== "no") out[k] = false;
+  }
+  return out;
+}

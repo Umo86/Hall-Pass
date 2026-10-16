@@ -1,12 +1,14 @@
 "use server";
 
 /**
- * Users: add people, change what they can do, suspend them, end their
- * access on a date, remove them, and manage invitation links. The database
- * work lives in lib/users/manage.ts; each action here parses, checks the
- * people action (people.manage for super admins and managers, users.manage
- * to remove), runs it in one transaction — where the per-person rules are
- * checked against the person as loaded — and revalidates.
+ * Users: add people (one or several), change what they can do, suspend
+ * them, end their access on a date, remove them, manage invitation links,
+ * and do any of that to several people at once. The database work lives in
+ * lib/users/manage.ts; each action here parses, checks the people action
+ * (people.manage for super admins and managers, users.manage to remove),
+ * runs it in one transaction — where the per-person rules are checked
+ * against the person as loaded — and revalidates. Bulk actions run each
+ * person in their own transaction with the same checks and audit rows.
  */
 import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
@@ -19,8 +21,11 @@ import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { roleLabel } from "@/lib/format";
 import { EDITABLE_ABILITY_KEYS, firstName, STAFF_ROLES } from "@/lib/users/rules";
 import {
+  bulkPeople,
   cancelInviteTx,
+  inviteRowsTx,
   inviteUserTx,
+  previewInviteRows,
   reactivateMemberTx,
   removeMemberTx,
   renewGrantLinkTx,
@@ -30,7 +35,10 @@ import {
   updateInviteTx,
   updateMemberTx,
   UserError,
+  type InviteRowResult,
+  type PreviewRow,
 } from "@/lib/users/manage";
+import { BACK_TO_DEPARTMENT, OTHER_GROUP } from "@/lib/users/handover";
 import type { AbilityKey } from "@/lib/authz";
 
 const NOT_ALLOWED = "Only super admins and managers add and change people";
@@ -92,6 +100,14 @@ const updateMemberSchema = personSchema
   .strict();
 
 const updateInviteSchema = personSchema.extend({ inviteId: z.string().uuid() }).strict();
+
+/** Who takes over each department's sign-offs: a person, or back to the department. */
+const handToSchema = z
+  .record(
+    z.union([z.string().uuid(), z.literal(OTHER_GROUP)]),
+    z.union([z.string().uuid(), z.literal(BACK_TO_DEPARTMENT)]),
+  )
+  .nullish();
 
 type Role = (typeof STAFF_ROLES)[number];
 type Scope = (typeof MANAGER_SCOPES)[number];
@@ -183,9 +199,14 @@ export async function inviteUser(input: unknown): Promise<ActionResult<InviteUse
         emailed: delivery.emailed,
         inviteUrl: delivery.emailed ? undefined : delivery.fallbackUrl,
       },
-      delivery.emailed
-        ? `Invitation sent to ${data.email}`
-        : `${firstName(data.fullName)} added — send them the link`,
+      [
+        delivery.emailed
+          ? `Invitation sent to ${data.email}`
+          : `${firstName(data.fullName)} added — send them the link`,
+        ...invite.mainKept.map(
+          (m) => `${m.name} stays main approver until ${firstName(data.fullName)} has accepted`,
+        ),
+      ].join(". "),
     );
   } catch (err) {
     return failure(err, "inviteUser");
@@ -204,11 +225,22 @@ export async function updateUser(input: unknown): Promise<ActionResult> {
     );
     refresh();
     if (out.changed.length === 0) return success(undefined, "Nothing to save");
+    const notes = [
+      out.signoffsMoved > 0
+        ? `${out.signoffsMoved} sign-off${out.signoffsMoved === 1 ? "" : "s"} went back to the department`
+        : null,
+      out.signoffsKept > 0
+        ? `${out.signoffsKept} sign-off${out.signoffsKept === 1 ? " still names" : "s still name"} ${firstName(out.name)} — nobody else signs off there, so hand ${out.signoffsKept === 1 ? "it" : "them"} on from the item`
+        : null,
+    ].filter(Boolean);
     return success(
       undefined,
-      parsed.data.userId === session.user.id
-        ? "Saved"
-        : `Saved — ${firstName(out.name)} sees the change on their next page load`,
+      [
+        parsed.data.userId === session.user.id
+          ? "Saved"
+          : `Saved — ${firstName(out.name)} sees the change on their next page load`,
+        ...notes,
+      ].join(". "),
     );
   } catch (err) {
     return failure(err, "updateUser");
@@ -226,7 +258,15 @@ export async function updateInvitation(input: unknown): Promise<ActionResult> {
       updateInviteTx(tx, ctx(session), personData(parsed.data)),
     );
     refresh();
-    return success(undefined, `Saved — ${firstName(out.name)} gets this when they accept`);
+    return success(
+      undefined,
+      [
+        `Saved — ${firstName(out.name)} gets this when they accept`,
+        ...out.mainKept.map(
+          (m) => `${m.name} stays main approver until ${firstName(out.name)} has accepted`,
+        ),
+      ].join(". "),
+    );
   } catch (err) {
     return failure(err, "updateInvitation");
   }
@@ -238,7 +278,12 @@ export async function updateInvitation(input: unknown): Promise<ActionResult> {
  */
 export async function removeUser(input: unknown): Promise<ActionResult> {
   const parsed = z
-    .object({ userId: z.string().uuid(), handToUserId: z.string().uuid().nullish() })
+    .object({
+      userId: z.string().uuid(),
+      handTo: handToSchema,
+      handToUserId: z.string().uuid().nullish(),
+      workToUserId: z.string().uuid().nullish(),
+    })
     .strict()
     .safeParse(input);
   if (!parsed.success) return fail("Invalid request");
@@ -252,13 +297,21 @@ export async function removeUser(input: unknown): Promise<ActionResult> {
     );
     refresh();
     revalidatePath("/", "layout");
+    const toWorker = out.items - out.itemsToYou;
     const moved = [
       out.tasks ? `${out.tasks} task${out.tasks === 1 ? "" : "s"}` : null,
-      out.items ? `${out.items} item${out.items === 1 ? "" : "s"}` : null,
+      toWorker ? `${toWorker} item${toWorker === 1 ? "" : "s"}` : null,
     ].filter(Boolean);
+    const workTo = parsed.data.workToUserId && parsed.data.workToUserId !== session.user.id;
     return success(
       undefined,
-      `${out.name} removed${moved.length ? ` — ${moved.join(" and ")} moved to you` : ""}${
+      `${out.name} removed${
+        moved.length ? ` — ${moved.join(" and ")} moved to ${workTo ? out.workToName : "you"}` : ""
+      }${
+        out.itemsToYou
+          ? `; ${out.itemsToYou} item${out.itemsToYou === 1 ? "" : "s"} ${out.workToName} can't work on moved to you`
+          : ""
+      }${
         out.handedOver
           ? `; ${out.handedOver} sign-off${out.handedOver === 1 ? "" : "s"} handed over`
           : ""
@@ -371,7 +424,11 @@ export async function newExternalLink(
  */
 export async function suspendUser(input: unknown): Promise<ActionResult<{ handedOver: number }>> {
   const parsed = z
-    .object({ userId: z.string().uuid(), handToUserId: z.string().uuid().nullish() })
+    .object({
+      userId: z.string().uuid(),
+      handTo: handToSchema,
+      handToUserId: z.string().uuid().nullish(),
+    })
     .strict()
     .safeParse(input);
   if (!parsed.success) return fail("Invalid request");
@@ -446,5 +503,219 @@ export async function setAccessEnd(input: unknown): Promise<ActionResult> {
     );
   } catch (err) {
     return failure(err, "setAccessEnd");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Add several people at once.
+// ---------------------------------------------------------------------------
+
+const pastedRowSchema = z
+  .object({
+    line: z.number().int().min(1).max(10_000),
+    name: z.string().trim().max(200),
+    email: z.string().trim().max(320),
+    jobTitle: z
+      .string()
+      .trim()
+      .max(200)
+      .nullish()
+      .transform((v) => v || null),
+  })
+  .strict();
+
+/** What everyone pasted gets: department, role, sections, abilities and an end date. */
+const sharedSchema = personSchema
+  .pick({
+    departmentId: true,
+    newDepartmentName: true,
+    role: true,
+    features: true,
+    abilities: true,
+    accessEndsOn: true,
+  })
+  .strict();
+
+export type PreviewInviteResult = { rows: PreviewRow[]; ready: number };
+
+/** Check pasted people before inviting them (reads only): ready, or why not. */
+export async function previewInviteUsers(
+  input: unknown,
+): Promise<ActionResult<PreviewInviteResult>> {
+  const parsed = z
+    .object({ rows: z.array(pastedRowSchema).min(1, "Paste at least one person").max(200) })
+    .strict()
+    .safeParse(input);
+  if (!parsed.success) return invalid(parsed.error);
+  const session = await peopleSession();
+  if (!session) return fail(NOT_ALLOWED);
+  try {
+    const rows = await previewInviteRows(db, session.organisation.id, parsed.data.rows);
+    return success({ rows, ready: rows.filter((r) => r.reason === "ready").length });
+  } catch (err) {
+    return failure(err, "previewInviteUsers");
+  }
+}
+
+export type InviteUsersResult = {
+  results: (InviteRowResult & { emailed?: boolean })[];
+  invited: number;
+};
+
+/**
+ * Invite up to 50 people with the same settings. Each person is checked and
+ * saved on their own (one savepoint each) inside one transaction; emails go
+ * out after it commits. When email isn't set up, each link comes back to
+ * pass on.
+ */
+export async function inviteUsers(input: unknown): Promise<ActionResult<InviteUsersResult>> {
+  const parsed = z
+    .object({
+      rows: z.array(pastedRowSchema).min(1, "Paste at least one person").max(200),
+      shared: sharedSchema,
+    })
+    .strict()
+    .safeParse(input);
+  if (!parsed.success) return invalid(parsed.error);
+  const session = await peopleSession();
+  if (!session) return fail(NOT_ALLOWED);
+  const shared = personData(parsed.data.shared);
+  try {
+    const out = await db.transaction((tx) =>
+      inviteRowsTx(
+        tx,
+        { ...ctx(session), actorName: inviterName(session) },
+        parsed.data.rows,
+        shared,
+      ),
+    );
+    const results: InviteUsersResult["results"] = [];
+    for (const r of out.results) {
+      if (!r.ok || !r.inviteId || !r.inviteUrl) {
+        results.push(r);
+        continue;
+      }
+      const delivery = await deliverInvite({
+        email: r.email,
+        name: r.name,
+        inviterName: inviterName(session),
+        reason: `You've been added to the ${session.organisation.brandName} team${
+          out.departmentName ? ` (${out.departmentName})` : ""
+        } as ${roleLabel(shared.role)}.`,
+        inviteUrl: r.inviteUrl,
+        inviteId: r.inviteId,
+      });
+      results.push({
+        ...r,
+        emailed: delivery.emailed,
+        inviteUrl: delivery.emailed ? undefined : delivery.fallbackUrl,
+      });
+    }
+    refresh();
+    const invited = results.filter((r) => r.ok).length;
+    return success(
+      { results, invited },
+      invited === 0
+        ? "Nobody was invited — see why below"
+        : `${invited} ${invited === 1 ? "person" : "people"} invited${
+            invited < results.length ? ` · ${results.length - invited} left out` : ""
+          }`,
+    );
+  } catch (err) {
+    return failure(err, "inviteUsers");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The same change for several people (the list's bulk bar).
+// ---------------------------------------------------------------------------
+
+const BULK_USER_ACTIONS = ["resend", "suspend", "reactivate", "end_date", "cancel"] as const;
+export type BulkUserAction = (typeof BULK_USER_ACTIONS)[number];
+
+export type BulkUserRow = {
+  id: string;
+  name: string;
+  ok: boolean;
+  /** Why it was left alone, in a few words. */
+  reason?: string;
+  /** Resend with email off: the new link to pass on. */
+  inviteUrl?: string;
+};
+
+export type BulkUsersResult = { done: number; failed: number; rows: BulkUserRow[] };
+
+const VERB: Record<BulkUserAction, string> = {
+  resend: "sent again",
+  suspend: "suspended",
+  reactivate: "reactivated",
+  end_date: "given the end date",
+  cancel: "cancelled",
+};
+
+/**
+ * Resend, suspend, reactivate, set an end date or cancel for several
+ * people. Each person runs on their own (own transaction, the same checks
+ * and audit rows as doing it on their page); the result names everyone
+ * left alone and why, so the list keeps them selected. Suspending here
+ * hands sign-offs to each department's default (its main approver or
+ * another approver); people with nobody to take them are left for their
+ * own page.
+ */
+export async function bulkUsers(input: unknown): Promise<ActionResult<BulkUsersResult>> {
+  const parsed = z
+    .object({
+      ids: z.array(z.string().uuid()).min(1, "Select someone first").max(200),
+      action: z.enum(BULK_USER_ACTIONS),
+      date: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "Enter the end date as a date")
+        .nullish(),
+    })
+    .strict()
+    .safeParse(input);
+  if (!parsed.success) return invalid(parsed.error);
+  const session = await peopleSession();
+  if (!session) return fail(NOT_ALLOWED);
+  const { action, date } = parsed.data;
+  if (action === "end_date" && date === undefined) return fail("Choose the date access ends");
+  const c = { ...ctx(session), actorName: inviterName(session) };
+  try {
+    const out = await bulkPeople(db, c, { ids: parsed.data.ids, action, date });
+    const rows: BulkUserRow[] = [];
+    for (const r of out) {
+      if (!r.ok || !r.invite || !r.inviteUrl) {
+        rows.push({ id: r.id, name: r.name, ok: r.ok, reason: r.reason });
+        continue;
+      }
+      // Resent: emails go out after each invitation's own transaction.
+      const delivery = await deliverInvite({
+        email: r.invite.email,
+        name: r.invite.name,
+        inviterName: c.actorName,
+        reason: `You've been added to the ${session.organisation.brandName} team as ${roleLabel(r.invite.role)}.`,
+        inviteUrl: r.inviteUrl,
+        inviteId: r.id,
+      });
+      rows.push({
+        id: r.id,
+        name: r.name,
+        ok: true,
+        inviteUrl: delivery.emailed ? undefined : delivery.fallbackUrl,
+      });
+    }
+    refresh();
+    if (action === "suspend" || action === "reactivate") revalidatePath("/", "layout");
+    const done = rows.filter((r) => r.ok).length;
+    const failed = rows.length - done;
+    const people = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
+    return success(
+      { done, failed, rows },
+      done === 0
+        ? `Nothing changed — ${people(failed)} left as they were`
+        : `${people(done)} ${VERB[action]}${failed ? ` · ${people(failed)} left as they were` : ""}`,
+    );
+  } catch (err) {
+    return failure(err, "bulkUsers");
   }
 }

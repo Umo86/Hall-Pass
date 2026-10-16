@@ -5,7 +5,7 @@ import "server-only";
  * small (tens, not thousands), so filtering happens here after one read of
  * each table — always scoped to the organisation.
  */
-import { and, asc, eq, isNull, ne, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db, Tx } from "@/lib/db/client";
 import {
@@ -19,8 +19,9 @@ import {
   users,
 } from "@/lib/db/schema";
 import {
+  abilityOn,
   parseFeatures,
-  signoffPaused,
+  type AbilityKey,
   type Feature,
   type ManagerScope,
   type PermissionOverrides,
@@ -30,6 +31,8 @@ import { accessLive, accessState, canReceiveSignoff, type AccessState } from "@/
 import { formatDayMonth } from "@/lib/format";
 import { staffInviteExpired } from "@/lib/auth/staff-invite";
 import { inviteStatusText, sortPeople } from "./rules";
+import { activeMembership } from "./active";
+import { filterPeople, lacksDepartment, type ListFilters } from "./list";
 
 export type SignsOffFor = { departmentId: string; name: string; isMain: boolean };
 
@@ -232,29 +235,16 @@ export async function listTeam(
   return { rows: sortPeople(rows), departments: depts };
 }
 
-export type TeamFilters = {
-  q?: string;
-  /** A department id, or "none" for people without a (live) department. */
-  dept?: string;
-  role?: string;
-  status?: "active" | "invited";
-};
+/** The list's filters (?q, ?dept, ?role incl. "manager", ?status, ?activity=stale). */
+export type TeamFilters = ListFilters;
 
 /** Has no department, or only an archived one: they show in the "needs a department" banner. */
 export function needsDepartment(r: Pick<TeamRow, "departmentId" | "departmentArchived">) {
-  return !r.departmentId || r.departmentArchived;
+  return lacksDepartment(r);
 }
 
-export function filterTeam(rows: TeamRow[], f: TeamFilters): TeamRow[] {
-  const q = f.q?.trim().toLowerCase();
-  return rows.filter((r) => {
-    if (q && !`${r.name} ${r.email} ${r.jobTitle ?? ""}`.toLowerCase().includes(q)) return false;
-    if (f.dept === "none" ? !needsDepartment(r) : f.dept && r.departmentId !== f.dept) return false;
-    if (f.role && r.role !== f.role) return false;
-    if (f.status === "active" && (r.kind !== "member" || r.access !== "active")) return false;
-    if (f.status === "invited" && r.kind !== "invite") return false;
-    return true;
-  });
+export function filterTeam(rows: TeamRow[], f: TeamFilters, now = new Date()): TeamRow[] {
+  return filterPeople(rows, f, now);
 }
 
 export type PersonDetail = TeamRow & {
@@ -295,7 +285,8 @@ export async function loadPerson(
           eq(events.organisationId, organisationId),
           eq(signageItems.ownerUserId, id),
           isNull(signageItems.deletedAt),
-          ne(editions.status, "archived"),
+          ne(signageItems.status, "closed"),
+          inArray(editions.status, ["planning", "live"]),
         ),
       );
     for (const it of items) {
@@ -343,7 +334,15 @@ export async function loadPerson(
 }
 
 export type DepartmentCard = DepartmentInfo & {
+  /** Everyone in it, suspended and ended people included. */
   memberCount: number;
+  /** Of those, how many are suspended, and whose access has ended. */
+  suspendedCount: number;
+  endedCount: number;
+  /** Department managers of this department (people with access). */
+  managers: { userId: string; name: string }[];
+  /** How many approvers can sign off now (canReceiveSignoff). */
+  signersNow: number;
   approvers: {
     id: string;
     userId: string | null;
@@ -351,28 +350,42 @@ export type DepartmentCard = DepartmentInfo & {
     jobTitle: string | null;
     email: string;
     isMain: boolean;
-    /** active: can sign off; invited: waiting for them to accept; none: no account or invitation. */
+    /** active: can sign off; paused: can't sign now; invited: waiting for them to accept; none: no account or a lapsed invitation. */
     state: "active" | "paused" | "invited" | "none";
+    /** Why, in a few words, when they can't sign now ("Suspended", "Invitation expired — resend"…). */
+    stateText: string | null;
     /** Their person page, when there is one. */
     href: string | null;
   }[];
 };
 
-/** Departments with how many people are in each and who signs off for it. */
+/** Departments with who is in each, who manages it and who signs off for it. */
 export async function listDepartmentCards(
   db: Db | Tx,
   organisationId: string,
+  now = new Date(),
 ): Promise<DepartmentCard[]> {
   const [depts, members, approverRows, invites] = await Promise.all([
     listDepartmentInfo(db, organisationId),
     db
-      .select({ departmentId: memberships.departmentId })
+      .select({
+        departmentId: memberships.departmentId,
+        userId: memberships.userId,
+        role: memberships.role,
+        managerScope: memberships.managerScope,
+        suspendedAt: memberships.suspendedAt,
+        accessEndsAt: memberships.accessEndsAt,
+        name: users.fullName,
+        email: users.email,
+      })
       .from(memberships)
+      .innerJoin(users, eq(users.id, memberships.userId))
       .where(eq(memberships.organisationId, organisationId)),
     db
       .select({
         a: approvers,
         memberUserId: memberships.userId,
+        role: memberships.role,
         overrides: memberships.permissionOverrides,
         suspendedAt: memberships.suspendedAt,
         accessEndsAt: memberships.accessEndsAt,
@@ -390,7 +403,11 @@ export async function listDepartmentCards(
       .where(eq(approvers.organisationId, organisationId))
       .orderBy(asc(approvers.fullName)),
     db
-      .select({ id: staffInvites.id, email: staffInvites.invitedEmail })
+      .select({
+        id: staffInvites.id,
+        email: staffInvites.invitedEmail,
+        expiresAt: staffInvites.expiresAt,
+      })
       .from(staffInvites)
       .where(
         and(
@@ -400,18 +417,39 @@ export async function listDepartmentCards(
         ),
       ),
   ]);
-  const inviteByEmail = new Map(invites.map((i) => [i.email, i.id]));
-  return depts.map((d) => ({
-    ...d,
-    memberCount: members.filter((m) => m.departmentId === d.id).length,
-    approvers: approverRows
+  const inviteByEmail = new Map(invites.map((i) => [i.email, i]));
+  return depts.map((d) => {
+    const inDept = members.filter((m) => m.departmentId === d.id);
+    const cards = approverRows
       .filter((r) => r.a.departmentId === d.id)
-      .map(({ a, memberUserId, overrides, userName, suspendedAt, accessEndsAt }) => {
-        const inviteId = !memberUserId ? inviteByEmail.get(a.email) : undefined;
-        // Can't sign now: sign-off paused, suspended or access ended.
-        const paused =
-          signoffPaused(overrides as PermissionOverrides) ||
-          !accessLive({ suspendedAt, accessEndsAt });
+      .map(({ a, memberUserId, role, overrides, userName, suspendedAt, accessEndsAt }) => {
+        const invite = !memberUserId ? inviteByEmail.get(a.email) : undefined;
+        const expired = invite ? staffInviteExpired(invite, now) : false;
+        let state: DepartmentCard["approvers"][number]["state"];
+        let stateText: string | null = null;
+        if (memberUserId && role) {
+          const access = accessState({ suspendedAt, accessEndsAt }, now);
+          const canSign = canReceiveSignoff(
+            { role, overrides: overrides as PermissionOverrides, suspendedAt, accessEndsAt },
+            now,
+          );
+          state = canSign ? "active" : "paused";
+          stateText = canSign
+            ? null
+            : access === "suspended"
+              ? "Suspended"
+              : access === "ended"
+                ? "Access ended"
+                : role === "viewer"
+                  ? "Viewer — can't sign off"
+                  : "Sign-off paused";
+        } else if (invite && !expired) {
+          state = "invited";
+          stateText = "Invited — not set up yet";
+        } else {
+          state = "none";
+          stateText = invite ? "Invitation expired — resend" : "No account yet";
+        }
         return {
           id: a.id,
           userId: memberUserId ?? null,
@@ -419,17 +457,23 @@ export async function listDepartmentCards(
           jobTitle: a.jobTitle,
           email: a.email,
           isMain: a.isMain,
-          state: memberUserId
-            ? paused
-              ? ("paused" as const)
-              : ("active" as const)
-            : inviteId
-              ? ("invited" as const)
-              : ("none" as const),
-          href: memberUserId ? `/users/${memberUserId}` : inviteId ? `/users/${inviteId}` : null,
+          state,
+          stateText,
+          href: memberUserId ? `/users/${memberUserId}` : invite ? `/users/${invite.id}` : null,
         };
-      }),
-  }));
+      });
+    return {
+      ...d,
+      memberCount: inDept.length,
+      suspendedCount: inDept.filter((m) => accessState(m, now) === "suspended").length,
+      endedCount: inDept.filter((m) => accessState(m, now) === "ended").length,
+      managers: inDept
+        .filter((m) => m.role !== "admin" && m.managerScope === "department" && accessLive(m, now))
+        .map((m) => ({ userId: m.userId, name: m.name || m.email })),
+      signersNow: cards.filter((c) => c.state === "active").length,
+      approvers: cards,
+    };
+  });
 }
 
 /**
@@ -464,7 +508,8 @@ export async function memberOptions(db: Db | Tx, organisationId: string) {
 
 /**
  * Departments for the person form, with each one's main approver (so the
- * form can say who a new main approver replaces). `person` marks rows that
+ * form can say who a new main approver replaces, and that someone only
+ * invited doesn't replace a main who can sign). `person` marks rows that
  * are theirs.
  */
 export async function departmentOptions(
@@ -481,9 +526,20 @@ export async function departmentOptions(
         email: approvers.email,
         name: approvers.fullName,
         userName: users.fullName,
+        role: memberships.role,
+        overrides: memberships.permissionOverrides,
+        suspendedAt: memberships.suspendedAt,
+        accessEndsAt: memberships.accessEndsAt,
       })
       .from(approvers)
       .leftJoin(users, eq(users.id, approvers.userId))
+      .leftJoin(
+        memberships,
+        and(
+          eq(memberships.userId, approvers.userId),
+          eq(memberships.organisationId, approvers.organisationId),
+        ),
+      )
       .where(and(eq(approvers.organisationId, organisationId), eq(approvers.isMain, true))),
   ]);
   return depts.map((d) => {
@@ -500,6 +556,42 @@ export async function departmentOptions(
       isArchived: d.isArchived,
       mainApprover: main ? main.userName || main.name : null,
       mainIsThisPerson: Boolean(mine),
+      mainCanSign: Boolean(
+        main?.userId &&
+        main.role &&
+        canReceiveSignoff({
+          role: main.role,
+          overrides: main.overrides as PermissionOverrides,
+          suspendedAt: main.suspendedAt,
+          accessEndsAt: main.accessEndsAt,
+        }),
+      ),
     };
   });
+}
+
+/**
+ * People with access who hold an ability (for "ask …" notes, e.g. who can
+ * invite partners), super admins first.
+ */
+export async function abilityHolders(
+  db: Db | Tx,
+  organisationId: string,
+  key: AbilityKey,
+): Promise<{ name: string; email: string; role: StaffRole }[]> {
+  const rows = await db
+    .select({
+      name: users.fullName,
+      email: users.email,
+      role: memberships.role,
+      overrides: memberships.permissionOverrides,
+    })
+    .from(memberships)
+    .innerJoin(users, eq(users.id, memberships.userId))
+    .where(and(eq(memberships.organisationId, organisationId), activeMembership()))
+    .orderBy(asc(users.fullName));
+  return rows
+    .filter((r) => abilityOn({ role: r.role, overrides: r.overrides as PermissionOverrides }, key))
+    .sort((a, b) => Number(b.role === "admin") - Number(a.role === "admin"))
+    .map((r) => ({ name: r.name || r.email, email: r.email, role: r.role }));
 }

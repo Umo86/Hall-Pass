@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { LoginCard, type DevUser } from "@/components/auth/login-card";
 import { brandName } from "@/lib/config";
 import { demoEmailAllowed, devAuthEnabled, getAccessBlock, getSession } from "@/lib/auth/actor";
-import { accessBlockMessage } from "@/lib/access";
+import type { AccessBlock } from "@/lib/access";
 import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
 import { supabaseUrl } from "@/lib/auth/supabase-config";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
@@ -44,6 +44,19 @@ async function devUserList(): Promise<DevUser[]> {
   } catch {
     return [];
   }
+}
+
+/**
+ * Why a suspended person, or one whose access has ended, can't get in, and
+ * who to ask — by name, with their email when it is known.
+ */
+function blockedNotice(block: AccessBlock & { askEmail?: string | null }): string {
+  const name = block.askName?.trim();
+  const email = block.askEmail?.trim();
+  const who = name ? `${name}${email ? ` (${email})` : ""}` : "a super admin";
+  return block.state === "suspended"
+    ? `Your access is paused for now. To get it back, ask ${who}.`
+    : `Your access has ended. If you still need it, ask ${who} to give you a new end date.`;
 }
 
 const NOTICES: Record<string, string> = {
@@ -97,7 +110,7 @@ export default async function LoginPage({
       next={next}
       notice={
         block
-          ? `${accessBlockMessage(block)}.`
+          ? blockedNotice(block)
           : error
             ? (NOTICES[error] ?? "Sign-in didn't work — please try again.")
             : null
