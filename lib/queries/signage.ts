@@ -18,9 +18,36 @@ import {
   users,
 } from "@/lib/db/schema";
 import type { LabelRow } from "@/lib/exports/label-fields";
-import { loadItemBundle } from "@/lib/domain/signage";
+import {
+  isMineRow,
+  loadItemBundle,
+  quickFiltersFor,
+  rowIsOverdue,
+  stepStillDue,
+  type QuickFilter,
+} from "@/lib/domain/signage";
+import type { StaffActor } from "@/lib/authz";
+import { artworkDue } from "@/lib/deadlines";
+import { roleLabel } from "@/lib/format";
+import { todayInLondon } from "@/lib/today";
+import { editionForDeadlines } from "@/lib/queries/editions";
 import { SIGNAGE_KINDS } from "@/lib/edition-path";
 import { loadRun } from "@/lib/workflow/persist";
+
+/** A waiting sign-off or confirmation on a list row. */
+export type ScheduleStep = {
+  name: string;
+  /** Department or role (kept for older callers); see `who` for the words to show. */
+  role: string | null;
+  /** Who it waits on: a named person, the department, the supplier or the role. */
+  who: string;
+  stepKind: "approval" | "confirmation";
+  assignedRole: string | null;
+  assignedUserId: string | null;
+  assignedDepartmentId: string | null;
+  dueAt: string | null;
+  overdue: boolean;
+};
 
 export type ScheduleRow = {
   id: string;
@@ -32,12 +59,16 @@ export type ScheduleRow = {
   typeName: string | null;
   /** Print or digital (from the signage type). */
   format: string | null;
+  hallId: string | null;
   hallName: string | null;
+  locationId: string | null;
   locationName: string | null;
   standNumber: string | null;
   sponsorName: string | null;
+  supplierId: string | null;
   supplierName: string | null;
   ownerRole: string;
+  ownerUserId: string | null;
   widthMm: number | null;
   heightMm: number | null;
   quantity: number;
@@ -50,48 +81,69 @@ export type ScheduleRow = {
   installSlot: string | null;
   printDeadline: string | null;
   artworkDueOverride: string | null;
+  /** The date artwork is due: the item's own, else the event's deadline. */
+  artworkDue: string | null;
   currentVersion: number | null;
   previewPath: string | null;
-  pendingSteps: { name: string; role: string | null; dueAt: string | null; overdue: boolean }[];
+  /** Waiting steps of the current round. */
+  pendingSteps: ScheduleStep[];
+  /** The status chips the row counts under (see quickFiltersFor). */
+  quick: QuickFilter[];
 };
 
-export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]> {
-  const rows = await db
-    .select({
-      item: signageItems,
-      typeName: itemTypes.name,
-      format: itemTypes.format,
-      hallName: halls.name,
-      locationName: locations.name,
-      sponsorName: sponsors.companyName,
-      supplierName: suppliers.name,
-      currentVersion: artworkVersions.versionNumber,
-      previewPath: artworkVersions.previewPath,
-    })
-    .from(signageItems)
-    .leftJoin(itemTypes, eq(signageItems.itemTypeId, itemTypes.id))
-    .leftJoin(halls, eq(signageItems.hallId, halls.id))
-    .leftJoin(locations, eq(signageItems.locationId, locations.id))
-    .leftJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
-    .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
-    .leftJoin(artworkVersions, eq(signageItems.currentArtworkVersionId, artworkVersions.id))
-    // Everything for the show — organiser signage, sponsor signage and the
-    // items sold in the Sponsorship section — in one schedule.
-    .where(
-      and(
-        eq(signageItems.editionId, editionId),
-        isNull(signageItems.deletedAt),
-        // Stands and their panels live in Stand designs.
-        inArray(signageItems.kind, [...SIGNAGE_KINDS]),
-      ),
-    )
-    .orderBy(asc(signageItems.seq));
+/**
+ * The signage list for an event: signs and sponsorship items, with who each
+ * is waiting on, when the artwork is due, and (for `viewer`) which are theirs.
+ */
+export async function listScheduleRows(
+  editionId: string,
+  opts: { viewer?: StaffActor; today?: string } = {},
+): Promise<ScheduleRow[]> {
+  const today = opts.today ?? todayInLondon();
+  const [rows, deadlines] = await Promise.all([
+    db
+      .select({
+        item: signageItems,
+        typeName: itemTypes.name,
+        format: itemTypes.format,
+        hallName: halls.name,
+        locationName: locations.name,
+        sponsorName: sponsors.companyName,
+        supplierName: suppliers.name,
+        currentVersion: artworkVersions.versionNumber,
+        previewPath: artworkVersions.previewPath,
+      })
+      .from(signageItems)
+      .leftJoin(itemTypes, eq(signageItems.itemTypeId, itemTypes.id))
+      .leftJoin(halls, eq(signageItems.hallId, halls.id))
+      .leftJoin(locations, eq(signageItems.locationId, locations.id))
+      .leftJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
+      .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
+      .leftJoin(artworkVersions, eq(signageItems.currentArtworkVersionId, artworkVersions.id))
+      // Everything for the show — organiser signage, sponsor signage and the
+      // items sold in the Sponsorship section — in one schedule.
+      .where(
+        and(
+          eq(signageItems.editionId, editionId),
+          isNull(signageItems.deletedAt),
+          // Stands and their panels live in Stand designs.
+          inArray(signageItems.kind, [...SIGNAGE_KINDS]),
+        ),
+      )
+      .orderBy(asc(signageItems.seq)),
+    editionForDeadlines(editionId),
+  ]);
 
   const ids = rows.map((r) => r.item.id);
   const pending = ids.length
     ? await db
-        .select()
+        .select({
+          instance: approvalInstances,
+          assigneeName: users.fullName,
+          assigneeEmail: users.email,
+        })
         .from(approvalInstances)
+        .leftJoin(users, eq(approvalInstances.assignedUserId, users.id))
         .where(
           and(
             eq(approvalInstances.entityType, "signage_item"),
@@ -99,57 +151,182 @@ export async function listScheduleRows(editionId: string): Promise<ScheduleRow[]
             eq(approvalInstances.status, "pending"),
           ),
         )
+        .orderBy(asc(approvalInstances.sortOrderSnapshot))
     : [];
   const deptNames = await departmentNames(
     db,
-    pending.map((p) => p.assignedDepartmentId),
+    pending.map((p) => p.instance.assignedDepartmentId),
   );
+  const runOf = new Map(rows.map((r) => [r.item.id, r.item.currentRunNumber]));
+  const statusOf = new Map(rows.map((r) => [r.item.id, r.item.status as string]));
   const pendingByItem = new Map<string, typeof pending>();
   for (const p of pending) {
-    const list = pendingByItem.get(p.entityId) ?? [];
+    // Only the current round counts; an older round's leftovers don't.
+    if (runOf.get(p.instance.entityId) !== p.instance.runNumber) continue;
+    const status = statusOf.get(p.instance.entityId) ?? "";
+    if (
+      !stepStillDue(
+        { stepKind: p.instance.stepKindSnapshot, stepName: p.instance.stepNameSnapshot },
+        status,
+      )
+    ) {
+      continue;
+    }
+    const list = pendingByItem.get(p.instance.entityId) ?? [];
     list.push(p);
-    pendingByItem.set(p.entityId, list);
+    pendingByItem.set(p.instance.entityId, list);
   }
 
   const now = Date.now();
+  return rows.map((r) => {
+    const department = (id: string | null) => (id ? (deptNames.get(id) ?? null) : null);
+    const pendingSteps: ScheduleStep[] = (pendingByItem.get(r.item.id) ?? []).map(
+      ({ instance: p, assigneeName, assigneeEmail }) => {
+        const dept = department(p.assignedDepartmentId);
+        const who =
+          (p.assignedUserId && (assigneeName || assigneeEmail)) ||
+          dept ||
+          (p.assignedRole === "supplier"
+            ? (r.supplierName ?? "Supplier")
+            : roleLabel(p.assignedRole));
+        return {
+          name: p.stepNameSnapshot,
+          role: dept ?? p.assignedRole,
+          who,
+          stepKind: p.stepKindSnapshot,
+          assignedRole: p.assignedRole,
+          assignedUserId: p.assignedUserId,
+          assignedDepartmentId: p.assignedDepartmentId,
+          dueAt: p.dueAt?.toISOString() ?? null,
+          overdue: Boolean(p.dueAt && p.dueAt.getTime() < now),
+        };
+      },
+    );
+    const artworkDueDate = deadlines
+      ? artworkDue({ artworkDueOverride: r.item.artworkDueOverride }, deadlines)
+      : r.item.artworkDueOverride;
+    const hasArtwork = r.currentVersion != null;
+    const base = {
+      status: r.item.status,
+      hasArtwork,
+      artworkDue: artworkDueDate,
+      pendingSteps,
+    };
+    return {
+      id: r.item.id,
+      ref: r.item.ref,
+      name: r.item.name,
+      status: r.item.status,
+      kind: r.item.kind as "signage" | "sponsorship_item",
+      category: r.item.category,
+      typeName: r.typeName,
+      format: r.format,
+      hallId: r.item.hallId,
+      hallName: r.hallName,
+      locationId: r.item.locationId,
+      locationName: r.locationName,
+      standNumber: r.item.standNumber,
+      sponsorName: r.sponsorName,
+      supplierId: r.item.supplierId,
+      supplierName: r.supplierName,
+      ownerRole: r.item.ownerRole,
+      ownerUserId: r.item.ownerUserId,
+      widthMm: r.item.widthMm,
+      heightMm: r.item.heightMm,
+      quantity: r.item.quantity,
+      fixingMethod: r.item.fixingMethod,
+      requiresVenueApproval: r.item.requiresVenueApproval,
+      costEstimate: r.item.costEstimate,
+      costActual: r.item.costActual,
+      poNumber: r.item.poNumber,
+      installDate: r.item.installDate,
+      installSlot: r.item.installSlot,
+      printDeadline: r.item.printDeadline,
+      artworkDueOverride: r.item.artworkDueOverride,
+      artworkDue: artworkDueDate,
+      currentVersion: r.currentVersion,
+      previewPath: r.previewPath,
+      pendingSteps,
+      quick: quickFiltersFor({
+        status: r.item.status,
+        hasArtwork,
+        overdue: rowIsOverdue(base, today),
+        mine: opts.viewer
+          ? isMineRow({ ownerUserId: r.item.ownerUserId, pendingSteps }, opts.viewer)
+          : false,
+      }),
+    };
+  });
+}
+
+export type DeletedRow = {
+  id: string;
+  ref: string;
+  name: string;
+  kind: string;
+  deletedAt: Date;
+  deletedBy: string | null;
+};
+
+/**
+ * An event's deleted items, most recently deleted first, with who deleted
+ * each (from its latest delete in the audit log).
+ */
+export async function listDeletedItems(editionId: string, limit = 200): Promise<DeletedRow[]> {
+  const rows = await db
+    .select({
+      id: signageItems.id,
+      ref: signageItems.ref,
+      name: signageItems.name,
+      kind: signageItems.kind,
+      deletedAt: signageItems.deletedAt,
+    })
+    .from(signageItems)
+    .where(and(eq(signageItems.editionId, editionId), isNotNull(signageItems.deletedAt)))
+    .orderBy(desc(signageItems.deletedAt))
+    .limit(limit);
+  if (rows.length === 0) return [];
+  const deletes = await db
+    .select({
+      entityId: auditLog.entityId,
+      at: auditLog.createdAt,
+      name: users.fullName,
+      email: users.email,
+    })
+    .from(auditLog)
+    .leftJoin(users, eq(auditLog.actorUserId, users.id))
+    .where(
+      and(
+        eq(auditLog.entityType, "signage_item"),
+        eq(auditLog.action, "soft_delete"),
+        inArray(
+          auditLog.entityId,
+          rows.map((r) => r.id),
+        ),
+      ),
+    )
+    .orderBy(desc(auditLog.createdAt));
+  const by = new Map<string, string | null>();
+  for (const d of deletes) {
+    if (d.entityId && !by.has(d.entityId)) by.set(d.entityId, d.name || d.email || null);
+  }
   return rows.map((r) => ({
-    id: r.item.id,
-    ref: r.item.ref,
-    name: r.item.name,
-    status: r.item.status,
-    kind: r.item.kind as "signage" | "sponsorship_item",
-    category: r.item.category,
-    typeName: r.typeName,
-    format: r.format,
-    hallName: r.hallName,
-    locationName: r.locationName,
-    standNumber: r.item.standNumber,
-    sponsorName: r.sponsorName,
-    supplierName: r.supplierName,
-    ownerRole: r.item.ownerRole,
-    widthMm: r.item.widthMm,
-    heightMm: r.item.heightMm,
-    quantity: r.item.quantity,
-    fixingMethod: r.item.fixingMethod,
-    requiresVenueApproval: r.item.requiresVenueApproval,
-    costEstimate: r.item.costEstimate,
-    costActual: r.item.costActual,
-    poNumber: r.item.poNumber,
-    installDate: r.item.installDate,
-    installSlot: r.item.installSlot,
-    printDeadline: r.item.printDeadline,
-    artworkDueOverride: r.item.artworkDueOverride,
-    currentVersion: r.currentVersion,
-    previewPath: r.previewPath,
-    pendingSteps: (pendingByItem.get(r.item.id) ?? []).map((p) => ({
-      name: p.stepNameSnapshot,
-      role: p.assignedDepartmentId
-        ? (deptNames.get(p.assignedDepartmentId) ?? null)
-        : p.assignedRole,
-      dueAt: p.dueAt?.toISOString() ?? null,
-      overdue: Boolean(p.dueAt && p.dueAt.getTime() < now),
-    })),
+    id: r.id,
+    ref: r.ref,
+    name: r.name,
+    kind: r.kind,
+    deletedAt: r.deletedAt!,
+    deletedBy: by.get(r.id) ?? null,
   }));
+}
+
+/** How many of an event's items are deleted (for "Recently deleted (n)"). */
+export async function countDeletedItems(editionId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(signageItems)
+    .where(and(eq(signageItems.editionId, editionId), isNotNull(signageItems.deletedAt)));
+  return Number(row?.n ?? 0);
 }
 
 export type SponsorshipRow = {

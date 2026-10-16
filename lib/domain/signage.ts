@@ -24,7 +24,9 @@ import {
 } from "@/lib/db/schema";
 import { notify } from "@/lib/notify";
 import { departmentSignerIds } from "@/lib/domain/departments";
-import type { SignageItemCtx } from "@/lib/authz";
+import type { SignageItemCtx, StaffActor } from "@/lib/authz";
+import type { SignageStatus } from "@/lib/status/signage";
+import { formatDate, statusLabel } from "@/lib/format";
 import {
   createRun,
   defaultSignoffs,
@@ -36,8 +38,13 @@ import {
   type SignageCategory,
   type SignoffPlan,
 } from "@/lib/workflow";
-import { loadStepDefs, persistRun } from "@/lib/workflow/persist";
+import { loadRun, loadStepDefs, persistRun } from "@/lib/workflow/persist";
+import { resubmitAfterChanges } from "@/lib/workflow/engine";
 import { itemPath } from "@/lib/edition-path";
+import { writeAudit } from "@/lib/audit";
+import { signageTransition } from "@/lib/status/signage";
+import { PANEL_BLOCKED_MESSAGE, artworkBlockedReason } from "@/lib/artwork-rules";
+import { panelParent } from "@/lib/domain/stand-designs";
 
 export type ItemRow = typeof signageItems.$inferSelect;
 export type EditionRow = typeof editions.$inferSelect;
@@ -429,6 +436,102 @@ export async function notifyPendingAssignees(
   }
 }
 
+/**
+ * Send a draft for sign-off inside the caller's transaction, with its audit
+ * row: In sign-off when it has artwork, else Needs artwork (sign-off then
+ * starts on the first upload). Throws a plain-language error when it can't
+ * go yet. Shared by "Send for sign-off" and "upload and send".
+ */
+export async function submitItemInTx(
+  tx: Tx,
+  bundle: ItemBundle,
+  opts: { actorUserId: string; now: Date },
+): Promise<{ next: SignageStatus; pending: Instance[] }> {
+  const i = bundle.item;
+  if (i.status !== "draft") throw new Error("This item has already been sent for sign-off");
+  if (artworkBlockedReason(i.status, await panelParent(tx, i)) === PANEL_BLOCKED_MESSAGE) {
+    throw new Error(PANEL_BLOCKED_MESSAGE);
+  }
+  const missing = missingSubmitFields(i);
+  if (missing.length > 0) {
+    throw new Error(`Cannot send for sign-off yet — missing: ${missing.join(", ")}`);
+  }
+  // Items created by import (or before a workflow existed) get the default.
+  const workflowId =
+    i.workflowId ?? (await defaultSignageWorkflowId(tx, bundle.organisation.id, i.itemTypeId));
+  if (!workflowId) throw new Error("No sign-off workflow is set up yet — ask an admin");
+  const next = signageTransition(i.status, "submit_for_review", {
+    hasArtwork: Boolean(i.currentArtworkVersionId),
+  });
+  await tx.update(signageItems).set({ status: next, workflowId }).where(eq(signageItems.id, i.id));
+  let pending: Instance[] = [];
+  if (next === "in_review") {
+    const instances = await startItemRun(tx, { ...bundle, item: { ...i, workflowId } }, opts.now);
+    await notifyPendingAssignees(tx, bundle, instances);
+    pending = instances.filter((x) => x.status === "pending");
+  }
+  await writeAudit(tx, {
+    organisationId: bundle.organisation.id,
+    editionId: bundle.edition.id,
+    actorUserId: opts.actorUserId,
+    entityType: "signage_item",
+    entityId: i.id,
+    action: "submit",
+    before: { status: i.status },
+    after: { status: next },
+    summary:
+      next === "in_review"
+        ? `${i.ref} sent for sign-off`
+        : `${i.ref} ready for artwork — sign-off starts on upload`,
+  });
+  return { next, pending };
+}
+
+/**
+ * Send an item back for sign-off after changes were asked for, inside the
+ * caller's transaction, with its audit row. The run restarts from the step
+ * that asked (or as a new round, as the workflow says).
+ */
+export async function resubmitItemInTx(
+  tx: Tx,
+  bundle: ItemBundle,
+  opts: { actorUserId: string; now: Date },
+): Promise<{ next: SignageStatus; pending: Instance[] }> {
+  const item = bundle.item;
+  if (item.status !== "changes_requested") {
+    throw new Error("Only items with changes requested can be sent back for sign-off");
+  }
+  const next = signageTransition(item.status, "resubmit");
+  const run = await loadRun(tx, "signage_item", item.id, item.currentRunNumber);
+  const res = resubmitAfterChanges(run, { entity: itemEntityCtx(bundle), now: opts.now });
+  let pending: Instance[];
+  if (res.mode === "restart_from_step") {
+    const persisted = await persistRun(tx, "signage_item", item.id, res.instances);
+    pending = newlyPending(run, persisted);
+  } else {
+    // The whole run restarts as a new round; the old one stays in history.
+    pending = (await startItemRun(tx, bundle, opts.now)).filter((x) => x.status === "pending");
+  }
+  await notifyPendingAssignees(tx, bundle, pending);
+  await tx.update(signageItems).set({ status: next }).where(eq(signageItems.id, item.id));
+  await writeAudit(tx, {
+    organisationId: bundle.organisation.id,
+    editionId: bundle.edition.id,
+    actorUserId: opts.actorUserId,
+    entityType: "signage_item",
+    entityId: item.id,
+    action: "submit",
+    after: { status: next, mode: res.mode },
+    summary: `${item.ref} resubmitted`,
+  });
+  return { next, pending };
+}
+
+/** "Operations sign-off and Marketing sign-off" — who was just asked. */
+export function askedSummary(pending: Array<{ stepName: string }>): string {
+  return joinWords([...new Set(pending.map((p) => p.stepName))]);
+}
+
 /** Instances that are pending now but were not pending before. */
 export function newlyPending<T extends { id: string; stepId?: string; status: string }>(
   before: T[],
@@ -696,4 +799,689 @@ export async function ownEdition(db: Db | Tx, organisationId: string, editionId:
     .where(and(eq(editions.id, editionId), eq(events.organisationId, organisationId)))
     .limit(1);
   return row?.edition ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// The signage list and the item page's "next step" (pure; unit tested in
+// tests/unit/signage-list.test.ts and signage-next-step.test.ts). Computed
+// on the server and handed to the page as plain data.
+
+/** Dashboard stages: each status (except Rejected) belongs to one. */
+export const SIGNAGE_STAGES = {
+  getting_ready: ["draft", "awaiting_artwork", "on_hold"],
+  in_signoff: ["in_review", "changes_requested"],
+  production: ["approved", "approved_with_conditions", "in_production", "delivered"],
+  onsite: ["installed", "snagged", "closed"],
+} as const satisfies Record<string, readonly SignageStatus[]>;
+
+export type SignageStage = keyof typeof SIGNAGE_STAGES;
+
+export const STAGE_LABELS: Record<SignageStage, string> = {
+  getting_ready: "Getting ready",
+  in_signoff: "In sign-off",
+  production: "Production & delivery",
+  onsite: "Onsite & done",
+};
+
+/** The statuses for `?stage=…`; null for no stage or one we don't know (no filter). */
+export function stageStatuses(stage: string | null | undefined): SignageStatus[] | null {
+  if (!stage || !(stage in SIGNAGE_STAGES)) return null;
+  return [...SIGNAGE_STAGES[stage as SignageStage]];
+}
+
+export function stageOf(status: string): SignageStage | null {
+  for (const [stage, list] of Object.entries(SIGNAGE_STAGES)) {
+    if ((list as readonly string[]).includes(status)) return stage as SignageStage;
+  }
+  return null;
+}
+
+/** The status chips above the list, in the order they are shown. */
+export const QUICK_FILTERS = [
+  "needs_artwork",
+  "not_sent",
+  "in_signoff",
+  "changes_requested",
+  "ready_to_print",
+  "sent_to_print",
+  "delivered",
+  "onsite",
+  "overdue",
+  "mine",
+] as const;
+
+export type QuickFilter = (typeof QUICK_FILTERS)[number];
+
+export const QUICK_FILTER_LABELS: Record<QuickFilter, string> = {
+  needs_artwork: "Needs artwork",
+  not_sent: "Not sent yet",
+  in_signoff: "In sign-off",
+  changes_requested: "Changes requested",
+  ready_to_print: "Ready to print",
+  sent_to_print: "Sent to print",
+  delivered: "Delivered",
+  onsite: "Installed / snagged",
+  overdue: "Overdue",
+  mine: "Mine",
+};
+
+const STATUS_CHIP: Record<string, QuickFilter> = {
+  in_review: "in_signoff",
+  changes_requested: "changes_requested",
+  approved: "ready_to_print",
+  approved_with_conditions: "ready_to_print",
+  in_production: "sent_to_print",
+  delivered: "delivered",
+  installed: "onsite",
+  snagged: "onsite",
+};
+
+/** Which chips a row counts under: its status chip, then Overdue and Mine. */
+export function quickFiltersFor(row: {
+  status: string;
+  hasArtwork: boolean;
+  overdue: boolean;
+  mine: boolean;
+}): QuickFilter[] {
+  const out: QuickFilter[] = [];
+  if (row.status === "draft" || row.status === "awaiting_artwork") {
+    out.push(row.status === "draft" && row.hasArtwork ? "not_sent" : "needs_artwork");
+  } else if (STATUS_CHIP[row.status]) {
+    out.push(STATUS_CHIP[row.status]);
+  }
+  if (row.overdue) out.push("overdue");
+  if (row.mine) out.push("mine");
+  return out;
+}
+
+/**
+ * Overdue on the list: a waiting step is past its due date, or the artwork
+ * is past due and still missing.
+ */
+export function rowIsOverdue(
+  row: {
+    status: string;
+    hasArtwork: boolean;
+    artworkDue: string | null;
+    pendingSteps: { overdue: boolean }[];
+  },
+  today: string,
+): boolean {
+  if (row.pendingSteps.some((s) => s.overdue)) return true;
+  return (
+    (row.status === "draft" || row.status === "awaiting_artwork") &&
+    !row.hasArtwork &&
+    Boolean(row.artworkDue && row.artworkDue < today)
+  );
+}
+
+type MineStep = {
+  stepKind: "approval" | "confirmation";
+  assignedRole: string | null;
+  assignedUserId: string | null;
+  assignedDepartmentId: string | null;
+};
+
+/**
+ * Is this waiting step mine to decide as its assignee — named for me, for a
+ * department I sign off for, or for my role (operations also confirm a
+ * supplier's steps)? An admin's power to decide anything doesn't count.
+ */
+export function stepIsMine(
+  s: MineStep,
+  actor: Pick<StaffActor, "userId" | "role" | "signoffDepartmentIds">,
+): boolean {
+  if (s.assignedUserId) return s.assignedUserId === actor.userId;
+  if (s.assignedDepartmentId) {
+    return actor.signoffDepartmentIds?.includes(s.assignedDepartmentId) ?? false;
+  }
+  if (s.stepKind === "confirmation" && s.assignedRole === "supplier") {
+    return actor.role === "ops";
+  }
+  return Boolean(s.assignedRole) && s.assignedRole === actor.role;
+}
+
+/** "Mine" on the list: I own it, or one of its waiting steps is mine (stepIsMine). */
+export function isMineRow(
+  row: { ownerUserId: string | null; pendingSteps: MineStep[] },
+  actor: Pick<StaffActor, "userId" | "role" | "signoffDepartmentIds">,
+): boolean {
+  if (row.ownerUserId === actor.userId) return true;
+  return row.pendingSteps.some((s) => stepIsMine(s, actor));
+}
+
+/** The statuses at which each production confirmation is the thing waiting. */
+const CONFIRMATION_DUE_AT: Record<string, string[]> = {
+  "Sent to print": ["approved", "approved_with_conditions"],
+  Delivered: ["in_production"],
+  Installed: ["delivered"],
+};
+
+/**
+ * Is a waiting step really still waiting? A production confirmation left
+ * pending on an item that has already moved past it (older or imported
+ * data) is not shown as what the item waits on.
+ */
+export function stepStillDue(
+  step: { stepKind: "approval" | "confirmation"; stepName: string },
+  status: string,
+): boolean {
+  if (step.stepKind !== "confirmation" || status === "on_hold") return true;
+  const due = CONFIRMATION_DUE_AT[step.stepName];
+  return !due || due.includes(status);
+}
+
+/** The bulk confirmations on the list. */
+export type BulkConfirmStep = "Sent to print" | "Delivered";
+
+const SIGNED_OFF: string[] = ["approved", "approved_with_conditions"];
+const BEFORE_SIGNOFF: string[] = [
+  "draft",
+  "awaiting_artwork",
+  "in_review",
+  "changes_requested",
+  "rejected",
+];
+
+/**
+ * Why an item can't take a bulk "Sent to print" or "Delivered" confirmation,
+ * in a few words for the result list; null when it can.
+ */
+export function bulkConfirmSkipReason(
+  step: BulkConfirmStep,
+  item: {
+    status: string;
+    supplierId: string | null;
+    /** The steps waiting in the item's current round. */
+    pendingStepNames: string[];
+    canDecide: boolean;
+  },
+): string | null {
+  if (item.status === "on_hold") return "on hold";
+  if (BEFORE_SIGNOFF.includes(item.status)) return "not signed off yet";
+  if (step === "Sent to print") {
+    if (!SIGNED_OFF.includes(item.status)) return "already sent to print";
+  } else {
+    if (SIGNED_OFF.includes(item.status)) return "not sent to print yet";
+    if (item.status !== "in_production") return "already delivered";
+  }
+  if (!item.pendingStepNames.includes(step)) return "nothing waiting to confirm";
+  if (step === "Sent to print" && !item.supplierId) return "no supplier set";
+  if (!item.canDecide) return "not yours to confirm";
+  return null;
+}
+
+/** Once installed, what was approved can no longer change (reopen first). */
+export const SPEC_LOCKED_STATUSES: SignageStatus[] = ["installed", "snagged", "closed"];
+
+export function specLocked(status: string): boolean {
+  return (SPEC_LOCKED_STATUSES as string[]).includes(status);
+}
+
+type ReadinessItem = {
+  kind: "signage" | "sponsorship_item" | "stand_design" | "stand_panel";
+  hallId: string | null;
+  locationId: string | null;
+  itemTypeId: string | null;
+  widthMm: number | null;
+  heightMm: number | null;
+  quantity: number | null;
+  fixingMethod: string | null;
+  supplierId: string | null;
+  currentArtworkVersionId: string | null;
+};
+
+/** The form fields sign-off needs, so the form can tag them up front. */
+export function signoffRequiredFields(kind: ReadinessItem["kind"]): string[] {
+  switch (kind) {
+    case "signage":
+      return ["hallId", "locationId", "itemTypeId", "widthMm", "heightMm", "fixingMethod"];
+    case "sponsorship_item":
+      return ["itemTypeId"];
+    case "stand_panel":
+      return ["widthMm", "heightMm"];
+    default:
+      return [];
+  }
+}
+
+export type ReadinessLine = {
+  key: "where" | "type" | "size" | "quantity" | "fixing" | "artwork" | "supplier";
+  label: string;
+  done: boolean;
+  /** Blocking lines must be done before it can go for sign-off. */
+  blocking: boolean;
+  /** The form field to jump to, when the line is a field. */
+  field?: string;
+};
+
+export type Readiness = {
+  lines: ReadinessLine[];
+  /** Everything sign-off needs is filled in (the server's check agrees). */
+  fieldsReady: boolean;
+  hasArtwork: boolean;
+};
+
+/**
+ * What an item needs before (and soon after) it goes for sign-off, as a
+ * checklist. The blocking lines are exactly missingSubmitFields.
+ */
+export function signoffReadiness(item: ReadinessItem): Readiness {
+  const hasArtwork = Boolean(item.currentArtworkVersionId);
+  const lines: ReadinessLine[] = [];
+  const noun =
+    item.kind === "stand_design" ? "Design" : item.kind === "stand_panel" ? "Graphic" : "Artwork";
+  if (item.kind === "signage") {
+    lines.push({
+      key: "where",
+      label: "Hall and location",
+      done: Boolean(item.hallId && item.locationId),
+      blocking: true,
+      field: item.hallId ? "locationId" : "hallId",
+    });
+  }
+  if (item.kind === "signage" || item.kind === "sponsorship_item") {
+    lines.push({
+      key: "type",
+      label: "Item type",
+      done: Boolean(item.itemTypeId),
+      blocking: true,
+      field: "itemTypeId",
+    });
+  }
+  if (item.kind === "signage" || item.kind === "stand_panel") {
+    lines.push({
+      key: "size",
+      label: "Size",
+      done: Boolean(item.widthMm && item.heightMm && item.quantity),
+      blocking: true,
+      field: !item.widthMm ? "widthMm" : !item.heightMm ? "heightMm" : "quantity",
+    });
+  }
+  if (item.kind === "signage") {
+    lines.push({
+      key: "fixing",
+      label: "Fixing method",
+      done: Boolean(item.fixingMethod),
+      blocking: true,
+      field: "fixingMethod",
+    });
+  }
+  lines.push({ key: "artwork", label: noun, done: hasArtwork, blocking: false });
+  if (item.kind !== "stand_design") {
+    lines.push({
+      key: "supplier",
+      label: "Supplier (needed before print)",
+      done: Boolean(item.supplierId),
+      blocking: false,
+      field: "supplierId",
+    });
+  }
+  // A missing quantity on a sponsorship item has no line of its own.
+  const fieldsReady = missingSubmitFields(item).length === 0;
+  if (!fieldsReady && lines.every((l) => !l.blocking || l.done)) {
+    lines.unshift({
+      key: "quantity",
+      label: "Quantity",
+      done: false,
+      blocking: true,
+      field: "quantity",
+    });
+  }
+  return { lines, fieldsReady, hasArtwork };
+}
+
+/** "Add size and fixing method first", or null when nothing blocks sign-off. */
+export function submitBlockedReason(readiness: Readiness): string | null {
+  const missing = readiness.lines.filter((l) => l.blocking && !l.done);
+  if (missing.length === 0) return null;
+  return `Add ${joinWords(missing.map((l) => l.label.toLowerCase()))} first`;
+}
+
+/** Was artwork uploaded since the request for changes (made against `requestVersionId`)? */
+export function newArtworkSinceChanges(
+  requestVersionId: string | null,
+  currentVersionId: string | null,
+): boolean {
+  return currentVersionId != null && currentVersionId !== requestVersionId;
+}
+
+function joinWords(words: string[]): string {
+  if (words.length <= 1) return words[0] ?? "";
+  return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+export type NextStepAction =
+  | { type: "link"; label: string; href: string }
+  | { type: "submit"; label: string; disabledReason?: string }
+  | { type: "resubmit"; label: string; confirm: boolean }
+  | { type: "confirm"; instanceId: string; stepName: string; label: string }
+  | { type: "close"; label: string }
+  | { type: "resume"; label: string }
+  | { type: "reopen"; label: string };
+
+export type NextStep = {
+  tone: "action" | "waiting" | "warning" | "done";
+  title: string;
+  detail?: string;
+  action: NextStepAction | null;
+  secondary?: NextStepAction | null;
+  /** Show the readiness checklist under the sentence. */
+  showChecklist?: boolean;
+};
+
+export type NextStepPending = {
+  id: string;
+  stepName: string;
+  stepKind: "approval" | "confirmation";
+  /** "Anyone in Operations", "Dana Director", "Big Print Co". */
+  who: string;
+  dueAt: Date | null;
+  canDecide: boolean;
+};
+
+export type NextStepInput = {
+  kind: ReadinessItem["kind"];
+  status: string;
+  onHoldReason: string | null;
+  readiness: Readiness;
+  /** Waiting steps of the current round. */
+  pending: NextStepPending[];
+  /** The latest request for changes in the current round. */
+  changeRequest: { stepName: string; deciderName: string | null; comment: string | null } | null;
+  rejection: { stepName: string; deciderName: string | null; comment: string | null } | null;
+  newArtworkSinceChanges: boolean;
+  openSnags: number;
+  can: {
+    edit: boolean;
+    submit: boolean;
+    upload: boolean;
+    close: boolean;
+    reopen: boolean;
+    resume: boolean;
+  };
+  now: Date;
+};
+
+const CONFIRM_LABELS: Record<string, string> = {
+  "Sent to print": "Confirm sent to print",
+  Delivered: "Confirm delivered",
+  Installed: "Confirm installed",
+};
+
+const CONFIRM_TITLES: Record<string, [string, string]> = {
+  // [what's done, what's next]
+  "Sent to print": ["Signed off", "confirm it has gone to print"],
+  Delivered: ["Sent to print", "confirm delivery"],
+  Installed: ["Delivered", "confirm it is installed"],
+};
+
+function quote(text: string | null | undefined): string | undefined {
+  return text?.trim() ? `“${text.trim()}”` : undefined;
+}
+
+/** "Operations sign-off — overdue since 23 Sept 2026", "… — due 3 Oct 2026". */
+function dueLine(steps: NextStepPending[], now: Date): { text?: string; overdue: boolean } {
+  const dated = steps
+    .filter((s) => s.dueAt)
+    .sort((a, b) => a.dueAt!.getTime() - b.dueAt!.getTime());
+  const first = dated[0];
+  if (!first) return { text: steps.map((s) => s.stepName).join(", ") || undefined, overdue: false };
+  const overdue = first.dueAt!.getTime() < now.getTime();
+  return {
+    text: `${first.stepName} — ${overdue ? "overdue since" : "due"} ${formatDate(first.dueAt)}`,
+    overdue,
+  };
+}
+
+/**
+ * The one thing that happens next on an item, who it waits on, and the
+ * single button that does it (when the viewer may). Every kind of item
+ * shares it; stand designs stop at sign-off and move on to their panels.
+ */
+export function nextStep(input: NextStepInput): NextStep {
+  const { status, readiness, can } = input;
+  const artwork =
+    input.kind === "stand_design" ? "design" : input.kind === "stand_panel" ? "graphic" : "artwork";
+  const uploadLink = (label: string): NextStepAction | null =>
+    can.upload ? { type: "link", label, href: "?tab=artwork#upload" } : null;
+  const approvals = input.pending.filter((p) => p.stepKind === "approval");
+  const mine = approvals.find((p) => p.canDecide);
+  const waitingOn = (steps: NextStepPending[]) => joinWords([...new Set(steps.map((s) => s.who))]);
+
+  switch (status) {
+    case "on_hold":
+      return {
+        tone: "warning",
+        title: input.onHoldReason ? `On hold: ${input.onHoldReason}` : "On hold",
+        detail: "Sign-off is paused; due dates move on by the time it is held.",
+        action: can.resume ? { type: "resume", label: "Resume" } : null,
+      };
+    case "draft": {
+      if (!readiness.fieldsReady) {
+        const missing = readiness.lines.filter((l) => l.blocking && !l.done);
+        return {
+          tone: "action",
+          title: `Next: add ${joinWords(missing.map((l) => l.label.toLowerCase()))} so it can go for sign-off`,
+          action: can.edit
+            ? { type: "link", label: "Edit details", href: "?tab=details&edit=1" }
+            : null,
+          // Shown, but not until it is ready — and saying why.
+          secondary: can.submit
+            ? {
+                type: "submit",
+                label: "Send for sign-off",
+                disabledReason: submitBlockedReason(readiness) ?? undefined,
+              }
+            : null,
+          showChecklist: true,
+        };
+      }
+      if (!readiness.hasArtwork) {
+        return {
+          tone: "action",
+          title: `Next: upload the ${artwork}`,
+          detail: "Sign-off starts as soon as you send it.",
+          action: uploadLink(`Upload ${artwork}`),
+          secondary: can.submit ? { type: "submit", label: `Ready for ${artwork}` } : null,
+          showChecklist: true,
+        };
+      }
+      return {
+        tone: "action",
+        title: "Ready to send for sign-off",
+        detail: "Everything sign-off needs is here.",
+        action: can.submit ? { type: "submit", label: "Send for sign-off" } : null,
+        showChecklist: true,
+      };
+    }
+    case "awaiting_artwork":
+      return {
+        tone: "action",
+        title: `Next: upload the ${artwork}`,
+        detail: "Sign-off starts straight away when it is uploaded.",
+        action: uploadLink(`Upload ${artwork}`),
+      };
+    case "in_review": {
+      if (mine) {
+        const overdue = Boolean(mine.dueAt && mine.dueAt.getTime() < input.now.getTime());
+        return {
+          tone: overdue ? "warning" : "action",
+          title: `Your sign-off: ${mine.stepName}`,
+          detail: mine.dueAt
+            ? `${overdue ? "Overdue since" : "Due"} ${formatDate(mine.dueAt)}`
+            : undefined,
+          action: { type: "link", label: `Review ${artwork}`, href: "?tab=artwork#your-decision" },
+        };
+      }
+      const due = dueLine(approvals, input.now);
+      return {
+        tone: due.overdue ? "warning" : "waiting",
+        title: approvals.length ? `Waiting on ${waitingOn(approvals)}` : "In sign-off",
+        detail: due.text,
+        action: null,
+      };
+    }
+    case "changes_requested": {
+      const who = input.changeRequest?.deciderName || input.changeRequest?.stepName || "Someone";
+      const resubmit = (label: string, confirm: boolean): NextStepAction | null =>
+        can.submit ? { type: "resubmit", label, confirm } : null;
+      return {
+        tone: "action",
+        title: `${who} asked for changes`,
+        detail: quote(input.changeRequest?.comment),
+        action: input.newArtworkSinceChanges
+          ? resubmit("Send back for sign-off", false)
+          : uploadLink("Upload new version"),
+        secondary: input.newArtworkSinceChanges ? null : resubmit("Resubmit without changes", true),
+      };
+    }
+    case "rejected":
+      return {
+        tone: "warning",
+        title: `Rejected by ${input.rejection?.deciderName || input.rejection?.stepName || "a sign-off"}`,
+        detail: quote(input.rejection?.comment),
+        action: can.reopen ? { type: "reopen", label: "Reopen as a draft" } : null,
+      };
+    case "approved":
+    case "approved_with_conditions":
+    case "in_production":
+    case "delivered": {
+      const confirmation = input.pending.find((p) => p.stepKind === "confirmation");
+      if (!confirmation) {
+        if (input.kind === "stand_design") {
+          return {
+            tone: "action",
+            title: "Design signed off. Next: add the panels",
+            action: { type: "link", label: "Add panels", href: "?tab=panels" },
+          };
+        }
+        // Nothing waiting to confirm (older data): just say where it is.
+        return {
+          tone: "done",
+          title: status.startsWith("approved") ? "Signed off" : statusLabel(status),
+          action: null,
+        };
+      }
+      const [done, next] = CONFIRM_TITLES[confirmation.stepName] ?? [
+        "Signed off",
+        `confirm ${confirmation.stepName.toLowerCase()}`,
+      ];
+      if (
+        confirmation.stepName === "Sent to print" &&
+        !readiness.lines.find((l) => l.key === "supplier")?.done
+      ) {
+        return {
+          tone: "warning",
+          title: `${done}. Next: ${next}`,
+          detail: "Set the supplier first — nothing goes to print without one.",
+          action: can.edit
+            ? { type: "link", label: "Set the supplier", href: "?tab=details&edit=1#supplierId" }
+            : null,
+        };
+      }
+      if (!confirmation.canDecide) {
+        return {
+          tone: "waiting",
+          title: `${done}. Waiting on ${confirmation.who} to ${next}`,
+          detail: dueLine([confirmation], input.now).text,
+          action: null,
+        };
+      }
+      return {
+        tone: "action",
+        title: `${done}. Next: ${next}`,
+        detail: confirmation.dueAt ? dueLine([confirmation], input.now).text : undefined,
+        action: {
+          type: "confirm",
+          instanceId: confirmation.id,
+          stepName: confirmation.stepName,
+          label: CONFIRM_LABELS[confirmation.stepName] ?? "Confirm",
+        },
+      };
+    }
+    case "installed":
+      return {
+        tone: "action",
+        title: "Installed. Next: mark it complete",
+        detail: "No snags open.",
+        action: can.close ? { type: "close", label: "Mark complete" } : null,
+      };
+    case "snagged":
+      return {
+        tone: "warning",
+        title: `${input.openSnags} snag${input.openSnags === 1 ? "" : "s"} open — fix them to finish`,
+        action: { type: "link", label: "View snags", href: "?tab=details#snags" },
+      };
+    case "closed":
+      return { tone: "done", title: "Complete — installed and snag-free", action: null };
+    default:
+      return { tone: "waiting", title: statusLabel(status), action: null };
+  }
+}
+
+export type ProgressStep = { key: string; label: string; state: "done" | "current" | "todo" };
+
+const SIGN_STAGES = [
+  ["details", "Details"],
+  ["artwork", "Artwork"],
+  ["signoff", "Sign-off"],
+  ["print", "Print"],
+  ["delivered", "Delivered"],
+  ["installed", "Installed"],
+  ["complete", "Complete"],
+] as const;
+
+const STAND_STAGES = [
+  ["details", "Stand"],
+  ["artwork", "Design"],
+  ["signoff", "Sign-off"],
+  ["panels", "Panels"],
+] as const;
+
+/** The slim stepper under the next step: where the item is in its life. */
+export function itemProgress(
+  kind: ReadinessItem["kind"],
+  status: string,
+  ctx: { fieldsReady: boolean; hasArtwork: boolean; previousStatus?: string | null },
+): ProgressStep[] {
+  const stages = kind === "stand_design" ? STAND_STAGES : SIGN_STAGES;
+  const s = status === "on_hold" ? (ctx.previousStatus ?? "draft") : status;
+  let current: number;
+  switch (s) {
+    case "draft":
+      current = !ctx.fieldsReady ? 0 : !ctx.hasArtwork ? 1 : 2;
+      break;
+    case "awaiting_artwork":
+      current = 1;
+      break;
+    case "in_review":
+    case "changes_requested":
+    case "rejected":
+      current = 2;
+      break;
+    case "approved":
+    case "approved_with_conditions":
+      current = 3;
+      break;
+    case "in_production":
+      current = 4;
+      break;
+    case "delivered":
+      current = 5;
+      break;
+    case "installed":
+    case "snagged":
+      current = 6;
+      break;
+    default:
+      current = stages.length; // closed: everything done
+  }
+  // A stand design's life ends at sign-off; then its panels follow.
+  if (kind === "stand_design" && current >= 3 && s !== "closed") current = 3;
+  return stages.map(([key, label], i) => ({
+    key,
+    label,
+    state: i < current ? "done" : i === current ? "current" : "todo",
+  }));
 }

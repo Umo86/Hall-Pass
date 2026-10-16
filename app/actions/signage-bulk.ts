@@ -4,69 +4,185 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { signageItems, suppliers } from "@/lib/db/schema";
-import { itemAuthzCtx, loadItemBundle, syncConfirmationDueDates } from "@/lib/domain/signage";
+import { approvalInstances, signageItems, suppliers } from "@/lib/db/schema";
+import {
+  bulkConfirmSkipReason,
+  itemAuthzCtx,
+  loadItemBundle,
+  syncConfirmationDueDates,
+  type BulkConfirmStep,
+} from "@/lib/domain/signage";
 import { editionIsReadOnly } from "@/lib/edition-lock";
-import { can } from "@/lib/authz";
+import { can, type ApprovalStepCtx } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
-import { closeSignageItem, submitForReview, softDeleteSignageItem } from "./signage";
+import { todayInLondon } from "@/lib/today";
+import { closeSignageItem, softDeleteSignageItem, submitForReview } from "./signage";
+import { decideApproval } from "./approvals";
 
 const schema = z.object({
-  ids: z.array(z.string().uuid()).min(1),
-  action: z.enum(["set_supplier", "set_install", "submit", "delete", "close"]),
+  ids: z.array(z.string().uuid()).min(1).max(500),
+  action: z.enum([
+    "set_supplier",
+    "set_install",
+    "submit",
+    "delete",
+    "close",
+    "confirm_print",
+    "confirm_delivered",
+  ]),
   supplierId: z.string().uuid().optional().nullable(),
   installDate: z.string().date().optional().nullable(),
   installSlot: z.enum(["am", "pm", "overnight"]).optional().nullable(),
+  /** Bulk confirmations: the day it really happened (default today). */
+  confirmedDate: z.string().date().optional().nullable(),
 });
 
-export async function bulkSignageAction(
-  input: unknown,
-): Promise<ActionResult<{ done: number; failed: number }>> {
+/** One item the bulk action left alone, and why, in a few words. */
+export type BulkFailure = { id: string; ref: string; reason: string };
+
+export type BulkOutcome = {
+  done: number;
+  failed: number;
+  failures: BulkFailure[];
+};
+
+const CONFIRM_STEPS: Record<"confirm_print" | "confirm_delivered", BulkConfirmStep> = {
+  confirm_print: "Sent to print",
+  confirm_delivered: "Delivered",
+};
+
+const VERBS: Record<z.infer<typeof schema>["action"], string> = {
+  set_supplier: "updated",
+  set_install: "updated",
+  submit: "sent for sign-off",
+  delete: "deleted",
+  close: "marked complete",
+  confirm_print: "confirmed sent to print",
+  confirm_delivered: "confirmed delivered",
+};
+
+/** "Cannot send for sign-off yet — missing: width" → "missing: width". */
+function shortReason(error: string): string {
+  return error.replace(/^Cannot send for sign-off yet — /, "");
+}
+
+/**
+ * Bulk actions on the signage list. Every item is checked and recorded on
+ * its own (each item's History shows the change), and the result names each
+ * item that was left alone and why, so the list can keep those selected.
+ */
+export async function bulkSignageAction(input: unknown): Promise<ActionResult<BulkOutcome>> {
   const parsed = schema.safeParse(input);
   if (!parsed.success) return fail("Invalid bulk action");
   const session = await requireSession();
   if (session.actor.kind !== "staff") return fail("Not permitted");
   const { ids, action } = parsed.data;
+  const failures: BulkFailure[] = [];
+  let done = 0;
 
-  if (action === "submit") {
-    let done = 0;
-    let failed = 0;
-    for (const id of ids) {
-      const res = await submitForReview({ id });
-      if (res.ok) done += 1;
-      else failed += 1;
+  /** The ref for a failure, read only within the caller's organisation. */
+  const refOf = async (id: string) => {
+    const bundle = await loadItemBundle(db, id, { organisationId: session.organisation.id });
+    return bundle?.item.ref ?? "Unknown item";
+  };
+
+  const finish = () => {
+    revalidatePath("/", "layout");
+    const verb = VERBS[action];
+    const message =
+      failures.length === 0
+        ? `${done} ${verb}`
+        : `${done} ${verb}, ${failures.length} left as they were`;
+    return success<BulkOutcome>({ done, failed: failures.length, failures }, message);
+  };
+
+  if (action === "submit" || action === "close" || action === "delete") {
+    if (action === "close" && !can(session.actor, { type: "signage.close" })) {
+      return fail("You cannot mark items complete");
     }
-    return success(
-      { done, failed },
-      `${done} submitted${failed ? `, ${failed} could not be` : ""}`,
-    );
+    if (action === "delete" && !can(session.actor, { type: "signage.delete" })) {
+      return fail("You cannot delete items");
+    }
+    const run =
+      action === "submit"
+        ? submitForReview
+        : action === "close"
+          ? closeSignageItem
+          : softDeleteSignageItem;
+    for (const id of ids) {
+      const res = await run({ id });
+      if (res.ok) done += 1;
+      else failures.push({ id, ref: await refOf(id), reason: shortReason(res.error) });
+    }
+    return finish();
   }
-  if (action === "close") {
-    if (!can(session.actor, { type: "signage.close" })) return fail("You cannot close items");
-    let done = 0;
-    let failed = 0;
+
+  if (action === "confirm_print" || action === "confirm_delivered") {
+    const step = CONFIRM_STEPS[action];
+    const confirmedDate = parsed.data.confirmedDate ?? todayInLondon();
+    if (confirmedDate > todayInLondon()) return fail("The date cannot be in the future");
     for (const id of ids) {
-      const res = await closeSignageItem({ id });
+      const bundle = await loadItemBundle(db, id, { organisationId: session.organisation.id });
+      if (!bundle || bundle.item.deletedAt) {
+        failures.push({ id, ref: bundle?.item.ref ?? "Unknown item", reason: "not found" });
+        continue;
+      }
+      const item = bundle.item;
+      if (editionIsReadOnly(bundle.edition.status)) {
+        failures.push({ id, ref: item.ref, reason: "the event is archived" });
+        continue;
+      }
+      // The current round's waiting steps; the one to confirm is among them.
+      const pending = await db
+        .select()
+        .from(approvalInstances)
+        .where(
+          and(
+            eq(approvalInstances.entityType, "signage_item"),
+            eq(approvalInstances.entityId, id),
+            eq(approvalInstances.runNumber, item.currentRunNumber),
+            eq(approvalInstances.status, "pending"),
+          ),
+        );
+      const instance = pending.find(
+        (p) => p.stepNameSnapshot === step && p.stepKindSnapshot === "confirmation",
+      );
+      const stepCtx: ApprovalStepCtx | null = instance
+        ? {
+            assignedRole: instance.assignedRole,
+            assignedDepartmentId: instance.assignedDepartmentId,
+            stepKind: instance.stepKindSnapshot,
+            assignedUserId: instance.assignedUserId,
+            entity: { type: "signage_item", item: itemAuthzCtx(bundle) },
+          }
+        : null;
+      const reason = bulkConfirmSkipReason(step, {
+        status: item.status,
+        supplierId: item.supplierId,
+        pendingStepNames: pending
+          .filter((p) => p.stepKindSnapshot === "confirmation")
+          .map((p) => p.stepNameSnapshot),
+        canDecide: stepCtx ? can(session.actor, { type: "approval.decide", step: stepCtx }) : false,
+      });
+      if (reason || !instance) {
+        failures.push({ id, ref: item.ref, reason: reason ?? "nothing waiting to confirm" });
+        continue;
+      }
+      // The same decision as confirming it on the item: checked, recorded
+      // and audited by the approvals action.
+      const res = await decideApproval({
+        instanceId: instance.id,
+        decision: "confirm",
+        confirmedDate,
+        expectedStatus: "pending",
+        expectedLockedVersionId: item.currentArtworkVersionId,
+      });
       if (res.ok) done += 1;
-      else failed += 1;
+      else failures.push({ id, ref: item.ref, reason: res.error });
     }
-    return success(
-      { done, failed },
-      `${done} closed${failed ? `, ${failed} could not be (not installed, or snags still open)` : ""}`,
-    );
-  }
-  if (action === "delete") {
-    if (!can(session.actor, { type: "signage.delete" })) return fail("You cannot delete items");
-    let done = 0;
-    let failed = 0;
-    for (const id of ids) {
-      const res = await softDeleteSignageItem({ id });
-      if (res.ok) done += 1;
-      else failed += 1;
-    }
-    return success({ done, failed }, `${done} deleted${failed ? `, ${failed} could not be` : ""}`);
+    return finish();
   }
 
   // Field updates (supplier / install date + slot): checked and recorded
@@ -92,20 +208,22 @@ export async function bulkSignageAction(
     set.installDate = parsed.data.installDate ?? null;
     set.installSlot = parsed.data.installSlot ?? null;
   }
-  let done = 0;
-  let failed = 0;
   for (const id of ids) {
     try {
       const bundle = await loadItemBundle(db, id, { organisationId: session.organisation.id });
-      if (
-        !bundle ||
-        bundle.item.deletedAt ||
-        bundle.organisation.id !== session.organisation.id ||
-        editionIsReadOnly(bundle.edition.status) ||
-        !can(session.actor, { type: "signage.edit", item: itemAuthzCtx(bundle) }) ||
-        (action === "set_install" && bundle.item.kind !== "signage")
-      ) {
-        failed += 1;
+      const reason = !bundle
+        ? "not found"
+        : bundle.item.deletedAt
+          ? "deleted"
+          : editionIsReadOnly(bundle.edition.status)
+            ? "the event is archived"
+            : !can(session.actor, { type: "signage.edit", item: itemAuthzCtx(bundle) })
+              ? "you can't change it"
+              : action === "set_install" && bundle.item.kind !== "signage"
+                ? "not a sign (no install date)"
+                : null;
+      if (!bundle || reason) {
+        failures.push({ id, ref: bundle?.item.ref ?? "Unknown item", reason: reason! });
         continue;
       }
       const item = bundle.item as unknown as Record<string, unknown>;
@@ -127,12 +245,8 @@ export async function bulkSignageAction(
       done += 1;
     } catch (err) {
       console.error("bulk update", id, err);
-      failed += 1;
+      failures.push({ id, ref: await refOf(id), reason: "could not be saved" });
     }
   }
-  revalidatePath("/", "layout");
-  return success(
-    { done, failed },
-    `${done} item(s) updated${failed ? `, ${failed} could not be (no permission, locked or deleted)` : ""}`,
-  );
+  return finish();
 }

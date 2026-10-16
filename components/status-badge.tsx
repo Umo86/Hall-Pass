@@ -24,14 +24,27 @@ const STATUS_CLASSES: Record<string, string> = {
   snagged: "bg-rose-50 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
   closed: "bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200",
   rejected: "bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-300",
-  invalidated: "bg-neutral-100 text-neutral-400 line-through dark:bg-neutral-800",
-  skipped: "bg-neutral-50 text-neutral-400 dark:bg-neutral-900",
+  invalidated: "bg-neutral-100 text-neutral-500 line-through dark:bg-neutral-800",
+  skipped: "bg-neutral-50 text-neutral-500 dark:bg-neutral-900",
   on_hold: "bg-yellow-50 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300",
   open: "bg-rose-50 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
   resolved: "bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
 };
 
-export function StatusBadge({ status, className }: { status: string; className?: string }) {
+/**
+ * A status as a coloured badge with its words. `label` replaces the words
+ * when the caller knows better (e.g. "Waiting on Operations" for a pending
+ * step); the colour still follows the status.
+ */
+export function StatusBadge({
+  status,
+  label,
+  className,
+}: {
+  status: string;
+  label?: string;
+  className?: string;
+}) {
   return (
     <span
       className={cn(
@@ -40,7 +53,7 @@ export function StatusBadge({ status, className }: { status: string; className?:
         className,
       )}
     >
-      {statusLabel(status)}
+      {label ?? statusLabel(status)}
     </span>
   );
 }

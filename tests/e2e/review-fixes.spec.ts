@@ -37,7 +37,7 @@ test.describe("platform review fixes", () => {
     const code = (await other.getAttribute("data-code"))!;
     await other.click();
     await page.waitForURL(`**/${code}/signage`);
-    await expect(page.getByRole("heading", { name: /Signage schedule/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Signage", exact: true })).toBeVisible();
     await ctx.close();
   });
 
@@ -102,6 +102,9 @@ test.describe("platform review fixes", () => {
     await expect(page.getByText("BuildCo", { exact: true }).first()).toBeVisible();
     await page.goto(`${baseURL}/${code}/signage`);
     await page.getByPlaceholder(/Search ref/).fill("Main entrance arch banner");
+    await page.getByRole("button", { name: "Columns" }).click();
+    await page.getByRole("menuitemcheckbox", { name: "Sponsor", exact: true }).click();
+    await page.keyboard.press("Escape");
     const row = page.locator("main table tbody tr").first();
     await expect(row).toContainText("BuildCo");
     await page.goto(`${baseURL}/${code}/stand-designs`);

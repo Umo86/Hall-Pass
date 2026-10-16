@@ -1,17 +1,21 @@
 "use client";
 
-import { roleLabel } from "@/lib/format";
-
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SelectNative } from "@/components/ui/select-native";
 import { Textarea } from "@/components/ui/textarea";
+import { useConfirm } from "@/components/confirm-dialog";
+import { formatDate, formatMoney, roleLabel } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { createSignageItem, updateSignageItem } from "@/app/actions/signage";
 import { SignoffPicker, updatePlan } from "./signoff-picker";
+import { defaultSignoffPlan as defaultPlan, signoffPlanSummary } from "./signoff-summary";
+
 export type SignoffStepOption = {
   id: string;
   name: string;
@@ -39,13 +43,6 @@ export type ItemFormOptions = {
   /** Department sign-offs the item can ask for, and who can sign each. */
   signoffSteps?: SignoffStepOption[];
 };
-
-/** The defaults admins set for organiser or sponsor signage. */
-function defaultPlan(steps: SignoffStepOption[], category: string): SignoffChoice[] {
-  return steps
-    .filter((s) => s.defaultFor.includes(category))
-    .map((s) => ({ stepId: s.id, userId: s.defaultUserId }));
-}
 
 export type ItemFormValues = {
   id?: string;
@@ -111,6 +108,26 @@ const MORE_FIELDS = [
   "workflowId",
 ];
 
+/** What an installed item's form keeps as it is (what its sign-off certified). */
+const LOCKED_FIELDS = [
+  "name",
+  "category",
+  "sponsorId",
+  "itemTypeId",
+  "widthMm",
+  "heightMm",
+  "depthMm",
+  "quantity",
+  "sided",
+  "material",
+  "finish",
+  "fixingMethod",
+  "requiresVenueApproval",
+] as const satisfies readonly (keyof ItemFormValues)[];
+
+/** On a new sign, purchasing and install wait under "More details" too. */
+const MORE_FIELDS_ON_CREATE = ["supplierId", "costEstimate", "installDate"];
+
 const FIXINGS = [
   "rigged",
   "freestanding",
@@ -121,17 +138,9 @@ const FIXINGS = [
   "other",
 ];
 
-export function ItemForm({
-  mode,
-  values,
-  options,
-  canSeeCosts,
-  canEditCosts,
-  editionCode,
-  kind = "signage",
-  status,
-  readOnly = false,
-}: {
+export type ItemFormProps = Props;
+
+type Props = {
   mode: "create" | "edit";
   values: ItemFormValues;
   options: ItemFormOptions;
@@ -144,10 +153,60 @@ export function ItemForm({
   status?: string;
   /** View only: fields are shown but can't be changed and there is no Save. */
   readOnly?: boolean;
-}) {
+  /** Fields sign-off needs: tagged "Needed for sign-off" on new and draft items. */
+  requiredFields?: string[];
+  /** Installed items: what was approved (size, type, fixing…) can't change. */
+  lockSpec?: boolean;
+  /** The event's own artwork deadline, shown as the hint for the override. */
+  eventArtworkDue?: string | null;
+  /** Edit mode: leave without saving (back to the read-only view). */
+  onCancel?: () => void;
+  /** Edit mode: after a successful save. */
+  onSaved?: () => void;
+};
+
+/**
+ * The sign form for adding and editing. New signs ask only for what and
+ * where plus size and fixing up front; "Create and add another" keeps the
+ * category, type and hall for the next one.
+ */
+export function ItemForm(props: Props) {
+  const [round, setRound] = useState(0);
+  const [carry, setCarry] = useState<ItemFormValues>({});
+  return (
+    <ItemFormInner
+      key={round}
+      {...props}
+      values={{ ...props.values, ...carry }}
+      focusName={round > 0}
+      onAddAnother={(next) => {
+        setCarry(next);
+        setRound((r) => r + 1);
+      }}
+    />
+  );
+}
+
+function ItemFormInner({
+  mode,
+  values,
+  options,
+  canSeeCosts,
+  canEditCosts,
+  editionCode,
+  kind = "signage",
+  status,
+  readOnly = false,
+  requiredFields,
+  lockSpec = false,
+  eventArtworkDue,
+  onCancel,
+  onSaved,
+  focusName,
+  onAddAnother,
+}: Props & { focusName: boolean; onAddAnother: (carry: ItemFormValues) => void }) {
   const isSponsorship = kind === "sponsorship_item";
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [sponsorId, setSponsorId] = useState(values.sponsorId ?? "");
   const [category, setCategory] = useState(
@@ -160,6 +219,12 @@ export function ItemForm({
   );
   // Until someone changes the ticks, they follow the category's defaults.
   const [planTouched, setPlanTouched] = useState(false);
+  // New items summarise who signs off; "Change" opens the picker.
+  const [planOpen, setPlanOpen] = useState(mode === "edit");
+  const [dirty, setDirty] = useState(false);
+  const [confirmDialog, confirm] = useConfirm();
+  const formRef = useRef<HTMLFormElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
 
   function chooseCategory(next: string) {
     setCategory(next);
@@ -168,36 +233,121 @@ export function ItemForm({
 
   function setStep(stepId: string, on: boolean, userId?: string | null) {
     setPlanTouched(true);
+    setDirty(true);
     setPlan((current) => updatePlan(steps, current, stepId, on, userId));
   }
   const [hallId, setHallId] = useState(values.hallId ?? "");
   const [pending, start] = useTransition();
   const router = useRouter();
 
+  const moreKeys = new Set([
+    ...MORE_FIELDS,
+    ...(isSponsorship ? ["widthMm", "heightMm"] : []),
+    ...(mode === "create" && !isSponsorship ? MORE_FIELDS_ON_CREATE : []),
+  ]);
   const [moreOpen, setMoreOpen] = useState(false);
   // Errors on fields inside "More details" open it so they can be seen.
   function showErrors(errors: Record<string, string> | undefined) {
     setFieldErrors(errors ?? {});
-    const more = new Set([...MORE_FIELDS, ...(isSponsorship ? ["widthMm", "heightMm"] : [])]);
-    if (Object.keys(errors ?? {}).some((k) => more.has(k))) setMoreOpen(true);
+    if (Object.keys(errors ?? {}).some((k) => moreKeys.has(k))) setMoreOpen(true);
+  }
+
+  // After "Create and add another", the next sign starts at its name.
+  useEffect(() => {
+    if (focusName) nameRef.current?.focus();
+  }, [focusName]);
+
+  // A link from the checklist ("#widthMm") opens and focuses that field.
+  useEffect(() => {
+    const id = window.location.hash.slice(1);
+    if (!id || !/^[a-zA-Z]+$/.test(id)) return;
+    const t = window.setTimeout(() => {
+      if (moreKeys.has(id)) setMoreOpen(true);
+      const el = formRef.current?.querySelector<HTMLElement>(`#${id}`);
+      el?.scrollIntoView({ block: "center" });
+      el?.focus();
+    }, 50);
+    return () => window.clearTimeout(t);
+    // Only on arrival.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Unsaved edits: warn before leaving the page or following a link.
+  useEffect(() => {
+    if (!dirty || mode !== "edit") return;
+    const onUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey) return;
+      const a = (e.target as HTMLElement | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!a || a.target === "_blank" || a.hasAttribute("download")) return;
+      const url = new URL(a.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      if (url.pathname === window.location.pathname && url.search === window.location.search) {
+        return; // a jump within the page
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      void confirm({
+        title: "Leave without saving?",
+        description: "Your changes to this item haven't been saved yet.",
+        confirmLabel: "Leave without saving",
+        cancelLabel: "Keep editing",
+        destructive: true,
+      }).then((ok) => {
+        if (!ok) return;
+        setDirty(false);
+        router.push(url.pathname + url.search + url.hash);
+      });
+    };
+    window.addEventListener("beforeunload", onUnload);
+    document.addEventListener("click", onClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", onUnload);
+      document.removeEventListener("click", onClick, true);
+    };
+  }, [dirty, mode, confirm, router]);
+
+  async function cancel() {
+    if (dirty) {
+      const ok = await confirm({
+        title: "Discard your changes?",
+        description: "The item stays as it was.",
+        confirmLabel: "Discard changes",
+        cancelLabel: "Keep editing",
+        destructive: true,
+      });
+      if (!ok) return;
+    }
+    setDirty(false);
+    onCancel?.();
   }
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    const another = (e.nativeEvent as SubmitEvent).submitter?.getAttribute("value") === "another";
     const fd = new FormData(e.currentTarget);
     const raw = Object.fromEntries(fd.entries());
     const clean: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(raw)) {
       clean[k] = v === "" ? null : v;
     }
-    clean.requiresVenueApproval = fd.get("requiresVenueApproval") === "on";
-    if (category !== "sponsor" && !isSponsorship) clean.sponsorId = null;
-    if (steps.length > 0 && plan.length === 0) {
+    if (!lockSpec) {
+      clean.requiresVenueApproval = fd.get("requiresVenueApproval") === "on";
+      if (category !== "sponsor" && !isSponsorship) clean.sponsorId = null;
+    } else {
+      // Locked fields aren't posted; send what is stored so nothing reads as
+      // a change (an omitted quantity or "sided" would fall back to defaults).
+      for (const key of LOCKED_FIELDS) clean[key] = values[key] ?? null;
+    }
+    if (!lockSpec && steps.length > 0 && plan.length === 0) {
       setError("Choose at least one department to sign this off");
+      setPlanOpen(true);
       return;
     }
     setError(null);
-    setMessage(null);
     setFieldErrors({});
     start(async () => {
       if (mode === "create") {
@@ -205,19 +355,38 @@ export function ItemForm({
         if (!res.ok) {
           setError(res.error);
           showErrors(res.fieldErrors);
-        } else
-          router.push(
-            `/${editionCode}/${isSponsorship ? "sponsorship" : "signage"}/${res.data?.ref}`,
-          );
+          return;
+        }
+        const ref = res.data?.ref ?? "";
+        const href = `/${editionCode}/${isSponsorship ? "sponsorship" : "signage"}/${ref}`;
+        if (another) {
+          toast.success(res.message ?? `${ref} created`, {
+            action: { label: "Open", onClick: () => router.push(href) },
+          });
+          onAddAnother({
+            editionId: values.editionId,
+            category: isSponsorship ? undefined : category,
+            itemTypeId: (clean.itemTypeId as string | null) ?? null,
+            hallId: (clean.hallId as string | null) ?? null,
+          });
+          router.refresh();
+        } else {
+          // A sign's next step is its artwork; a sponsorship item's page
+          // opens on its photo and details.
+          router.push(isSponsorship ? `${href}?created=1` : `${href}?tab=artwork&created=1`);
+        }
       } else {
         const res = await updateSignageItem({ ...clean, id: values.id });
         if (!res.ok) {
           setError(res.error);
           showErrors(res.fieldErrors);
-        } else {
-          setMessage(res.message ?? "Saved");
-          router.refresh();
+          return;
         }
+        setDirty(false);
+        if (res.message === "No changes to save") toast.message(res.message);
+        else toast.success(res.message ?? "Saved");
+        onSaved?.();
+        router.refresh();
       }
     });
   }
@@ -234,6 +403,8 @@ export function ItemForm({
 
   // Supplier and cost: whoever runs a sponsorship item also buys it.
   const costEditable = canEditCosts || isSponsorship;
+  const showRequired = mode === "create" || status === "draft";
+  const required = new Set(showRequired ? (requiredFields ?? []) : []);
   const moreFilled = [
     values.description,
     isSponsorship ? values.widthMm : values.depthMm,
@@ -260,6 +431,9 @@ export function ItemForm({
     <div className={`space-y-1.5 ${opts.span ?? ""}`}>
       <Label htmlFor={id}>{label}</Label>
       {control}
+      {required.has(id) && (
+        <p className="text-xs font-medium text-sky-700 dark:text-sky-400">Needed for sign-off</p>
+      )}
       {opts.hint && <p className="text-muted-foreground text-xs">{opts.hint}</p>}
       {err(id)}
     </div>
@@ -284,7 +458,12 @@ export function ItemForm({
     />
   );
   const typeSelect = (
-    <SelectNative id="itemTypeId" name="itemTypeId" defaultValue={values.itemTypeId ?? ""}>
+    <SelectNative
+      id="itemTypeId"
+      name="itemTypeId"
+      defaultValue={values.itemTypeId ?? ""}
+      disabled={lockSpec}
+    >
       <option value="">— Select —</option>
       {isSponsorship
         ? options.itemTypes.map((t) => (
@@ -317,7 +496,8 @@ export function ItemForm({
       name="sponsorId"
       value={sponsorId}
       onChange={(e) => setSponsorId(e.target.value)}
-      required={!isSponsorship}
+      required={!isSponsorship && !lockSpec}
+      disabled={lockSpec}
     >
       <option value="">{isSponsorship ? "— Not sold yet —" : "— Select sponsor —"}</option>
       {options.sponsors.map((sp) => (
@@ -327,13 +507,10 @@ export function ItemForm({
       ))}
     </SelectNative>
   );
-  const supplierSelect = (
-    <SelectNative
-      id="supplierId"
-      name="supplierId"
-      defaultValue={values.supplierId ?? ""}
-      disabled={!costEditable}
-    >
+  const supplierName = options.suppliers.find((s) => s.id === values.supplierId)?.name;
+  // People who can't buy see who supplies it, and who sets it.
+  const supplierControl = costEditable ? (
+    <SelectNative id="supplierId" name="supplierId" defaultValue={values.supplierId ?? ""}>
       <option value="">— None yet —</option>
       {options.suppliers.map((sp) => (
         <option key={sp.id} value={sp.id}>
@@ -342,13 +519,104 @@ export function ItemForm({
         </option>
       ))}
     </SelectNative>
+  ) : (
+    <p id="supplierId" className="flex h-9 items-center text-sm font-medium">
+      {supplierName ?? <span className="text-muted-foreground font-normal">Not set yet</span>}
+    </p>
   );
+  const readOnlyHint = "Operations sets the supplier and cost.";
+  const costControl = (id: "costEstimate" | "costActual") =>
+    costEditable ? (
+      numberInput(id, { step: "0.01" })
+    ) : (
+      <p id={id} className="flex h-9 items-center text-sm font-medium">
+        {values[id] ? (
+          formatMoney(values[id])
+        ) : (
+          <span className="text-muted-foreground font-normal">Not set yet</span>
+        )}
+      </p>
+    );
   const sectionTitle = (text: string, span: string) => (
     <h3 className={`text-sm font-semibold ${span}`}>{text}</h3>
   );
 
+  const supplierFields = (
+    <>
+      {field("supplierId", "Supplier", supplierControl, {
+        hint: costEditable ? undefined : readOnlyHint,
+      })}
+      {canSeeCosts && field("costEstimate", "Cost price (£)", costControl("costEstimate"))}
+    </>
+  );
+
+  const signoffSection =
+    steps.length > 0 ? (
+      <section className="grid gap-2" aria-labelledby="signoff-heading">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 id="signoff-heading" className="text-sm font-semibold">
+              Sign-off
+            </h3>
+            <p className="text-muted-foreground text-xs">
+              {planOpen
+                ? `Who approves the artwork. Pre-set for ${
+                    category === "sponsor" ? "sponsor" : "organiser"
+                  } signage — untick a department or pick the person. They're emailed when it's their turn.`
+                : "Who approves the artwork; they're emailed when it's their turn."}
+            </p>
+          </div>
+          {!planOpen && !lockSpec && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls="signoff-picker"
+              onClick={() => setPlanOpen(true)}
+            >
+              Change who signs off
+            </Button>
+          )}
+        </div>
+        {planTouched && !lockSpec && (
+          <input type="hidden" name="signoffs" value={JSON.stringify(plan)} />
+        )}
+        {planOpen && !lockSpec ? (
+          <div id="signoff-picker">
+            <SignoffPicker steps={steps} plan={plan} onChange={setStep} />
+          </div>
+        ) : (
+          <p className="rounded-md border px-3 py-2 text-sm">
+            <span className="text-muted-foreground">Signed off by: </span>
+            {signoffPlanSummary(steps, plan) || "nobody yet"}
+          </p>
+        )}
+        {plan.length === 0 && (
+          <p className="text-destructive text-xs">Choose at least one department.</p>
+        )}
+        {mode === "edit" && status === "in_review" && planTouched && (
+          <p className="text-xs text-amber-800 dark:text-amber-300">
+            This item is in sign-off — saving a change here starts its sign-off again.
+          </p>
+        )}
+      </section>
+    ) : null;
+
   return (
-    <form onSubmit={onSubmit} className="max-w-4xl">
+    <form
+      ref={formRef}
+      onSubmit={onSubmit}
+      onChange={() => setDirty(true)}
+      className="max-w-4xl"
+      aria-label={mode === "create" ? "New item" : "Edit details"}
+    >
+      {lockSpec && !readOnly && (
+        <p className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          Installed — only dates, supplier and costs can change. To change the spec, use More → Undo
+          install first.
+        </p>
+      )}
       <fieldset disabled={readOnly} className="grid gap-5">
         {isSponsorship ? (
           <>
@@ -357,23 +625,22 @@ export function ItemForm({
               {field(
                 "name",
                 "Name",
-                <Input id="name" name="name" defaultValue={values.name ?? ""} required />,
-                {
-                  span: "sm:col-span-2",
-                },
+                <Input
+                  ref={nameRef}
+                  id="name"
+                  name="name"
+                  defaultValue={values.name ?? ""}
+                  required
+                  disabled={lockSpec}
+                />,
+                { span: "sm:col-span-2" },
               )}
               {field("itemTypeId", "Item type", typeSelect)}
-              {field("quantity", "Quantity", numberInput("quantity"))}
+              {field("quantity", "Quantity", numberInput("quantity", { disabled: lockSpec }))}
             </section>
             <section className="grid gap-3 sm:grid-cols-3">
               {sectionTitle("Buying", "sm:col-span-3")}
-              {field("supplierId", "Supplier", supplierSelect)}
-              {canSeeCosts &&
-                field(
-                  "costEstimate",
-                  "Cost price (£)",
-                  numberInput("costEstimate", { step: "0.01", disabled: !costEditable }),
-                )}
+              {supplierFields}
               {field("orderByDate", "Order by", dateInput("orderByDate"), {
                 hint: "Last day to order from the supplier — and so to sell it.",
               })}
@@ -409,12 +676,17 @@ export function ItemForm({
               {field(
                 "name",
                 "Name",
-                <Input id="name" name="name" defaultValue={values.name ?? ""} required />,
-                {
-                  span: "sm:col-span-2",
-                },
+                <Input
+                  ref={nameRef}
+                  id="name"
+                  name="name"
+                  defaultValue={values.name ?? ""}
+                  required
+                  disabled={lockSpec}
+                />,
+                { span: "sm:col-span-2" },
               )}
-              <fieldset className="space-y-1.5 sm:col-span-2">
+              <fieldset className="space-y-1.5 sm:col-span-2" disabled={lockSpec}>
                 <legend className="text-sm font-medium">Whose signage is it?</legend>
                 <div className="flex flex-wrap gap-2">
                   {(
@@ -429,7 +701,7 @@ export function ItemForm({
                   ).map(([value, label, hint]) => (
                     <label
                       key={value}
-                      className={`flex min-w-52 flex-1 cursor-pointer items-start gap-2 rounded-md border p-2.5 text-sm ${
+                      className={`flex min-w-52 flex-1 cursor-pointer items-start gap-2 rounded-md border p-2.5 text-sm has-[:disabled]:cursor-not-allowed ${
                         category === value ? "border-primary bg-primary/5" : ""
                       }`}
                     >
@@ -474,8 +746,8 @@ export function ItemForm({
               {field("itemTypeId", "Item type", typeSelect)}
               {options.halls.length === 0 && (
                 <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 sm:col-span-2 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-                  This show has no halls yet — add them in{" "}
-                  <Link href={`/${editionCode}/halls`} className="underline">
+                  This event has no halls yet — add them in{" "}
+                  <Link href={`/${editionCode}/halls`} className="link">
                     Halls &amp; locations
                   </Link>{" "}
                   so signs can be placed.
@@ -528,9 +800,9 @@ export function ItemForm({
             </section>
             <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {sectionTitle("Size and fixing", "col-span-2 sm:col-span-4")}
-              {field("widthMm", "Width (mm)", numberInput("widthMm"))}
-              {field("heightMm", "Height (mm)", numberInput("heightMm"))}
-              {field("quantity", "Quantity", numberInput("quantity"))}
+              {field("widthMm", "Width (mm)", numberInput("widthMm", { disabled: lockSpec }))}
+              {field("heightMm", "Height (mm)", numberInput("heightMm", { disabled: lockSpec }))}
+              {field("quantity", "Quantity", numberInput("quantity", { disabled: lockSpec }))}
               {field(
                 "fixingMethod",
                 "Fixing method",
@@ -538,6 +810,7 @@ export function ItemForm({
                   id="fixingMethod"
                   name="fixingMethod"
                   defaultValue={values.fixingMethod ?? ""}
+                  disabled={lockSpec}
                 >
                   <option value="">— Select —</option>
                   {FIXINGS.map((f) => (
@@ -553,46 +826,22 @@ export function ItemForm({
                   name="requiresVenueApproval"
                   className="size-4"
                   defaultChecked={values.requiresVenueApproval}
+                  disabled={lockSpec}
                 />
                 Needs venue approval (always for rigged items)
               </label>
             </section>
-            <section className="grid gap-3 sm:grid-cols-3">
-              {sectionTitle("Supplier, cost and install", "sm:col-span-3")}
-              {field("supplierId", "Supplier", supplierSelect)}
-              {canSeeCosts &&
-                field(
-                  "costEstimate",
-                  "Cost price (£)",
-                  numberInput("costEstimate", { step: "0.01", disabled: !costEditable }),
-                )}
-              {field("installDate", "Install date", dateInput("installDate"))}
-            </section>
+            {mode === "edit" && (
+              <section className="grid gap-3 sm:grid-cols-3">
+                {sectionTitle("Supplier, cost and install", "sm:col-span-3")}
+                {supplierFields}
+                {field("installDate", "Install date", dateInput("installDate"))}
+              </section>
+            )}
           </>
         )}
 
-        {steps.length > 0 && (
-          <section className="grid gap-2">
-            <div>
-              <h3 className="text-sm font-semibold">Sign-off</h3>
-              <p className="text-muted-foreground text-xs">
-                Who approves the artwork. Pre-set for{" "}
-                {category === "sponsor" ? "sponsor" : "organiser"} signage — untick a department or
-                pick the person. They&apos;re emailed when it&apos;s their turn.
-              </p>
-            </div>
-            {planTouched && <input type="hidden" name="signoffs" value={JSON.stringify(plan)} />}
-            <SignoffPicker steps={steps} plan={plan} onChange={setStep} />
-            {plan.length === 0 && (
-              <p className="text-destructive text-xs">Choose at least one department.</p>
-            )}
-            {mode === "edit" && status === "in_review" && planTouched && (
-              <p className="text-xs text-amber-800 dark:text-amber-300">
-                This item is in sign-off — saving a change here starts its sign-off again.
-              </p>
-            )}
-          </section>
-        )}
+        {signoffSection}
 
         <details
           className="rounded-lg border"
@@ -602,10 +851,20 @@ export function ItemForm({
           <summary className="cursor-pointer px-4 py-3 text-sm font-semibold select-none">
             More details
             <span className="text-muted-foreground ml-2 text-xs font-normal">
-              {moreFilled > 0 ? `${moreFilled} filled in` : "notes, extra spec, purchasing, dates"}
+              {moreFilled > 0
+                ? `${moreFilled} filled in`
+                : mode === "create" && !isSponsorship
+                  ? "supplier, cost, install date, notes, extra spec"
+                  : "notes, extra spec, purchasing, dates"}
             </span>
           </summary>
           <section className="grid gap-3 px-4 pb-4 sm:grid-cols-3">
+            {mode === "create" && !isSponsorship && (
+              <>
+                {supplierFields}
+                {field("installDate", "Install date", dateInput("installDate"))}
+              </>
+            )}
             {field(
               "description",
               "Notes",
@@ -618,8 +877,8 @@ export function ItemForm({
             )}
             {isSponsorship ? (
               <>
-                {field("widthMm", "Width (mm)", numberInput("widthMm"))}
-                {field("heightMm", "Height (mm)", numberInput("heightMm"))}
+                {field("widthMm", "Width (mm)", numberInput("widthMm", { disabled: lockSpec }))}
+                {field("heightMm", "Height (mm)", numberInput("heightMm", { disabled: lockSpec }))}
                 <input type="hidden" name="ownerRole" value={values.ownerRole ?? "ops"} />
               </>
             ) : (
@@ -659,11 +918,16 @@ export function ItemForm({
                     </SelectNative>,
                   )
                 )}
-                {field("depthMm", "Depth (mm)", numberInput("depthMm"))}
+                {field("depthMm", "Depth (mm)", numberInput("depthMm", { disabled: lockSpec }))}
                 {field(
                   "sided",
                   "Sided",
-                  <SelectNative id="sided" name="sided" defaultValue={values.sided ?? "single"}>
+                  <SelectNative
+                    id="sided"
+                    name="sided"
+                    defaultValue={values.sided ?? "single"}
+                    disabled={lockSpec}
+                  >
                     <option value="single">Single</option>
                     <option value="double">Double</option>
                   </SelectNative>,
@@ -674,12 +938,22 @@ export function ItemForm({
             {field(
               "material",
               "Material",
-              <Input id="material" name="material" defaultValue={values.material ?? ""} />,
+              <Input
+                id="material"
+                name="material"
+                defaultValue={values.material ?? ""}
+                disabled={lockSpec}
+              />,
             )}
             {field(
               "finish",
               "Finish",
-              <Input id="finish" name="finish" defaultValue={values.finish ?? ""} />,
+              <Input
+                id="finish"
+                name="finish"
+                defaultValue={values.finish ?? ""}
+                disabled={lockSpec}
+              />,
             )}
             {(isSponsorship || category === "sponsor") &&
               field(
@@ -699,22 +973,13 @@ export function ItemForm({
                   ))}
                 </SelectNative>,
               )}
-            {canSeeCosts && (
+            {canSeeCosts && costEditable && (
               <>
-                {field(
-                  "costActual",
-                  "Actual cost (£)",
-                  numberInput("costActual", { step: "0.01", disabled: !costEditable }),
-                )}
+                {field("costActual", "Actual cost (£)", costControl("costActual"))}
                 {field(
                   "poNumber",
                   "PO number",
-                  <Input
-                    id="poNumber"
-                    name="poNumber"
-                    defaultValue={values.poNumber ?? ""}
-                    disabled={!costEditable}
-                  />,
+                  <Input id="poNumber" name="poNumber" defaultValue={values.poNumber ?? ""} />,
                 )}
                 {field(
                   "budgetLine",
@@ -723,7 +988,6 @@ export function ItemForm({
                     id="budgetLine"
                     name="budgetLine"
                     defaultValue={values.budgetLine ?? ""}
-                    disabled={!costEditable}
                   />,
                 )}
               </>
@@ -732,6 +996,11 @@ export function ItemForm({
               "artworkDueOverride",
               "Artwork due (if different)",
               dateInput("artworkDueOverride"),
+              {
+                hint: eventArtworkDue
+                  ? `Event deadline: ${formatDate(eventArtworkDue)}. Set a date only to change it for this item.`
+                  : "Set a date only to change it for this item.",
+              },
             )}
             {!isSponsorship && field("printDeadline", "Print deadline", dateInput("printDeadline"))}
             {field("deliveryDate", "Delivery date", dateInput("deliveryDate"))}
@@ -796,20 +1065,53 @@ export function ItemForm({
         mode === "edit" &&
         status &&
         ["approved", "approved_with_conditions", "in_production", "delivered"].includes(status) && (
-          <p className="text-sm text-amber-800 dark:text-amber-300">
+          <p className="mt-4 text-sm text-amber-800 dark:text-amber-300">
             This item is signed off. Changing its size, material, fixing, type, sponsor or who signs
             it off sends it back for sign-off; dates, supplier and costs can change freely.
           </p>
         )}
       {!readOnly && (
-        <div className="mt-5 flex flex-wrap items-center gap-3">
-          <Button type="submit" disabled={pending}>
-            {mode === "create" ? "Create item" : "Save changes"}
+        <div
+          className={cn(
+            "mt-5 flex flex-wrap items-center gap-2 border-t py-3",
+            // Editing: Save and Cancel stay in reach however far down you are.
+            mode === "edit" && "bg-background/95 sticky bottom-0 z-10 backdrop-blur",
+          )}
+        >
+          <Button type="submit" value="save" disabled={pending}>
+            {pending ? "Saving…" : mode === "create" ? "Create item" : "Save changes"}
           </Button>
-          {message && <span className="text-sm text-green-700 dark:text-green-400">{message}</span>}
-          {error && <span className="text-destructive text-sm">{error}</span>}
+          {mode === "create" && (
+            <Button type="submit" value="another" variant="outline" disabled={pending}>
+              Create and add another
+            </Button>
+          )}
+          {mode === "create" ? (
+            <Button asChild variant="ghost">
+              <Link href={`/${editionCode}/${isSponsorship ? "sponsorship" : "signage"}`}>
+                Cancel
+              </Link>
+            </Button>
+          ) : (
+            onCancel && (
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={pending}
+                onClick={() => void cancel()}
+              >
+                Cancel
+              </Button>
+            )
+          )}
+          {error && (
+            <p role="alert" className="text-destructive text-sm">
+              {error}
+            </p>
+          )}
         </div>
       )}
+      {confirmDialog}
     </form>
   );
 }

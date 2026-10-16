@@ -31,12 +31,16 @@ import {
   artworkTypeAllowed,
 } from "@/lib/artwork-rules";
 import {
+  askedSummary,
   itemAuthzCtx,
   itemEntityCtx,
   loadItemBundle,
+  missingSubmitFields,
   notifyPendingAssignees,
   resolveAssigneeUserIds,
+  resubmitItemInTx,
   startItemRun,
+  submitItemInTx,
   type ItemBundle,
 } from "@/lib/domain/signage";
 import { itemPath } from "@/lib/edition-path";
@@ -59,13 +63,19 @@ async function generatePreview(bytes: Buffer, mimeType: string): Promise<Buffer 
   }
 }
 
-/** Direct upload through the server (dev/local backend and small files). */
-export async function uploadArtwork(
-  formData: FormData,
-): Promise<ActionResult<{ version: number }>> {
+/** What an upload did: the new version, and the item's status afterwards. */
+export type UploadOutcome = { version: number; status: string };
+
+/**
+ * Direct upload through the server (dev/local backend and small files).
+ * `sendForSignoff=on` also sends a draft for sign-off, or a "changes
+ * requested" item back for sign-off, in the same step.
+ */
+export async function uploadArtwork(formData: FormData): Promise<ActionResult<UploadOutcome>> {
   const itemId = formData.get("itemId");
   const notes = formData.get("notes");
   const file = formData.get("file");
+  const sendForSignoff = formData.get("sendForSignoff") === "on";
   if (typeof itemId !== "string" || !(file instanceof File)) return fail("Invalid upload");
 
   const session = await requireSession();
@@ -106,6 +116,7 @@ export async function uploadArtwork(
     sha256,
     previewPath,
     notes: typeof notes === "string" && notes.trim() ? notes.trim() : null,
+    sendForSignoff,
   });
 }
 
@@ -122,11 +133,12 @@ const uploadedSchema = z.object({
   fileSize: z.number().int().positive(),
   sha256: z.string(),
   notes: z.string().max(2000).optional(),
+  sendForSignoff: z.boolean().optional(),
 });
 
 export async function recordUploadedArtwork(
   rawInput: unknown,
-): Promise<ActionResult<{ version: number }>> {
+): Promise<ActionResult<UploadOutcome>> {
   const parsed = uploadedSchema.safeParse(rawInput);
   if (!parsed.success) return fail("Invalid upload details");
   const input = parsed.data;
@@ -183,6 +195,7 @@ export async function recordUploadedArtwork(
     sha256: input.sha256,
     previewPath,
     notes: input.notes?.trim() ? input.notes.trim() : null,
+    sendForSignoff: input.sendForSignoff ?? false,
   });
 }
 
@@ -198,11 +211,18 @@ async function recordArtworkVersion(
     sha256: string;
     previewPath?: string | null;
     notes: string | null;
+    /** Draft: send for sign-off; changes requested: send back for sign-off. */
+    sendForSignoff?: boolean;
   },
-): Promise<ActionResult<{ version: number }>> {
+): Promise<ActionResult<UploadOutcome>> {
   const item = bundle.item;
+  // Sending it on needs the right to submit as well as to upload.
+  const mayAlsoSend =
+    Boolean(fileMeta.sendForSignoff) &&
+    ["draft", "changes_requested"].includes(item.status) &&
+    can(session.actor, { type: "signage.submit", item: itemAuthzCtx(bundle) });
   try {
-    const version = await db.transaction(async (tx) => {
+    const outcome = await db.transaction(async (tx) => {
       const [latest] = await tx
         .select({ v: artworkVersions.versionNumber })
         .from(artworkVersions)
@@ -232,18 +252,24 @@ async function recordArtworkVersion(
 
       let summarySuffix = "";
       let reviewStarted = false;
+      let status: string = item.status;
+      let note = "";
       if (item.status === "awaiting_artwork") {
         set.status = signageTransition(item.status, "artwork_uploaded");
         await tx.update(signageItems).set(set).where(eq(signageItems.id, item.id));
         const instances = await startItemRun(tx, bundle, new Date());
         await notifyPendingAssignees(tx, bundle, instances);
         reviewStarted = true;
-        summarySuffix = " — review started";
+        status = "in_review";
+        summarySuffix = " — sign-off started";
+        const asked = instances.filter((i) => i.status === "pending");
+        note = ` and sent for sign-off${asked.length ? ` — waiting on ${askedSummary(asked)}` : ""}`;
       } else if (INVALIDATABLE_STATUSES.includes(item.status) || item.status === "in_review") {
         // Never silently: decided steps configured to invalidate are superseded,
         // including approvals already given earlier in the current review.
         if (item.status !== "in_review") {
           set.status = signageTransition(item.status, "new_version_after_approval");
+          status = set.status;
         }
         await tx.update(signageItems).set(set).where(eq(signageItems.id, item.id));
         const run = await loadRun(tx, "signage_item", item.id, item.currentRunNumber);
@@ -265,8 +291,30 @@ async function recordArtworkVersion(
           res.invalidated.length > 0
             ? ` — ${res.invalidated.length} approval(s) invalidated, back in review`
             : "";
+        if (res.invalidated.length > 0) {
+          note = ` — ${res.invalidated.length} sign-off${res.invalidated.length === 1 ? "" : "s"} superseded, back in sign-off`;
+        }
       } else {
         await tx.update(signageItems).set(set).where(eq(signageItems.id, item.id));
+        const updated = { ...bundle, item: { ...item, currentArtworkVersionId: ver.id } };
+        const missing = missingSubmitFields(item);
+        if (mayAlsoSend && (item.status === "changes_requested" || missing.length === 0)) {
+          // In a savepoint: if it can't be sent, the upload itself still stands.
+          try {
+            const back = item.status === "changes_requested";
+            const opts = { actorUserId: session.user.id, now: new Date() };
+            const res = await tx.transaction((sp) =>
+              back ? resubmitItemInTx(sp, updated, opts) : submitItemInTx(sp, updated, opts),
+            );
+            reviewStarted = true;
+            status = res.next;
+            note = ` and sent ${back ? "back " : ""}for sign-off${res.pending.length ? ` — waiting on ${askedSummary(res.pending)}` : ""}`;
+          } catch (err) {
+            note = `, but not sent for sign-off: ${err instanceof Error ? err.message : "please try again"}`;
+          }
+        } else if (mayAlsoSend) {
+          note = `. Add ${missing.join(", ")} to send it for sign-off`;
+        }
       }
 
       // Approvers with pending instances hear about new artwork.
@@ -302,10 +350,13 @@ async function recordArtworkVersion(
         after: { version: versionNumber, sha256: fileMeta.sha256, fileName: fileMeta.fileName },
         summary: `Artwork v${versionNumber} uploaded for ${item.ref}${summarySuffix}`,
       });
-      return versionNumber;
+      return { version: versionNumber, status, note };
     });
     revalidatePath("/", "layout");
-    return success({ version }, `Artwork v${version} uploaded`);
+    return success(
+      { version: outcome.version, status: outcome.status },
+      `v${outcome.version} uploaded${outcome.note}`,
+    );
   } catch (err) {
     return fail(err instanceof Error ? err.message : "Upload failed");
   }

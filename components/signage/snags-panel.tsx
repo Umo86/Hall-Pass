@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { FileInput } from "@/components/ui/file-input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/status-badge";
@@ -128,12 +129,11 @@ export function RaiseSnagButton({
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="snag-photo">Photo (optional)</Label>
-              <Input
+              <FileInput
                 id="snag-photo"
-                type="file"
                 accept="image/*"
-                capture="environment"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                buttonLabel="Take or choose a photo"
+                onFileChange={(files) => setFile(files?.[0] ?? null)}
               />
             </div>
             {error && <p className="text-destructive text-sm">{error}</p>}
@@ -175,12 +175,12 @@ export function SnagsPanel({
   const [kind, setKind] = useState<"resolved" | "wont_fix">("resolved");
   const [note, setNote] = useState("");
   const [file, setFile] = useState<File | null>(null);
-  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
 
   function move(snagId: string, status: string, withNote = false) {
-    setMessage(null);
+    setError(null);
     start(async () => {
       const fd = new FormData();
       fd.set("snagId", snagId);
@@ -190,17 +190,16 @@ export function SnagsPanel({
         if (file) fd.set("file", file);
       }
       const res = await updateSnag(fd);
-      setMessage(
-        res.ok
-          ? { text: res.message ?? "Updated", error: false }
-          : { text: res.error, error: true },
-      );
-      if (res.ok) {
-        setClosing(null);
-        setNote("");
-        setFile(null);
-        router.refresh();
+      if (!res.ok) {
+        setError(res.error);
+        if (!withNote) toast.error(res.error);
+        return;
       }
+      toast.success(res.message ?? `Snag on ${itemRef} updated`);
+      setClosing(null);
+      setNote("");
+      setFile(null);
+      router.refresh();
     });
   }
 
@@ -208,7 +207,7 @@ export function SnagsPanel({
   function openClosing(id: string, status: "resolved" | "wont_fix") {
     setNote("");
     setFile(null);
-    setMessage(null);
+    setError(null);
     setKind(status);
     setClosing({ id, status });
   }
@@ -217,34 +216,37 @@ export function SnagsPanel({
   const done = snags.filter((s) => s.status === "resolved" || s.status === "wont_fix");
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <p className="text-muted-foreground">
-          Snags{" "}
+    <section
+      id="snags"
+      aria-labelledby="snags-heading"
+      className="flex max-w-4xl scroll-mt-20 flex-col gap-3 rounded-lg border p-4 text-sm"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 id="snags-heading" className="text-sm font-semibold">
+            Snags
+          </h2>
           {snags.length > 0 && (
-            <span>
-              · {open.length} open, {done.length} done
-            </span>
+            <p className="text-muted-foreground text-xs">
+              {open.length} open · {done.length} done
+            </p>
           )}
-        </p>
+        </div>
         {canManage && canRaise && (
           <RaiseSnagButton
             itemId={itemId}
             itemRef={itemRef}
-            onDone={(r) => setMessage(r.ok ? { text: r.message ?? "Raised", error: false } : null)}
+            onDone={(r) => {
+              if (r.ok) toast.success(r.message ?? `Snag raised on ${itemRef}`);
+            }}
           />
-        )}
-        {message && (
-          <span
-            className={`text-sm ${message.error ? "text-destructive" : "text-muted-foreground"}`}
-          >
-            {message.text}
-          </span>
         )}
       </div>
       {snags.length === 0 && (
         <p className="text-muted-foreground text-sm">
-          {canRaise ? "No snags." : "No snags. Snags can be raised once the item is installed."}
+          {canRaise
+            ? "No snags. If something is wrong once it is up, raise a snag here."
+            : "No snags. Snags can be raised once the item is installed."}
         </p>
       )}
       <ul className="space-y-2">
@@ -352,12 +354,12 @@ export function SnagsPanel({
               placeholder={kind === "resolved" ? "What was done" : "Why it stays"}
               rows={3}
             />
-            <Input
-              type="file"
+            <FileInput
               accept="image/*"
-              capture="environment"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              buttonLabel="Add a photo of the fix"
+              onFileChange={(files) => setFile(files?.[0] ?? null)}
             />
+            {error && <p className="text-destructive text-sm">{error}</p>}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setClosing(null)}>
@@ -372,6 +374,6 @@ export function SnagsPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </section>
   );
 }

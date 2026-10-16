@@ -31,7 +31,7 @@ async function decide(
   opts: { photo?: boolean; date?: string } = {},
 ) {
   await page.goto(`${baseURL}/approvals`);
-  const row = page.locator("li", { hasText: ref });
+  const row = page.getByRole("main").locator("li", { hasText: ref });
   await row.getByRole("button", { name: button, exact: true }).click();
   const dialog = page.getByRole("dialog");
   if (opts.date) await dialog.getByLabel("When did this happen?").fill(opts.date);
@@ -58,6 +58,7 @@ test.describe("lifecycle: print → install → snag → reopen → close", () =
     await ops.goto(`${baseURL}/BIRM27/signage/new`);
     const name = `E2E lifecycle sign ${Date.now()}`;
     await ops.getByLabel("Name", { exact: true }).fill(name);
+    await ops.getByRole("button", { name: "Change who signs off" }).click();
     await ops.getByLabel("Needs Senior management sign-off").uncheck();
     await ops.getByLabel("Item type").selectOption({ label: "Foamex board" });
     await ops.getByLabel("Hall", { exact: true }).selectOption({ label: "Hall 1" });
@@ -65,6 +66,8 @@ test.describe("lifecycle: print → install → snag → reopen → close", () =
     await ops.getByLabel("Width (mm)").fill("1000");
     await ops.getByLabel("Height (mm)").fill("500");
     await ops.getByLabel("Fixing method").selectOption("wall_mounted");
+    // Purchasing and install wait under More details on a new sign.
+    await ops.getByText("More details").click();
     await ops.getByLabel("Supplier").selectOption({ index: 1 });
     await ops.getByLabel("Install date").fill(today);
     await ops.getByRole("button", { name: "Create item" }).click();
@@ -75,18 +78,17 @@ test.describe("lifecycle: print → install → snag → reopen → close", () =
     // Change requests are gone: editing is the one way to change an item.
     await expect(ops.getByRole("link", { name: "Change requests" })).toHaveCount(0);
 
-    // Artwork, review, approvals.
+    // Artwork, then sign-off straight away (the upload sends it).
     await ops.goto(`${itemUrl}?tab=artwork`);
     await ops.setInputFiles('input[type="file"]', {
       name: "artwork.pdf",
       mimeType: "application/pdf",
       buffer: Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF"),
     });
-    await ops.getByRole("button", { name: "Upload" }).click();
+    await ops.getByRole("button", { name: "Upload", exact: true }).click();
     await expect(ops.getByText("v1 — artwork.pdf")).toBeVisible();
     await ops.goto(itemUrl);
-    await ops.getByRole("button", { name: "Submit for review" }).click();
-    await expect(ops.getByText("In review", { exact: true })).toBeVisible();
+    await expect(ops.getByText("In sign-off", { exact: true }).first()).toBeVisible();
     const mkt = await as(browser, "marketing@media10.test", baseURL!);
     await decide(mkt, baseURL!, ref, "Approve");
     await decide(ops, baseURL!, ref, "Approve");
@@ -143,22 +145,36 @@ test.describe("lifecycle: print → install → snag → reopen → close", () =
     await expect(ops.getByText("All snags cleared — item back to Installed")).toBeVisible();
     await expect(ops.getByText("Installed", { exact: true }).first()).toBeVisible();
 
-    // Reopen undoes the install: back to Delivered, photo cleared.
-    await ops.getByRole("button", { name: "Reopen", exact: true }).click();
+    // Undo install (under More): back to Delivered, photo cleared.
+    await ops.getByRole("button", { name: "More" }).click();
+    await ops.getByRole("menuitem", { name: "Undo install" }).click();
     const reopenDialog = ops.getByRole("dialog");
     await reopenDialog.getByPlaceholder(/Why\?/).fill("Hung in the wrong place");
-    await reopenDialog.getByRole("button", { name: "Reopen", exact: true }).click();
+    await reopenDialog.getByRole("button", { name: "Undo install", exact: true }).click();
     await expect(reopenDialog).toHaveCount(0);
     await expect(ops.getByText("Delivered", { exact: true }).first()).toBeVisible();
     await expect(ops.getByText(/Installed:\s*Not yet/)).toBeVisible();
 
-    // Installed again, then closed.
+    // Installed again, then marked complete from the next step.
     await decide(ops, baseURL!, ref, "Confirm", { photo: true });
     await ops.goto(itemUrl);
-    await expect(ops.getByText("Installed", { exact: true }).first()).toBeVisible();
-    await ops.getByRole("button", { name: "Close", exact: true }).click();
-    await expect(ops.getByText("Closed", { exact: true }).first()).toBeVisible();
-    await expect(ops.getByRole("button", { name: "Close", exact: true })).toHaveCount(0);
+    await expect(ops.getByText("Installed. Next: mark it complete")).toBeVisible();
+    // Installed: the spec is locked, but dates can still change.
+    await ops.getByRole("button", { name: "Edit details" }).click();
+    await expect(
+      ops.getByText(/Installed — only dates, supplier and costs can change/),
+    ).toBeVisible();
+    await expect(ops.getByLabel("Width (mm)")).toBeDisabled();
+    await ops.getByText("More details").click();
+    await ops.getByLabel("Install slot").selectOption("pm");
+    await ops.getByRole("button", { name: "Save changes" }).click();
+    await expect(ops.getByText(`${ref} saved`).first()).toBeVisible();
+    await ops.getByRole("button", { name: "Mark complete", exact: true }).click();
+    const done = ops.getByRole("dialog");
+    await expect(done).toContainText("Everything is installed and snag-free");
+    await done.getByRole("button", { name: "Mark complete", exact: true }).click();
+    await expect(ops.getByText("Complete", { exact: true }).first()).toBeVisible();
+    await expect(ops.getByRole("button", { name: "Mark complete", exact: true })).toHaveCount(0);
   });
 
   test("an event's print deadline can be pinned to a date", async ({ browser, baseURL }) => {

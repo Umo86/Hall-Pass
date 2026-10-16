@@ -30,24 +30,25 @@ import { loadRun, loadStepDefs, persistRun } from "@/lib/workflow/persist";
 import { nextSignageRef } from "@/lib/refs";
 import { notify } from "@/lib/notify";
 import {
+  askedSummary,
   assertItemLinks,
   changedSpecKeys,
   defaultSignageWorkflowId,
   itemAuthzCtx,
   loadItemBundle,
-  missingSubmitFields,
+  newArtworkSinceChanges,
   normaliseSignoffs,
   notifyPendingAssignees,
   ownEdition,
   resolveItemCreationRecipients,
+  resubmitItemInTx,
   startItemRun,
+  submitItemInTx,
   syncConfirmationDueDates,
 } from "@/lib/domain/signage";
 import { diffDaysIso } from "@/lib/deadlines";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { itemPath } from "@/lib/edition-path";
-import { panelParent } from "@/lib/domain/stand-designs";
-import { PANEL_BLOCKED_MESSAGE, artworkBlockedReason } from "@/lib/artwork-rules";
 
 const itemFields = z.object({
   name: z.string().trim().min(1, "Name is required").max(300),
@@ -302,7 +303,7 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
       return ref;
     });
     revalidatePath("/", "layout");
-    return success({ ref }, `Created ${ref}`);
+    return success({ ref }, `${ref} created`);
   } catch (err) {
     return fail(errMessage(err));
   }
@@ -508,8 +509,8 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
     return success(
       undefined,
       outcome === "restarted"
-        ? "Saved — sign-off has restarted and the approvers have been told"
-        : "Saved",
+        ? `${bundle.item.ref} saved — sign-off has restarted and the approvers have been told`
+        : `${bundle.item.ref} saved`,
     );
   } catch (err) {
     return fail(errMessage(err));
@@ -571,7 +572,10 @@ export async function softDeleteSignageItem(input: unknown): Promise<ActionResul
       });
     });
     revalidatePath("/", "layout");
-    return success(undefined, `Deleted ${bundle.item.ref} (restorable from Settings)`);
+    return success(
+      undefined,
+      `Deleted ${bundle.item.ref} — restore it from Recently deleted on the Signage page`,
+    );
   } catch (err) {
     unstable_rethrow(err);
     console.error("softDeleteSignageItem", err);
@@ -579,7 +583,9 @@ export async function softDeleteSignageItem(input: unknown): Promise<ActionResul
   }
 }
 
-export async function restoreSignageItem(input: unknown): Promise<ActionResult> {
+export async function restoreSignageItem(
+  input: unknown,
+): Promise<ActionResult<{ ref: string; href: string }>> {
   try {
     const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
     if (!parsed.success) return fail("Invalid request");
@@ -606,7 +612,10 @@ export async function restoreSignageItem(input: unknown): Promise<ActionResult> 
       });
     });
     revalidatePath("/", "layout");
-    return success(undefined, `Restored ${bundle.item.ref}`);
+    return success(
+      { ref: bundle.item.ref, href: itemPath(bundle.edition.code, bundle.item) },
+      `Restored ${bundle.item.ref}`,
+    );
   } catch (err) {
     unstable_rethrow(err);
     console.error("restoreSignageItem", err);
@@ -614,7 +623,11 @@ export async function restoreSignageItem(input: unknown): Promise<ActionResult> 
   }
 }
 
-/** Submit for review (brief 5.1): validates required fields, starts the run. */
+/**
+ * Send for sign-off (brief 5.1): checks the fields sign-off needs, then
+ * starts the run — or, without artwork yet, marks it ready for artwork so
+ * the first upload starts it.
+ */
 export async function submitForReview(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
@@ -625,63 +638,72 @@ export async function submitForReview(input: unknown): Promise<ActionResult> {
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.submit", item: itemAuthzCtx(bundle) })) {
-    return fail("You cannot submit items for review");
+    return fail("You cannot send items for sign-off");
   }
-  const i = bundle.item;
-  const panelBlocked = artworkBlockedReason(i.status, await panelParent(db, i));
-  if (panelBlocked === PANEL_BLOCKED_MESSAGE) return fail(panelBlocked);
-  const missing = missingSubmitFields(i);
-  if (missing.length > 0) {
-    return fail(`Cannot submit yet — missing: ${missing.join(", ")}`);
-  }
-  // Items created by import (or before a workflow existed) get the default.
-  let workflowId = i.workflowId;
-  if (!workflowId) {
-    workflowId = await defaultSignageWorkflowId(db, session.organisation.id, i.itemTypeId);
-    if (!workflowId) return fail("No sign-off workflow is set up yet — ask an admin");
-  }
-
-  const hasArtwork = Boolean(i.currentArtworkVersionId);
-  let next;
   try {
-    next = signageTransition(i.status, "submit_for_review", { hasArtwork });
+    const { next, pending } = await db.transaction((tx) =>
+      submitItemInTx(tx, bundle, { actorUserId: session.user.id, now: new Date() }),
+    );
+    revalidatePath("/", "layout");
+    const ref = bundle.item.ref;
+    return success(
+      undefined,
+      next === "in_review"
+        ? `${ref} sent for sign-off${pending.length ? ` — waiting on ${askedSummary(pending)}` : ""}`
+        : `${ref} is ready for artwork — sign-off starts when it is uploaded`,
+    );
   } catch (err) {
     return transitionFail(err);
   }
+}
 
-  try {
-    await db.transaction(async (tx) => {
-      await tx
-        .update(signageItems)
-        .set({ status: next, workflowId })
-        .where(eq(signageItems.id, i.id));
-      if (next === "in_review") {
-        const instances = await startItemRun(
-          tx,
-          { ...bundle, item: { ...i, workflowId } },
-          new Date(),
-        );
-        await notifyPendingAssignees(tx, bundle, instances);
-      }
-      await writeAudit(tx, {
-        organisationId: session.organisation.id,
-        editionId: bundle.edition.id,
-        actorUserId: session.user.id,
-        entityType: "signage_item",
-        entityId: i.id,
-        action: "submit",
-        before: { status: i.status },
-        after: { status: next },
-        summary: `${i.ref} submitted for review`,
+/**
+ * Send an item back for sign-off after changes were asked for. With no new
+ * artwork since the request, it asks first (`confirmRequired`), unless the
+ * caller has confirmed sending the same version back.
+ */
+export async function resubmitItem(
+  input: unknown,
+): Promise<ActionResult<{ confirmRequired?: string }>> {
+  const parsed = z
+    .object({ id: z.string().uuid(), confirmSameArtwork: z.boolean().optional() })
+    .safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await requireSession();
+  const bundle = await loadItemBundle(db, parsed.data.id, {
+    organisationId: session.organisation.id,
+  });
+  if (!bundle || bundle.item.deletedAt) return fail("Item not found");
+  if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
+  if (!can(session.actor, { type: "signage.submit", item: itemAuthzCtx(bundle) })) {
+    return fail("You cannot send this item back for sign-off");
+  }
+  const item = bundle.item;
+  if (item.status !== "changes_requested") {
+    return fail("Only items with changes requested can be sent back for sign-off");
+  }
+  if (!parsed.data.confirmSameArtwork) {
+    const run = await loadRun(db, "signage_item", item.id, item.currentRunNumber);
+    const request = run
+      .filter((i) => i.status === "changes_requested")
+      .sort((a, b) => (b.decidedAt?.getTime() ?? 0) - (a.decidedAt?.getTime() ?? 0))[0];
+    if (!newArtworkSinceChanges(request?.lockedVersionId ?? null, item.currentArtworkVersionId)) {
+      return success({
+        confirmRequired: `No new artwork since ${request?.stepName ?? "the sign-off"} asked for changes. Send the same version back for sign-off?`,
       });
-    });
+    }
+  }
+  try {
+    const { pending } = await db.transaction((tx) =>
+      resubmitItemInTx(tx, bundle, { actorUserId: session.user.id, now: new Date() }),
+    );
     revalidatePath("/", "layout");
     return success(
-      undefined,
-      next === "in_review" ? "Submitted — review started" : "Submitted — awaiting artwork",
+      {},
+      `${item.ref} sent back for sign-off${pending.length ? ` — waiting on ${askedSummary(pending)}` : ""}`,
     );
   } catch (err) {
-    return fail(errMessage(err));
+    return transitionFail(err);
   }
 }
 
@@ -722,7 +744,7 @@ export async function holdSignageItem(input: unknown): Promise<ActionResult> {
     });
   });
   revalidatePath("/", "layout");
-  return success(undefined, "Item on hold — pending approvals are paused");
+  return success(undefined, `${bundle.item.ref} is on hold — its sign-offs are paused`);
 }
 
 export async function resumeSignageItem(input: unknown): Promise<ActionResult> {
@@ -788,7 +810,7 @@ export async function resumeSignageItem(input: unknown): Promise<ActionResult> {
     });
   });
   revalidatePath("/", "layout");
-  return success(undefined, "Item resumed");
+  return success(undefined, `${bundle.item.ref} resumed`);
 }
 
 /** Statuses where Reopen undoes the install and takes the item back to Delivered. */
@@ -873,12 +895,12 @@ export async function reopenSignageItem(input: unknown): Promise<ActionResult> {
   return success(
     undefined,
     undoInstall
-      ? "Back to Delivered — confirm Installed again once it is fixed"
-      : "Item reopened as draft — the previous run is kept in history",
+      ? `${bundle.item.ref} is back to Delivered — confirm Installed again once it is fixed`
+      : `${bundle.item.ref} reopened as a draft — the earlier sign-off is kept in History`,
   );
 }
 
-/** Close: an installed item with no open snags is finished. Admin and ops only. */
+/** Mark complete (close): an installed item with no open snags is finished. Admin and ops only. */
 export async function closeSignageItem(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
@@ -888,7 +910,9 @@ export async function closeSignageItem(input: unknown): Promise<ActionResult> {
   });
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
-  if (!can(session.actor, { type: "signage.close" })) return fail("You cannot close items");
+  if (!can(session.actor, { type: "signage.close" })) {
+    return fail("You cannot mark items complete");
+  }
   let next: SignageStatus;
   try {
     next = signageTransition(bundle.item.status as SignageStatus, "close");
@@ -925,7 +949,9 @@ export async function closeSignageItem(input: unknown): Promise<ActionResult> {
         )
         .returning({ id: signageItems.id });
       if (updated.length === 0) {
-        throw new Error("Could not close — a snag was just raised or the item changed; refresh");
+        throw new Error(
+          "Could not mark it complete — a snag was just raised or the item changed; refresh",
+        );
       }
       await writeAudit(tx, {
         organisationId: session.organisation.id,
@@ -936,14 +962,14 @@ export async function closeSignageItem(input: unknown): Promise<ActionResult> {
         action: "status_change",
         before: { status: bundle.item.status },
         after: { status: next },
-        summary: `${bundle.item.ref} closed`,
+        summary: `${bundle.item.ref} marked complete`,
       });
     });
   } catch (err) {
     return fail(errMessage(err));
   }
   revalidatePath("/", "layout");
-  return success(undefined, "Item closed");
+  return success(undefined, `${bundle.item.ref} marked complete`);
 }
 
 // ------------------------------------------------------------------ helpers

@@ -7,6 +7,12 @@ test.describe("wide tables and the side menu", () => {
     await signInAs(ctx, "ops@media10.test", baseURL!);
     const page = await ctx.newPage();
     await page.goto(`${baseURL}/BIRM27/signage`);
+    // More columns than fit on the screen.
+    await page.getByRole("button", { name: "Columns" }).click();
+    for (const col of ["Category", "Sponsor", "Type", "Supplier", "Size (mm)"]) {
+      await page.getByRole("menuitemcheckbox", { name: col, exact: true }).click();
+    }
+    await page.keyboard.press("Escape");
 
     const table = page.locator("main table");
     const box = table.locator("xpath=..");

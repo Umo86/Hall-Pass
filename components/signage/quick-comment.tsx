@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { addComment } from "@/app/actions/comments";
@@ -13,7 +14,6 @@ import { addComment } from "@/app/actions/comments";
  */
 export function QuickComment({ itemId, count }: { itemId: string; count: number }) {
   const [body, setBody] = useState("");
-  const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
@@ -24,7 +24,6 @@ export function QuickComment({ itemId, count }: { itemId: string; count: number 
       onSubmit={(e) => {
         e.preventDefault();
         setError(null);
-        setMessage(null);
         start(async () => {
           const res = await addComment({
             entityType: "signage_item",
@@ -35,7 +34,7 @@ export function QuickComment({ itemId, count }: { itemId: string; count: number 
           if (!res.ok) setError(res.error);
           else {
             setBody("");
-            setMessage("Comment added");
+            toast.success("Comment added");
             router.refresh();
           }
         });
@@ -53,13 +52,16 @@ export function QuickComment({ itemId, count }: { itemId: string; count: number 
       />
       <div className="flex flex-wrap items-center gap-3">
         <Button type="submit" size="sm" disabled={pending || !body.trim()}>
-          Post comment
+          {pending ? "Posting…" : "Post comment"}
         </Button>
         <Link href="?tab=comments" className="text-muted-foreground text-xs hover:underline">
           {count > 0 ? `See all ${count} comment${count === 1 ? "" : "s"}` : "Comments tab"}
         </Link>
-        {message && <span className="text-xs text-green-700 dark:text-green-400">{message}</span>}
-        {error && <span className="text-destructive text-xs">{error}</span>}
+        {error && (
+          <span role="alert" className="text-destructive text-xs">
+            {error}
+          </span>
+        )}
       </div>
     </form>
   );

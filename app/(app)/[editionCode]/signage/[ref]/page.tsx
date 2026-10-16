@@ -1,11 +1,33 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
+import { X } from "lucide-react";
 import { db } from "@/lib/db/client";
-import { comments as commentsTable, memberships, signageItems, users } from "@/lib/db/schema";
+import {
+  comments as commentsTable,
+  contractors,
+  memberships,
+  signageItems,
+  snags as snagsTable,
+  suppliers,
+  users,
+} from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, type ApprovalStepCtx } from "@/lib/authz";
-import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
+import {
+  itemAuthzCtx,
+  itemProgress,
+  loadItemBundle,
+  newArtworkSinceChanges,
+  nextStep,
+  signoffReadiness,
+  signoffRequiredFields,
+  specLocked,
+  stepIsMine,
+  stepStillDue,
+  submitBlockedReason,
+  type NextStepPending,
+} from "@/lib/domain/signage";
 import { departmentNames } from "@/lib/domain/departments";
 import {
   getEntityAudit,
@@ -17,22 +39,36 @@ import {
   artworkInvalidationPreview,
   panelWarning,
 } from "@/lib/queries/signage";
+import { editionForDeadlines } from "@/lib/queries/editions";
 import { itemFormOptions } from "@/lib/queries/item-form-options";
 import { blobEnabled, directUploadMode, getDownloadUrl, getInlineUrl } from "@/lib/storage";
-import { formatDate, formatDateTime, formatMoney, statusLabel } from "@/lib/format";
+import {
+  formatDate,
+  formatDateTime,
+  formatMoney,
+  roleLabel,
+  slotLabel,
+  statusLabel,
+} from "@/lib/format";
+import { artworkDue, effectiveDeadline, printDeadline } from "@/lib/deadlines";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { APPROVED_OR_LATER } from "@/lib/status/signage";
+import { todayInLondon } from "@/lib/today";
+import { orderCountdown } from "@/lib/countdown";
+import { cn } from "@/lib/utils";
+import { Page } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { ApprovalChain, type ChainInstance } from "@/components/approvals/chain";
+import { DecideButtons } from "@/components/approvals/decide-buttons";
 import { ArtworkTab, type VersionRow } from "@/components/signage/artwork-tab";
 import { CommentThread } from "@/components/comments/thread";
-import { ItemForm } from "@/components/signage/item-form";
+import { DetailsEditor } from "@/components/signage/details-editor";
 import { PhotoUploader } from "@/components/sponsorship/photo-uploader";
-import { orderCountdown } from "@/lib/countdown";
-import { todayInLondon } from "@/lib/today";
 import { LifecycleButtons } from "@/components/signage/lifecycle-buttons";
+import { NextStepCard } from "@/components/signage/next-step-card";
 import { SnagsPanel, type SnagView } from "@/components/signage/snags-panel";
 import { QuickComment } from "@/components/signage/quick-comment";
+import { defaultSignoffPlan, signoffPlanSummary } from "@/components/signage/signoff-summary";
 import { ITEM_SECTION } from "@/lib/edition-path";
 import { PANEL_BLOCKED_MESSAGE, artworkBlockedReason, isVideoArtwork } from "@/lib/artwork-rules";
 import { listStandPanels, standFormOptions } from "@/lib/queries/stand-designs";
@@ -89,61 +125,230 @@ function resolveTab(raw: string | undefined, tabs: Tab[]): TabId {
   return alias && tabs.some((t) => t.id === alias) ? alias : "details";
 }
 
+type Item = NonNullable<Awaited<ReturnType<typeof getItemByRef>>>;
+type Bundle = NonNullable<Awaited<ReturnType<typeof loadItemBundle>>>;
+type StaffSession = Awaited<ReturnType<typeof requireStaffSession>>;
+type InstanceRows = Awaited<ReturnType<typeof getItemInstances>>;
+type StaffRow = { id: string; fullName: string | null; email: string; role: string };
+type Deadlines = Awaited<ReturnType<typeof editionForDeadlines>>;
+
 export default async function ItemDetailPage({
   params,
   searchParams,
 }: {
   params: Promise<{ editionCode: string; ref: string }>;
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; compare?: string; created?: string; edit?: string }>;
 }) {
   const session = await requireStaffSession();
   const { editionCode, ref } = await params;
-  const { tab: rawTab } = await searchParams;
+  const sp = await searchParams;
 
   const item = await getItemByRef(decodeURIComponent(ref));
   if (!item || item.deletedAt) notFound();
   const bundle = await loadItemBundle(db, item.id, { organisationId: session.organisation.id });
-  // Only this organisation's items, and only under their own show's address.
+  // Only this organisation's items, and only under their own event's address.
   if (!bundle || bundle.edition.code !== editionCode.toUpperCase()) notFound();
   const isSponsorship = item.kind === "sponsorship_item";
   const isStand = item.kind === "stand_design";
   const isPanel = item.kind === "stand_panel";
   const tabs = isStand ? STAND_TABS : isPanel ? PANEL_TABS : TABS;
-  const tab = resolveTab(rawTab, tabs);
-  // A panel belongs to a stand: link back to it.
-  const parent =
-    isPanel && item.parentItemId
-      ? await db
-          .select({ ref: signageItems.ref, name: signageItems.name, status: signageItems.status })
-          .from(signageItems)
-          .where(eq(signageItems.id, item.parentItemId))
-          .then((r) => r[0] ?? null)
-      : null;
+  const tab = resolveTab(sp.tab, tabs);
+
+  const [parent, instanceRows, staffRows, deadlines, [openSnagCount], supplier] = await Promise.all(
+    [
+      // A panel belongs to a stand: link back to it.
+      isPanel && item.parentItemId
+        ? db
+            .select({ ref: signageItems.ref, name: signageItems.name, status: signageItems.status })
+            .from(signageItems)
+            .where(eq(signageItems.id, item.parentItemId))
+            .then((r) => r[0] ?? null)
+        : null,
+      getItemInstances(item.id),
+      // Everyone on the team (names on the sign-off list); sign-offs can be
+      // handed to anyone except viewers.
+      db
+        .select({
+          id: users.id,
+          fullName: users.fullName,
+          email: users.email,
+          role: memberships.role,
+        })
+        .from(memberships)
+        .innerJoin(users, eq(memberships.userId, users.id))
+        .where(eq(memberships.organisationId, session.organisation.id)),
+      editionForDeadlines(bundle.edition.id),
+      db
+        .select({ n: count() })
+        .from(snagsTable)
+        .where(
+          and(
+            eq(snagsTable.signageItemId, item.id),
+            inArray(snagsTable.status, ["open", "in_progress"]),
+          ),
+        ),
+      item.supplierId
+        ? db
+            .select({ name: suppliers.name })
+            .from(suppliers)
+            .where(
+              and(
+                eq(suppliers.id, item.supplierId),
+                eq(suppliers.organisationId, session.organisation.id),
+              ),
+            )
+            .then((r) => r[0] ?? null)
+        : null,
+    ],
+  );
+  const openSnags = Number(openSnagCount?.n ?? 0);
   const listSegment = ITEM_SECTION[isPanel ? "stand_design" : item.kind];
   const listLabel = isSponsorship
     ? "Sponsorship"
     : isStand || isPanel
-      ? "Stand designs"
+      ? "Feature stands"
       : "Signage";
   const listHref = parent
     ? `/${editionCode}/stand-designs/${parent.ref}?tab=panels`
     : `/${editionCode}/${listSegment}`;
 
+  const readOnly = editionIsReadOnly(bundle.edition.status);
   const itemCtx = itemAuthzCtx(bundle);
   const canSeeCosts = can(session.actor, { type: "costs.view" });
   const canEditCosts = can(session.actor, { type: "costs.edit" });
-  const canEdit =
-    can(session.actor, { type: "signage.edit", item: itemCtx }) &&
-    !editionIsReadOnly(bundle.edition.status);
+  const canEdit = can(session.actor, { type: "signage.edit", item: itemCtx }) && !readOnly;
   // Same rule as the server and the Onsite page: photos are for signs only.
   const requiresInstallPhoto =
     item.kind === "signage" && session.organisation.settings.install_photo_required;
+  const uploadBlocked = ["installed", "snagged", "closed"].includes(item.status)
+    ? "This item is installed — to upload new artwork, Operations or an admin can use More → Undo install first."
+    : isPanel && artworkBlockedReason(item.status, { parentStatus: parent?.status ?? null })
+      ? `${PANEL_BLOCKED_MESSAGE}.`
+      : null;
+  const can_ = {
+    edit: canEdit,
+    submit: can(session.actor, { type: "signage.submit", item: itemCtx }) && !readOnly,
+    upload:
+      can(session.actor, { type: "artwork.upload", item: itemCtx }) && !readOnly && !uploadBlocked,
+    close: can(session.actor, { type: "signage.close" }) && !readOnly,
+    reopen: can(session.actor, { type: "signage.reopen" }) && !readOnly,
+    resume: can(session.actor, { type: "signage.resume" }) && !readOnly,
+  };
+
+  // What happens next: the current round's waiting steps and who holds each.
+  const nameById = new Map(staffRows.map((u) => [u.id, u.fullName || u.email]));
+  const deptNames = await departmentNames(
+    db,
+    instanceRows.map((r) => r.instance.assignedDepartmentId),
+  );
+  const currentRun = instanceRows.filter((r) => r.instance.runNumber === item.currentRunNumber);
+  const whoOf = (i: InstanceRows[number]["instance"]) =>
+    (i.assignedUserId && nameById.get(i.assignedUserId)) ||
+    (i.assignedDepartmentId ? (deptNames.get(i.assignedDepartmentId) ?? null) : null) ||
+    (i.assignedRole === "supplier"
+      ? (supplier?.name ?? "the supplier")
+      : roleLabel(i.assignedRole));
+  const stepCtx = (i: InstanceRows[number]["instance"]): ApprovalStepCtx => ({
+    assignedRole: i.assignedRole,
+    assignedDepartmentId: i.assignedDepartmentId,
+    stepKind: i.stepKindSnapshot,
+    assignedUserId: i.assignedUserId,
+    entity: { type: "signage_item", item: itemCtx },
+  });
+  const pendingRows = currentRun.filter(
+    (r) =>
+      r.instance.status === "pending" &&
+      stepStillDue(
+        { stepKind: r.instance.stepKindSnapshot, stepName: r.instance.stepNameSnapshot },
+        item.status,
+      ),
+  );
+  const canDecideIds = new Set<string>();
+  const canDelegateIds = new Set<string>();
+  // Decisions that are the viewer's own (not an admin deciding for others).
+  const myDecisionIds = new Set<string>();
+  for (const { instance } of pendingRows) {
+    if (readOnly) break;
+    if (can(session.actor, { type: "approval.decide", step: stepCtx(instance) })) {
+      canDecideIds.add(instance.id);
+      if (
+        instance.stepKindSnapshot === "approval" &&
+        session.actor.kind === "staff" &&
+        stepIsMine(
+          {
+            stepKind: instance.stepKindSnapshot,
+            assignedRole: instance.assignedRole,
+            assignedUserId: instance.assignedUserId,
+            assignedDepartmentId: instance.assignedDepartmentId,
+          },
+          session.actor,
+        )
+      ) {
+        myDecisionIds.add(instance.id);
+      }
+    }
+    if (can(session.actor, { type: "approval.delegate", step: stepCtx(instance) })) {
+      canDelegateIds.add(instance.id);
+    }
+  }
+  const pending: NextStepPending[] = pendingRows.map(({ instance }) => ({
+    id: instance.id,
+    stepName: instance.stepNameSnapshot,
+    stepKind: instance.stepKindSnapshot,
+    who: whoOf(instance),
+    dueAt: instance.dueAt,
+    canDecide:
+      instance.stepKindSnapshot === "approval"
+        ? myDecisionIds.has(instance.id)
+        : canDecideIds.has(instance.id),
+  }));
+  const latest = (status: string) =>
+    currentRun
+      .filter((r) => r.instance.status === status)
+      .sort(
+        (a, b) => (b.instance.decidedAt?.getTime() ?? 0) - (a.instance.decidedAt?.getTime() ?? 0),
+      )[0];
+  const requested = latest("changes_requested");
+  const rejected = latest("rejected");
+  const decisionOf = (row: InstanceRows[number] | undefined) =>
+    row
+      ? {
+          stepName: row.instance.stepNameSnapshot,
+          deciderName: row.decider?.fullName || row.decider?.email || null,
+          comment: row.instance.decisionComment,
+        }
+      : null;
+  const readiness = signoffReadiness(item);
+  const now = new Date();
+  const step = nextStep({
+    kind: item.kind,
+    status: item.status,
+    onHoldReason: item.onHoldReason,
+    readiness,
+    pending,
+    changeRequest: decisionOf(requested),
+    rejection: decisionOf(rejected),
+    newArtworkSinceChanges: newArtworkSinceChanges(
+      requested?.instance.lockedVersionId ?? null,
+      item.currentArtworkVersionId,
+    ),
+    openSnags,
+    can: can_,
+    now,
+  });
+  const progress = itemProgress(item.kind, item.status, {
+    fieldsReady: readiness.fieldsReady,
+    hasArtwork: readiness.hasArtwork,
+    previousStatus: item.previousStatus,
+  });
+  // The next step's confirmation button is the one place to confirm it.
+  const confirmInNextStep = step.action?.type === "confirm" ? step.action.instanceId : null;
 
   return (
-    <div className="flex flex-col gap-4 p-4 sm:p-6">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="min-w-0">
-          <p className="text-muted-foreground text-xs">
+    <Page width="default" className="gap-4">
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-1">
+          <nav aria-label="Breadcrumb" className="text-muted-foreground text-xs">
             <Link href={`/${editionCode}/${listSegment}`} className="hover:underline">
               {listLabel}
             </Link>{" "}
@@ -159,32 +364,71 @@ export default async function ItemDetailPage({
               </>
             )}
             / {item.ref}
-          </p>
-          <h1 className="text-xl font-semibold tracking-tight">{item.name}</h1>
+          </nav>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl font-semibold tracking-tight">{item.name}</h1>
+            <StatusBadge status={item.status} />
+          </div>
         </div>
-        <StatusBadge status={item.status} className="mt-1" />
-        {item.status === "on_hold" && item.onHoldReason && (
-          <span className="text-muted-foreground text-sm">({item.onHoldReason})</span>
-        )}
-        <div className="ml-auto">
+        <div className="flex shrink-0 items-center gap-2">
           <LifecycleButtons
             itemId={item.id}
+            itemRef={item.ref}
             status={item.status}
-            canSubmit={can(session.actor, { type: "signage.submit", item: itemCtx })}
-            canHold={can(session.actor, { type: "signage.hold" })}
-            canClose={can(session.actor, { type: "signage.close" })}
-            canDelete={can(session.actor, { type: "signage.delete" })}
+            canHold={can(session.actor, { type: "signage.hold" }) && !readOnly}
+            canReopen={can_.reopen}
+            canDelete={can(session.actor, { type: "signage.delete" }) && !readOnly}
             listHref={listHref}
           />
         </div>
-      </div>
+      </header>
+
+      {sp.created === "1" && (
+        <div
+          role="status"
+          className="flex items-start justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
+        >
+          <p>
+            <span className="font-medium">{item.ref} created.</span>{" "}
+            {isStand
+              ? "Next: upload the design."
+              : isSponsorship
+                ? "Next: add a photo, then upload the artwork."
+                : "Next: upload the artwork."}
+          </p>
+          <Link
+            href={`?tab=${tab}`}
+            aria-label="Dismiss"
+            className="-m-1 rounded p-1 hover:bg-emerald-100 dark:hover:bg-emerald-900"
+          >
+            <X className="size-4" aria-hidden />
+          </Link>
+        </div>
+      )}
+
+      {readOnly && (
+        <p className="text-muted-foreground text-sm">
+          This event is archived, so its items can no longer be changed.
+        </p>
+      )}
+
+      <NextStepCard
+        step={step}
+        progress={progress}
+        lines={readiness.lines}
+        itemId={item.id}
+        itemRef={item.ref}
+        currentVersionId={item.currentArtworkVersionId}
+        requiresInstallPhoto={requiresInstallPhoto}
+        canEditFields={canEdit && !isStand}
+      />
 
       <nav className="flex gap-1 overflow-x-auto border-b" aria-label="Item sections">
         {tabs.map((t) => (
           <Link
             key={t.id}
             href={`?tab=${t.id}`}
-            className={`px-3 py-2 text-sm whitespace-nowrap ${
+            className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm whitespace-nowrap ${
               tab === t.id
                 ? "border-primary text-foreground border-b-2 font-medium"
                 : "text-muted-foreground hover:text-foreground"
@@ -192,6 +436,12 @@ export default async function ItemDetailPage({
             aria-current={tab === t.id ? "page" : undefined}
           >
             {t.label}
+            {t.id === "details" && openSnags > 0 && (
+              <span className="rounded-full bg-rose-100 px-1.5 text-xs font-medium text-rose-800 tabular-nums dark:bg-rose-950 dark:text-rose-300">
+                {openSnags}
+                <span className="sr-only"> open snag{openSnags === 1 ? "" : "s"}</span>
+              </span>
+            )}
           </Link>
         ))}
       </nav>
@@ -208,7 +458,12 @@ export default async function ItemDetailPage({
           canSeeCosts={canSeeCosts}
           canEditCosts={canEditCosts}
           canCertificate={can(session.actor, { type: "export.run", kind: "certificate" })}
-          canManageSnags={can(session.actor, { type: "snag.manage" })}
+          canManageSnags={can(session.actor, { type: "snag.manage" }) && !readOnly}
+          deadlines={deadlines}
+          staffRows={staffRows}
+          supplierName={supplier?.name ?? null}
+          waitingOn={pending.map((p) => p.who)}
+          startEditing={sp.edit === "1"}
         />
       )}
       {tab === "artwork" && (
@@ -216,8 +471,22 @@ export default async function ItemDetailPage({
           item={item}
           bundle={bundle}
           session={session}
+          instanceRows={instanceRows}
+          staffRows={staffRows}
+          deptNames={deptNames}
+          canDecideIds={canDecideIds}
+          canDelegateIds={canDelegateIds}
+          myDecisionIds={myDecisionIds}
+          hideButtonsFor={confirmInNextStep}
           requiresInstallPhoto={requiresInstallPhoto}
-          parentStatus={parent?.status ?? null}
+          uploadBlocked={uploadBlocked}
+          canUpload={can_.upload || Boolean(uploadBlocked && canEdit)}
+          canSendForSignoff={can_.submit}
+          sendBlockedReason={item.status === "draft" ? submitBlockedReason(readiness) : null}
+          changeRequest={item.status === "changes_requested" ? decisionOf(requested) : null}
+          initialCompare={Number(sp.compare) || null}
+          justCreated={sp.created === "1"}
+          now={now}
         />
       )}
       {tab === "panels" && isStand && (
@@ -233,14 +502,18 @@ export default async function ItemDetailPage({
         />
       )}
       {tab === "comments" && <CommentsSection itemId={item.id} session={session} />}
-      {tab === "history" && <HistorySection itemId={item.id} />}
-    </div>
+      {tab === "history" && (
+        <HistorySection
+          item={item}
+          creatorName={item.createdBy ? (nameById.get(item.createdBy) ?? null) : null}
+        />
+      )}
+    </Page>
   );
 }
 
-type Item = NonNullable<Awaited<ReturnType<typeof getItemByRef>>>;
-type Bundle = NonNullable<Awaited<ReturnType<typeof loadItemBundle>>>;
-type StaffSession = Awaited<ReturnType<typeof requireStaffSession>>;
+/** A fact for the read-only details: a label and its value. */
+type Fact = [string, React.ReactNode];
 
 async function DetailsTab({
   item,
@@ -251,6 +524,11 @@ async function DetailsTab({
   canEditCosts,
   canCertificate,
   canManageSnags,
+  deadlines,
+  staffRows,
+  supplierName,
+  waitingOn,
+  startEditing,
 }: {
   item: Item;
   bundle: Bundle;
@@ -260,9 +538,14 @@ async function DetailsTab({
   canEditCosts: boolean;
   canCertificate: boolean;
   canManageSnags: boolean;
+  deadlines: Deadlines;
+  staffRows: StaffRow[];
+  supplierName: string | null;
+  waitingOn: string[];
+  startEditing: boolean;
 }) {
   const isSponsorship = item.kind === "sponsorship_item";
-  const [options, snags, photoUrl, productPhotoUrl] = await Promise.all([
+  const [options, snags, photoUrl, productPhotoUrl, contractor] = await Promise.all([
     itemFormOptions({
       organisationId: bundle.organisation.id,
       editionId: bundle.edition.id,
@@ -275,8 +558,14 @@ async function DetailsTab({
       ? getInlineUrl("photos", item.installPhotoPath).catch(() => null)
       : null,
     item.photoPath ? getInlineUrl("photos", item.photoPath).catch(() => null) : null,
+    item.installContractorId
+      ? db
+          .select({ name: contractors.name })
+          .from(contractors)
+          .where(eq(contractors.id, item.installContractorId))
+          .then((r) => r[0]?.name ?? null)
+      : null,
   ]);
-  const readOnly = editionIsReadOnly(bundle.edition.status);
   const snagViews: SnagView[] = await Promise.all(
     snags.map(async (snag) => ({
       id: snag.id,
@@ -296,6 +585,26 @@ async function DetailsTab({
   );
   const nameOf = (list: { id: string; name: string }[], id: string | null) =>
     (id && list.find((x) => x.id === id)?.name) || null;
+  const today = todayInLondon();
+  const eventArtworkDue = deadlines ? effectiveDeadline(deadlines, "artwork_due") : null;
+  const artworkDueDate = deadlines ? artworkDue(item, deadlines) : item.artworkDueOverride;
+  const artworkLate =
+    Boolean(artworkDueDate && artworkDueDate < today) &&
+    !item.currentArtworkVersionId &&
+    ["draft", "awaiting_artwork"].includes(item.status);
+  const printBy = deadlines ? printDeadline(item, deadlines) : item.printDeadline;
+  const deliveryBy =
+    item.deliveryDate ?? (deadlines ? effectiveDeadline(deadlines, "delivery") : null);
+  const owner = item.ownerUserId
+    ? (staffRows.find((u) => u.id === item.ownerUserId)?.fullName ??
+      staffRows.find((u) => u.id === item.ownerUserId)?.email ??
+      null)
+    : null;
+  const steps = options.signoffSteps ?? [];
+  const plan =
+    item.signoffs ??
+    defaultSignoffPlan(steps, isSponsorship ? "sponsor" : (item.category ?? "organiser"));
+  const planSummary = steps.length > 0 ? signoffPlanSummary(steps, plan) : null;
   const sold = Boolean(item.sponsorId);
   const countdown = item.orderByDate
     ? orderCountdown(item.orderByDate, todayInLondon(), sold)
@@ -304,20 +613,34 @@ async function DetailsTab({
     sold && item.salePrice != null && item.costEstimate != null
       ? Number(item.salePrice) - Number(item.costEstimate)
       : null;
-  // The few facts each team needs at a glance; everything else is in the form.
-  const facts: [string, React.ReactNode][] = isSponsorship
+  const dash = <span className="text-muted-foreground font-normal">—</span>;
+  const costs = (rows: Fact[]): Fact[] => (canSeeCosts ? rows : []);
+  const artworkDueFact: Fact = [
+    "Artwork due",
+    artworkDueDate ? (
+      <span className={artworkLate ? "text-destructive" : undefined}>
+        {formatDate(artworkDueDate)}
+        {artworkLate && " — overdue"}
+      </span>
+    ) : (
+      dash
+    ),
+  ];
+
+  // The facts each team needs at a glance; "Edit details" changes them.
+  const facts: Fact[] = isSponsorship
     ? [
         ["Status", sold ? "Sold" : "Available"],
-        ["Sponsor", nameOf(options.sponsors, item.sponsorId) ?? "—"],
-        ["Type", nameOf(options.itemTypes, item.itemTypeId) ?? "—"],
+        ["Sponsor", nameOf(options.sponsors, item.sponsorId) ?? dash],
+        ["Type", nameOf(options.itemTypes, item.itemTypeId) ?? dash],
         ["Quantity", item.quantity.toLocaleString("en-GB")],
-        ["Supplier", nameOf(options.suppliers, item.supplierId) ?? "—"],
-        ["Cost price", formatMoney(item.costEstimate)],
+        ["Supplier", supplierName ?? dash],
+        ...costs([["Cost price", formatMoney(item.costEstimate)]]),
         ...(sold
-          ? ([
+          ? costs([
               ["Sale price", formatMoney(item.salePrice)],
               ["Profit", profit != null ? formatMoney(profit) : "—"],
-            ] as [string, React.ReactNode][])
+            ])
           : []),
         [
           "Order by",
@@ -338,170 +661,208 @@ async function DetailsTab({
               )}
             </span>
           ) : (
-            "—"
+            dash
           ),
         ],
+        artworkDueFact,
+        ["Waiting on", waitingOn.length ? waitingOn.join(", ") : dash],
       ]
     : [
         [
           "Where",
           [nameOf(options.halls, item.hallId), nameOf(options.locations, item.locationId)]
             .filter(Boolean)
-            .join(" · ") || "—",
+            .join(" · ") || dash,
         ],
-        ["Stand no.", item.standNumber || "—"],
+        ["Stand no.", item.standNumber || dash],
         [
           "Size",
           item.widthMm && item.heightMm
             ? `${item.widthMm} × ${item.heightMm} mm${item.quantity > 1 ? ` · ${item.quantity} off` : ""}`
-            : "—",
+            : dash,
         ],
-        ["Fixing", item.fixingMethod ? statusLabel(item.fixingMethod) : "—"],
-        ["Type", nameOf(options.itemTypes, item.itemTypeId) ?? "—"],
+        ["Fixing", item.fixingMethod ? statusLabel(item.fixingMethod) : dash],
+        ["Type", nameOf(options.itemTypes, item.itemTypeId) ?? dash],
         ...(item.category === "sponsor"
-          ? ([["Sponsor", nameOf(options.sponsors, item.sponsorId) ?? "—"]] as [
-              string,
-              React.ReactNode,
-            ][])
+          ? ([["Sponsor", nameOf(options.sponsors, item.sponsorId) ?? dash]] as Fact[])
           : []),
-        ["Supplier", nameOf(options.suppliers, item.supplierId) ?? "—"],
-        ["Cost price", formatMoney(item.costEstimate)],
-        ["Install", item.installDate ? formatDate(item.installDate) : "—"],
+        ["Owner", owner ?? dash],
+        ["Waiting on", waitingOn.length ? waitingOn.join(", ") : dash],
+        artworkDueFact,
+        ["Print by", printBy ? formatDate(printBy) : dash],
+        ["Delivery", deliveryBy ? formatDate(deliveryBy) : dash],
+        [
+          "Install",
+          item.installDate
+            ? `${formatDate(item.installDate)}${item.installSlot ? ` ${slotLabel(item.installSlot)}` : ""}`
+            : dash,
+        ],
+        ["Supplier", supplierName ?? <span className="text-muted-foreground">Not set yet</span>],
+        ...costs([["Cost price", formatMoney(item.costEstimate)]]),
       ];
+  // Everything else that has been filled in.
+  const extra: Fact[] = [
+    ...(item.material ? ([["Material", item.material]] as Fact[]) : []),
+    ...(item.finish ? ([["Finish", item.finish]] as Fact[]) : []),
+    ...(item.depthMm ? ([["Depth", `${item.depthMm} mm`]] as Fact[]) : []),
+    ...(item.sided === "double" ? ([["Sided", "Double"]] as Fact[]) : []),
+    ...(item.weightKg ? ([["Weight", `${item.weightKg} kg`]] as Fact[]) : []),
+    ...(item.requiresVenueApproval ? ([["Venue approval", "Needed"]] as Fact[]) : []),
+    ...(contractor ? ([["Install contractor", contractor]] as Fact[]) : []),
+    ...(item.sponsorEntitlementId
+      ? ([
+          [
+            "Entitlement",
+            options.entitlements.find((e) => e.id === item.sponsorEntitlementId)?.description ??
+              dash,
+          ],
+        ] as Fact[])
+      : []),
+    ...costs([
+      ...(item.costActual ? ([["Actual cost", formatMoney(item.costActual)]] as Fact[]) : []),
+      ...(item.poNumber ? ([["PO number", item.poNumber]] as Fact[]) : []),
+      ...(item.budgetLine ? ([["Budget line", item.budgetLine]] as Fact[]) : []),
+    ]),
+    ...(planSummary ? ([["Sign-off", planSummary]] as Fact[]) : []),
+  ];
+  const snagsCard = !isSponsorship &&
+    (snagViews.length > 0 || ["installed", "snagged"].includes(item.status)) && (
+      <SnagsPanel
+        itemId={item.id}
+        itemRef={item.ref}
+        snags={snagViews}
+        canManage={canManageSnags}
+        canRaise={["installed", "snagged"].includes(item.status)}
+      />
+    );
+  const snagsFirst = ["installed", "snagged"].includes(item.status);
+  const factList = (list: Fact[]) => (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 sm:grid-cols-[auto_1fr_auto_1fr]">
+      {list.map(([label, value]) => (
+        <div key={label} className="contents">
+          <dt className="text-muted-foreground">{label}</dt>
+          <dd className="min-w-0 font-medium break-words">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
 
   return (
-    <div className="grid gap-6">
-      <section
-        className={`grid max-w-4xl gap-4 rounded-lg border p-4 text-sm ${
-          isSponsorship ? "sm:grid-cols-[14rem_1fr]" : ""
-        }`}
-        aria-label="At a glance"
+    <div className="grid gap-4">
+      {snagsFirst && snagsCard}
+      <DetailsEditor
+        canEdit={canEdit}
+        initialEditing={startEditing}
+        formProps={{
+          kind: formKind(item.kind),
+          status: item.status,
+          requiredFields: signoffRequiredFields(item.kind),
+          lockSpec: specLocked(item.status),
+          eventArtworkDue,
+          values: {
+            id: item.id,
+            name: item.name,
+            description: item.description,
+            category: item.category,
+            itemTypeId: item.itemTypeId,
+            hallId: item.hallId,
+            locationId: item.locationId,
+            standNumber: item.standNumber,
+            ownerRole: item.ownerRole,
+            ownerUserId: item.ownerUserId,
+            sponsorId: item.sponsorId,
+            sponsorEntitlementId: item.sponsorEntitlementId,
+            widthMm: item.widthMm,
+            heightMm: item.heightMm,
+            depthMm: item.depthMm,
+            quantity: item.quantity,
+            sided: item.sided,
+            material: item.material,
+            finish: item.finish,
+            fixingMethod: item.fixingMethod,
+            weightKg: item.weightKg,
+            requiresVenueApproval: item.requiresVenueApproval,
+            signoffs: item.signoffs ?? null,
+            // Costs stay on the server for people who can't see them.
+            budgetLine: canSeeCosts ? item.budgetLine : null,
+            costEstimate: canSeeCosts ? item.costEstimate : null,
+            costActual: canSeeCosts ? item.costActual : null,
+            poNumber: canSeeCosts ? item.poNumber : null,
+            supplierId: item.supplierId,
+            artworkDueOverride: item.artworkDueOverride,
+            printDeadline: item.printDeadline,
+            orderByDate: item.orderByDate,
+            salePrice: canSeeCosts ? item.salePrice : null,
+            deliveryDate: item.deliveryDate,
+            installDate: item.installDate,
+            installSlot: item.installSlot,
+            installContractorId: item.installContractorId,
+          },
+          options,
+          canSeeCosts,
+          canEditCosts,
+          editionCode,
+        }}
       >
-        {isSponsorship && (
-          <PhotoUploader
-            itemId={item.id}
-            photoUrl={productPhotoUrl}
-            alt={item.name}
-            canEdit={canEdit}
-          />
-        )}
-        <div className="flex flex-col gap-3">
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 sm:grid-cols-[auto_1fr_auto_1fr]">
-            {facts.map(([label, value]) => (
-              <div key={label} className="contents">
-                <dt className="text-muted-foreground">{label}</dt>
-                <dd className="font-medium">{value}</dd>
-              </div>
-            ))}
-          </dl>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 border-t pt-2">
-            <a
-              className="text-primary hover:underline"
-              href={`/api/exports/spec-label/${item.ref}`}
-            >
-              Spec label (PDF)
-            </a>
-            {canCertificate &&
-              (APPROVED_OR_LATER.includes(item.status) ? (
-                <a
-                  className="text-primary hover:underline"
-                  href={`/api/exports/certificate/${item.ref}`}
-                >
-                  Approval certificate (PDF)
-                </a>
-              ) : (
-                <span className="text-muted-foreground">Approval certificate: once signed off</span>
-              ))}
-          </div>
-          {!isSponsorship && (
-            <p>
-              <span className="text-muted-foreground">Installed: </span>
-              {item.installedAt ? formatDateTime(item.installedAt) : "Not yet"}
-              {photoUrl ? (
-                <>
-                  {" · "}
-                  <a
-                    className="text-primary hover:underline"
-                    href={photoUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    View photo
-                  </a>
-                </>
-              ) : item.installPhotoPath ? (
-                " · photo on file"
-              ) : null}
-            </p>
-          )}
-          {!isSponsorship && (
-            <SnagsPanel
+        <div className={cn("grid gap-4", isSponsorship && "sm:grid-cols-[14rem_1fr]")}>
+          {isSponsorship && (
+            <PhotoUploader
               itemId={item.id}
-              itemRef={item.ref}
-              snags={snagViews}
-              canManage={canManageSnags && !readOnly}
-              canRaise={["installed", "snagged"].includes(item.status)}
+              photoUrl={productPhotoUrl}
+              alt={item.name}
+              canEdit={canEdit}
             />
           )}
+          <div className="flex flex-col gap-3">
+            {factList([...facts, ...extra])}
+            {item.description && (
+              <div className="border-t pt-3">
+                <p className="text-muted-foreground">Notes</p>
+                <p className="whitespace-pre-line">{item.description}</p>
+              </div>
+            )}
+            {!isSponsorship && (
+              <p>
+                <span className="text-muted-foreground">Installed: </span>
+                {item.installedAt ? formatDateTime(item.installedAt) : "Not yet"}
+                {photoUrl ? (
+                  <>
+                    {" · "}
+                    <a className="link" href={photoUrl} target="_blank" rel="noreferrer">
+                      View photo
+                    </a>
+                  </>
+                ) : item.installPhotoPath ? (
+                  " · photo on file"
+                ) : null}
+              </p>
+            )}
+            <div className="flex flex-wrap gap-x-4 gap-y-1 border-t pt-3">
+              <a className="link" href={`/api/exports/spec-label/${item.ref}`}>
+                Spec label (PDF)
+              </a>
+              {canCertificate &&
+                (APPROVED_OR_LATER.includes(item.status) ? (
+                  <a className="link" href={`/api/exports/certificate/${item.ref}`}>
+                    Approval certificate (PDF)
+                  </a>
+                ) : (
+                  <span className="text-muted-foreground">
+                    Approval certificate: once signed off
+                  </span>
+                ))}
+            </div>
+          </div>
         </div>
-      </section>
-
+      </DetailsEditor>
+      {!snagsFirst && snagsCard}
       {!canEdit && (
         <p className="text-muted-foreground text-sm">
           {editionIsReadOnly(bundle.edition.status)
-            ? "This show is archived, so its items can no longer be changed."
+            ? "This event is archived, so its items can no longer be changed."
             : "You can view this item but not change it."}
         </p>
       )}
-      <ItemForm
-        mode="edit"
-        kind={formKind(item.kind)}
-        status={item.status}
-        readOnly={!canEdit}
-        values={{
-          id: item.id,
-          name: item.name,
-          description: item.description,
-          category: item.category,
-          itemTypeId: item.itemTypeId,
-          hallId: item.hallId,
-          locationId: item.locationId,
-          standNumber: item.standNumber,
-          ownerRole: item.ownerRole,
-          ownerUserId: item.ownerUserId,
-          sponsorId: item.sponsorId,
-          sponsorEntitlementId: item.sponsorEntitlementId,
-          widthMm: item.widthMm,
-          heightMm: item.heightMm,
-          depthMm: item.depthMm,
-          quantity: item.quantity,
-          sided: item.sided,
-          material: item.material,
-          finish: item.finish,
-          fixingMethod: item.fixingMethod,
-          weightKg: item.weightKg,
-          requiresVenueApproval: item.requiresVenueApproval,
-          signoffs: item.signoffs ?? null,
-          // Costs stay on the server for people who can't see them.
-          budgetLine: canSeeCosts ? item.budgetLine : null,
-          costEstimate: canSeeCosts ? item.costEstimate : null,
-          costActual: canSeeCosts ? item.costActual : null,
-          poNumber: canSeeCosts ? item.poNumber : null,
-          supplierId: item.supplierId,
-          artworkDueOverride: item.artworkDueOverride,
-          printDeadline: item.printDeadline,
-          orderByDate: item.orderByDate,
-          salePrice: item.salePrice,
-          deliveryDate: item.deliveryDate,
-          installDate: item.installDate,
-          installSlot: item.installSlot,
-          installContractorId: item.installContractorId,
-        }}
-        options={options}
-        canSeeCosts={canSeeCosts}
-        canEditCosts={canEditCosts}
-        editionCode={editionCode}
-      />
     </div>
   );
 }
@@ -510,32 +871,47 @@ async function ArtworkAndSignOff({
   item,
   bundle,
   session,
+  instanceRows,
+  staffRows,
+  deptNames,
+  canDecideIds,
+  canDelegateIds,
+  myDecisionIds,
+  hideButtonsFor,
   requiresInstallPhoto,
-  parentStatus,
+  uploadBlocked,
+  canUpload,
+  canSendForSignoff,
+  sendBlockedReason,
+  changeRequest,
+  initialCompare,
+  justCreated,
+  now,
 }: {
   item: Item;
   bundle: Bundle;
   session: StaffSession;
+  now: Date;
+  instanceRows: InstanceRows;
+  staffRows: StaffRow[];
+  deptNames: Map<string, string>;
+  canDecideIds: Set<string>;
+  canDelegateIds: Set<string>;
+  myDecisionIds: Set<string>;
+  /** The confirmation the next-step card already offers. */
+  hideButtonsFor: string | null;
   requiresInstallPhoto: boolean;
-  parentStatus: string | null;
+  uploadBlocked: string | null;
+  canUpload: boolean;
+  canSendForSignoff: boolean;
+  sendBlockedReason: string | null;
+  changeRequest: { stepName: string; deciderName: string | null; comment: string | null } | null;
+  initialCompare: number | null;
+  justCreated: boolean;
 }) {
-  const itemCtx = itemAuthzCtx(bundle);
-  const [versions, instanceRows, invalidation, staffRows, [comments]] = await Promise.all([
+  const [versions, invalidation, [comments]] = await Promise.all([
     getItemVersions(item.id),
-    getItemInstances(item.id),
     artworkInvalidationPreview(item.id),
-    // Everyone on the team (names on the sign-off list); sign-offs can be
-    // handed to anyone except viewers.
-    db
-      .select({
-        id: users.id,
-        fullName: users.fullName,
-        email: users.email,
-        role: memberships.role,
-      })
-      .from(memberships)
-      .innerJoin(users, eq(memberships.userId, users.id))
-      .where(eq(memberships.organisationId, session.organisation.id)),
     db
       .select({ n: count() })
       .from(commentsTable)
@@ -545,27 +921,8 @@ async function ArtworkAndSignOff({
   ]);
   const commentCount = Number(comments?.n ?? 0);
 
-  const canDecideIds = new Set<string>();
-  const canDelegateIds = new Set<string>();
-  for (const { instance } of instanceRows) {
-    if (instance.status !== "pending" || instance.runNumber !== item.currentRunNumber) continue;
-    const step: ApprovalStepCtx = {
-      assignedRole: instance.assignedRole,
-      assignedDepartmentId: instance.assignedDepartmentId,
-      stepKind: instance.stepKindSnapshot,
-      assignedUserId: instance.assignedUserId,
-      entity: { type: "signage_item", item: itemCtx },
-    };
-    if (can(session.actor, { type: "approval.decide", step })) canDecideIds.add(instance.id);
-    if (can(session.actor, { type: "approval.delegate", step })) canDelegateIds.add(instance.id);
-  }
-
   const versionById = new Map(versions.map((v) => [v.version.id, v.version.versionNumber]));
   const nameById = new Map(staffRows.map((u) => [u.id, u.fullName || u.email]));
-  const deptNames = await departmentNames(
-    db,
-    instanceRows.map((r) => r.instance.assignedDepartmentId),
-  );
   const chain: ChainInstance[] = instanceRows.map(({ instance, decider }) => ({
     id: instance.id,
     runNumber: instance.runNumber,
@@ -590,6 +947,18 @@ async function ArtworkAndSignOff({
     assigneeName: instance.assignedUserId ? (nameById.get(instance.assignedUserId) ?? null) : null,
     confirmedOn: instance.confirmedOn,
   }));
+  // Sign-off is the decisions on the artwork; production and install are
+  // the confirmations that follow (this round only).
+  const signoffChain = chain.filter((c) => c.stepKind === "approval");
+  const productionChain = chain.filter(
+    (c) => c.stepKind === "confirmation" && c.runNumber === item.currentRunNumber,
+  );
+  // The viewer's own decision sits under the preview; the next step's
+  // confirmation sits in the card. Neither is repeated in the chain.
+  const chainDecideIds = new Set(
+    [...canDecideIds].filter((id) => !myDecisionIds.has(id) && id !== hideButtonsFor),
+  );
+  const myDecisions = chain.filter((c) => myDecisionIds.has(c.id));
 
   const versionRows: VersionRow[] = await Promise.all(
     versions.map(async ({ version, uploader }) => {
@@ -622,19 +991,54 @@ async function ArtworkAndSignOff({
       };
     }),
   );
+  const delegatableUsers = staffRows
+    .filter((u) => u.role !== "viewer")
+    .map((u) => ({ id: u.id, name: u.fullName || u.email }));
+  const noun =
+    item.kind === "stand_design" ? "design" : item.kind === "stand_panel" ? "graphic" : "artwork";
 
-  const uploadBlocked = ["installed", "snagged", "closed"].includes(item.status)
-    ? "This item is installed — an admin or ops user must reopen it before new artwork can be uploaded."
-    : item.kind === "stand_panel" && artworkBlockedReason(item.status, { parentStatus })
-      ? `${PANEL_BLOCKED_MESSAGE}.`
-      : null;
+  const decision =
+    myDecisions.length > 0 ? (
+      <div id="your-decision" className="scroll-mt-20 space-y-2">
+        {myDecisions.map((d) => {
+          const overdue = d.dueAt && d.dueAt.getTime() < now.getTime();
+          return (
+            <section
+              key={d.id}
+              aria-label={`Your decision: ${d.stepName}`}
+              className="rounded-lg border border-sky-300 bg-sky-50/60 p-4 dark:border-sky-800 dark:bg-sky-950/30"
+            >
+              <p className="font-semibold">Your decision — {d.stepName}</p>
+              <p className="text-muted-foreground mb-3 text-sm">
+                {versions.length > 0
+                  ? `On v${versionById.get(item.currentArtworkVersionId ?? "") ?? versions[0].version.versionNumber}, shown above.`
+                  : "No artwork uploaded yet."}
+                {d.dueAt && (
+                  <span className={overdue ? "text-destructive font-medium" : undefined}>
+                    {" "}
+                    {overdue ? "Overdue since" : "Due"} {formatDate(d.dueAt)}.
+                  </span>
+                )}
+              </p>
+              <DecideButtons
+                instanceId={d.id}
+                stepKind="approval"
+                stepName={d.stepName}
+                expectedStatus="pending"
+                expectedLockedVersionId={item.currentArtworkVersionId}
+              />
+            </section>
+          );
+        })}
+      </div>
+    ) : null;
 
   return (
     <div className="grid gap-8">
       <ArtworkTab
         itemId={item.id}
         versions={versionRows}
-        canUpload={can(session.actor, { type: "artwork.upload", item: itemCtx })}
+        canUpload={canUpload}
         invalidationCount={invalidation.count}
         invalidationSteps={invalidation.steps}
         panelWarning={panelWarning(invalidation.panels)}
@@ -645,29 +1049,51 @@ async function ArtworkAndSignOff({
             ? `artwork/${bundle.organisation.id}/${bundle.edition.id}/signage_item/${item.id}/`
             : null
         }
+        status={item.status}
+        initialCompare={initialCompare}
+        changeRequest={changeRequest}
+        canSendForSignoff={canSendForSignoff}
+        sendBlockedReason={sendBlockedReason}
+        autoFocusUpload={justCreated}
+        noun={noun}
+        decision={decision}
       />
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold">Sign-off</h2>
-        {chain.length === 0 ? (
+      <section className="space-y-3" aria-labelledby="signoff-heading">
+        <h2 id="signoff-heading" className="text-sm font-semibold">
+          Sign-off
+        </h2>
+        {signoffChain.length === 0 ? (
           <p className="text-muted-foreground text-sm">
-            {item.kind === "stand_design"
-              ? "Not sent for sign-off yet — upload the design, then use Submit for review."
-              : "Not sent for sign-off yet — add artwork, then use Submit for review."}
+            Not sent for sign-off yet — add the {noun}, then use Send for sign-off.
           </p>
         ) : (
           <ApprovalChain
-            instances={chain}
+            instances={signoffChain}
             currentRun={item.currentRunNumber}
-            canDecideIds={canDecideIds}
+            canDecideIds={chainDecideIds}
             canDelegateIds={canDelegateIds}
             currentVersionId={item.currentArtworkVersionId}
             requiresInstallPhoto={requiresInstallPhoto}
-            delegatableUsers={staffRows
-              .filter((u) => u.role !== "viewer")
-              .map((u) => ({ id: u.id, name: u.fullName || u.email }))}
+            delegatableUsers={delegatableUsers}
           />
         )}
       </section>
+      {productionChain.length > 0 && (
+        <section className="space-y-3" aria-labelledby="production-heading">
+          <h2 id="production-heading" className="text-sm font-semibold">
+            Production &amp; install
+          </h2>
+          <ApprovalChain
+            instances={productionChain}
+            currentRun={item.currentRunNumber}
+            canDecideIds={chainDecideIds}
+            canDelegateIds={canDelegateIds}
+            currentVersionId={item.currentArtworkVersionId}
+            requiresInstallPhoto={requiresInstallPhoto}
+            delegatableUsers={delegatableUsers}
+          />
+        </section>
+      )}
       {can(session.actor, { type: "comment.internal.write" }) && (
         <section className="max-w-2xl">
           <QuickComment itemId={item.id} count={commentCount} />
@@ -697,27 +1123,45 @@ async function CommentsSection({ itemId, session }: { itemId: string; session: S
   );
 }
 
-async function HistorySection({ itemId }: { itemId: string }) {
-  const audit = await getEntityAudit("signage_item", itemId);
+/** Every change, newest first, ending with when (and by whom) it was created. */
+async function HistorySection({ item, creatorName }: { item: Item; creatorName: string | null }) {
+  const audit = await getEntityAudit("signage_item", item.id);
+  const hasCreate = audit.some(({ entry }) => entry.action === "create");
   return (
-    <ol className="max-w-3xl space-y-2 text-sm">
-      {audit.map(({ entry, actor }) => (
-        <li
-          key={entry.id}
-          className="flex flex-col gap-1 rounded-lg border p-3 sm:flex-row sm:gap-3"
-        >
-          <span className="text-muted-foreground shrink-0 text-xs sm:w-40">
-            {formatDateTime(entry.createdAt)}
-          </span>
-          <div>
-            <p>{entry.summary}</p>
-            <p className="text-muted-foreground text-xs">
-              {actor?.fullName || actor?.email || "System"}
+    <div className="grid max-w-3xl gap-3">
+      {audit.length === 0 && (
+        <p className="text-muted-foreground rounded-lg border border-dashed px-4 py-6 text-center text-sm">
+          No changes recorded yet. Edits, uploads and sign-off decisions will appear here.
+        </p>
+      )}
+      <ol className="space-y-2 text-sm" aria-label="History">
+        {audit.map(({ entry, actor }) => (
+          <li
+            key={entry.id}
+            className="flex flex-col gap-1 rounded-lg border p-3 sm:flex-row sm:gap-3"
+          >
+            <span className="text-muted-foreground shrink-0 text-xs sm:w-40">
+              {formatDateTime(entry.createdAt)}
+            </span>
+            <div>
+              <p>{entry.summary}</p>
+              <p className="text-muted-foreground text-xs">
+                {actor?.fullName || actor?.email || "System"}
+              </p>
+            </div>
+          </li>
+        ))}
+        {!hasCreate && (
+          <li className="text-muted-foreground flex flex-col gap-1 rounded-lg border border-dashed p-3 sm:flex-row sm:gap-3">
+            <span className="shrink-0 text-xs sm:w-40">{formatDateTime(item.createdAt)}</span>
+            <p>
+              Created {item.ref}
+              {creatorName ? ` — by ${creatorName}` : " (imported or set up before History began)"}
             </p>
-          </div>
-        </li>
-      ))}
-    </ol>
+          </li>
+        )}
+      </ol>
+    </div>
   );
 }
 
@@ -747,7 +1191,7 @@ async function StandDetails({
       {!canEdit && (
         <p className="text-muted-foreground text-sm">
           {editionIsReadOnly(bundle.edition.status)
-            ? "This show is archived, so its stands can no longer be changed."
+            ? "This event is archived, so its stands can no longer be changed."
             : "You can view this stand but not change it."}
         </p>
       )}

@@ -42,14 +42,46 @@ export function formatMoney(value: string | number | null | undefined, currency 
   }).format(n);
 }
 
-/** Labels that plain "replace the underscores" gets wrong. */
+/**
+ * The words people see for each status (decided once for the whole app),
+ * and labels that plain "replace the underscores" gets wrong. Item
+ * statuses first, then sign-off step states.
+ */
 const STATUS_LABELS: Record<string, string> = {
-  wont_fix: "Won't fix",
+  // Items (signs, sponsorship items, stands and panels)
+  draft: "Draft",
+  awaiting_artwork: "Needs artwork",
+  in_review: "In sign-off",
+  changes_requested: "Changes requested",
+  approved: "Approved",
+  approved_with_conditions: "Approved (conditions)",
+  in_production: "Sent to print",
+  delivered: "Delivered",
+  installed: "Installed",
+  snagged: "Snagged",
+  closed: "Complete",
   on_hold: "On hold",
+  rejected: "Rejected",
+  // Sign-off steps ("pending" reads better with a name: see stepStatusLabel)
+  pending: "Their turn",
+  waiting: "Not started",
+  invalidated: "Superseded",
+  skipped: "Skipped",
+  // Snags
+  wont_fix: "Won't fix",
 };
 
 export function statusLabel(status: string): string {
   return STATUS_LABELS[status] ?? status.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+}
+
+/**
+ * A sign-off step's state, naming who it waits on when that is known:
+ * "Waiting on Operations", else "Their turn"; every other state as usual.
+ */
+export function stepStatusLabel(status: string, who?: string | null): string {
+  if (status === "pending" && who?.trim()) return `Waiting on ${who.trim()}`;
+  return statusLabel(status);
 }
 
 /** Install slots as people write them. */

@@ -16,13 +16,18 @@ test.describe("stand numbers and supplier types", () => {
     await page.getByLabel("Stand no.").fill("B12");
     await page.getByRole("button", { name: "Create item" }).click();
     await page.waitForURL("**/signage/SIG-BIRM27-*");
+    await page.getByRole("link", { name: "Details", exact: true }).click();
     await expect(page.getByText("Stand no.").first()).toBeVisible();
     await expect(page.getByText("B12").first()).toBeVisible();
 
-    // In the table, Stand no. comes straight after Location.
+    // In the table, Stand no. (one click away in Columns) comes straight
+    // after Hall · Location.
     await page.goto(`${baseURL}/BIRM27/signage`);
+    await page.getByRole("button", { name: "Columns" }).click();
+    await page.getByRole("menuitemcheckbox", { name: "Stand no." }).click();
+    await page.keyboard.press("Escape");
     const headers = await page.locator("main table thead th").allInnerTexts();
-    const at = headers.findIndex((h) => h.trim() === "Location");
+    const at = headers.findIndex((h) => h.trim() === "Hall · Location");
     expect(at).toBeGreaterThan(-1);
     expect(headers[at + 1].trim()).toBe("Stand no.");
     await page.getByPlaceholder(/Search ref/).fill(name);
