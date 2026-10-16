@@ -8,6 +8,14 @@ import { dashboardData, refsForInstanceEntities } from "@/lib/queries/dashboard"
 import { formatDate, formatDateTime, formatMoney, roleLabel } from "@/lib/format";
 import { itemPath } from "@/lib/edition-path";
 import { StatusBadge } from "@/components/status-badge";
+import { editionIsReadOnly } from "@/lib/edition-lock";
+import { getSetupStatus } from "@/lib/queries/setup";
+import { todayInLondon } from "@/lib/today";
+import { EmptyState } from "@/components/empty-state";
+import { Button } from "@/components/ui/button";
+import { SetupCard } from "@/components/setup/setup-card";
+import { ImportSheet } from "@/components/setup/import-sheet";
+import { Pencil, Plus, Signpost } from "lucide-react";
 
 export const metadata = { title: "Dashboard" };
 export const dynamic = "force-dynamic";
@@ -50,10 +58,24 @@ export default async function DashboardPage({
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
   const { notice } = await searchParams;
-  const [data, logoUrl] = await Promise.all([
+  const archived = editionIsReadOnly(ed.edition.status);
+  const canSetup = can(session.actor, { type: "settings.manage" }) && !archived;
+  const canAddSigns = can(session.actor, { type: "signage.create" }) && !archived;
+  const [data, logoUrl, setup] = await Promise.all([
     dashboardData(ed.edition.id),
     showLogoUrl(ed.edition.logoPath),
+    // Admins and Operations see how far setup has got until it's finished.
+    canSetup &&
+    !(ed.edition.setupChecked ?? []).includes("dismissed") &&
+    ed.edition.breakdownEnd >= todayInLondon()
+      ? getSetupStatus(ed.edition, session.organisation.id, {
+          canSetup,
+          canUsers: can(session.actor, { type: "users.manage" }),
+          canAddSigns,
+        })
+      : Promise.resolve(null),
   ]);
+  const noSigns = Object.values(data.statusCounts).every((n) => !n);
   const refMap = await refsForInstanceEntities(data.overdue);
   const mostOverdueRef = data.mostOverdue ? refsForLink(refMap, data.mostOverdue) : null;
 
@@ -74,8 +96,8 @@ export default async function DashboardPage({
     <div className="flex flex-col gap-6 p-4 sm:p-6">
       {notice && (
         <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-          The show was created, but the logo wasn&apos;t saved: {notice}. Add it again from Shows →
-          Edit.
+          The event was created, but the logo wasn&apos;t saved: {notice}. Add it again from Event
+          details.
         </p>
       )}
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -97,7 +119,28 @@ export default async function DashboardPage({
           </p>
         </div>
         <StatusBadge status={ed.edition.status} />
+        {canSetup && (
+          <Button asChild variant="outline" size="sm">
+            <Link href={`/${ed.edition.code}/setup#details`}>
+              <Pencil aria-hidden /> Edit details
+            </Link>
+          </Button>
+        )}
       </div>
+
+      {setup && !setup.summary.complete && (
+        <SetupCard
+          editionId={ed.edition.id}
+          code={ed.edition.code}
+          done={setup.summary.done}
+          total={setup.summary.total}
+          next={
+            setup.summary.next
+              ? { key: setup.summary.next.key, title: setup.summary.next.title }
+              : null
+          }
+        />
+      )}
 
       {data.mostOverdue && mostOverdueRef && (
         <Link
@@ -119,18 +162,39 @@ export default async function DashboardPage({
       <section className="grid gap-4 lg:grid-cols-3">
         <div className="rounded-lg border p-4 lg:col-span-2">
           <h2 className="mb-3 text-sm font-semibold">Signage by status</h2>
-          <div className="flex flex-wrap gap-2">
-            {SIGNAGE_ORDER.filter((s) => data.statusCounts[s]).map((s) => (
-              <Link
-                key={s}
-                href={`/${editionCode}/signage?status=${s}`}
-                className="hover:bg-muted/50 flex items-center gap-2 rounded-md border px-3 py-2"
-              >
-                <StatusBadge status={s} />
-                <span className="text-sm font-semibold">{data.statusCounts[s]}</span>
-              </Link>
-            ))}
-          </div>
+          {noSigns ? (
+            <EmptyState
+              icon={Signpost}
+              title="No signs yet"
+              description="Add them one by one, or import the schedule you already have in a spreadsheet."
+              className="py-6"
+              action={
+                canAddSigns ? (
+                  <>
+                    <Button asChild>
+                      <Link href={`/${editionCode}/signage/new`}>
+                        <Plus aria-hidden /> Add a sign
+                      </Link>
+                    </Button>
+                    <ImportSheet editionId={ed.edition.id} />
+                  </>
+                ) : undefined
+              }
+            />
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {SIGNAGE_ORDER.filter((s) => data.statusCounts[s]).map((s) => (
+                <Link
+                  key={s}
+                  href={`/${editionCode}/signage?status=${s}`}
+                  className="hover:bg-muted/50 flex items-center gap-2 rounded-md border px-3 py-2"
+                >
+                  <StatusBadge status={s} />
+                  <span className="text-sm font-semibold">{data.statusCounts[s]}</span>
+                </Link>
+              ))}
+            </div>
+          )}
           <Link
             href={`/${editionCode}/sponsorship`}
             className="text-muted-foreground mt-3 inline-block text-sm hover:underline"

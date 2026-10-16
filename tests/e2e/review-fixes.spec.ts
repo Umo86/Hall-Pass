@@ -29,9 +29,12 @@ test.describe("platform review fixes", () => {
     await signInAs(ctx, "ops@media10.test", baseURL!);
     const page = await ctx.newPage();
     await page.goto(`${baseURL}/BIRM27/signage/SIG-BIRM27-001?tab=artwork`);
-    await page.getByRole("button", { name: /BIRM27/ }).click();
-    const other = page.getByRole("menuitem").filter({ hasNotText: "BIRM27" }).first();
-    const code = (await other.locator("span").first().textContent())!.trim();
+    await page.getByRole("button", { name: /^Event: .*BIRM27/ }).click();
+    const other = page
+      .locator("[role=menuitem][data-code]")
+      .filter({ hasNotText: "BIRM27" })
+      .first();
+    const code = (await other.getAttribute("data-code"))!;
     await other.click();
     await page.waitForURL(`**/${code}/signage`);
     await expect(page.getByRole("heading", { name: /Signage schedule/ })).toBeVisible();
@@ -53,7 +56,7 @@ test.describe("platform review fixes", () => {
     await ctx.close();
   });
 
-  test("copying a show keeps its sponsors, sponsor signage and stands", async ({
+  test("copying an event keeps its sponsors, sponsor signage and stands", async ({
     browser,
     baseURL,
   }) => {
@@ -61,24 +64,38 @@ test.describe("platform review fixes", () => {
     await signInAs(ctx, "admin@media10.test", baseURL!);
     const page = await ctx.newPage();
     const code = `CP${String(Date.now()).slice(-6)}`;
-    await page.goto(`${baseURL}/editions`);
-    await page.getByRole("button", { name: "Copy a show" }).click();
-    const dialog = page.getByRole("dialog");
-    const source = dialog.getByLabel("Copy from");
+    await page.goto(`${baseURL}/start?mode=copy`, { waitUntil: "networkidle" });
+    const source = page.getByLabel("Copy from");
     const value = await source
-      .locator("option", { hasText: "BIRM27" })
+      .locator("option", { hasText: /^UKCW Birmingham 2027 · NEC Birmingham/ })
       .first()
       .getAttribute("value");
     await source.selectOption(value!);
-    await dialog.getByLabel("New name").fill(`Copy of BIRM27 ${code}`);
-    await dialog.getByLabel("New code").fill(code);
-    await dialog.getByLabel("Build starts").fill("2028-10-01");
-    await dialog.getByLabel("Build ends").fill("2028-10-04");
-    await dialog.getByLabel("Show opens").fill("2028-10-05");
-    await dialog.getByLabel("Show closes").fill("2028-10-07");
-    await dialog.getByLabel("Breakdown ends").fill("2028-10-08");
-    await dialog.getByRole("button", { name: "Copy show" }).click();
-    await expect(dialog).toHaveCount(0);
+    // Next year's name and dates are suggested from the source.
+    await expect(page.getByLabel("Event name")).toHaveValue("UKCW Birmingham 2028");
+    await expect(page.getByLabel("Opens to visitors")).toHaveValue("2028-10-03");
+    await page.getByLabel("Event name").fill(`Copy of BIRM27 ${code}`);
+    await page.getByRole("button", { name: "Change" }).click();
+    await page.getByLabel("Reference code").fill(code);
+    await page.getByLabel("Opens to visitors").fill("2028-10-05");
+    await page.getByLabel("Closes to visitors").fill("2028-10-07");
+    await expect(page.getByLabel(/^Halls & locations \(2 halls/)).toBeChecked();
+    await expect(page.getByLabel(/^Signs and sponsorship items as drafts/)).toBeChecked();
+    await page.getByRole("button", { name: "Copy event" }).click();
+
+    // Setup: what came across is done; the dates and deadlines need a look.
+    await page.waitForURL(`**/${code}/setup`);
+    await expect(page.getByText(/Copied from UKCW Birmingham 2027 — 2 halls/)).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /^2\. Halls and locations\s*, Done/ }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /^8\. First signs\s*, Done/ })).toContainText(
+      "copied as drafts",
+    );
+    await expect(
+      page.getByRole("button", { name: /^1\. Dates, venue and budget\s*, To do/ }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /^3\. Deadlines\s*, To do/ })).toBeVisible();
 
     // Sponsors and sponsor signage come across; stands keep their own refs.
     await page.goto(`${baseURL}/${code}/sponsorship?tab=sponsors`);

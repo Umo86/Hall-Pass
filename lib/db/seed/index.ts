@@ -4,9 +4,17 @@
  * or stand number is absent.
  *
  *   pnpm db:seed
+ *
+ * Starter mode sets up a real organisation instead of the demo: just the
+ * organisation, its first admin, the four departments, the signage sign-off
+ * workflow, the standard sign types and supplier services. No series,
+ * venues, events or items — the admin creates the first event in the app.
+ *
+ *   SEED_MODE=starter FIRST_ADMIN_EMAIL=you@company.com \
+ *     ORG_NAME="Media10" BRAND_NAME="Hall Pass" pnpm db:seed
  */
-import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { and, eq, isNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import "dotenv/config";
@@ -22,7 +30,7 @@ import {
   type StepDef,
 } from "@/lib/workflow";
 import { persistRun } from "@/lib/workflow/persist";
-import { syncDepartmentSteps } from "@/lib/domain/departments";
+import { ensureSignageWorkflow, syncDepartmentSteps } from "@/lib/domain/departments";
 import { formatSignageRef, formatStandDesignRef, formatStandRef, STAND_SEQ_BASE } from "@/lib/refs";
 import { ensureStandDesignWorkflow } from "@/lib/domain/stand-designs";
 
@@ -43,6 +51,137 @@ const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const uid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
 const engineSettings: EngineSettings = { costThresholdForDirector: 5000 };
+
+/** What suppliers can do (admins can add more under Settings). */
+const SERVICE_NAMES = [
+  "Signage print",
+  "Digital screens & AV",
+  "Rigging",
+  "Installation",
+  "Staffing",
+  "Furniture",
+  "Structural engineering",
+  "Floor Manager",
+  "Security",
+];
+
+/** The standard sign and sponsorship item types. */
+const ITEM_TYPE_DEFS: Array<{
+  name: string;
+  code: string;
+  defaultFixingMethod: typeof s.signageItems.$inferSelect.fixingMethod;
+  requiresVenueApprovalDefault: boolean;
+  kind?: "signage" | "sponsorship_item";
+}> = [
+  {
+    name: "Hanging banner",
+    code: "hanging_banner",
+    defaultFixingMethod: "rigged",
+    requiresVenueApprovalDefault: true,
+  },
+  {
+    name: "Foamex board",
+    code: "foamex_board",
+    defaultFixingMethod: "wall_mounted",
+    requiresVenueApprovalDefault: false,
+  },
+  {
+    name: "Fabric graphic",
+    code: "fabric_graphic",
+    defaultFixingMethod: "shell_mounted",
+    requiresVenueApprovalDefault: false,
+  },
+  {
+    name: "Floor vinyl",
+    code: "floor_vinyl",
+    defaultFixingMethod: "floor",
+    requiresVenueApprovalDefault: false,
+  },
+  {
+    name: "Aisle sign",
+    code: "aisle_sign",
+    defaultFixingMethod: "rigged",
+    requiresVenueApprovalDefault: true,
+  },
+  {
+    name: "Entrance feature",
+    code: "entrance_feature",
+    defaultFixingMethod: "freestanding",
+    requiresVenueApprovalDefault: true,
+  },
+  {
+    name: "Registration",
+    code: "registration",
+    defaultFixingMethod: "freestanding",
+    requiresVenueApprovalDefault: false,
+  },
+  {
+    name: "Seminar theatre",
+    code: "seminar_theatre",
+    defaultFixingMethod: "freestanding",
+    requiresVenueApprovalDefault: false,
+  },
+  {
+    name: "Feature area",
+    code: "feature_area",
+    defaultFixingMethod: "freestanding",
+    requiresVenueApprovalDefault: false,
+  },
+  {
+    name: "External",
+    code: "external",
+    defaultFixingMethod: "freestanding",
+    requiresVenueApprovalDefault: true,
+  },
+  {
+    name: "Digital screen",
+    code: "digital_screen",
+    defaultFixingMethod: "digital",
+    requiresVenueApprovalDefault: false,
+  },
+  // Sponsorship deliverables sold by the sales team (separate register).
+  {
+    name: "Branded lanyards",
+    code: "lanyard",
+    defaultFixingMethod: null,
+    requiresVenueApprovalDefault: false,
+    kind: "sponsorship_item",
+  },
+  {
+    name: "Show bags",
+    code: "show_bag",
+    defaultFixingMethod: null,
+    requiresVenueApprovalDefault: false,
+    kind: "sponsorship_item",
+  },
+  {
+    name: "Registration branding",
+    code: "reg_branding",
+    defaultFixingMethod: null,
+    requiresVenueApprovalDefault: false,
+    kind: "sponsorship_item",
+  },
+  // Catch-alls so staff can add something new without a code change.
+  {
+    name: "Other signage",
+    code: "other_signage",
+    defaultFixingMethod: null,
+    requiresVenueApprovalDefault: false,
+  },
+  {
+    name: "Other sponsorship item",
+    code: "other_sponsorship",
+    defaultFixingMethod: null,
+    requiresVenueApprovalDefault: false,
+    kind: "sponsorship_item",
+  },
+];
+const formatFor = (it: { code: string; kind?: string }) =>
+  (it.kind ?? "signage") !== "signage"
+    ? null
+    : it.code === "digital_screen"
+      ? ("digital" as const)
+      : ("print" as const);
 
 async function main() {
   // ---------------------------------------------------------------- tenancy
@@ -304,19 +443,8 @@ async function main() {
   }
 
   // What each supplier does (admins can add more under Settings).
-  const serviceNames = [
-    "Signage print",
-    "Digital screens & AV",
-    "Rigging",
-    "Installation",
-    "Staffing",
-    "Furniture",
-    "Structural engineering",
-    "Floor Manager",
-    "Security",
-  ];
   const serviceRows: Record<string, typeof s.supplierServices.$inferSelect> = {};
-  for (const [i, name] of serviceNames.entries()) {
+  for (const [i, name] of SERVICE_NAMES.entries()) {
     const [row] = await db
       .insert(s.supplierServices)
       .values({ organisationId: org.id, name, sortOrder: i + 1 })
@@ -537,124 +665,8 @@ async function main() {
   const standWf = await ensureWorkflow("Stand default", "stand", defaultStandSteps);
 
   // ------------------------------------------------------------------ item types
-  const itemTypeDefs: Array<{
-    name: string;
-    code: string;
-    defaultFixingMethod: typeof s.signageItems.$inferSelect.fixingMethod;
-    requiresVenueApprovalDefault: boolean;
-    kind?: "signage" | "sponsorship_item";
-  }> = [
-    {
-      name: "Hanging banner",
-      code: "hanging_banner",
-      defaultFixingMethod: "rigged",
-      requiresVenueApprovalDefault: true,
-    },
-    {
-      name: "Foamex board",
-      code: "foamex_board",
-      defaultFixingMethod: "wall_mounted",
-      requiresVenueApprovalDefault: false,
-    },
-    {
-      name: "Fabric graphic",
-      code: "fabric_graphic",
-      defaultFixingMethod: "shell_mounted",
-      requiresVenueApprovalDefault: false,
-    },
-    {
-      name: "Floor vinyl",
-      code: "floor_vinyl",
-      defaultFixingMethod: "floor",
-      requiresVenueApprovalDefault: false,
-    },
-    {
-      name: "Aisle sign",
-      code: "aisle_sign",
-      defaultFixingMethod: "rigged",
-      requiresVenueApprovalDefault: true,
-    },
-    {
-      name: "Entrance feature",
-      code: "entrance_feature",
-      defaultFixingMethod: "freestanding",
-      requiresVenueApprovalDefault: true,
-    },
-    {
-      name: "Registration",
-      code: "registration",
-      defaultFixingMethod: "freestanding",
-      requiresVenueApprovalDefault: false,
-    },
-    {
-      name: "Seminar theatre",
-      code: "seminar_theatre",
-      defaultFixingMethod: "freestanding",
-      requiresVenueApprovalDefault: false,
-    },
-    {
-      name: "Feature area",
-      code: "feature_area",
-      defaultFixingMethod: "freestanding",
-      requiresVenueApprovalDefault: false,
-    },
-    {
-      name: "External",
-      code: "external",
-      defaultFixingMethod: "freestanding",
-      requiresVenueApprovalDefault: true,
-    },
-    {
-      name: "Digital screen",
-      code: "digital_screen",
-      defaultFixingMethod: "digital",
-      requiresVenueApprovalDefault: false,
-    },
-    // Sponsorship deliverables sold by the sales team (separate register).
-    {
-      name: "Branded lanyards",
-      code: "lanyard",
-      defaultFixingMethod: null,
-      requiresVenueApprovalDefault: false,
-      kind: "sponsorship_item",
-    },
-    {
-      name: "Show bags",
-      code: "show_bag",
-      defaultFixingMethod: null,
-      requiresVenueApprovalDefault: false,
-      kind: "sponsorship_item",
-    },
-    {
-      name: "Registration branding",
-      code: "reg_branding",
-      defaultFixingMethod: null,
-      requiresVenueApprovalDefault: false,
-      kind: "sponsorship_item",
-    },
-    // Catch-alls so staff can add something new without a code change.
-    {
-      name: "Other signage",
-      code: "other_signage",
-      defaultFixingMethod: null,
-      requiresVenueApprovalDefault: false,
-    },
-    {
-      name: "Other sponsorship item",
-      code: "other_sponsorship",
-      defaultFixingMethod: null,
-      requiresVenueApprovalDefault: false,
-      kind: "sponsorship_item",
-    },
-  ];
-  const formatFor = (it: { code: string; kind?: string }) =>
-    (it.kind ?? "signage") !== "signage"
-      ? null
-      : it.code === "digital_screen"
-        ? ("digital" as const)
-        : ("print" as const);
   const itemTypeRows: Record<string, typeof s.itemTypes.$inferSelect> = {};
-  for (const [i, it] of itemTypeDefs.entries()) {
+  for (const [i, it] of ITEM_TYPE_DEFS.entries()) {
     const [row] = await db
       .insert(s.itemTypes)
       .values({
@@ -1923,7 +1935,129 @@ async function main() {
   await client.end();
 }
 
-main().catch((err) => {
+/** The departments a new organisation starts with (renamed or added to in Users). */
+const STARTER_DEPARTMENTS = [
+  { name: "Operations", defaultFor: ["organiser", "sponsor"], signsLast: false },
+  { name: "Marketing", defaultFor: ["organiser", "sponsor"], signsLast: false },
+  { name: "Sales", defaultFor: ["sponsor"], signsLast: false },
+  { name: "Senior management", defaultFor: ["organiser", "sponsor"], signsLast: true },
+];
+
+/**
+ * SEED_MODE=starter: a real organisation with nothing in it yet but what
+ * every organisation needs. Safe to run twice.
+ */
+async function starter() {
+  const email = process.env.FIRST_ADMIN_EMAIL?.trim().toLowerCase();
+  if (!email || !email.includes("@")) {
+    throw new Error("Set FIRST_ADMIN_EMAIL to the first admin's email address");
+  }
+  const orgName = process.env.ORG_NAME?.trim() || "My organisation";
+  const slug =
+    process.env.ORG_SLUG?.trim() ||
+    orgName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") ||
+    "organisation";
+  const [org] = await db
+    .insert(s.organisations)
+    .values({ name: orgName, slug, brandName: process.env.BRAND_NAME?.trim() || "Hall Pass" })
+    .onConflictDoUpdate({ target: s.organisations.slug, set: { name: orgName } })
+    .returning();
+
+  // The first admin. An existing account gets the membership; a demo
+  // address (…@….test) gets an account for demo sign-in; anyone else gets an
+  // invitation that turns into the membership when they first sign in.
+  const existing = await db.query.users.findFirst({ where: eq(s.users.email, email) });
+  let adminNote: string;
+  if (existing) {
+    const other = await db.query.memberships.findFirst({
+      where: eq(s.memberships.userId, existing.id),
+    });
+    if (other && other.organisationId !== org.id) {
+      throw new Error(`${email} already belongs to another organisation`);
+    }
+    await db
+      .insert(s.memberships)
+      .values({ userId: existing.id, organisationId: org.id, role: "admin" })
+      .onConflictDoNothing();
+    adminNote = `${email} is an admin (existing account).`;
+  } else if (email.endsWith(".test")) {
+    const [user] = await db
+      .insert(s.users)
+      .values({ id: randomUUID(), email, fullName: process.env.FIRST_ADMIN_NAME?.trim() ?? "" })
+      .returning();
+    await db
+      .insert(s.memberships)
+      .values({ userId: user.id, organisationId: org.id, role: "admin" })
+      .onConflictDoNothing();
+    adminNote = `${email} is an admin (demo sign-in).`;
+  } else {
+    const open = await db.query.staffInvites.findFirst({
+      where: and(
+        eq(s.staffInvites.organisationId, org.id),
+        eq(s.staffInvites.invitedEmail, email),
+        isNull(s.staffInvites.acceptedAt),
+        isNull(s.staffInvites.revokedAt),
+      ),
+    });
+    if (!open) {
+      await db.insert(s.staffInvites).values({
+        organisationId: org.id,
+        invitedEmail: email,
+        fullName: process.env.FIRST_ADMIN_NAME?.trim() ?? "",
+        role: "admin",
+        // No expiry: the first admin may not sign in straight away.
+        expiresAt: null,
+        inviteTokenHash: sha(randomBytes(24).toString("base64url")),
+      });
+    }
+    adminNote = `${email} is invited as admin: they sign in at /login with that email.`;
+  }
+
+  for (const [i, d] of STARTER_DEPARTMENTS.entries()) {
+    await db
+      .insert(s.departments)
+      .values({
+        organisationId: org.id,
+        name: d.name,
+        sortOrder: i + 1,
+        signsLast: d.signsLast,
+        defaultFor: d.defaultFor,
+      })
+      .onConflictDoNothing();
+  }
+  const workflowId = await ensureSignageWorkflow(db, org.id);
+
+  for (const [i, it] of ITEM_TYPE_DEFS.entries()) {
+    await db
+      .insert(s.itemTypes)
+      .values({
+        organisationId: org.id,
+        sortOrder: i,
+        defaultWorkflowId: workflowId,
+        format: formatFor(it),
+        ...it,
+      })
+      .onConflictDoNothing();
+  }
+  for (const [i, name] of SERVICE_NAMES.entries()) {
+    await db
+      .insert(s.supplierServices)
+      .values({ organisationId: org.id, name, sortOrder: i + 1 })
+      .onConflictDoNothing();
+  }
+
+  console.log(`Starter organisation "${org.name}" (${org.slug}) is ready.`);
+  console.log(adminNote);
+  console.log("Next: sign in, and the app asks for the first event.");
+  await client.end();
+}
+
+const starterMode = process.env.SEED_MODE === "starter" || process.argv.includes("--starter");
+
+(starterMode ? starter() : main()).catch((err) => {
   console.error(err);
   process.exit(1);
 });

@@ -47,6 +47,20 @@ Without Supabase configured, the login page offers **development sign-in** as an
 
 **Going live:** invite yourself as admin (Settings → Team), sign in with the emailed link, then remove `DEV_AUTH` and redeploy.
 
+**Start a real organisation** (no demo data): on an empty, migrated database run
+
+```bash
+SEED_MODE=starter FIRST_ADMIN_EMAIL=you@company.com ORG_NAME="Your company" pnpm db:seed
+```
+
+It creates only the organisation, the first admin (an invitation they accept by signing in
+with that email; a `…@….test` address gets a demo sign-in account instead), the departments
+Operations, Marketing, Sales and Senior management (signs last), the signage sign-off
+workflow, the standard sign types and supplier services. No series, venues, events or signs:
+the admin signs in, is taken to **Create your event**, and the event's setup checklist walks
+through dates, halls, deadlines, who signs off, people and the first signs. Optional:
+`BRAND_NAME`, `ORG_SLUG`, `FIRST_ADMIN_NAME`. Safe to run twice.
+
 Stand approvals are built but hidden; set `STANDS_ENABLED=1` to show them.
 
 Checks:

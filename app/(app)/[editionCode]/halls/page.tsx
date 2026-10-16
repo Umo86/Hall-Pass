@@ -1,11 +1,12 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, count, eq, isNull } from "drizzle-orm";
-import { db } from "@/lib/db/client";
-import { halls, locations, signageItems } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { getEditionByCode } from "@/lib/queries/editions";
+import { hallCopySources, hallsEditorData } from "@/lib/queries/setup";
+import { Page, PageHeader } from "@/components/page-header";
+import { Button } from "@/components/ui/button";
 import { HallsEditor } from "@/components/halls/halls-editor";
 
 export const metadata = { title: "Halls & locations" };
@@ -17,60 +18,45 @@ export default async function HallsPage({ params }: { params: Promise<{ editionC
   const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
   if (!ed) notFound();
 
-  const [hallRows, locationRows, byHall, byLocation] = await Promise.all([
-    db
-      .select()
-      .from(halls)
-      .where(eq(halls.editionId, ed.edition.id))
-      .orderBy(halls.sortOrder, halls.name),
-    db
-      .select({ loc: locations })
-      .from(locations)
-      .innerJoin(halls, eq(locations.hallId, halls.id))
-      .where(eq(halls.editionId, ed.edition.id))
-      .orderBy(locations.name),
-    db
-      .select({ id: signageItems.hallId, n: count() })
-      .from(signageItems)
-      .where(and(eq(signageItems.editionId, ed.edition.id), isNull(signageItems.deletedAt)))
-      .groupBy(signageItems.hallId),
-    db
-      .select({ id: signageItems.locationId, n: count() })
-      .from(signageItems)
-      .where(and(eq(signageItems.editionId, ed.edition.id), isNull(signageItems.deletedAt)))
-      .groupBy(signageItems.locationId),
+  const canSetup = can(session.actor, { type: "settings.manage" });
+  const canEdit = canSetup && !editionIsReadOnly(ed.edition.status);
+  const [data, sources] = await Promise.all([
+    hallsEditorData(ed.edition.id),
+    canEdit ? hallCopySources(session.organisation.id, ed.edition) : Promise.resolve([]),
   ]);
-  const hallCounts = new Map(byHall.map((r) => [r.id, Number(r.n)]));
-  const locCounts = new Map(byLocation.map((r) => [r.id, Number(r.n)]));
-  const canEdit =
-    can(session.actor, { type: "settings.manage" }) && !editionIsReadOnly(ed.edition.status);
+  const locationCount = data.halls.reduce((n, h) => n + h.locations.length, 0);
 
   return (
-    <div className="flex max-w-3xl flex-col gap-4 p-4 sm:p-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Halls &amp; locations</h1>
-        <p className="text-muted-foreground text-sm">
-          Where signs go at {ed.edition.name}. Every sign needs a hall and a location before it can
-          be sent for sign-off.
-        </p>
-      </div>
+    <Page width="narrow">
+      <PageHeader
+        title="Halls & locations"
+        description={
+          canEdit
+            ? `Where signs go at ${ed.edition.name}. Every sign needs a hall and a location before it can be sent for sign-off.`
+            : `Where signs go at ${ed.edition.name}. Only admins and Operations can add halls.`
+        }
+        meta={
+          data.halls.length > 0
+            ? `${data.halls.length} hall${data.halls.length === 1 ? "" : "s"} · ${locationCount} location${locationCount === 1 ? "" : "s"} · ${ed.venue.name}`
+            : ed.venue.name
+        }
+        actions={
+          canSetup ? (
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/${ed.edition.code}/setup`}>Event setup</Link>
+            </Button>
+          ) : undefined
+        }
+      />
       <HallsEditor
         editionId={ed.edition.id}
+        editionCode={ed.edition.code}
         canEdit={canEdit}
-        halls={hallRows.map((h) => ({
-          id: h.id,
-          name: h.name,
-          itemCount: hallCounts.get(h.id) ?? 0,
-          locations: locationRows
-            .filter(({ loc }) => loc.hallId === h.id)
-            .map(({ loc }) => ({
-              id: loc.id,
-              name: loc.name,
-              zone: loc.zone,
-              itemCount: locCounts.get(loc.id) ?? 0,
-            })),
-        }))}
+        venueName={ed.venue.name}
+        halls={data.halls}
+        zones={data.zones}
+        copySources={sources}
       />
-    </div>
+    </Page>
   );
 }

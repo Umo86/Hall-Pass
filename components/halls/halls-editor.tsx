@@ -1,28 +1,50 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useId, useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Copy, ListPlus, MapPin, Pencil, Plus, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { SelectNative } from "@/components/ui/select-native";
+import { Textarea } from "@/components/ui/textarea";
+import { useConfirm } from "@/components/confirm-dialog";
 import {
+  copyHallsFrom,
   createHall,
+  createHallsBulk,
   createLocation,
   deleteHall,
   deleteLocation,
   renameHall,
   renameLocation,
 } from "@/app/actions/halls";
+import { describeBulk, parseBulkHalls } from "./bulk";
+
+export type LocationRow = { id: string; name: string; zone: string | null; itemCount: number };
 
 export type HallRow = {
   id: string;
   name: string;
-  locations: { id: string; name: string; zone: string | null; itemCount: number }[];
+  locations: LocationRow[];
   itemCount: number;
+  /** Signs in this hall that have no location yet. */
+  unplacedCount: number;
 };
 
-type Result = { ok: boolean; error?: string };
+export type HallCopySource = {
+  id: string;
+  name: string;
+  code: string;
+  halls: number;
+  locations: number;
+};
 
+type Result = { ok: boolean; error?: string; message?: string };
+
+/** Run a server action: toast on success and refresh, keep the error for inline display. */
 function useAction() {
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -31,198 +53,590 @@ function useAction() {
     setError(null);
     start(async () => {
       const res = await fn();
-      if (!res.ok) setError(res.error ?? "Something went wrong");
-      else {
-        onDone?.();
-        router.refresh();
+      if (!res.ok) {
+        setError(res.error ?? "Something went wrong");
+        return;
       }
+      toast.success(res.message ?? "Saved");
+      onDone?.();
+      router.refresh();
     });
   }
-  return { error, pending, run };
+  return { error, setError, pending, run };
 }
 
-function InlineAdd({
-  placeholder,
-  label,
-  onAdd,
+function plural(n: number, one: string, many = `${one}s`) {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+function InlineError({ error }: { error: string | null }) {
+  if (!error) return null;
+  return (
+    <p className="text-destructive w-full text-sm" role="alert">
+      {error}
+    </p>
+  );
+}
+
+/** Location name + optional zone, used for adding and for editing. */
+function LocationFields({
+  hallName,
+  name,
+  zone,
+  zonesListId,
+  onName,
+  onZone,
+  autoFocus,
 }: {
-  placeholder: string;
-  label: string;
-  onAdd: (name: string) => Promise<Result>;
+  hallName: string;
+  name: string;
+  zone: string;
+  zonesListId: string;
+  onName: (v: string) => void;
+  onZone: (v: string) => void;
+  autoFocus?: boolean;
 }) {
-  const [value, setValue] = useState("");
+  return (
+    <>
+      <Input
+        value={name}
+        onChange={(e) => onName(e.target.value)}
+        placeholder="e.g. Main entrance"
+        aria-label={`Location name in ${hallName}`}
+        className="h-9 min-w-0 flex-1 sm:max-w-56"
+        autoFocus={autoFocus}
+        maxLength={120}
+      />
+      <Input
+        value={zone}
+        onChange={(e) => onZone(e.target.value)}
+        placeholder="Zone (optional)"
+        aria-label={`Zone in ${hallName} (optional)`}
+        list={zonesListId}
+        className="h-9 w-full sm:w-40"
+        maxLength={120}
+      />
+    </>
+  );
+}
+
+function AddLocation({ hall, zonesListId }: { hall: HallRow; zonesListId: string }) {
+  const [name, setName] = useState("");
+  const [zone, setZone] = useState("");
   const { error, pending, run } = useAction();
   return (
     <form
       className="flex flex-wrap items-center gap-2"
       onSubmit={(e) => {
         e.preventDefault();
-        if (!value.trim()) return;
+        if (!name.trim()) return;
         run(
-          () => onAdd(value),
-          () => setValue(""),
+          () => createLocation({ hallId: hall.id, name, zone }),
+          () => {
+            setName("");
+            setZone("");
+          },
         );
       }}
     >
-      <Input
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder={placeholder}
-        aria-label={label}
-        className="h-9 min-w-0 flex-1 sm:max-w-xs"
+      <LocationFields
+        hallName={hall.name}
+        name={name}
+        zone={zone}
+        zonesListId={zonesListId}
+        onName={setName}
+        onZone={setZone}
       />
-      <Button type="submit" size="sm" variant="outline" disabled={pending || !value.trim()}>
-        <Plus className="size-4" /> {label}
+      <Button type="submit" size="sm" variant="outline" disabled={pending || !name.trim()}>
+        <Plus aria-hidden /> {pending ? "Adding…" : "Add location"}
       </Button>
-      {error && <p className="text-destructive w-full text-sm">{error}</p>}
+      <InlineError error={error} />
     </form>
   );
 }
 
-function RenameDelete({
-  name,
-  onRename,
-  onDelete,
-  deleteLabel,
+function LocationItem({
+  loc,
+  hallName,
+  editionCode,
+  canEdit,
+  zonesListId,
+  confirm,
 }: {
-  name: string;
-  onRename: (name: string) => Promise<Result>;
-  onDelete: () => Promise<Result>;
-  deleteLabel: string;
+  loc: LocationRow;
+  hallName: string;
+  editionCode: string;
+  canEdit: boolean;
+  zonesListId: string;
+  confirm: ReturnType<typeof useConfirm>[1];
 }) {
   const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(name);
-  const { error, pending, run } = useAction();
+  const [name, setName] = useState(loc.name);
+  const [zone, setZone] = useState(loc.zone ?? "");
+  const { error, setError, pending, run } = useAction();
+
   if (editing) {
     return (
-      <form
-        className="flex flex-wrap items-center gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          run(
-            () => onRename(value),
-            () => setEditing(false),
-          );
-        }}
-      >
-        <Input
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          aria-label={`New name for ${name}`}
-          className="h-8 w-48"
-          autoFocus
-        />
-        <Button type="submit" size="sm" disabled={pending}>
-          Save
-        </Button>
-        <Button type="button" size="sm" variant="ghost" onClick={() => setEditing(false)}>
-          Cancel
-        </Button>
-        {error && <span className="text-destructive text-xs">{error}</span>}
-      </form>
+      <li className="py-2">
+        <form
+          className="flex flex-wrap items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            run(
+              () => renameLocation({ id: loc.id, name, zone }),
+              () => setEditing(false),
+            );
+          }}
+        >
+          <LocationFields
+            hallName={hallName}
+            name={name}
+            zone={zone}
+            zonesListId={zonesListId}
+            onName={setName}
+            onZone={setZone}
+            autoFocus
+          />
+          <Button type="submit" size="sm" disabled={pending || !name.trim()}>
+            {pending ? "Saving…" : "Save"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setEditing(false);
+              setName(loc.name);
+              setZone(loc.zone ?? "");
+              setError(null);
+            }}
+          >
+            Cancel
+          </Button>
+          <InlineError error={error} />
+        </form>
+      </li>
     );
   }
+
   return (
-    <span className="inline-flex items-center gap-1">
-      <Button
-        size="sm"
-        variant="ghost"
-        aria-label={`Rename ${name}`}
-        onClick={() => setEditing(true)}
-      >
-        <Pencil className="size-3.5" />
-      </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        aria-label={`${deleteLabel} ${name}`}
-        disabled={pending}
-        onClick={() => {
-          if (window.confirm(`${deleteLabel} "${name}"?`)) run(onDelete);
-        }}
-      >
-        <Trash2 className="size-3.5" />
-      </Button>
-      {error && <span className="text-destructive text-xs">{error}</span>}
-    </span>
+    <li className="flex flex-wrap items-center gap-x-2 gap-y-1 py-2 text-sm">
+      <span className="min-w-0 font-medium break-words">{loc.name}</span>
+      {loc.zone && (
+        <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-xs">
+          {loc.zone}
+        </span>
+      )}
+      {loc.itemCount > 0 ? (
+        <Link
+          href={`/${editionCode}/signage?location=${loc.id}`}
+          className="link text-xs"
+          aria-label={`${plural(loc.itemCount, "sign")} at ${loc.name}`}
+        >
+          {plural(loc.itemCount, "sign")}
+        </Link>
+      ) : (
+        <span className="text-muted-foreground text-xs">no signs</span>
+      )}
+      {canEdit && (
+        <span className="ml-auto inline-flex items-center">
+          <Button
+            size="icon"
+            variant="ghost"
+            className="size-8"
+            aria-label={`Edit location ${loc.name}`}
+            onClick={() => setEditing(true)}
+          >
+            <Pencil className="size-3.5" aria-hidden />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="size-8"
+            aria-label={`Remove location ${loc.name}`}
+            disabled={pending}
+            onClick={async () => {
+              const ok = await confirm({
+                title: `Remove ${loc.name}?`,
+                description: `It comes off ${hallName}. Signs can't be placed there afterwards.`,
+                confirmLabel: "Remove location",
+                destructive: true,
+              });
+              if (ok) run(() => deleteLocation({ id: loc.id }));
+            }}
+          >
+            <Trash2 className="size-3.5" aria-hidden />
+          </Button>
+        </span>
+      )}
+      <InlineError error={error} />
+    </li>
   );
 }
 
-export function HallsEditor({
-  editionId,
-  halls,
+function HallCard({
+  hall,
+  editionCode,
   canEdit,
+  zonesListId,
+  confirm,
 }: {
-  editionId: string;
-  halls: HallRow[];
+  hall: HallRow;
+  editionCode: string;
   canEdit: boolean;
+  zonesListId: string;
+  confirm: ReturnType<typeof useConfirm>[1];
 }) {
+  const [renaming, setRenaming] = useState(false);
+  const [name, setName] = useState(hall.name);
+  const { error, setError, pending, run } = useAction();
+  const headingId = useId();
+
   return (
-    <div className="space-y-4">
-      {halls.length === 0 && (
-        <p className="text-muted-foreground rounded-lg border border-dashed p-4 text-sm">
-          No halls yet. Add the halls for this show, then the locations inside each one (e.g.
-          &ldquo;Main entrance&rdquo;, &ldquo;Aisle A&rdquo;). Signs are placed at a location.
-        </p>
-      )}
-      {halls.map((hall) => (
-        <section key={hall.id} className="rounded-lg border p-4">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-semibold">{hall.name}</h2>
+    <section aria-labelledby={headingId} className="rounded-lg border">
+      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
+        {renaming ? (
+          <form
+            className="flex w-full flex-wrap items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              run(
+                () => renameHall({ id: hall.id, name }),
+                () => setRenaming(false),
+              );
+            }}
+          >
+            <h3 id={headingId} className="sr-only">
+              {hall.name}
+            </h3>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              aria-label={`New name for ${hall.name}`}
+              className="h-9 min-w-0 flex-1 sm:max-w-64"
+              autoFocus
+              maxLength={120}
+            />
+            <Button type="submit" size="sm" disabled={pending || !name.trim()}>
+              {pending ? "Saving…" : "Save"}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setRenaming(false);
+                setName(hall.name);
+                setError(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </form>
+        ) : (
+          <>
+            <h3 id={headingId} className="text-sm font-semibold">
+              {hall.name}
+            </h3>
             <span className="text-muted-foreground text-xs">
-              {hall.locations.length} location{hall.locations.length === 1 ? "" : "s"} ·{" "}
-              {hall.itemCount} item{hall.itemCount === 1 ? "" : "s"}
+              {plural(hall.locations.length, "location")} ·{" "}
+              {hall.itemCount > 0 ? (
+                <Link href={`/${editionCode}/signage?hall=${hall.id}`} className="link">
+                  {plural(hall.itemCount, "sign")}
+                </Link>
+              ) : (
+                "no signs yet"
+              )}
             </span>
             {canEdit && (
-              <span className="ml-auto">
-                <RenameDelete
-                  name={hall.name}
-                  deleteLabel="Remove hall"
-                  onRename={(name) => renameHall({ id: hall.id, name })}
-                  onDelete={() => deleteHall({ id: hall.id })}
-                />
+              <span className="ml-auto inline-flex items-center">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-8"
+                  aria-label={`Rename ${hall.name}`}
+                  onClick={() => setRenaming(true)}
+                >
+                  <Pencil className="size-3.5" aria-hidden />
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-8"
+                  aria-label={`Remove hall ${hall.name}`}
+                  disabled={pending}
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: `Remove ${hall.name}?`,
+                      description:
+                        hall.locations.length > 0
+                          ? `Its ${plural(hall.locations.length, "location")} go too. Signs can't be placed there afterwards.`
+                          : "Signs can't be placed there afterwards.",
+                      confirmLabel: "Remove hall",
+                      destructive: true,
+                    });
+                    if (ok) run(() => deleteHall({ id: hall.id }));
+                  }}
+                >
+                  <Trash2 className="size-3.5" aria-hidden />
+                </Button>
               </span>
             )}
-          </div>
+          </>
+        )}
+        <InlineError error={error} />
+      </div>
+
+      {hall.unplacedCount > 0 && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          <AlertTriangle className="size-4 shrink-0" aria-hidden />
+          <span>
+            {plural(hall.unplacedCount, "sign")} in {hall.name}{" "}
+            {hall.unplacedCount === 1 ? "has" : "have"} no location yet
+          </span>
+          <Link
+            href={`/${editionCode}/signage?hall=${hall.id}&location=none`}
+            className="font-medium underline underline-offset-2"
+          >
+            Place them →
+          </Link>
+        </div>
+      )}
+
+      <div className="px-4 py-2">
+        {hall.locations.length === 0 ? (
+          <p className="text-muted-foreground py-2 text-sm">
+            No locations yet.{" "}
+            {canEdit ? "Add the places in this hall where signs go." : "None have been added."}
+          </p>
+        ) : (
           <ul className="divide-y">
             {hall.locations.map((loc) => (
-              <li key={loc.id} className="flex flex-wrap items-center gap-2 py-1.5 text-sm">
-                <span>{loc.name}</span>
-                {loc.zone && <span className="text-muted-foreground text-xs">· {loc.zone}</span>}
-                <span className="text-muted-foreground text-xs">
-                  · {loc.itemCount} item{loc.itemCount === 1 ? "" : "s"}
-                </span>
-                {canEdit && (
-                  <span className="ml-auto">
-                    <RenameDelete
-                      name={loc.name}
-                      deleteLabel="Remove location"
-                      onRename={(name) => renameLocation({ id: loc.id, name })}
-                      onDelete={() => deleteLocation({ id: loc.id })}
-                    />
-                  </span>
-                )}
-              </li>
+              <LocationItem
+                key={loc.id}
+                loc={loc}
+                hallName={hall.name}
+                editionCode={editionCode}
+                canEdit={canEdit}
+                zonesListId={zonesListId}
+                confirm={confirm}
+              />
             ))}
           </ul>
+        )}
+        {canEdit && (
+          <div className="border-t py-3">
+            <AddLocation hall={hall} zonesListId={zonesListId} />
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function AddHall({ editionId }: { editionId: string }) {
+  const [name, setName] = useState("");
+  const { error, pending, run } = useAction();
+  return (
+    <form
+      className="flex flex-wrap items-center gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!name.trim()) return;
+        run(
+          () => createHall({ editionId, name }),
+          () => setName(""),
+        );
+      }}
+    >
+      <Input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="e.g. Hall 3"
+        aria-label="New hall name"
+        className="h-9 min-w-0 flex-1 sm:max-w-xs"
+        maxLength={120}
+      />
+      <Button type="submit" size="sm" variant="outline" disabled={pending || !name.trim()}>
+        <Plus aria-hidden /> {pending ? "Adding…" : "Add hall"}
+      </Button>
+      <InlineError error={error} />
+    </form>
+  );
+}
+
+function AddSeveral({ editionId, defaultOpen }: { editionId: string; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const [text, setText] = useState("");
+  const { error, pending, run } = useAction();
+  const id = useId();
+  const preview = parseBulkHalls(text);
+  if (!open) {
+    return (
+      <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(true)}>
+        <ListPlus aria-hidden /> Add several at once
+      </Button>
+    );
+  }
+  return (
+    <form
+      className="space-y-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (preview.length === 0) return;
+        run(
+          () => createHallsBulk({ editionId, text }),
+          () => setText(""),
+        );
+      }}
+    >
+      <Label htmlFor={id}>Add several at once</Label>
+      <p className="text-muted-foreground text-xs" id={`${id}-help`}>
+        One per line. Use &ldquo;Hall 1: Main entrance, Registration&rdquo; to add locations too.
+      </p>
+      <Textarea
+        id={id}
+        aria-describedby={`${id}-help`}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={"Hall 1: Main entrance, Registration\nHall 2: Seminar theatre\nHall 3"}
+        className="min-h-28 font-mono text-sm"
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="submit" size="sm" disabled={pending || preview.length === 0}>
+          {pending ? "Adding…" : preview.length > 0 ? `Add ${describeBulk(preview)}` : "Add"}
+        </Button>
+        {!defaultOpen && (
+          <Button type="button" size="sm" variant="ghost" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+        )}
+      </div>
+      <InlineError error={error} />
+    </form>
+  );
+}
+
+function CopyFromEvent({
+  editionId,
+  venueName,
+  sources,
+}: {
+  editionId: string;
+  venueName: string;
+  sources: HallCopySource[];
+}) {
+  const [sourceId, setSourceId] = useState(sources[0]?.id ?? "");
+  const { error, pending, run } = useAction();
+  const id = useId();
+  return (
+    <form
+      className="space-y-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!sourceId) return;
+        run(() => copyHallsFrom({ sourceEditionId: sourceId, targetEditionId: editionId }));
+      }}
+    >
+      <Label htmlFor={id}>Copy halls &amp; locations from a previous event at {venueName}</Label>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <SelectNative
+          id={id}
+          value={sourceId}
+          onChange={(e) => setSourceId(e.target.value)}
+          className="sm:max-w-sm"
+        >
+          {sources.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name} — {plural(s.halls, "hall")}, {plural(s.locations, "location")}
+            </option>
+          ))}
+        </SelectNative>
+        <Button type="submit" disabled={pending || !sourceId}>
+          <Copy aria-hidden /> {pending ? "Copying…" : "Copy"}
+        </Button>
+      </div>
+      <InlineError error={error} />
+    </form>
+  );
+}
+
+/**
+ * Halls and the locations inside them, where every sign is placed. Used on
+ * the Halls & locations page and inside the event setup checklist.
+ */
+export function HallsEditor({
+  editionId,
+  editionCode,
+  halls,
+  zones = [],
+  canEdit,
+  venueName,
+  copySources = [],
+}: {
+  editionId: string;
+  editionCode: string;
+  halls: HallRow[];
+  zones?: string[];
+  canEdit: boolean;
+  venueName: string;
+  copySources?: HallCopySource[];
+}) {
+  const [confirmDialog, confirm] = useConfirm();
+  const zonesListId = `zones-${editionId}`;
+
+  return (
+    <div className="space-y-4">
+      {confirmDialog}
+      <datalist id={zonesListId}>
+        {zones.map((z) => (
+          <option key={z} value={z} />
+        ))}
+      </datalist>
+
+      {halls.length === 0 && (
+        <div className="space-y-4 rounded-lg border border-dashed p-4 sm:p-5">
+          <div className="flex items-start gap-3">
+            <span className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-full">
+              <MapPin className="size-4" aria-hidden />
+            </span>
+            <div className="space-y-1">
+              <p className="text-sm font-medium">No halls yet</p>
+              <p className="text-muted-foreground text-sm">
+                {canEdit
+                  ? `Add the halls at ${venueName}, then the places inside each one where signs go (“Main entrance”, “Aisle A”).`
+                  : "Only admins and Operations can add halls."}
+              </p>
+            </div>
+          </div>
+          {canEdit && copySources.length > 0 && (
+            <CopyFromEvent editionId={editionId} venueName={venueName} sources={copySources} />
+          )}
+          {canEdit && <AddSeveral editionId={editionId} defaultOpen />}
           {canEdit && (
-            <div className="mt-2">
-              <InlineAdd
-                placeholder="e.g. Main entrance"
-                label="Add location"
-                onAdd={(name) => createLocation({ hallId: hall.id, name })}
-              />
+            <div className="space-y-1">
+              <p className="text-muted-foreground text-xs">Or add one hall:</p>
+              <AddHall editionId={editionId} />
             </div>
           )}
-        </section>
+        </div>
+      )}
+
+      {halls.map((hall) => (
+        <HallCard
+          key={hall.id}
+          hall={hall}
+          editionCode={editionCode}
+          canEdit={canEdit}
+          zonesListId={zonesListId}
+          confirm={confirm}
+        />
       ))}
-      {canEdit && (
-        <div className="rounded-lg border border-dashed p-4">
-          <InlineAdd
-            placeholder="e.g. Hall 3"
-            label="Add hall"
-            onAdd={(name) => createHall({ editionId, name })}
-          />
+
+      {canEdit && halls.length > 0 && (
+        <div className="space-y-3 rounded-lg border border-dashed p-4">
+          <AddHall editionId={editionId} />
+          <AddSeveral editionId={editionId} defaultOpen={false} />
         </div>
       )}
     </div>

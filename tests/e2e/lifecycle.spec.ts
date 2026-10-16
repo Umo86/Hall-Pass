@@ -161,26 +161,26 @@ test.describe("lifecycle: print → install → snag → reopen → close", () =
     await expect(ops.getByRole("button", { name: "Close", exact: true })).toHaveCount(0);
   });
 
-  test("a show's print deadline can be pinned to a date", async ({ browser, baseURL }) => {
+  test("an event's print deadline can be pinned to a date", async ({ browser, baseURL }) => {
     const admin = await as(browser, "admin@media10.test", baseURL!);
-    await admin.goto(`${baseURL}/editions`);
-    const row = admin.locator("li", { hasText: "BIRM27" }).first();
-    await row.getByRole("button", { name: "Edit" }).click();
-    const dialog = admin.getByRole("dialog");
-    const fixed = dialog.getByLabel("Print deadline: fixed date");
+    await admin.goto(`${baseURL}/BIRM27/setup#deadlines`, { waitUntil: "networkidle" });
+    const fixed = admin.getByLabel("Print deadline: fixed date");
     await fixed.fill("2027-09-14");
-    await dialog.getByRole("button", { name: "Save" }).click();
-    await expect(dialog).toHaveCount(0);
+    // The date column follows the fixed date straight away.
+    await expect(admin.getByRole("row", { name: /Print deadline/ })).toContainText(/14 Sept? 2027/);
+    await admin.getByRole("button", { name: /These look right|Save deadlines/ }).click();
+    await expect(admin.getByText(/Deadlines (saved|confirmed)/)).toBeVisible();
 
-    // The calendar shows it on that day; the dialog remembers it.
+    // The calendar shows it on that day; the setup page remembers it.
     await admin.goto(`${baseURL}/BIRM27/calendar?m=2027-09`);
     await expect(admin.getByRole("cell", { name: /^14 Deadline: Print deadline/ })).toBeVisible();
-    await admin.goto(`${baseURL}/editions`);
-    await row.getByRole("button", { name: "Edit" }).click();
-    await expect(dialog.getByLabel("Print deadline: fixed date")).toHaveValue("2027-09-14");
+    await admin.goto(`${baseURL}/BIRM27/setup#deadlines`, { waitUntil: "networkidle" });
+    await expect(admin.getByLabel("Print deadline: fixed date")).toHaveValue("2027-09-14");
     // Put it back so other runs see the standard offset.
-    await dialog.getByLabel("Print deadline: fixed date").fill("");
-    await dialog.getByRole("button", { name: "Save" }).click();
-    await expect(dialog).toHaveCount(0);
+    await admin.getByRole("button", { name: "Clear the fixed date for Print deadline" }).click();
+    await admin.getByRole("button", { name: /These look right|Save deadlines/ }).click();
+    await expect(admin.getByText(/Deadlines (saved|confirmed)/)).toBeVisible();
+    await admin.goto(`${baseURL}/BIRM27/setup#deadlines`, { waitUntil: "networkidle" });
+    await expect(admin.getByLabel("Print deadline: fixed date")).toHaveValue("");
   });
 });

@@ -6,14 +6,18 @@ const STAFF_PAGES = [
   "/approvals",
   "/approvals?tab=artwork",
   "/approvals?tab=approvers",
-  "/editions",
+  "/events",
+  "/events?view=past",
+  "/events?view=archived",
+  "/start",
   "/suppliers",
   "/settings",
-  "/settings?tab=team",
+  "/users",
   "/settings?tab=types",
   "/settings?tab=services",
   "/settings?tab=venues",
   "/BIRM27/dashboard",
+  "/BIRM27/setup",
   "/BIRM27/signage",
   "/BIRM27/signage/SIG-BIRM27-001",
   "/BIRM27/signage/SIG-BIRM27-001?tab=artwork",
@@ -44,6 +48,9 @@ test.describe("every page, every role", () => {
       for (const path of STAFF_PAGES) {
         const res = await page.goto(`${baseURL}${path}`);
         expect(res?.status(), path).toBeLessThan(400);
+        // Some pages send people elsewhere once loaded (/settings without
+        // settings → /users); let that finish before the next page.
+        await page.waitForLoadState("networkidle");
         await expect(page.getByRole("heading", { name: "Something went wrong" }), path).toHaveCount(
           0,
         );

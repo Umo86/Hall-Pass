@@ -1,4 +1,4 @@
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { and, count, desc, eq, isNull } from "drizzle-orm";
 import { AppNav } from "@/components/app-nav";
 import { EditionSwitcher } from "@/components/edition-switcher";
@@ -12,7 +12,17 @@ import { db } from "@/lib/db/client";
 import { departments, notifications } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { DemoBanner } from "@/components/demo-banner";
-import { listEditions } from "@/lib/queries/editions";
+import {
+  LAST_EVENT_COOKIE,
+  eventGroup,
+  listEditions,
+  pickDefaultEdition,
+  sortForGroup,
+} from "@/lib/queries/editions";
+import { getSetupStatus } from "@/lib/queries/setup";
+import { editionCodeFromPath } from "@/lib/edition-path";
+import { todayInLondon } from "@/lib/today";
+import { dateRangeWithYear } from "@/components/setup/format";
 import { can, FEATURES, hasFeature } from "@/lib/authz";
 import { standsEnabled } from "@/lib/config";
 import { roleLabel } from "@/lib/format";
@@ -39,15 +49,76 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       : Promise.resolve(undefined),
   ]);
 
-  const sidebarHidden = (await cookies()).get(SIDEBAR_COOKIE)?.value === "hidden";
-  const navEditions = editions.map((e) => ({
+  const cookieStore = await cookies();
+  const sidebarHidden = cookieStore.get(SIDEBAR_COOKIE)?.value === "hidden";
+  const canSetup = can(actor, { type: "settings.manage" });
+  const today = todayInLondon();
+
+  // The event pages without one in their address use: the last one opened,
+  // else the next one coming up (see pickDefaultEdition).
+  const defaultCode = pickDefaultEdition(
+    editions.map((e) => ({
+      code: e.edition.code,
+      status: e.edition.status,
+      openStart: e.edition.openStart,
+      openEnd: e.edition.openEnd,
+    })),
+    { lastCode: cookieStore.get(LAST_EVENT_COOKIE)?.value ?? null, today },
+  );
+  // The event in the address (set by proxy.ts) or the default one: its setup
+  // progress drives the "Setup 3/6" item in the side navigation.
+  const pathCode = editionCodeFromPath(
+    ((await headers()).get("x-hp-path") ?? "").split("?")[0],
+  )?.toUpperCase();
+  const current =
+    editions.find((e) => e.edition.code === pathCode) ??
+    editions.find((e) => e.edition.code === defaultCode) ??
+    null;
+  const setupStatus =
+    // Only while the event is still to come: nobody sets up a finished one.
+    canSetup && current && eventGroup(current.edition, today) === "upcoming"
+      ? await getSetupStatus(current.edition, session.organisation.id, {
+          canSetup,
+          canUsers: can(actor, { type: "users.manage" }),
+          canAddSigns: can(actor, { type: "signage.create" }),
+        })
+      : null;
+
+  // The default event first, so the side navigation shows it on pages
+  // without an event in their address.
+  const ordered = [
+    ...editions.filter((e) => e.edition.code === defaultCode),
+    ...editions.filter((e) => e.edition.code !== defaultCode),
+  ];
+  const navEditions = ordered.map((e) => ({
     code: e.edition.code,
     name: e.edition.name,
     status: e.edition.status,
   }));
-  const canSetup = can(actor, { type: "settings.manage" });
+  const switcherEditions = (["upcoming", "past", "archived"] as const).flatMap((group) =>
+    sortForGroup(
+      editions
+        .filter((e) => eventGroup(e.edition, today) === group)
+        .map((e) => ({
+          code: e.edition.code,
+          name: e.edition.name,
+          openStart: e.edition.openStart,
+          group,
+          line: `${dateRangeWithYear(e.edition.openStart, e.edition.openEnd)} · ${e.venue.name}`,
+        })),
+      group,
+    ).map(({ code, name, group: g, line }) => ({ code, name, group: g, line })),
+  );
   const navOptions = {
     canSetup,
+    setup:
+      current && setupStatus
+        ? {
+            code: current.edition.code,
+            done: setupStatus.summary.done,
+            total: setupStatus.summary.total,
+          }
+        : null,
     canSettings: canSetup || can(actor, { type: "users.manage" }),
     showStands: standsEnabled,
     // Null = every section; otherwise the sections this person can use.
@@ -79,11 +150,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <SidebarToggle initiallyHidden={sidebarHidden} />
         <Wordmark name={session.organisation.brandName} size="sm" />
         <EditionSwitcher
-          editions={editions.map((e) => ({
-            code: e.edition.code,
-            name: e.edition.name,
-            status: e.edition.status,
-          }))}
+          editions={switcherEditions}
+          defaultCode={defaultCode}
+          navCode={current?.edition.code ?? null}
+          canSetup={canSetup}
         />
         <div className="ml-auto flex items-center gap-2">
           <NotificationsBell

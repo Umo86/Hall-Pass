@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { memberships, users } from "@/lib/db/schema";
@@ -9,6 +10,8 @@ import { boardTasks, type BoardScope } from "@/lib/queries/tasks";
 import { StatusBadge } from "@/components/status-badge";
 import { TaskForm } from "@/components/tasks/task-form";
 import { TaskBoard } from "@/components/tasks/task-board";
+import { countActiveEvents, setupContacts } from "@/lib/queries/setup";
+import { NoEventsYet } from "@/components/setup/no-events-state";
 
 export const metadata = { title: "My Work" };
 
@@ -26,6 +29,10 @@ export default async function MyWorkPage({
   searchParams: Promise<{ view?: string }>;
 }) {
   const session = await requireStaffSession();
+  // A brand-new organisation starts by creating its first event.
+  const activeEvents = await countActiveEvents(session.organisation.id);
+  if (activeEvents === 0 && can(session.actor, { type: "settings.manage" })) redirect("/start");
+  const contacts = activeEvents === 0 ? await setupContacts(session.organisation.id) : [];
   const { view } = await searchParams;
   const isAdmin = session.actor.role === "admin";
   const scope: BoardScope =
@@ -57,10 +64,14 @@ export default async function MyWorkPage({
       <div>
         <h1 className="text-xl font-semibold tracking-tight">My Work</h1>
         <p className="text-muted-foreground text-sm">
-          Your jobs across all shows. Drag a card between columns (or use its menu); open it for
+          Your jobs across all events. Drag a card between columns (or use its menu); open it for
           subtasks, deadlines and files.
         </p>
       </div>
+
+      {activeEvents === 0 && (
+        <NoEventsYet brandName={session.organisation.brandName} contacts={contacts} />
+      )}
 
       <section className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">

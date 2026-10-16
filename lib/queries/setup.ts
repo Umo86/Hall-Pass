@@ -1,0 +1,783 @@
+import "server-only";
+import { and, count, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { db } from "@/lib/db/client";
+import {
+  editionDeadlines,
+  editions,
+  events,
+  externalGrants,
+  halls,
+  itemTypes,
+  locations,
+  memberships,
+  signageItems,
+  sponsors,
+  staffInvites,
+  suppliers,
+  users,
+  venues,
+  workflows,
+} from "@/lib/db/schema";
+import { listDepartments } from "@/lib/domain/departments";
+import {
+  DEADLINE_KEYS,
+  DEADLINE_LABELS,
+  DEFAULT_DEADLINE_OFFSETS,
+  deadlineDate,
+  type DeadlineKey,
+} from "@/lib/deadlines";
+import { formatDate, plural } from "@/lib/format";
+
+/*
+ * Event setup: the checklist on /CODE/setup, the "Setup 3/6" pill in the nav
+ * and the cards on the dashboard and the Events list all come from here.
+ * The facts are loaded with a fixed number of grouped count queries (however
+ * many events are asked about); turning them into steps is pure.
+ */
+
+export const SETUP_STEP_KEYS = [
+  "details",
+  "halls",
+  "deadlines",
+  "signoff",
+  "people",
+  "types",
+  "suppliers",
+  "signs",
+  "sponsorship",
+] as const;
+export type SetupStepKey = (typeof SETUP_STEP_KEYS)[number];
+
+/** Steps confirmed by hand (kept in editions.setup_checked), plus "dismissed" for the dashboard card. */
+export const CONFIRMABLE_STEPS = ["details", "deadlines", "dismissed"] as const;
+export type ConfirmableStep = (typeof CONFIRMABLE_STEPS)[number];
+
+export type SetupState = "done" | "todo" | "waiting" | "optional";
+export type SetupLevel = "essential" | "recommended" | "optional";
+
+export type SetupStep = {
+  key: SetupStepKey;
+  title: string;
+  /** One line: why it matters. */
+  reason: string;
+  level: SetupLevel;
+  required: boolean;
+  state: SetupState;
+  /** One line built from the data ("2 halls · 12 locations"). */
+  detail: string;
+  /** Where the step is done, when it isn't done on the setup page itself. */
+  href: string | null;
+  /** Can the person looking do this step? */
+  canAct: boolean;
+  /** Shared by every event of the organisation (departments, people, types). */
+  shared: boolean;
+};
+
+export type SignoffDepartmentFact = {
+  name: string;
+  /** Signs organiser signage by default, so it must have someone who can sign. */
+  forOrganiser: boolean;
+  approvers: { name: string; email: string; isMain: boolean; active: boolean }[];
+};
+
+export type OrgSetupFacts = {
+  signageWorkflow: boolean;
+  /** Live departments that sign off (not archived, signs-off on). */
+  signoffDepartments: SignoffDepartmentFact[];
+  memberCount: number;
+  openInviteCount: number;
+  signTypeCount: number;
+  supplierCount: number;
+};
+
+export type EditionSetupFacts = {
+  setupChecked: string[];
+  dates: { buildStart: string; openStart: string; openEnd: string; breakdownEnd: string };
+  copied: boolean;
+  halls: { name: string; locations: number }[];
+  signCount: number;
+  draftSignCount: number;
+  sponsorCount: number;
+  sponsorshipItemCount: number;
+  deadlines: { key: DeadlineKey; label: string; date: string | null }[];
+};
+
+export type SetupPermissions = {
+  /** settings.manage: event details, halls, deadlines, sign types, suppliers. */
+  canSetup: boolean;
+  /** users.manage: people and sign-off departments. */
+  canUsers: boolean;
+  /** signage.create: adding and importing signs. */
+  canAddSigns: boolean;
+};
+
+function hasChecked(facts: EditionSetupFacts, key: ConfirmableStep) {
+  return facts.setupChecked.includes(key);
+}
+
+/** "Operations, Marketing and Sales". */
+function listNames(names: string[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
+/**
+ * Sign-off is ready when the workflow exists, at least one department signs
+ * off, and every department that signs organiser signage by default has
+ * someone with an account who can sign (its main approver, or anyone in it
+ * when none is starred — that is how sign-offs are routed). Someone added by
+ * email who hasn't accepted yet makes it "waiting".
+ */
+export function signoffState(org: OrgSetupFacts): { state: SetupState; detail: string } {
+  if (!org.signageWorkflow) return { state: "todo", detail: "Sign-off hasn't been set up yet" };
+  if (org.signoffDepartments.length === 0) {
+    return { state: "todo", detail: "No department signs off artwork yet" };
+  }
+  const needed = org.signoffDepartments.filter((d) => d.forOrganiser);
+  if (needed.length === 0) {
+    return { state: "todo", detail: "Choose which departments sign off organiser signage" };
+  }
+  const empty = needed.filter((d) => d.approvers.length === 0);
+  if (empty.length > 0) {
+    return {
+      state: "todo",
+      detail: `${listNames(empty.map((d) => d.name))}: nobody to sign off yet`,
+    };
+  }
+  const notReady = needed.filter((d) => {
+    const main = d.approvers.find((a) => a.isMain);
+    return main
+      ? !main.active && !d.approvers.some((a) => a.active)
+      : !d.approvers.some((a) => a.active);
+  });
+  if (notReady.length > 0) {
+    const waitingFor = notReady.map(
+      (d) => (d.approvers.find((a) => a.isMain) ?? d.approvers[0]).email,
+    );
+    return {
+      state: "waiting",
+      detail: `Waiting for ${listNames(waitingFor)} to accept ${waitingFor.length === 1 ? "their invitation" : "their invitations"}`,
+    };
+  }
+  return {
+    state: "done",
+    detail: `${listNames(org.signoffDepartments.map((d) => d.name))} sign${org.signoffDepartments.length === 1 ? "s" : ""} off`,
+  };
+}
+
+function hallsState(facts: EditionSetupFacts): { done: boolean; detail: string } {
+  if (facts.halls.length === 0) return { done: false, detail: "No halls yet" };
+  const bare = facts.halls.filter((h) => h.locations === 0);
+  const locationCount = facts.halls.reduce((n, h) => n + h.locations, 0);
+  if (bare.length > 0) {
+    return {
+      done: false,
+      detail:
+        bare.length === 1
+          ? `${bare[0].name} has no locations yet`
+          : `${listNames(bare.map((h) => h.name))} have no locations yet`,
+    };
+  }
+  return {
+    done: true,
+    detail: `${plural(facts.halls.length, "hall")} · ${plural(locationCount, "location")}`,
+  };
+}
+
+/** Turn the facts into the checklist, in order. Pure. */
+export function buildSetupSteps(
+  edition: { code: string },
+  facts: EditionSetupFacts,
+  org: OrgSetupFacts,
+  perms: SetupPermissions,
+): SetupStep[] {
+  const code = edition.code;
+  const state = (done: boolean, level: SetupLevel): SetupState =>
+    done ? "done" : level === "optional" ? "optional" : "todo";
+  const halls = hallsState(facts);
+  const signoff = signoffState(org);
+  const artwork = facts.deadlines.find((d) => d.key === "artwork_due");
+  const print = facts.deadlines.find((d) => d.key === "print_deadline");
+  const deadlineDetail = [
+    artwork?.date ? `Artwork due ${formatDate(artwork.date)}` : null,
+    print?.date ? `Print ${formatDate(print.date)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const sponsorParts = [
+    facts.sponsorCount > 0 ? plural(facts.sponsorCount, "sponsor") : null,
+    facts.sponsorshipItemCount > 0 ? plural(facts.sponsorshipItemCount, "sponsorship item") : null,
+  ].filter(Boolean);
+
+  const steps: SetupStep[] = [
+    {
+      key: "details",
+      title: "Dates, venue and budget",
+      reason: "Everything else is timed from these.",
+      level: "essential",
+      required: true,
+      state: state(hasChecked(facts, "details"), "essential"),
+      detail: hasChecked(facts, "details")
+        ? `Build-up from ${formatDate(facts.dates.buildStart)} · open ${formatDate(facts.dates.openStart)} – ${formatDate(facts.dates.openEnd)}`
+        : "Build-up and breakdown dates were assumed — check them",
+      href: `/${code}/setup#details`,
+      canAct: perms.canSetup,
+      shared: false,
+    },
+    {
+      key: "halls",
+      title: "Halls and locations",
+      reason: "Every sign needs a hall and location before it can go for sign-off.",
+      level: "essential",
+      required: true,
+      state: state(halls.done, "essential"),
+      detail: halls.detail,
+      href: `/${code}/halls`,
+      canAct: perms.canSetup,
+      shared: false,
+    },
+    {
+      key: "deadlines",
+      title: "Deadlines",
+      reason: "Artwork, print and delivery reminders go out against these.",
+      level: "essential",
+      required: true,
+      state: state(hasChecked(facts, "deadlines"), "essential"),
+      detail: deadlineDetail || "No deadlines set",
+      href: `/${code}/setup#deadlines`,
+      canAct: perms.canSetup,
+      shared: false,
+    },
+    {
+      key: "signoff",
+      title: "Who signs off",
+      reason: "The departments that approve artwork. Shared by every event.",
+      level: "essential",
+      required: true,
+      state: signoff.state,
+      detail: signoff.detail,
+      href: "/users?tab=departments",
+      canAct: perms.canUsers,
+      shared: true,
+    },
+    {
+      key: "people",
+      title: "People",
+      reason: "Invite the colleagues who'll add signs and approve them.",
+      level: "recommended",
+      required: false,
+      state: state(org.memberCount >= 2 || org.openInviteCount >= 1, "recommended"),
+      detail: [
+        plural(org.memberCount, "person", "people"),
+        org.openInviteCount > 0 ? `${plural(org.openInviteCount, "invitation")} open` : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      href: "/users/new",
+      canAct: perms.canUsers,
+      shared: true,
+    },
+    {
+      key: "types",
+      title: "Sign types",
+      reason: "The list people pick from when adding a sign.",
+      level: "essential",
+      required: true,
+      state: state(org.signTypeCount >= 1, "essential"),
+      detail: org.signTypeCount > 0 ? plural(org.signTypeCount, "sign type") : "No sign types yet",
+      href: "/settings?tab=types",
+      canAct: perms.canSetup,
+      shared: true,
+    },
+    {
+      key: "suppliers",
+      title: "Suppliers",
+      reason: "Printers and installers you send work to.",
+      level: "optional",
+      required: false,
+      state: state(org.supplierCount >= 1, "optional"),
+      detail: org.supplierCount > 0 ? plural(org.supplierCount, "supplier") : "None yet",
+      href: "/suppliers",
+      canAct: perms.canSetup,
+      shared: true,
+    },
+    {
+      key: "signs",
+      title: "First signs",
+      reason: "Add them one by one or import your spreadsheet.",
+      level: "essential",
+      required: true,
+      state: state(facts.signCount >= 1, "essential"),
+      detail:
+        facts.signCount === 0
+          ? "No signs yet"
+          : facts.copied && facts.draftSignCount === facts.signCount
+            ? `${plural(facts.signCount, "sign")} copied as drafts — review them`
+            : plural(facts.signCount, "sign"),
+      href: `/${code}/signage/new`,
+      canAct: perms.canAddSigns,
+      shared: false,
+    },
+    {
+      key: "sponsorship",
+      title: "Sponsorship",
+      reason: "Sponsors and the items they've bought.",
+      level: "optional",
+      required: false,
+      state: state(sponsorParts.length > 0, "optional"),
+      detail: sponsorParts.length > 0 ? sponsorParts.join(" · ") : "None yet",
+      href: `/${code}/sponsorship`,
+      canAct: perms.canAddSigns,
+      shared: false,
+    },
+  ];
+  return steps;
+}
+
+export type SetupSummary = {
+  done: number;
+  total: number;
+  complete: boolean;
+  /** The first essential step still to do (or waiting). */
+  next: SetupStep | null;
+};
+
+/** Progress over the essential steps. Pure. */
+export function summariseSetup(steps: SetupStep[]): SetupSummary {
+  const essential = steps.filter((s) => s.required);
+  const done = essential.filter((s) => s.state === "done").length;
+  return {
+    done,
+    total: essential.length,
+    complete: done === essential.length,
+    next: essential.find((s) => s.state !== "done") ?? null,
+  };
+}
+
+// ---------------------------------------------------------------- database
+
+/** Events that aren't archived — none means the organisation hasn't started. */
+export async function countActiveEvents(organisationId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(editions)
+    .innerJoin(events, eq(editions.eventId, events.id))
+    .where(and(eq(events.organisationId, organisationId), ne(editions.status, "archived")));
+  return Number(row?.n ?? 0);
+}
+
+/** The organisation-wide facts (one query each, run together). */
+export async function loadOrgSetupFacts(organisationId: string): Promise<OrgSetupFacts> {
+  const [flow, depts, [members], [invites], [types], [supplierRows]] = await Promise.all([
+    db
+      .select({ id: workflows.id })
+      .from(workflows)
+      .where(
+        and(
+          eq(workflows.organisationId, organisationId),
+          eq(workflows.appliesTo, "signage"),
+          isNull(workflows.forKind),
+          eq(workflows.isArchived, false),
+        ),
+      )
+      .limit(1),
+    listDepartments(db, organisationId),
+    db
+      .select({ n: count() })
+      .from(memberships)
+      .where(eq(memberships.organisationId, organisationId)),
+    db
+      .select({ n: count() })
+      .from(staffInvites)
+      .where(
+        and(
+          eq(staffInvites.organisationId, organisationId),
+          isNull(staffInvites.acceptedAt),
+          isNull(staffInvites.revokedAt),
+          or(isNull(staffInvites.expiresAt), gt(staffInvites.expiresAt, new Date())),
+        ),
+      ),
+    db
+      .select({ n: count() })
+      .from(itemTypes)
+      .where(
+        and(
+          eq(itemTypes.organisationId, organisationId),
+          eq(itemTypes.kind, "signage"),
+          eq(itemTypes.isArchived, false),
+        ),
+      ),
+    db
+      .select({ n: count() })
+      .from(suppliers)
+      .where(and(eq(suppliers.organisationId, organisationId), eq(suppliers.isArchived, false))),
+  ]);
+  return {
+    signageWorkflow: flow.length > 0,
+    signoffDepartments: depts
+      .filter((d) => !d.isArchived && d.signsOff)
+      .map((d) => ({
+        name: d.name,
+        forOrganiser: d.defaultFor.includes("organiser"),
+        approvers: d.approvers.map((a) => ({
+          name: a.fullName,
+          email: a.email,
+          isMain: a.isMain,
+          active: a.active,
+        })),
+      })),
+    memberCount: Number(members?.n ?? 0),
+    openInviteCount: Number(invites?.n ?? 0),
+    signTypeCount: Number(types?.n ?? 0),
+    supplierCount: Number(supplierRows?.n ?? 0),
+  };
+}
+
+type EditionRowForSetup = Pick<
+  typeof editions.$inferSelect,
+  | "id"
+  | "setupChecked"
+  | "buildStart"
+  | "openStart"
+  | "openEnd"
+  | "breakdownEnd"
+  | "clonedFromEditionId"
+>;
+
+/** Per-event facts for several events at once (four grouped queries). */
+export async function loadEditionSetupFacts(
+  rows: readonly EditionRowForSetup[],
+): Promise<Map<string, EditionSetupFacts>> {
+  const ids = rows.map((r) => r.id);
+  const out = new Map<string, EditionSetupFacts>();
+  if (ids.length === 0) return out;
+  const [hallRows, itemRows, sponsorRows, deadlineRows] = await Promise.all([
+    db
+      .select({
+        editionId: halls.editionId,
+        name: halls.name,
+        sortOrder: halls.sortOrder,
+        n: count(locations.id),
+      })
+      .from(halls)
+      .leftJoin(locations, eq(locations.hallId, halls.id))
+      .where(inArray(halls.editionId, ids))
+      .groupBy(halls.id)
+      .orderBy(halls.sortOrder, halls.name),
+    db
+      .select({
+        editionId: signageItems.editionId,
+        kind: signageItems.kind,
+        draft: sql<boolean>`${signageItems.status} = 'draft'`,
+        n: count(),
+      })
+      .from(signageItems)
+      .where(and(inArray(signageItems.editionId, ids), isNull(signageItems.deletedAt)))
+      .groupBy(signageItems.editionId, signageItems.kind, sql`${signageItems.status} = 'draft'`),
+    db
+      .select({ editionId: sponsors.editionId, n: count() })
+      .from(sponsors)
+      .where(inArray(sponsors.editionId, ids))
+      .groupBy(sponsors.editionId),
+    db.select().from(editionDeadlines).where(inArray(editionDeadlines.editionId, ids)),
+  ]);
+  for (const r of rows) {
+    const items = itemRows.filter((i) => i.editionId === r.id);
+    const signs = items.filter((i) => i.kind === "signage");
+    out.set(r.id, {
+      setupChecked: r.setupChecked ?? [],
+      dates: {
+        buildStart: r.buildStart,
+        openStart: r.openStart,
+        openEnd: r.openEnd,
+        breakdownEnd: r.breakdownEnd,
+      },
+      copied: Boolean(r.clonedFromEditionId),
+      halls: hallRows
+        .filter((h) => h.editionId === r.id)
+        .map((h) => ({ name: h.name, locations: Number(h.n) })),
+      signCount: signs.reduce((n, i) => n + Number(i.n), 0),
+      draftSignCount: signs.filter((i) => i.draft).reduce((n, i) => n + Number(i.n), 0),
+      sponsorCount: Number(sponsorRows.find((s) => s.editionId === r.id)?.n ?? 0),
+      sponsorshipItemCount: items
+        .filter((i) => i.kind === "sponsorship_item")
+        .reduce((n, i) => n + Number(i.n), 0),
+      deadlines: deadlineRows
+        .filter((d) => d.editionId === r.id)
+        .map((d) => ({
+          key: d.key,
+          label: d.label,
+          date: deadlineDate(r.buildStart, d.daysBeforeBuildStart, d.overrideDate),
+        }))
+        .sort((a, b) => DEADLINE_KEYS.indexOf(a.key) - DEADLINE_KEYS.indexOf(b.key)),
+    });
+  }
+  return out;
+}
+
+/** The checklist for one event (one round of queries). */
+export async function getSetupStatus(
+  edition: EditionRowForSetup & { code: string },
+  organisationId: string,
+  perms: SetupPermissions,
+): Promise<{
+  steps: SetupStep[];
+  summary: SetupSummary;
+  org: OrgSetupFacts;
+  facts: EditionSetupFacts;
+}> {
+  const [org, all] = await Promise.all([
+    loadOrgSetupFacts(organisationId),
+    loadEditionSetupFacts([edition]),
+  ]);
+  const facts = all.get(edition.id)!;
+  const steps = buildSetupSteps(edition, facts, org, perms);
+  return { steps, summary: summariseSetup(steps), org, facts };
+}
+
+/** Progress for several events (the Events list), same number of queries. */
+export async function getSetupSummaries(
+  rows: readonly (EditionRowForSetup & { code: string })[],
+  organisationId: string,
+  perms: SetupPermissions,
+): Promise<Map<string, SetupSummary>> {
+  const out = new Map<string, SetupSummary>();
+  if (rows.length === 0) return out;
+  const [org, facts] = await Promise.all([
+    loadOrgSetupFacts(organisationId),
+    loadEditionSetupFacts(rows),
+  ]);
+  for (const r of rows) {
+    out.set(r.id, summariseSetup(buildSetupSteps(r, facts.get(r.id)!, org, perms)));
+  }
+  return out;
+}
+
+/**
+ * Who to ask about setting things up: the organisation's admins and
+ * Operations people, admins first.
+ */
+export async function setupContacts(
+  organisationId: string,
+): Promise<{ name: string; email: string; role: string }[]> {
+  const rows = await db
+    .select({ name: users.fullName, email: users.email, role: memberships.role })
+    .from(memberships)
+    .innerJoin(users, eq(memberships.userId, users.id))
+    .where(
+      and(
+        eq(memberships.organisationId, organisationId),
+        inArray(memberships.role, ["admin", "ops"]),
+      ),
+    )
+    .orderBy(memberships.role, users.fullName);
+  return rows.map((r) => ({ name: r.name || r.email, email: r.email, role: r.role }));
+}
+
+/** Every deadline for the setup form; missing rows take the standard offsets. */
+export async function deadlinesForSetup(editionId: string) {
+  const rows = await db
+    .select()
+    .from(editionDeadlines)
+    .where(eq(editionDeadlines.editionId, editionId));
+  return DEADLINE_KEYS.map((key) => {
+    const row = rows.find((r) => r.key === key);
+    return {
+      key,
+      label: DEADLINE_LABELS[key],
+      daysBeforeBuildStart: row?.daysBeforeBuildStart ?? DEFAULT_DEADLINE_OFFSETS[key],
+      overrideDate: row?.overrideDate ?? null,
+    };
+  });
+}
+
+/** Hall and location rows for the halls editor, with sign counts. */
+export async function hallsEditorData(editionId: string) {
+  const live = and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt));
+  const [hallRows, locationRows, byHall, byLocation, unplaced] = await Promise.all([
+    db
+      .select()
+      .from(halls)
+      .where(eq(halls.editionId, editionId))
+      .orderBy(halls.sortOrder, halls.name),
+    db
+      .select({ loc: locations })
+      .from(locations)
+      .innerJoin(halls, eq(locations.hallId, halls.id))
+      .where(eq(halls.editionId, editionId))
+      .orderBy(locations.name),
+    db
+      .select({ id: signageItems.hallId, n: count() })
+      .from(signageItems)
+      .where(live)
+      .groupBy(signageItems.hallId),
+    db
+      .select({ id: signageItems.locationId, n: count() })
+      .from(signageItems)
+      .where(live)
+      .groupBy(signageItems.locationId),
+    db
+      .select({ id: signageItems.hallId, n: count() })
+      .from(signageItems)
+      .where(and(live, isNull(signageItems.locationId)))
+      .groupBy(signageItems.hallId),
+  ]);
+  const hallCounts = new Map(byHall.map((r) => [r.id, Number(r.n)]));
+  const locCounts = new Map(byLocation.map((r) => [r.id, Number(r.n)]));
+  const unplacedCounts = new Map(unplaced.map((r) => [r.id, Number(r.n)]));
+  const zones = [
+    ...new Set(locationRows.map(({ loc }) => loc.zone?.trim()).filter((z): z is string => !!z)),
+  ].sort((a, b) => a.localeCompare(b));
+  return {
+    zones,
+    halls: hallRows.map((h) => ({
+      id: h.id,
+      name: h.name,
+      itemCount: hallCounts.get(h.id) ?? 0,
+      unplacedCount: unplacedCounts.get(h.id) ?? 0,
+      locations: locationRows
+        .filter(({ loc }) => loc.hallId === h.id)
+        .map(({ loc }) => ({
+          id: loc.id,
+          name: loc.name,
+          zone: loc.zone,
+          itemCount: locCounts.get(loc.id) ?? 0,
+        })),
+    })),
+  };
+}
+
+/**
+ * Earlier events at the same venue that have halls, newest first, to copy
+ * halls and locations from.
+ */
+export async function hallCopySources(
+  organisationId: string,
+  target: { id: string; venueId: string },
+) {
+  const rows = await db
+    .select({
+      id: editions.id,
+      name: editions.name,
+      code: editions.code,
+      openStart: editions.openStart,
+      halls: sql<number>`count(distinct ${halls.id})`,
+      locations: sql<number>`count(${locations.id})`,
+    })
+    .from(editions)
+    .innerJoin(events, eq(editions.eventId, events.id))
+    .innerJoin(halls, eq(halls.editionId, editions.id))
+    .leftJoin(locations, eq(locations.hallId, halls.id))
+    .where(
+      and(
+        eq(events.organisationId, organisationId),
+        eq(editions.venueId, target.venueId),
+        ne(editions.id, target.id),
+      ),
+    )
+    .groupBy(editions.id)
+    .orderBy(desc(editions.openStart));
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    code: r.code,
+    halls: Number(r.halls),
+    locations: Number(r.locations),
+  }));
+}
+
+/** Venues for pickers: most recently used first, archived ones left out. */
+export async function venuesForPicker(organisationId: string) {
+  const rows = await db
+    .select({
+      id: venues.id,
+      name: venues.name,
+      address: venues.address,
+      lastUsed: sql<string | null>`max(${editions.openStart})`,
+    })
+    .from(venues)
+    .leftJoin(editions, eq(editions.venueId, venues.id))
+    .where(and(eq(venues.organisationId, organisationId), eq(venues.isArchived, false)))
+    .groupBy(venues.id)
+    .orderBy(sql`max(${editions.openStart}) desc nulls last`, venues.name);
+  return rows.map((r) => ({ id: r.id, name: r.name, address: r.address }));
+}
+
+/**
+ * What each earlier event would bring across when copied, for the "Copy a
+ * previous event" form: one grouped query per kind of record.
+ */
+export async function copySourceCounts(organisationId: string) {
+  const orgEditions = db
+    .select({ id: editions.id })
+    .from(editions)
+    .innerJoin(events, eq(editions.eventId, events.id))
+    .where(eq(events.organisationId, organisationId));
+  const [hallRows, deadlineRows, sponsorRows, itemRows, grantRows] = await Promise.all([
+    db
+      .select({
+        editionId: halls.editionId,
+        halls: sql<number>`count(distinct ${halls.id})`,
+        locations: sql<number>`count(${locations.id})`,
+      })
+      .from(halls)
+      .leftJoin(locations, eq(locations.hallId, halls.id))
+      .where(inArray(halls.editionId, orgEditions))
+      .groupBy(halls.editionId),
+    db
+      .select({ editionId: editionDeadlines.editionId, n: count() })
+      .from(editionDeadlines)
+      .where(inArray(editionDeadlines.editionId, orgEditions))
+      .groupBy(editionDeadlines.editionId),
+    db
+      .select({ editionId: sponsors.editionId, n: count() })
+      .from(sponsors)
+      .where(inArray(sponsors.editionId, orgEditions))
+      .groupBy(sponsors.editionId),
+    db
+      .select({ editionId: signageItems.editionId, n: count() })
+      .from(signageItems)
+      .where(and(inArray(signageItems.editionId, orgEditions), isNull(signageItems.deletedAt)))
+      .groupBy(signageItems.editionId),
+    db
+      .select({
+        editionId: externalGrants.editionId,
+        scopeType: externalGrants.scopeType,
+        role: externalGrants.role,
+        n: count(),
+      })
+      .from(externalGrants)
+      .where(
+        and(
+          eq(externalGrants.organisationId, organisationId),
+          isNull(externalGrants.revokedAt),
+          or(isNull(externalGrants.expiresAt), gt(externalGrants.expiresAt, new Date())),
+        ),
+      )
+      .groupBy(externalGrants.editionId, externalGrants.scopeType, externalGrants.role),
+  ]);
+  const num = (v: unknown) => Number(v ?? 0);
+  return (editionId: string) => {
+    const h = hallRows.find((r) => r.editionId === editionId);
+    const grants = grantRows.filter((g) => g.editionId === editionId);
+    return {
+      halls: num(h?.halls),
+      locations: num(h?.locations),
+      deadlines: num(deadlineRows.find((r) => r.editionId === editionId)?.n),
+      sponsors: num(sponsorRows.find((r) => r.editionId === editionId)?.n),
+      items: num(itemRows.find((r) => r.editionId === editionId)?.n),
+      // Venue and supplier access, engineers and H&S come across; sponsor
+      // and exhibitor access belongs to the old event's records.
+      access: grants
+        .filter((g) =>
+          g.scopeType === null
+            ? g.role === "structural_engineer" || g.role === "hs"
+            : g.scopeType === "venue" || g.scopeType === "supplier",
+        )
+        .reduce((n, g) => n + num(g.n), 0),
+      accessLeftBehind: grants
+        .filter((g) => g.scopeType === "sponsor" || g.scopeType === "exhibitor")
+        .reduce((n, g) => n + num(g.n), 0),
+    };
+  };
+}

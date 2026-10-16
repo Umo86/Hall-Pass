@@ -135,35 +135,49 @@ test.describe("signage set-up and sign-off", () => {
     await page.context().close();
   });
 
-  test("ops creates a show with a new venue, address and logo", async ({ browser, baseURL }) => {
+  test("ops creates an event with a new venue, then adds its address and logo", async ({
+    browser,
+    baseURL,
+  }) => {
     const page = await as(browser, "ops@media10.test", baseURL!);
     const n = stamp();
     const code = `E2E${n}`;
-    await page.goto(`${baseURL}/editions`);
-    await page.getByRole("button", { name: "New show" }).click();
-    const dialog = page.getByRole("dialog");
-    await dialog.getByLabel("Show name").fill(`E2E Expo ${n}`);
-    await dialog.getByLabel("Short code").fill(code);
-    await dialog.getByLabel("Show series").selectOption("new");
-    await dialog.getByLabel("New series name").fill(`E2E Expo Series ${n}`);
-    await dialog.getByLabel("Venue", { exact: true }).selectOption("new");
-    await dialog.getByLabel("New venue name").fill(`E2E Hall ${n}`);
-    await dialog.getByLabel("Venue address").fill("1 Test Street, Testville TE5 7ST");
-    await dialog
+    await page.goto(`${baseURL}/start?mode=fresh`, { waitUntil: "networkidle" });
+    await expect(page.getByRole("heading", { name: "Create your event" })).toBeVisible();
+    await page.getByLabel("Event name").fill(`E2E Expo ${n}`);
+    await page.getByLabel("Opens to visitors").fill("2028-03-03");
+    await page.getByLabel("Closes to visitors").fill("2028-03-05");
+    await page.getByLabel("Venue", { exact: true }).selectOption("new");
+    await page.getByLabel("Venue name").fill(`E2E Hall ${n}`);
+    await page.getByLabel("Address (optional)").fill("1 Test Street, Testville TE5 7ST");
+    await page.getByRole("button", { name: "Change" }).click();
+    await page.getByLabel("Reference code").fill(code);
+    await page.getByRole("button", { name: "Create event" }).click();
+    await page.waitForURL(`**/${code}/setup`);
+    await page.waitForLoadState("networkidle");
+
+    // Step 1: the assumed dates are there to check; add the logo and save.
+    await expect(page.getByLabel("Build-up starts")).toHaveValue("2028-03-01");
+    await expect(page.getByLabel("Breakdown ends")).toHaveValue("2028-03-06");
+    await expect(page.getByLabel("Venue address")).toHaveValue("1 Test Street, Testville TE5 7ST");
+    await page
       .getByLabel("Logo (optional)")
       .setInputFiles({ name: "logo.png", mimeType: "image/png", buffer: PNG });
-    await dialog.getByLabel("Build starts").fill("2028-03-01");
-    await dialog.getByLabel("Build ends").fill("2028-03-02");
-    await dialog.getByLabel("Show opens").fill("2028-03-03");
-    await dialog.getByLabel("Show closes").fill("2028-03-05");
-    await dialog.getByLabel("Breakdown ends").fill("2028-03-06");
-    await dialog.getByRole("button", { name: "Create show" }).click();
-    await page.waitForURL(`**/${code}/dashboard`);
+    await page.getByRole("button", { name: "Save and continue" }).click();
+    await expect(page.getByText("Details saved")).toBeVisible();
+
+    await page.goto(`${baseURL}/${code}/dashboard`);
     await expect(page.getByRole("heading", { name: `E2E Expo ${n}` })).toBeVisible();
     await expect(page.getByAltText(`E2E Expo ${n} logo`)).toBeVisible();
     await expect(
       page.getByText("1 Test Street, Testville TE5 7ST", { exact: false }),
     ).toBeVisible();
+    // A new event has no signs yet: the dashboard says how to add them.
+    await expect(page.getByText("No signs yet")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Add a sign" })).toHaveAttribute(
+      "href",
+      `/${code}/signage/new`,
+    );
     await page.context().close();
   });
 

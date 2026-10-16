@@ -1,185 +1,165 @@
 import Link from "next/link";
-import { eq, inArray } from "drizzle-orm";
-import { db } from "@/lib/db/client";
-import { editionDeadlines, events, venues } from "@/lib/db/schema";
+import { CalendarPlus, Copy, Plus } from "lucide-react";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can } from "@/lib/authz";
-import { listEditions, showLogoUrl } from "@/lib/queries/editions";
-import { DEADLINE_KEYS, DEADLINE_LABELS } from "@/lib/deadlines";
-import { formatDate } from "@/lib/format";
-import { StatusBadge } from "@/components/status-badge";
+import { todayInLondon } from "@/lib/today";
 import {
-  CloneEditionDialog,
-  CreateEditionDialog,
-  EditEditionDialog,
-} from "@/components/editions/edition-forms";
+  EVENT_PHASE_LABELS,
+  eventGroup,
+  eventPhase,
+  listEditions,
+  showLogoUrl,
+  sortForGroup,
+  type EventGroup,
+} from "@/lib/queries/editions";
+import { getSetupSummaries, setupContacts } from "@/lib/queries/setup";
+import { Page, PageHeader } from "@/components/page-header";
+import { EmptyState } from "@/components/empty-state";
+import { SegmentedLinks } from "@/components/ui/segmented";
+import { Button } from "@/components/ui/button";
+import { EventsList, type EventCard } from "@/components/editions/events-list";
+import { NoEventsYet } from "@/components/setup/no-events-state";
+import { dateRangeWithYear } from "@/components/setup/format";
 
 export const metadata = { title: "Events" };
-
-/** Standard offsets for a show that has no row for a deadline yet. */
-const DEFAULT_OFFSETS: Record<string, number> = {
-  stand_design_due: 42,
-  insurance_due: 28,
-  venue_rigging_submission: 28,
-  artwork_due: 21,
-  print_deadline: 14,
-  delivery: 3,
-};
 export const dynamic = "force-dynamic";
 
-export default async function ShowsPage() {
+const VIEWS: { id: EventGroup; label: string }[] = [
+  { id: "upcoming", label: "Upcoming & live" },
+  { id: "past", label: "Past" },
+  { id: "archived", label: "Archived" },
+];
+
+const EMPTY_TEXT: Record<EventGroup, string> = {
+  upcoming: "Nothing coming up. Past events are under Past.",
+  past: "No past events yet.",
+  archived: "Nothing archived. Admins archive an event once it's finished with.",
+};
+
+export default async function EventsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ view?: string }>;
+}) {
   const session = await requireStaffSession();
   const orgId = session.organisation.id;
-  const [rows, eventRows, venueRows] = await Promise.all([
-    listEditions(orgId),
-    db.select().from(events).where(eq(events.organisationId, orgId)).orderBy(events.name),
-    db.select().from(venues).where(eq(venues.organisationId, orgId)).orderBy(venues.name),
-  ]);
-  const logos = await Promise.all(rows.map((r) => showLogoUrl(r.edition.logoPath)));
-  const deadlineRows = rows.length
-    ? await db
-        .select()
-        .from(editionDeadlines)
-        .where(
-          inArray(
-            editionDeadlines.editionId,
-            rows.map((r) => r.edition.id),
-          ),
-        )
-    : [];
-  // Every show gets the full list; missing rows take the standard offsets.
-  const deadlinesFor = (editionId: string) =>
-    DEADLINE_KEYS.map((key) => {
-      const row = deadlineRows.find((d) => d.editionId === editionId && d.key === key);
-      return {
-        key,
-        label: DEADLINE_LABELS[key],
-        daysBeforeBuildStart: row?.daysBeforeBuildStart ?? DEFAULT_OFFSETS[key],
-        overrideDate: row?.overrideDate ?? null,
-      };
-    });
-  const canManage = can(session.actor, { type: "settings.manage" });
+  const { view: rawView } = await searchParams;
+  const view: EventGroup = VIEWS.some((v) => v.id === rawView)
+    ? (rawView as EventGroup)
+    : "upcoming";
+  const canSetup = can(session.actor, { type: "settings.manage" });
   const canArchive = can(session.actor, { type: "users.manage" });
-  const venueOptions = venueRows.map((v) => ({ id: v.id, name: v.name, address: v.address }));
+  const rows = await listEditions(orgId);
+
+  if (rows.length === 0) {
+    return (
+      <Page>
+        <PageHeader
+          title="Events"
+          description="Each event has its own signage, sponsorship, sign-offs and deadlines."
+        />
+        {canSetup ? (
+          <EmptyState
+            icon={CalendarPlus}
+            title="Create your first event"
+            description="Start with its name, dates and venue — halls, deadlines and people come next, one step at a time."
+            action={
+              <Button asChild size="lg">
+                <Link href="/start">Create your event</Link>
+              </Button>
+            }
+          />
+        ) : (
+          <NoEventsYet
+            brandName={session.organisation.brandName}
+            contacts={await setupContacts(orgId)}
+          />
+        )}
+      </Page>
+    );
+  }
+
+  const today = todayInLondon();
+  const grouped = new Map<EventGroup, typeof rows>(VIEWS.map((v) => [v.id, []]));
+  for (const r of rows) grouped.get(eventGroup(r.edition, today))!.push(r);
+  const inView = sortForGroup(
+    grouped.get(view)!.map((r) => ({ ...r, openStart: r.edition.openStart, code: r.edition.code })),
+    view,
+  );
+  const [summaries, logos] = await Promise.all([
+    // Setup progress only matters for events still to come.
+    canSetup && view === "upcoming"
+      ? getSetupSummaries(
+          inView.filter((r) => r.edition.status !== "archived").map((r) => r.edition),
+          orgId,
+          {
+            canSetup,
+            canUsers: canArchive,
+            canAddSigns: can(session.actor, { type: "signage.create" }),
+          },
+        )
+      : Promise.resolve(new Map<string, { done: number; total: number; complete: boolean }>()),
+    Promise.all(inView.map((r) => showLogoUrl(r.edition.logoPath))),
+  ]);
+
+  const cards: EventCard[] = inView.map((r, i) => {
+    const phase = eventPhase(r.edition, today);
+    const summary = summaries.get(r.edition.id);
+    const incomplete = summary && !summary.complete;
+    return {
+      id: r.edition.id,
+      code: r.edition.code,
+      name: r.edition.name,
+      href: incomplete ? `/${r.edition.code}/setup` : `/${r.edition.code}/dashboard`,
+      line: `Open ${dateRangeWithYear(r.edition.openStart, r.edition.openEnd)} · ${r.venue.name}`,
+      series: r.event.name,
+      phase,
+      phaseLabel: EVENT_PHASE_LABELS[phase],
+      setup: summary ? { done: summary.done, total: summary.total } : null,
+      logoUrl: logos[i],
+      archived: r.edition.status === "archived",
+    };
+  });
 
   return (
-    <div className="flex flex-col gap-4 p-4 sm:p-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Shows</h1>
-          <p className="text-muted-foreground text-sm">
-            Each show has its own signage, sponsorship, sign-offs and deadlines.
-          </p>
-        </div>
-        {canManage && (
-          <div className="flex gap-2">
-            {rows.length > 0 && (
-              <CloneEditionDialog
-                editions={rows.map((r) => ({
-                  id: r.edition.id,
-                  code: r.edition.code,
-                  name: r.edition.name,
-                }))}
-              />
-            )}
-            <CreateEditionDialog
-              events={eventRows.map((e) => ({ id: e.id, name: e.name }))}
-              venues={venueOptions}
-            />
-          </div>
-        )}
-      </div>
-
-      {rows.length === 0 ? (
-        <div className="border-border text-muted-foreground flex h-48 flex-col items-center justify-center gap-3 rounded-lg border border-dashed text-sm">
-          No shows yet.{canManage ? " Use New show to set up the first one." : ""}
-        </div>
-      ) : (
-        <ul className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {rows.map((r, i) => (
-            <li key={r.edition.id} className="flex flex-col gap-3 rounded-lg border p-4">
-              <div className="flex items-start gap-3">
-                <div className="bg-muted/40 flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-md border">
-                  {logos[i] ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={logos[i]!}
-                      alt={`${r.edition.name} logo`}
-                      className="max-h-full max-w-full object-contain"
-                    />
-                  ) : (
-                    <span className="text-muted-foreground text-xs font-semibold">
-                      {r.edition.code.slice(0, 4)}
-                    </span>
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <Link
-                    href={`/${r.edition.code}/dashboard`}
-                    className="font-semibold hover:underline"
-                  >
-                    {r.edition.name}
-                  </Link>
-                  <p className="text-muted-foreground text-xs">
-                    {r.edition.code} · {r.event.name}
-                  </p>
-                </div>
-                <StatusBadge status={r.edition.status} />
-              </div>
-              <dl className="text-muted-foreground grid grid-cols-[5.5rem_1fr] gap-x-2 gap-y-1 text-sm">
-                <dt>Venue</dt>
-                <dd className="text-foreground">
-                  {r.venue.name}
-                  {r.venue.address && (
-                    <span className="text-muted-foreground block text-xs">{r.venue.address}</span>
-                  )}
-                </dd>
-                <dt>Build</dt>
-                <dd>
-                  {formatDate(r.edition.buildStart)} – {formatDate(r.edition.buildEnd)}
-                </dd>
-                <dt>Open</dt>
-                <dd>
-                  {formatDate(r.edition.openStart)} – {formatDate(r.edition.openEnd)}
-                </dd>
-                <dt>Breakdown</dt>
-                <dd>ends {formatDate(r.edition.breakdownEnd)}</dd>
-              </dl>
-              <div className="mt-auto flex flex-wrap gap-2">
-                <Link
-                  href={`/${r.edition.code}/signage`}
-                  className="text-primary text-sm hover:underline"
-                >
-                  Signage →
+    <Page>
+      <PageHeader
+        title="Events"
+        description="Each event has its own signage, sponsorship, sign-offs and deadlines."
+        actions={
+          canSetup ? (
+            <>
+              <Button asChild variant="outline">
+                <Link href="/start?mode=copy">
+                  <Copy aria-hidden /> Copy an event
                 </Link>
-                {canManage && (
-                  <span className="ml-auto">
-                    <EditEditionDialog
-                      edition={{
-                        id: r.edition.id,
-                        code: r.edition.code,
-                        name: r.edition.name,
-                        status: r.edition.status,
-                        buildStart: r.edition.buildStart,
-                        buildEnd: r.edition.buildEnd,
-                        openStart: r.edition.openStart,
-                        openEnd: r.edition.openEnd,
-                        breakdownEnd: r.edition.breakdownEnd,
-                        signageBudget: r.edition.signageBudget,
-                        venueId: r.edition.venueId,
-                        logoUrl: logos[i],
-                        deadlines: deadlinesFor(r.edition.id),
-                      }}
-                      venues={venueOptions}
-                      canArchive={canArchive}
-                    />
-                  </span>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+              </Button>
+              <Button asChild>
+                <Link href="/start">
+                  <Plus aria-hidden /> New event
+                </Link>
+              </Button>
+            </>
+          ) : undefined
+        }
+      />
+      <SegmentedLinks
+        label="Which events"
+        className="self-start"
+        items={VIEWS.map((v) => ({
+          label: v.label,
+          href: v.id === "upcoming" ? "/events" : `/events?view=${v.id}`,
+          active: v.id === view,
+          count: grouped.get(v.id)!.length,
+        }))}
+      />
+      <EventsList
+        key={view}
+        events={cards}
+        canSetup={canSetup}
+        canArchive={canArchive}
+        emptyText={EMPTY_TEXT[view]}
+      />
+    </Page>
   );
 }
