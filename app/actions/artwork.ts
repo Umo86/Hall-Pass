@@ -24,6 +24,7 @@ import {
   sha256Hex,
 } from "@/lib/storage";
 import { notify } from "@/lib/notify";
+import { recipientsWhoCanSee } from "@/lib/users/external";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import {
   ARTWORK_TYPE_MESSAGE,
@@ -288,9 +289,17 @@ async function recordArtworkVersion(
         // Requests for steps the new version superseded are over.
         await settleApprovalNotifications(tx, "signage_item", item.id);
         for (const inst of res.invalidated) {
-          const approvers = inst.decidedBy ? [inst.decidedBy] : [];
+          // A partner who decided (a venue or sponsor approver) hears only
+          // while their live grants here still show them the item.
+          const approvers = await recipientsWhoCanSee(
+            tx,
+            session.organisation.id,
+            inst.decidedBy ? [inst.decidedBy] : [],
+            { sees: (a) => can(a, { type: "signage.view", item: ctx }) },
+          );
           await notify(tx, {
             userIds: approvers,
+            scope: { organisationId: session.organisation.id, editionId: bundle.edition.id },
             kind: "approval_invalidated",
             title: `New artwork supersedes your approval — ${item.ref}`,
             body: `${inst.stepName}: your approval of the previous artwork is superseded by v${versionNumber}. Compare the versions and re-approve.`,

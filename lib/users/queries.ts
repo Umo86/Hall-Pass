@@ -299,9 +299,12 @@ export async function loadPerson(
       owned[f] = (owned[f] ?? 0) + 1;
     }
   }
-  // The last super admin with access can't be demoted, suspended or removed.
-  const admins = rows.filter(
-    (r) => r.kind === "member" && r.role === "admin" && r.access === "active",
+  // There must always be a super admin with lasting access (active, no end
+  // date): the last one can't be demoted, suspended, removed or given an
+  // end date (lib/users/manage.ts, anotherLastingSuperAdmin).
+  const lasting = rows.filter(
+    (r) =>
+      r.kind === "member" && r.role === "admin" && r.access === "active" && r.accessEndsAt == null,
   );
   const signoffRows = await db
     .select({ departmentId: approvers.departmentId, isMain: approvers.isMain })
@@ -327,7 +330,8 @@ export async function loadPerson(
         row.kind === "member" &&
         row.role === "admin" &&
         row.access === "active" &&
-        admins.length <= 1,
+        row.accessEndsAt == null &&
+        !lasting.some((a) => a.id !== row.id),
     },
     departments: depts,
   };

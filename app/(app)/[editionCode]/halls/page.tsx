@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
-import { editionIsReadOnly } from "@/lib/edition-lock";
+import { can, missingAbilityMessage } from "@/lib/authz";
+import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { hallCopySources, hallsEditorData } from "@/lib/queries/setup";
 import { Page, PageHeader } from "@/components/page-header";
@@ -20,6 +20,11 @@ export default async function HallsPage({ params }: { params: Promise<{ editionC
 
   const canSetup = can(session.actor, { type: "halls.manage" });
   const canEdit = canSetup && !editionIsReadOnly(ed.edition.status);
+  // Why halls can't be added: the event is archived (whoever is looking),
+  // or the person lacks the ability.
+  const hallsLocked = editionIsReadOnly(ed.edition.status)
+    ? EDITION_LOCKED_MESSAGE
+    : `${missingAbilityMessage("halls.manage")}.`;
   const [data, sources] = await Promise.all([
     hallsEditorData(ed.edition.id),
     canEdit ? hallCopySources(session.organisation.id, ed.edition) : Promise.resolve([]),
@@ -33,7 +38,7 @@ export default async function HallsPage({ params }: { params: Promise<{ editionC
         description={
           canEdit
             ? `Where signs go at ${ed.edition.name}. Every sign needs a hall and a location before it can be sent for sign-off.`
-            : `Where signs go at ${ed.edition.name}. Only admins and Operations can add halls.`
+            : `Where signs go at ${ed.edition.name}. ${hallsLocked}`
         }
         meta={
           data.halls.length > 0
@@ -52,6 +57,7 @@ export default async function HallsPage({ params }: { params: Promise<{ editionC
         editionId={ed.edition.id}
         editionCode={ed.edition.code}
         canEdit={canEdit}
+        lockedReason={hallsLocked}
         venueName={ed.venue.name}
         halls={data.halls}
         zones={data.zones}

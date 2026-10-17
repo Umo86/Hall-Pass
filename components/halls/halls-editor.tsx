@@ -571,6 +571,7 @@ export function HallsEditor({
   halls,
   zones = [],
   canEdit,
+  lockedReason,
   venueName,
   copySources = [],
 }: {
@@ -579,6 +580,8 @@ export function HallsEditor({
   halls: HallRow[];
   zones?: string[];
   canEdit: boolean;
+  /** Why halls can't be added here (archived event, or no ability), when canEdit is false. */
+  lockedReason?: string;
   venueName: string;
   copySources?: HallCopySource[];
 }) {
@@ -605,7 +608,7 @@ export function HallsEditor({
               <p className="text-muted-foreground text-sm">
                 {canEdit
                   ? `Add the halls at ${venueName}, then the places inside each one where signs go (“Main entrance”, “Aisle A”).`
-                  : "Only admins and Operations can add halls."}
+                  : (lockedReason ?? "Halls can't be added here.")}
               </p>
             </div>
           </div>

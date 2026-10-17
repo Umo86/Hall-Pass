@@ -5,6 +5,7 @@ import { signageItems, workflows } from "@/lib/db/schema";
 import type { SignoffPlan, StepDef } from "@/lib/workflow/types";
 import { isDepartmentStep } from "@/lib/workflow/signoffs";
 import { syncDepartmentSteps } from "./departments";
+import type { StandChip } from "@/components/stand-designs/chips";
 
 export const STAND_DESIGN_WORKFLOW_NAME = "Stand design sign-off";
 
@@ -97,26 +98,8 @@ const APPROVED_STATUSES = [
   "closed",
 ];
 
-/** The status chips above the Feature stands cards. */
-export const STAND_CHIPS = [
-  "needs_design",
-  "not_sent",
-  "in_signoff",
-  "changes_requested",
-  "approved",
-  "on_hold",
-] as const;
-
-export type StandChip = (typeof STAND_CHIPS)[number];
-
-export const STAND_CHIP_LABELS: Record<StandChip, string> = {
-  needs_design: "Needs design",
-  not_sent: "Not sent yet",
-  in_signoff: "In sign-off",
-  changes_requested: "Changes requested",
-  approved: "Approved",
-  on_hold: "On hold",
-};
+// The status chips live in a client-safe module (the stand list imports them).
+export { STAND_CHIPS, STAND_CHIP_LABELS, type StandChip } from "@/components/stand-designs/chips";
 
 /** Which chip a stand counts under (rejected stands only under All). */
 export function standChip(status: string, hasDesign: boolean): StandChip | null {

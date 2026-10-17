@@ -2,7 +2,7 @@ import "server-only";
 import Link from "next/link";
 import { Lock } from "lucide-react";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, missingAbilityMessage } from "@/lib/authz";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,8 +37,8 @@ export function SectionLocked({ id }: { id: SettingsSectionId }) {
       icon={Lock}
       title={
         section.needs === "system.manage"
-          ? `Only admins can open ${section.label}`
-          : `Only admins and Operations can change ${section.label.toLowerCase()}`
+          ? `Only super admins can open ${section.label}`
+          : missingAbilityMessage(section.needs)
       }
       description="Your own details and notifications are in My account."
       action={

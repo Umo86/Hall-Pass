@@ -125,7 +125,76 @@ function scan(file: string): Hit[] {
   return hits;
 }
 
+/**
+ * The admin role is shown as "Super admin" (DECISIONS, "Words"), and who
+ * may do something comes from the abilities registry (missingAbilityMessage),
+ * so copy never says "admins" or "an admin" on its own.
+ */
+const ADMIN_WORD = /(?<!super[ -])\badmins?\b/gi;
+
+/** "file: text" for copy that must keep the word (none at the moment). */
+const ADMIN_ALLOWED = new Set<string>([]);
+
+function adminUses(text: string): string[] {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (!t || looksLikeCode(t)) return [];
+  return [...t.matchAll(ADMIN_WORD)].map((m) => m[0]);
+}
+
+function scanAdmin(file: string): Hit[] {
+  const source = readFileSync(file, "utf8");
+  const sf = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const rel = path.relative(ROOT, file);
+  const hits: Hit[] = [];
+  const check = (node: ts.Node, text: string) => {
+    if (adminUses(text).length === 0) return;
+    const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+    hits.push({ file: rel, line, text: text.replace(/\s+/g, " ").trim() });
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return;
+    if (ts.isTaggedTemplateExpression(node) && isSqlTag(node)) return;
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      check(node, node.text);
+      return;
+    }
+    if (ts.isTemplateExpression(node)) {
+      check(node, templateText(node));
+      for (const span of node.templateSpans) visit(span.expression);
+      return;
+    }
+    if (ts.isJsxElement(node) || ts.isJsxFragment(node)) {
+      check(node, jsxText(node.children));
+      if (ts.isJsxElement(node)) visit(node.openingElement);
+      for (const child of node.children) if (!ts.isJsxText(child)) visit(child);
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return hits;
+}
+
 describe("terminology", () => {
+  it("says super admin, never admins on their own", () => {
+    expect(adminUses("Only admins and Operations create events")).toEqual(["admins"]);
+    expect(adminUses("Ask an admin")).toEqual(["admin"]);
+    expect(adminUses("Ask a super admin")).toEqual([]);
+    expect(adminUses("Super admins see everything")).toEqual([]);
+    expect(adminUses("admin")).toEqual([]); // a role key, not copy
+    const hits = DIRS.flatMap((d) => sourceFiles(path.join(ROOT, d))).flatMap(scanAdmin);
+    const key = (h: Hit) => `${h.file}: ${h.text}`;
+    expect(
+      hits.filter((h) => !ADMIN_ALLOWED.has(key(h))).map((h) => `${h.file}:${h.line}: ${h.text}`),
+    ).toEqual([]);
+  });
+
   it("tells a verb from a noun", () => {
     expect(nounUses("Show more")).toEqual([]);
     expect(nounUses("Show {} more ({} not shown)")).toEqual([]);

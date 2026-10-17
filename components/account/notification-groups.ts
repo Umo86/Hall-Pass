@@ -19,7 +19,14 @@ export const NOTIFICATION_GROUPS: { id: string; label: string; kinds: MutableKin
   {
     id: "items",
     label: "Items I own or follow",
-    kinds: ["artwork_uploaded", "comment", "snag", "item_created", "supplier_needed"],
+    kinds: [
+      "artwork_uploaded",
+      "comment",
+      "snag",
+      "item_created",
+      "item_assigned",
+      "supplier_needed",
+    ],
   },
   {
     id: "tasks",

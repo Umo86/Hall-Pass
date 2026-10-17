@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import { and, count, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
@@ -19,15 +20,26 @@ import {
   workflows,
 } from "@/lib/db/schema";
 import { listDepartments } from "@/lib/domain/departments";
+import { londonDateOfAccessEnd } from "@/lib/access";
+import type { CopyableGrant } from "@/lib/copy-access";
 import {
   DEADLINE_KEYS,
   DEADLINE_LABELS,
   DEFAULT_DEADLINE_OFFSETS,
   deadlineDate,
+  diffDaysIso,
   type DeadlineKey,
 } from "@/lib/deadlines";
 import { formatDate, plural } from "@/lib/format";
-import { can, type Action, type Actor } from "@/lib/authz";
+import {
+  abilityOn,
+  can,
+  EVENT_SETUP_ABILITIES,
+  type Action,
+  type Actor,
+  type PermissionOverrides,
+} from "@/lib/authz";
+import { activeMembership } from "@/lib/users/active";
 
 /*
  * Event setup: the checklist on /CODE/setup, the "Setup 3/6" pill in the nav
@@ -381,6 +393,21 @@ export function summariseSetup(steps: SetupStep[]): SetupSummary {
 
 // ---------------------------------------------------------------- database
 
+/** How many events the organisation has: not archived, and in all. */
+export async function countEvents(
+  organisationId: string,
+): Promise<{ active: number; total: number }> {
+  const [row] = await db
+    .select({
+      total: count(),
+      active: sql<number>`(count(*) filter (where ${editions.status} <> 'archived'))::int`,
+    })
+    .from(editions)
+    .innerJoin(events, eq(editions.eventId, events.id))
+    .where(eq(events.organisationId, organisationId));
+  return { active: Number(row?.active ?? 0), total: Number(row?.total ?? 0) };
+}
+
 /** Events that aren't archived — none means the organisation hasn't started. */
 export async function countActiveEvents(organisationId: string): Promise<number> {
   const [row] = await db
@@ -540,7 +567,21 @@ export async function loadEditionSetupFacts(
   return out;
 }
 
-/** The checklist for one event (one round of queries). */
+/**
+ * The facts behind the checklist, loaded once per request (React cache):
+ * the layout's "Setup 3/6" and the Dashboard or Setup page under it share
+ * them instead of running the same queries twice. Keyed by value, so the
+ * same event row from two loaders hits the same entry.
+ */
+const orgSetupFactsForRequest = cache((organisationId: string) =>
+  loadOrgSetupFacts(organisationId),
+);
+const editionSetupFactsForRequest = cache(async (key: string) => {
+  const row = JSON.parse(key) as EditionRowForSetup;
+  return (await loadEditionSetupFacts([row])).get(row.id)!;
+});
+
+/** The checklist for one event (one round of queries per request). */
 export async function getSetupStatus(
   edition: EditionRowForSetup & { code: string },
   organisationId: string,
@@ -551,11 +592,19 @@ export async function getSetupStatus(
   org: OrgSetupFacts;
   facts: EditionSetupFacts;
 }> {
-  const [org, all] = await Promise.all([
-    loadOrgSetupFacts(organisationId),
-    loadEditionSetupFacts([edition]),
+  const key: EditionRowForSetup = {
+    id: edition.id,
+    setupChecked: edition.setupChecked ?? [],
+    buildStart: edition.buildStart,
+    openStart: edition.openStart,
+    openEnd: edition.openEnd,
+    breakdownEnd: edition.breakdownEnd,
+    clonedFromEditionId: edition.clonedFromEditionId,
+  };
+  const [org, facts] = await Promise.all([
+    orgSetupFactsForRequest(organisationId),
+    editionSetupFactsForRequest(JSON.stringify(key)),
   ]);
-  const facts = all.get(edition.id)!;
   const steps = buildSetupSteps(edition, facts, org, perms);
   return { steps, summary: summariseSetup(steps), org, facts };
 }
@@ -579,24 +628,37 @@ export async function getSetupSummaries(
 }
 
 /**
- * Who to ask about setting things up: the organisation's admins and
- * Operations people, admins first.
+ * Who to ask about setting things up: people with access (not suspended,
+ * access not ended) who hold the ability the page needs — creating events
+ * by default, or any of the event setup abilities — super admins first;
+ * the organisation's super admins with access when nobody else holds it.
  */
 export async function setupContacts(
   organisationId: string,
+  need: "events.create" | "event.setup" = "events.create",
 ): Promise<{ name: string; email: string; role: string }[]> {
   const rows = await db
-    .select({ name: users.fullName, email: users.email, role: memberships.role })
+    .select({
+      name: users.fullName,
+      email: users.email,
+      role: memberships.role,
+      overrides: memberships.permissionOverrides,
+    })
     .from(memberships)
     .innerJoin(users, eq(memberships.userId, users.id))
-    .where(
-      and(
-        eq(memberships.organisationId, organisationId),
-        inArray(memberships.role, ["admin", "ops"]),
-      ),
-    )
-    .orderBy(memberships.role, users.fullName);
-  return rows.map((r) => ({ name: r.name || r.email, email: r.email, role: r.role }));
+    .where(and(eq(memberships.organisationId, organisationId), activeMembership()))
+    .orderBy(users.fullName);
+  const holds = (r: (typeof rows)[number]) => {
+    const holder = { role: r.role, overrides: r.overrides as PermissionOverrides };
+    return need === "events.create"
+      ? abilityOn(holder, "events.create")
+      : EVENT_SETUP_ABILITIES.some((k) => abilityOn(holder, k));
+  };
+  const picked = rows.filter(holds);
+  const contacts = picked.length > 0 ? picked : rows.filter((r) => r.role === "admin");
+  return contacts
+    .sort((a, b) => Number(b.role === "admin") - Number(a.role === "admin"))
+    .map((r) => ({ name: r.name || r.email, email: r.email, role: r.role }));
 }
 
 /** Every deadline for the setup form; missing rows take the standard offsets. */
@@ -764,45 +826,75 @@ export async function copySourceCounts(organisationId: string) {
       .from(signageItems)
       .where(and(inArray(signageItems.editionId, orgEditions), isNull(signageItems.deletedAt)))
       .groupBy(signageItems.editionId),
+    // Every grant that isn't revoked, ended ones included: cloneEdition
+    // copies those too, with the end date moved to the new event.
     db
       .select({
         editionId: externalGrants.editionId,
         scopeType: externalGrants.scopeType,
+        scopeId: externalGrants.scopeId,
         role: externalGrants.role,
-        n: count(),
+        expiresAt: externalGrants.expiresAt,
+        userId: externalGrants.userId,
+        email: externalGrants.invitedEmail,
+        venueId: editions.venueId,
+        breakdownEnd: editions.breakdownEnd,
       })
       .from(externalGrants)
+      .innerJoin(editions, eq(editions.id, externalGrants.editionId))
       .where(
-        and(
-          eq(externalGrants.organisationId, organisationId),
-          isNull(externalGrants.revokedAt),
-          or(isNull(externalGrants.expiresAt), gt(externalGrants.expiresAt, new Date())),
-        ),
-      )
-      .groupBy(externalGrants.editionId, externalGrants.scopeType, externalGrants.role),
+        and(eq(externalGrants.organisationId, organisationId), isNull(externalGrants.revokedAt)),
+      ),
   ]);
+  const [liveSupplierRows, teamRows] = await Promise.all([
+    db
+      .select({ id: suppliers.id })
+      .from(suppliers)
+      .where(and(eq(suppliers.organisationId, organisationId), eq(suppliers.isArchived, false))),
+    db
+      .select({ userId: memberships.userId, email: users.email })
+      .from(memberships)
+      .innerJoin(users, eq(users.id, memberships.userId))
+      .where(eq(memberships.organisationId, organisationId)),
+  ]);
+  const liveSuppliers = new Set(liveSupplierRows.map((r) => r.id));
+  const teamIds = new Set(teamRows.map((r) => r.userId));
+  const teamEmails = new Set(teamRows.map((r) => r.email.toLowerCase()));
   const num = (v: unknown) => Number(v ?? 0);
   return (editionId: string) => {
     const h = hallRows.find((r) => r.editionId === editionId);
     const grants = grantRows.filter((g) => g.editionId === editionId);
+    // What cloneEdition brings across: the venue (to the same venue),
+    // suppliers still in use, engineers and H&S — never someone now on the
+    // team. Sponsor and exhibitor access belongs to the old event's records.
+    const copyable: CopyableGrant[] = grants
+      .filter((g) =>
+        g.scopeType === null
+          ? g.role === "structural_engineer" || g.role === "hs"
+          : g.scopeType === "venue"
+            ? g.scopeId === g.venueId
+            : g.scopeType === "supplier" && g.scopeId != null && liveSuppliers.has(g.scopeId),
+      )
+      .filter((g) => !(g.userId && teamIds.has(g.userId)) && !teamEmails.has(g.email.toLowerCase()))
+      .map((g) => ({
+        venue: g.scopeType === "venue",
+        endOffsetDays: g.expiresAt
+          ? diffDaysIso(londonDateOfAccessEnd(g.expiresAt), g.breakdownEnd)
+          : null,
+      }));
     return {
       halls: num(h?.halls),
       locations: num(h?.locations),
       deadlines: num(deadlineRows.find((r) => r.editionId === editionId)?.n),
       sponsors: num(sponsorRows.find((r) => r.editionId === editionId)?.n),
       items: num(itemRows.find((r) => r.editionId === editionId)?.n),
-      // Venue and supplier access, engineers and H&S come across; sponsor
-      // and exhibitor access belongs to the old event's records.
-      access: grants
-        .filter((g) =>
-          g.scopeType === null
-            ? g.role === "structural_engineer" || g.role === "hs"
-            : g.scopeType === "venue" || g.scopeType === "supplier",
-        )
-        .reduce((n, g) => n + num(g.n), 0),
-      accessLeftBehind: grants
-        .filter((g) => g.scopeType === "sponsor" || g.scopeType === "exhibitor")
-        .reduce((n, g) => n + num(g.n), 0),
+      /** Grants a copy to the same venue could bring across (ended ones included). */
+      access: copyable.length,
+      /** Each of them, for counting against the new event's dates and venue (copiedAccessCount). */
+      accessGrants: copyable,
+      accessLeftBehind: grants.filter(
+        (g) => g.scopeType === "sponsor" || g.scopeType === "exhibitor",
+      ).length,
     };
   };
 }

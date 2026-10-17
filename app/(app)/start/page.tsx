@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { events } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, missingAbilityMessage } from "@/lib/authz";
 import { addDaysIso } from "@/lib/deadlines";
 import { todayInLondon } from "@/lib/today";
 import { listEditions } from "@/lib/queries/editions";
@@ -51,7 +51,7 @@ export default async function StartPage({
         ) : (
           <EmptyState
             icon={Lock}
-            title="Only admins and Operations create events"
+            title={missingAbilityMessage("events.create")}
             description={<AskContacts contacts={contacts} suffix="if you need a new one" />}
             action={
               <Button asChild variant="outline">
@@ -120,6 +120,7 @@ export default async function StartPage({
         series={seriesRows.map((s) => ({ id: s.id, name: s.name }))}
         takenCodes={rows.map((r) => r.edition.code)}
         canCopyAccess={canCopyAccess}
+        today={today}
       />
     </Page>
   );

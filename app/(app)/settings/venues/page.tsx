@@ -56,13 +56,16 @@ export default async function VenuesPage() {
 
   const rows: VenueRow[] = venueRows.map((v) => {
     const here = editionRows.filter((e) => e.venueId === v.id);
-    const list = here.map((e) => ({
-      id: e.id,
-      code: e.code,
-      label: `${e.name} · ${formatDate(e.openStart)}`,
-      upcoming: e.status !== "archived" && e.openEnd >= today,
-      openStart: e.openStart,
-    }));
+    // Archived events take no new invitations (the server refuses them too).
+    const list = here
+      .filter((e) => e.status !== "archived")
+      .map((e) => ({
+        id: e.id,
+        code: e.code,
+        label: `${e.name} · ${formatDate(e.openStart)}`,
+        upcoming: e.openEnd >= today,
+        openStart: e.openStart,
+      }));
     // Upcoming soonest first, then past newest first.
     const upcoming = list
       .filter((e) => e.upcoming)

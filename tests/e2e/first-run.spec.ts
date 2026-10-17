@@ -206,7 +206,7 @@ test.describe.serial("first run: create an event, then get it ready", () => {
     const page = await as(browser, staff.email, baseURL!);
     await page.goto(`${baseURL}/${code}/setup`);
     await expect(page.getByRole("heading", { name: `Get ${eventName} ready` })).toBeVisible();
-    await expect(page.getByText("Admins and Operations finish these steps")).toBeVisible();
+    await expect(page.getByText("People who set up events finish these steps")).toBeVisible();
     await expect(page.getByRole("button", { name: "Save and continue" })).toHaveCount(0);
     await page.goto(`${baseURL}/my-work`);
     await expect(page.getByRole("heading", { name: "Nothing set up yet" })).toHaveCount(0);

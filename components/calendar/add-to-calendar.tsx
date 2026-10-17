@@ -75,7 +75,7 @@ export function AddToCalendar({
                 Set it up in Settings → System
               </Link>
             ) : (
-              "Ask an admin to set it up."
+              "Ask a super admin to set it up."
             )}
           </p>
         )}

@@ -310,12 +310,12 @@ d("suppliers, venues and organisation settings", () => {
     expect(bad).toMatchObject({ ok: false, error: "Chase after at least 1 day" });
     const tooMany = await organisation.updateOrganisationSettings({
       brandName: "Media10",
-      currency: "JPY",
-      escalateAfterDays: 3,
+      escalateAfterDays: 30,
       installPhotoRequired: true,
     });
     expect(tooMany.ok).toBe(false);
 
+    // The currency is shown, not changed (nothing uses it yet): a sent one is ignored.
     const ok = await organisation.updateOrganisationSettings({
       brandName: "Media10 Events",
       currency: "EUR",
@@ -328,7 +328,7 @@ d("suppliers, venues and organisation settings", () => {
     });
     expect(org!.brandName).toBe("Media10 Events");
     expect(org!.settings).toMatchObject({
-      currency: "EUR",
+      currency: "GBP",
       escalate_after_days: 5,
       install_photo_required: false,
       cost_threshold_for_director: 5000,

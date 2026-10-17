@@ -33,6 +33,13 @@ function addsSummary(o: ImportOutcome): string | null {
   return `Also adds ${parts.length ? `${parts.join(", ")} and ${last}` : last}.`;
 }
 
+/** "3 owned by the people named, 2 left to you." — only when the sheet has an Owner email column. */
+function ownersSummary(o: ImportOutcome): string | null {
+  const w = o.owners;
+  if (!w) return null;
+  return `${w.fromSheet} owned by the people named, ${w.toYou} left to you.`;
+}
+
 /**
  * Import a schedule from Excel: download the template, choose the filled-in
  * file, see what it will do ("12 new, 5 updated, 0 errors"), then import.
@@ -175,6 +182,21 @@ export function ImportPanel({
                 </p>
                 {addsSummary(outcome) && (
                   <p className="text-muted-foreground mt-0.5 text-xs">{addsSummary(outcome)}</p>
+                )}
+                {ownersSummary(outcome) && (
+                  <p className="text-muted-foreground mt-0.5 text-xs">{ownersSummary(outcome)}</p>
+                )}
+                {outcome.owners && outcome.owners.notes.length > 0 && (
+                  <ul className="text-muted-foreground mt-1 list-disc pl-5 text-xs">
+                    {outcome.owners.notes.slice(0, 10).map((note) => (
+                      <li key={note.row}>
+                        Row {note.row}: {note.message}
+                      </li>
+                    ))}
+                    {outcome.owners.notes.length > 10 && (
+                      <li>…and {outcome.owners.notes.length - 10} more.</li>
+                    )}
+                  </ul>
                 )}
               </div>
             )}

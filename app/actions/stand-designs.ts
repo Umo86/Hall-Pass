@@ -120,7 +120,7 @@ export async function createStandDesign(input: unknown): Promise<ActionResult<{ 
   if (!parsed.success) return fail("Check the highlighted fields", fieldErrors(parsed.error));
   const session = await requireSession();
   if (!can(session.actor, { type: "stand_design.create" })) {
-    return fail("Only admins and operations can set up stands");
+    return fail("Only Operations and super admins set up stands");
   }
   const data = parsed.data;
   if (!(await ownEdition(db, session.organisation.id, data.editionId))) {
@@ -257,7 +257,7 @@ export async function addStandPanel(input: unknown): Promise<ActionResult<{ ref:
   if (!parsed.success) return fail("Check the highlighted fields", fieldErrors(parsed.error));
   const session = await requireSession();
   if (!can(session.actor, { type: "stand_design.create" })) {
-    return fail("Only admins and operations can add panels");
+    return fail("Only Operations and super admins add panels");
   }
   const data = parsed.data;
   const bundle = await loadItemBundle(db, data.standId, {

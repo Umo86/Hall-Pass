@@ -17,7 +17,7 @@ export function AskContacts({
   if (contacts.length === 0)
     return (
       <>
-        {prefix} an admin{suffix ? ` ${suffix}` : ""}.
+        {prefix} a super admin{suffix ? ` ${suffix}` : ""}.
       </>
     );
   const shown = contacts.slice(0, 3);
@@ -32,7 +32,7 @@ export function AskContacts({
           </a>
         </span>
       ))}
-      {contacts.length > shown.length ? " (or another admin)" : ""}
+      {contacts.length > shown.length ? " (or someone else who can)" : ""}
       {suffix ? ` ${suffix}` : ""}.
     </>
   );
@@ -46,10 +46,13 @@ export function NoEventsYet({
   brandName,
   contacts,
   className,
+  betweenSeasons = false,
 }: {
   brandName: string;
   contacts: SetupContact[];
   className?: string;
+  /** Every event is archived (the next one isn't created yet). */
+  betweenSeasons?: boolean;
 }) {
   return (
     <section
@@ -61,11 +64,12 @@ export function NoEventsYet({
       </span>
       <div className="space-y-1.5 text-sm">
         <h2 id="no-events-title" className="font-semibold">
-          Nothing set up yet
+          {betweenSeasons ? "No event running" : "Nothing set up yet"}
         </h2>
         <p className="text-muted-foreground">
-          Your team hasn&apos;t created an event in {brandName} yet. Once an admin creates one, its
-          signage and sign-offs appear here.
+          {betweenSeasons
+            ? "Every event is archived. Once the next one is created, its signage and sign-offs appear here."
+            : `Your team hasn't created an event in ${brandName} yet. Once one is created, its signage and sign-offs appear here.`}
         </p>
         <p>
           <AskContacts contacts={contacts} suffix="to create one" />
@@ -73,6 +77,37 @@ export function NoEventsYet({
         <p>
           <Link href="/account" className="link">
             Meanwhile, choose how you&apos;re notified →
+          </Link>
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * My Work between seasons for someone who creates events: every event is
+ * archived, so offer the next one — My Work itself (and its tasks) stays.
+ */
+export function CreateNextEvent({ className }: { className?: string }) {
+  return (
+    <section
+      aria-labelledby="next-event-title"
+      className={cn("flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:p-5", className)}
+    >
+      <span className="bg-muted text-muted-foreground flex size-10 shrink-0 items-center justify-center rounded-full">
+        <CalendarPlus className="size-5" aria-hidden />
+      </span>
+      <div className="space-y-1.5 text-sm">
+        <h2 id="next-event-title" className="font-semibold">
+          Create your next event
+        </h2>
+        <p className="text-muted-foreground">
+          Every event is archived. Copy last year&apos;s to bring its halls, deadlines and partners
+          across, or start a new one.
+        </p>
+        <p>
+          <Link href="/start" className="link">
+            Create the next event →
           </Link>
         </p>
       </div>

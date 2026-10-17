@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can, hasFeature } from "@/lib/authz";
+import { can, hasFeature, missingAbilityMessage } from "@/lib/authz";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { listDeletedItems } from "@/lib/queries/signage";
 import { editionIsReadOnly } from "@/lib/edition-lock";
@@ -66,7 +66,7 @@ export default async function DeletedItemsPage({
       {!can(session.actor, { type: "signage.restore" }) ? (
         <EmptyState
           icon={Trash2}
-          title="Only Operations or an admin can see deleted items"
+          title={missingAbilityMessage("signage.delete")}
           description="Ask them if something you need has gone missing."
         />
       ) : rows.length === 0 ? (

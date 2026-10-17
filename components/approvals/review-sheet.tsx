@@ -194,8 +194,8 @@ function ReviewItem({
         { stepName: row.stepName, itemName: row.title, itemHref: row.href },
         (h) => router.push(h),
       );
+      // decideApproval revalidates, which refreshes this page; no second render.
       onDecided();
-      router.refresh();
     });
   }
 

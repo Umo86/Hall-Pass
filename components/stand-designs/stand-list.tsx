@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status-badge";
 import { EmptyState } from "@/components/empty-state";
-import { STAND_CHIPS, STAND_CHIP_LABELS, type StandChip } from "@/lib/domain/stand-designs";
+import { STAND_CHIPS, STAND_CHIP_LABELS, type StandChip } from "./chips";
 import { cn } from "@/lib/utils";
 
 export type StandListCard = {

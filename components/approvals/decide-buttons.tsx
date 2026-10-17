@@ -96,7 +96,7 @@ export const DECISION_CONSEQUENCE: Record<DecisionKind, string> = {
     "Your approval is recorded with the conditions below; they follow the item to installation.",
   request_changes:
     "The item returns to its owner for changes. Steps after yours reset when it is resubmitted.",
-  reject: "The item is rejected. Only admin or ops can reopen it.",
+  reject: "The item is rejected. Only someone with “Hold, reopen and mark complete” can reopen it.",
   confirm: "Recorded against the current version, with the date it actually happened.",
 };
 
@@ -217,8 +217,8 @@ export function useDecisionDialog(target: DecisionTarget): {
         setPhotoPath("");
         setPhotoPreview(null);
         toastDecision(kind, target, router.push);
+        // decideApproval revalidates, which refreshes the page; no second render.
         target.onDecided?.(kind);
-        router.refresh();
       }
     });
   }

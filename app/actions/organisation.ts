@@ -11,15 +11,14 @@ import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 
-const CURRENCIES = ["GBP", "EUR", "USD"] as const;
-
+// The currency isn't changed here: costs, labels and exports all show
+// pounds today, so it stays as stored until they use it (DECISIONS.md).
 const schema = z.object({
   brandName: z
     .string()
     .trim()
     .min(1, "Give your organisation a name")
     .max(60, "Keep the name to 60 characters"),
-  currency: z.enum(CURRENCIES, { message: "Choose pounds, euros or dollars" }),
   escalateAfterDays: z.coerce
     .number({ message: "Enter a number of days" })
     .int("Enter a whole number of days")
@@ -29,9 +28,9 @@ const schema = z.object({
 });
 
 /**
- * Settings → Organisation: the name shown in the app and emails, the
- * currency, when overdue sign-offs are chased and whether installers must
- * add a photo. Admins and Operations.
+ * Settings → Organisation: the name shown in the app and emails, when
+ * overdue sign-offs are chased and whether installers must add a photo.
+ * The currency is shown but not changed here yet. Admins and Operations.
  */
 export async function updateOrganisationSettings(input: unknown): Promise<ActionResult> {
   const parsed = schema.safeParse(input);
@@ -52,7 +51,6 @@ export async function updateOrganisationSettings(input: unknown): Promise<Action
       if (!org) throw new Error("Organisation not found");
       const settings = {
         ...org.settings,
-        currency: data.currency,
         escalate_after_days: data.escalateAfterDays,
         install_photo_required: data.installPhotoRequired,
       };

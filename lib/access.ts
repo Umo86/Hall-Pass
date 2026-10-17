@@ -38,8 +38,12 @@ export function canReceiveSignoff(
   return accessLive(p, now) && p.role !== "viewer" && !signoffPaused(p.overrides);
 }
 
-/** Why a person who signed in is turned away, and who they should ask. */
-export type AccessBlock = { state: Exclude<AccessState, "active">; askName: string | null };
+/** Why a person who signed in is turned away, and who they should ask (with their email when known). */
+export type AccessBlock = {
+  state: Exclude<AccessState, "active">;
+  askName: string | null;
+  askEmail?: string | null;
+};
 
 /** "Your access is paused — ask Sam Smith". */
 export function accessBlockMessage(block: AccessBlock): string {

@@ -35,6 +35,8 @@ export function missingHandover(
  * Who takes over each department's sign-offs that name someone: the
  * department's approvers who can sign first (main approver as the
  * default), "everyone who signs off for it", or anyone else who can sign.
+ * `signersOnly` (the viewer isn't a super admin): a department's sign-offs
+ * go only to its own approvers or back to it, as the server allows.
  */
 export function HandoverFields({
   idPrefix,
@@ -44,6 +46,7 @@ export function HandoverFields({
   onChange,
   who,
   currentUserId,
+  signersOnly = false,
 }: {
   idPrefix: string;
   groups: readonly HandoverGroup[];
@@ -53,13 +56,15 @@ export function HandoverFields({
   /** Their first name, for the labels. */
   who: string;
   currentUserId: string;
+  signersOnly?: boolean;
 }) {
   if (groups.length === 0) return null;
   return (
     <div className="space-y-3">
       {groups.map((g) => {
         const signerIds = new Set(g.signers.map((s) => s.userId));
-        const others = candidates.filter((c) => !signerIds.has(c.userId));
+        const others =
+          signersOnly && g.departmentId ? [] : candidates.filter((c) => !signerIds.has(c.userId));
         const later = g.steps.length - g.waitingNow;
         const id = `${idPrefix}-${g.key}`;
         const label = [
@@ -125,8 +130,9 @@ export function HandoverFields({
             </SelectNative>
             {g.departmentId && g.signers.length === 0 && (
               <p className="text-muted-foreground text-xs">
-                Nobody else can sign off for {g.departmentName} now, so pick someone to name on
-                these.
+                {signersOnly
+                  ? `Nobody else can sign off for ${g.departmentName} now — ask a super admin to choose who takes these over.`
+                  : `Nobody else can sign off for ${g.departmentName} now, so pick someone to name on these.`}
               </p>
             )}
           </div>

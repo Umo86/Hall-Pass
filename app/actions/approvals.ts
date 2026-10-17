@@ -16,7 +16,7 @@ import { abilityOn, can, type ApprovalStepCtx, type PermissionOverrides } from "
 import { loadTeam, taskRefusal } from "@/lib/people";
 import { canReceiveSignoff } from "@/lib/access";
 import { writeAudit } from "@/lib/audit";
-import { requireSession } from "@/lib/auth/actor";
+import { requireSession, type Session } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { signageTransition } from "@/lib/status/signage";
 import { standTransition } from "@/lib/status/stand";
@@ -71,8 +71,64 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
   const parsed = decideSchema.safeParse(input);
   if (!parsed.success) return fail("Invalid decision");
   const session = await requireSession();
-  const data = parsed.data;
+  const res = await decideOne(session, parsed.data);
+  if (res.ok) revalidatePath("/", "layout");
+  return res;
+}
 
+const confirmManySchema = z
+  .object({
+    rows: z
+      .array(
+        z
+          .object({
+            instanceId: z.string().uuid(),
+            expectedLockedVersionId: z.string().nullable(),
+          })
+          .strict(),
+      )
+      .min(1, "Select something to confirm first")
+      .max(200),
+    confirmedDate: z.string().date(),
+  })
+  .strict();
+
+export type ConfirmManyResult = { results: { instanceId: string; ok: boolean; error?: string }[] };
+
+/**
+ * Confirm several print, delivery or install steps with one date (Approvals
+ * → To confirm). Each is decided on its own, in its own transaction, with
+ * the same checks and audit row as confirming it alone; the pages are
+ * revalidated once at the end rather than once per step.
+ */
+export async function confirmApprovals(input: unknown): Promise<ActionResult<ConfirmManyResult>> {
+  const parsed = confirmManySchema.safeParse(input);
+  if (!parsed.success) return fail(parsed.error.issues[0]?.message ?? "Invalid request");
+  const session = await requireSession();
+  const results: ConfirmManyResult["results"] = [];
+  for (const row of parsed.data.rows) {
+    const res = await decideOne(session, {
+      instanceId: row.instanceId,
+      decision: "confirm",
+      confirmedDate: parsed.data.confirmedDate,
+      expectedStatus: "pending",
+      expectedLockedVersionId: row.expectedLockedVersionId,
+    });
+    results.push(
+      res.ok
+        ? { instanceId: row.instanceId, ok: true }
+        : { instanceId: row.instanceId, ok: false, error: res.error },
+    );
+  }
+  if (results.some((r) => r.ok)) revalidatePath("/", "layout");
+  return success({ results });
+}
+
+/** One decision in its own transaction; the caller revalidates. */
+async function decideOne(
+  session: Session,
+  data: z.infer<typeof decideSchema>,
+): Promise<ActionResult> {
   try {
     const outcome = await db.transaction(async (tx) => {
       // Serialise concurrent decisions on the same instance.
@@ -448,7 +504,6 @@ export async function decideApproval(input: unknown): Promise<ActionResult> {
       }
       return statusNote;
     });
-    revalidatePath("/", "layout");
     return success(undefined, `Decision recorded${outcome}`);
   } catch (err) {
     if (err instanceof ConflictError) return fail(err.message);

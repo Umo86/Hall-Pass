@@ -19,18 +19,28 @@ export type NotifyInput = {
   entityType?:
     "signage_item" | "stand_submission" | "exhibitor" | "contractor" | "supplier" | "edition";
   entityId?: string;
+  /**
+   * Where the record lives. Partners (no team membership) are then kept
+   * only with a live grant in that organisation — and on that event, when
+   * one is given — instead of a live grant anywhere.
+   */
+  scope?: RecipientScope;
 };
+
+export type RecipientScope = { organisationId: string; editionId?: string | null };
 
 /**
  * Of these people, the ones who may still be told anything: team members
  * whose access is active (not suspended, end date not reached), and portal
- * users with a live invitation. People who have left, been suspended or
- * whose access has ended are dropped — the last line of defence behind
- * every recipient list.
+ * users with a live invitation (in `scope`, when given). People who have
+ * left, been suspended or whose access has ended are dropped — the last
+ * line of defence behind every recipient list. Whether a partner can see
+ * the record itself is the caller's check (recipientsWhoCanSee).
  */
 export async function activeRecipientIds(
   exec: Db | Tx,
   userIds: readonly string[],
+  scope?: RecipientScope,
 ): Promise<Set<string>> {
   const ids = [...new Set(userIds)].filter(Boolean);
   if (ids.length === 0) return new Set();
@@ -54,6 +64,8 @@ export async function activeRecipientIds(
           inArray(externalGrants.userId, others),
           isNull(externalGrants.revokedAt),
           or(isNull(externalGrants.expiresAt), gt(externalGrants.expiresAt, new Date())),
+          scope ? eq(externalGrants.organisationId, scope.organisationId) : undefined,
+          scope?.editionId ? eq(externalGrants.editionId, scope.editionId) : undefined,
         ),
       );
     for (const g of grants) if (g.userId) keep.add(g.userId);
@@ -64,7 +76,7 @@ export async function activeRecipientIds(
 export async function notify(tx: Tx, input: NotifyInput): Promise<void> {
   const wanted = [...new Set(input.userIds)].filter(Boolean);
   if (wanted.length === 0) return;
-  const allowed = await activeRecipientIds(tx, wanted);
+  const allowed = await activeRecipientIds(tx, wanted, input.scope);
   const ids = wanted.filter((id) => allowed.has(id));
   if (ids.length === 0) return;
   const recipients = await tx.select().from(users).where(inArray(users.id, ids));

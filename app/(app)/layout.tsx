@@ -93,8 +93,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     editions.find((e) => e.edition.code === defaultCode) ??
     null;
   const setupStatus =
-    // Only while the event is still to come: nobody sets up a finished one.
-    canSetup && current && eventGroup(current.edition, today) === "upcoming"
+    // Only while the event is still to come (nobody sets up a finished one)
+    // and setup isn't hidden ("dismissed": it stays under Event details).
+    // Shared with the Dashboard or Setup page in the same request.
+    canSetup &&
+    current &&
+    eventGroup(current.edition, today) === "upcoming" &&
+    !(current.edition.setupChecked ?? []).includes("dismissed")
       ? await getSetupStatus(current.edition, session.organisation.id, setupPermissionsFor(actor))
       : null;
 

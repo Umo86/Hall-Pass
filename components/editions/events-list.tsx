@@ -77,7 +77,7 @@ function CardMenu({
         ? {
             title: `Archive ${event.name}?`,
             description:
-              "It becomes read-only for everyone: nothing in it can be changed until an admin brings it back. It moves to the Archived list.",
+              "It becomes read-only for everyone: nothing in it can be changed until a super admin brings it back. It moves to the Archived list.",
             confirmLabel: "Archive event",
             destructive: true,
           }

@@ -58,7 +58,7 @@ export default async function AccountPage() {
               .
             </>
           ) : (
-            "An admin sets your role and department. Ask one if they look wrong."
+            "A super admin or your manager sets your role and department. Ask them if they look wrong."
           )}
         </p>
       </section>

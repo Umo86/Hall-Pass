@@ -21,12 +21,21 @@ export const IMPORT_COLUMNS = [
   "Install slot",
   "Description",
   "Category",
+  "Owner email",
 ] as const;
 
 export type ImportColumn = (typeof IMPORT_COLUMNS)[number];
 
-/** Where each column sat before "Stand no." was added, for older sheets. */
-const OLD_ORDER = IMPORT_COLUMNS.filter((c) => c !== "Stand no.");
+/** Hints the template puts on a heading. */
+export const IMPORT_COLUMN_HINTS: Partial<Record<ImportColumn, string>> = {
+  "Owner email": "Email of an active team member; blank = you",
+};
+
+/**
+ * Where each column sat in the original template, for older sheets.
+ * Columns added since ("Stand no.", "Owner email") have no old place.
+ */
+const OLD_ORDER = IMPORT_COLUMNS.filter((c) => c !== "Stand no." && c !== "Owner email");
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 /** Other ways people head the same column. */
@@ -35,8 +44,8 @@ const ALIASES: Record<string, string> = { standnumber: "standno", stand: "standn
 /**
  * Find each column by its heading (any case or punctuation), so sheets with
  * or without "Stand no." both import. A heading that can't be found falls
- * back to where it was in the original template; "Stand no." has no old
- * place, so it's simply left out.
+ * back to where it was in the original template; "Stand no." and "Owner
+ * email" have no old place, so they're simply left out.
  */
 export function importColumnFinder(headings: string[]): (name: ImportColumn) => number | null {
   const found = new Map<string, number>();

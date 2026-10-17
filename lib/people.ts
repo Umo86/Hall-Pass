@@ -11,7 +11,7 @@
  * Kept free of lib/domain imports so departments, signage and the cron can
  * all use it.
  */
-import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { Db, Tx } from "@/lib/db/client";
 import {
   approvalInstances,
@@ -347,7 +347,9 @@ export async function loadTeam(exec: Db | Tx, organisationId: string): Promise<T
       .from(memberships)
       .innerJoin(users, eq(users.id, memberships.userId))
       .leftJoin(departments, eq(departments.id, memberships.departmentId))
-      .where(eq(memberships.organisationId, organisationId)),
+      .where(eq(memberships.organisationId, organisationId))
+      // A stable order, so "ask A or B" reads the same every time.
+      .orderBy(asc(users.fullName), asc(users.email)),
     exec
       .select({ userId: approvers.userId, departmentId: approvers.departmentId })
       .from(approvers)
@@ -480,11 +482,13 @@ export type StepMove = { id: string; from: string | null; to: string | null };
  * Where each open department step should be now (pure). Items following
  * their category's defaults (no stored plan) go to the department's
  * current main approver, or anyone in it when there is none — unless the
- * step was handed to someone on purpose (delegated) who can still sign.
+ * step was handed on purpose (delegated to someone who can still sign, or
+ * handed back to the whole department).
  * Items with a stored plan keep whoever was chosen, unless that person can
  * no longer sign for the department; then the step follows the department.
- * Plans don't record whether a named person was picked or just pre-filled,
- * so they are never rewritten here.
+ * A step never moves to a department nobody can sign for. Plans don't
+ * record whether a named person was picked or just pre-filled, so they are
+ * never rewritten here.
  */
 export function rerouteDepartmentSteps(
   steps: readonly OpenDeptStep[],
@@ -510,11 +514,16 @@ export function rerouteDepartmentSteps(
     const main = opts.mainOf(s.assignedDepartmentId);
     const current = s.assignedUserId;
     let to: string | null = current;
-    if (s.delegatedFromUserId && current) {
-      // Handed to someone on purpose: theirs while they can sign at all.
-      if (!opts.canSign(current)) to = main;
+    if (s.delegatedFromUserId) {
+      // Handed on purpose — to someone (theirs while they can sign at all) or
+      // back to the whole department (stopSigningTx, a hand-over): left as is.
+      if (current && !opts.canSign(current)) to = main;
     } else if (current && !signers.has(current)) to = main;
     else if (opts.followsDefaults) to = main;
+    // Nobody can sign for the department: the step stays named (as when
+    // someone stops signing, stopSigningTx), so it can be handed on from
+    // their page or the item instead of waiting on nobody.
+    if (to === null && signers.size === 0) to = current;
     if (to !== current) moves.push({ id: s.id, from: current, to });
   }
   return moves;

@@ -185,8 +185,14 @@ test.describe("Users v2", () => {
     await fred.goto(`${baseURL}/my-work`);
     await fred.waitForURL(/\/login/);
     await expect(
-      fred.getByText("Your access is paused for now. To get it back, ask Alex Admin."),
+      fred.getByText(
+        "Your access is paused for now. To get it back, ask Alex Admin (admin@media10.test).",
+      ),
     ).toBeVisible();
+    await expect(fred.getByRole("link", { name: "admin@media10.test" })).toHaveAttribute(
+      "href",
+      "mailto:admin@media10.test",
+    );
 
     await admin.getByRole("button", { name: "Reactivate Fred" }).click();
     await expect(admin.getByText(`Fred Freelance ${n} can sign in again`)).toBeVisible();

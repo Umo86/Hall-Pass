@@ -1,6 +1,12 @@
 import Link from "next/link";
 import { Users as UsersIcon } from "lucide-react";
-import { canManagePerson, FEATURE_LABELS, managerScope, type Actor } from "@/lib/authz";
+import {
+  canManagePerson,
+  canRenewInvite,
+  FEATURE_LABELS,
+  managerScope,
+  type Actor,
+} from "@/lib/authz";
 import { standsEnabled } from "@/lib/config";
 import { db } from "@/lib/db/client";
 import { filterTeam, listTeam, needsDepartment, type TeamFilters } from "@/lib/users/queries";
@@ -119,6 +125,18 @@ export async function TeamTab({
       lastActive: r.kind === "member" ? lastActiveText(r.lastSeenAt, now) : null,
       lastActiveTitle: r.lastSeenAt ? formatDateTime(r.lastSeenAt) : null,
       manageable: isAdmin && manages(r),
+      // Resend / Copy link only for invitations the viewer could have made.
+      canRenew:
+        r.kind === "invite" &&
+        canRenewInvite(actor, {
+          role: r.role,
+          departmentId: r.departmentId,
+          features,
+          overrides: r.overrides,
+          managerScope: r.managerScope,
+          signoffs: r.signsOffFor.map((s) => ({ departmentId: s.departmentId, isMain: s.isMain })),
+          accessEndsAt: r.accessEndsAt,
+        }),
     };
   });
 

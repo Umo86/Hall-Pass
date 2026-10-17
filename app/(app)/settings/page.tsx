@@ -27,8 +27,8 @@ export default async function SettingsPage({
         title="Settings"
         description={
           <>
-            Settings are looked after by admins and Operations. Your own details and notifications
-            are in{" "}
+            Settings are looked after by super admins and the people they choose. Your own details
+            and notifications are in{" "}
             <Link href="/account" className="link">
               My account
             </Link>

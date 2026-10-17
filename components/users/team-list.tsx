@@ -41,6 +41,11 @@ export type TeamListRow = {
   lastActiveTitle: string | null;
   /** The viewer may change this person (a checkbox for the bulk bar). */
   manageable: boolean;
+  /**
+   * Invitations: the viewer may send it again (it gives nothing they
+   * couldn't give themselves). The server refuses it either way.
+   */
+  canRenew?: boolean;
 };
 
 function YouTag() {
@@ -240,6 +245,7 @@ export function TeamList({
                           name={r.name}
                           email={r.email}
                           emailOn={emailOn}
+                          canRenew={r.canRenew ?? true}
                         />
                       )}
                     </div>
@@ -262,13 +268,15 @@ export function TeamList({
       <ul className="space-y-2 md:hidden" aria-label="People">
         {rows.map((r) => (
           <li key={r.id} className="flex items-stretch gap-2">
-            {bulk && (
-              <label className="flex w-11 shrink-0 items-center justify-center rounded-lg border">
-                {r.manageable && (
+            {bulk &&
+              (r.manageable ? (
+                <label className="flex w-11 shrink-0 items-center justify-center rounded-lg border">
                   <Pick row={r} checked={selected.has(r.id)} onChange={(on) => toggle(r.id, on)} />
-                )}
-              </label>
-            )}
+                </label>
+              ) : (
+                // Keeps the cards lined up; there is nothing to pick on this row.
+                <span className="w-11 shrink-0" aria-hidden />
+              ))}
             <Link
               href={`/users/${r.id}`}
               className="hover:bg-muted/40 flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-lg border p-3"

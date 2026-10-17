@@ -57,17 +57,19 @@ test.describe("settings", () => {
     await expect(ops.getByRole("main").getByRole("link", { name: /^Venues/ })).toBeVisible();
     await expect(ops.getByRole("main").getByRole("link", { name: /^System/ })).toHaveCount(0);
     await ops.goto(`${baseURL}/settings/system`);
-    await expect(ops.getByText("Only admins can open System")).toBeVisible();
+    await expect(ops.getByText("Only super admins can open System")).toBeVisible();
     await ops.context().close();
 
     // Everyone else is pointed at My account and Users.
     const viewer = await as(browser, "viewer@media10.test", baseURL!);
     await viewer.goto(`${baseURL}/settings`);
     await expect(
-      viewer.getByText(/Settings are looked after by admins and Operations/),
+      viewer.getByText(/Settings are looked after by super admins and the people they choose/),
     ).toBeVisible();
     await viewer.goto(`${baseURL}/settings/venues`);
-    await expect(viewer.getByText("Only admins and Operations can change venues")).toBeVisible();
+    await expect(
+      viewer.getByText("You need “Manage lists” for that — ask a super admin"),
+    ).toBeVisible();
     await viewer.context().close();
   });
 

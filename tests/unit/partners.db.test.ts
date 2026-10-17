@@ -722,11 +722,15 @@ d("partner access", () => {
   describe("copying an event (P4.7, P0.12)", () => {
     it("moves partner end dates, audits each copied grant, and hands inactive owners' items to the copier", async () => {
       // Partner access on last year's event.
+      const venueUser = randomUUID();
+      await db
+        .insert(schema.users)
+        .values({ id: venueUser, email: mail("venue-contact"), fullName: "Vee", isExternal: true });
       const venueGrant = await grant({
         role: "venue",
         scopeType: "venue",
         scopeId: venueId,
-        userId: people.admin.id,
+        userId: venueUser,
         acceptedAt: new Date("2026-01-01"),
         // Ended with last year's event (end of 5 June, London).
         expiresAt: new Date("2026-06-05T22:59:59.999Z"),
@@ -739,6 +743,8 @@ d("partner access", () => {
         scopeType: "sponsor",
         scopeId: sponsorId,
       });
+      // Someone who has joined the team since holds no partner access (lifecycle-4).
+      const teamGrant = await grant({ userId: people.ops.id, acceptedAt: new Date("2026-01-01") });
 
       // Items: one with an active owner, one with a suspended owner.
       const mk = async (owner: string, name: string) => {
@@ -759,6 +765,12 @@ d("partner access", () => {
       };
       await mk(people.ops.id, "Kept owner");
       await mk(people.gone.id, "Suspended owner");
+      // An item whose supplier has since been archived (regressions-9).
+      const archivedSupplied = await mk(people.ops.id, "Archived supplier's");
+      await db
+        .update(schema.signageItems)
+        .set({ supplierId: archivedSupplierId })
+        .where(eq(schema.signageItems.id, archivedSupplied.id));
 
       as("admin");
       const code = `PCP${n}`;
@@ -794,7 +806,10 @@ d("partner access", () => {
       expect(byEmail.has(longGone.invitedEmail)).toBe(false);
       expect(byEmail.has(revoked.invitedEmail)).toBe(false);
       expect(byEmail.has(sponsorGrant.invitedEmail)).toBe(false);
+      expect(byEmail.has(teamGrant.invitedEmail)).toBe(false);
+      expect(res.data?.counts.accessTeam).toBeGreaterThanOrEqual(1);
       expect(res.data?.counts.accessEnded).toBeGreaterThanOrEqual(1);
+      expect(res.message).toMatch(/partners? can sign in to the new event now/);
 
       for (const g of copied) {
         const [audit] = await auditFor(g.id);
@@ -809,6 +824,10 @@ d("partner access", () => {
         .where(eq(schema.signageItems.editionId, target.id));
       expect(items.find((i) => i.name === "Kept owner")?.ownerUserId).toBe(people.ops.id);
       expect(items.find((i) => i.name === "Suspended owner")?.ownerUserId).toBe(people.admin.id);
+      // Archived suppliers don't come across onto the drafts.
+      expect(items.find((i) => i.name === "Archived supplier's")?.supplierId).toBeNull();
+      expect(res.data?.counts.suppliersDropped).toBe(1);
+      expect(res.message).toMatch(/supplier is archived, so it has no supplier yet/);
     });
   });
 

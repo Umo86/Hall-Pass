@@ -57,7 +57,7 @@ export function WhoSignsOff({
           description={
             canManage
               ? "Switch on sign-off for a department in Users → Departments and add who signs."
-              : "An admin sets up who signs off in Users → Departments."
+              : "People who manage departments set up who signs off, in Users → Departments."
           }
         />
       ) : (

@@ -16,7 +16,7 @@ import {
   syncDepartmentSteps,
 } from "@/lib/domain/departments";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
-import { stopSigningTx, UserError } from "@/lib/users/manage";
+import { clearOtherMainsTx, lockPeople, stopSigningTx, UserError } from "@/lib/users/manage";
 
 /**
  * Departments and who signs off for each (Users → Departments). A
@@ -348,11 +348,14 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
       }
       const email = member.user.email.toLowerCase();
       if (data.isMain) {
-        // One main approver per department: clear the others first.
-        await tx
-          .update(approvers)
-          .set({ isMain: false })
-          .where(and(eq(approvers.departmentId, dept.id), ne(approvers.email, email)));
+        // One main approver per department: clear the others first (audited).
+        await clearOtherMainsTx(tx, {
+          organisationId: orgId,
+          actorUserId: session.user.id,
+          departmentId: dept.id,
+          keep: ne(approvers.email, email),
+          newMainName: who,
+        });
       }
       const [row] = await tx
         .insert(approvers)
@@ -423,11 +426,14 @@ export async function setMainApprover(input: unknown): Promise<ActionResult> {
         }
       }
       if (parsed.data.isMain) {
-        // One main approver per department: clear the others first.
-        await tx
-          .update(approvers)
-          .set({ isMain: false })
-          .where(and(eq(approvers.departmentId, dept.id), ne(approvers.id, row.id)));
+        // One main approver per department: clear the others first (audited).
+        await clearOtherMainsTx(tx, {
+          organisationId: orgId,
+          actorUserId: session.user.id,
+          departmentId: dept.id,
+          keep: ne(approvers.id, row.id),
+          newMainName: row.fullName || row.email,
+        });
       }
       await tx
         .update(approvers)
@@ -477,6 +483,9 @@ export async function removeApprover(input: unknown): Promise<ActionResult> {
   const orgId = session.organisation.id;
   try {
     const name = await db.transaction(async (tx) => {
+      // People changes that hand sign-offs on run one after another
+      // (stopSigningTx below), taken before anything here is changed.
+      await lockPeople(tx, orgId);
       const row = await tx.query.approvers.findFirst({
         where: and(eq(approvers.id, parsed.data.id), eq(approvers.organisationId, orgId)),
       });
@@ -499,7 +508,7 @@ export async function removeApprover(input: unknown): Promise<ActionResult> {
         subjectEmail: row.email,
         summary: `${row.fullName} removed from ${dept.name} approvers`,
       });
-      await syncDepartmentSteps(tx, orgId);
+      // Their named sign-offs first, so the re-sync's routing doesn't move them unannounced.
       const handed = row.userId
         ? await stopSigningTx(
             tx,
@@ -516,6 +525,7 @@ export async function removeApprover(input: unknown): Promise<ActionResult> {
             },
           )
         : { moved: 0, kept: 0 };
+      await syncDepartmentSteps(tx, orgId);
       const left = (await departmentSignerIds(tx, orgId, dept.id)).length;
       return [
         `${row.fullName} removed from ${dept.name} approvers`,

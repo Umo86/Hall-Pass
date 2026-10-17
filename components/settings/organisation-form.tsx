@@ -6,7 +6,6 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { SelectNative } from "@/components/ui/select-native";
 import { updateOrganisationSettings } from "@/app/actions/organisation";
 
 export type OrganisationValues = {
@@ -22,7 +21,7 @@ const CURRENCIES = [
   { value: "USD", label: "US dollars ($)" },
 ];
 
-/** Settings → Organisation: name, currency and the company-wide rules. */
+/** Settings → Organisation: name, currency (shown, not yet changeable) and the company-wide rules. */
 export function OrganisationForm({ initial }: { initial: OrganisationValues }) {
   const [values, setValues] = useState<OrganisationValues>(initial);
   const [saved, setSaved] = useState<OrganisationValues>(initial);
@@ -42,7 +41,11 @@ export function OrganisationForm({ initial }: { initial: OrganisationValues }) {
         e.preventDefault();
         setError(null);
         start(async () => {
-          const res = await updateOrganisationSettings(values);
+          const res = await updateOrganisationSettings({
+            brandName: values.brandName,
+            escalateAfterDays: values.escalateAfterDays,
+            installPhotoRequired: values.installPhotoRequired,
+          });
           if (!res.ok) {
             setError(res.error);
             return;
@@ -69,23 +72,15 @@ export function OrganisationForm({ initial }: { initial: OrganisationValues }) {
         </p>
       </div>
 
+      {/* Read-only until costs, labels and exports use it (they show pounds today). */}
       <div className="space-y-1.5">
-        <Label htmlFor={`${ids}-currency`}>Currency</Label>
-        <SelectNative
-          id={`${ids}-currency`}
-          value={values.currency}
-          onChange={(e) => set("currency", e.target.value)}
-          aria-describedby={`${ids}-currency-hint`}
-          className="h-11 sm:h-9 sm:w-64"
-        >
-          {CURRENCIES.map((c) => (
-            <option key={c.value} value={c.value}>
-              {c.label}
-            </option>
-          ))}
-        </SelectNative>
-        <p id={`${ids}-currency-hint`} className="text-muted-foreground text-xs">
-          For costs, budgets and sponsorship prices.
+        <p className="text-sm font-medium">Currency</p>
+        <p className="text-sm">
+          {CURRENCIES.find((c) => c.value === values.currency)?.label ?? values.currency}
+        </p>
+        <p className="text-muted-foreground text-xs">
+          Costs, budgets and sponsorship prices are shown in pounds. Other currencies aren&apos;t
+          available yet.
         </p>
       </div>
 
@@ -108,8 +103,8 @@ export function OrganisationForm({ initial }: { initial: OrganisationValues }) {
           <span className="text-sm">{values.escalateAfterDays === 1 ? "day" : "days"}</span>
         </div>
         <p id={`${ids}-days-hint`} className="text-muted-foreground text-xs">
-          When a sign-off is this many days past its due date, admins and the item&rsquo;s owner are
-          told so they can chase it. Between 1 and 14 days.
+          When a sign-off is this many days past its due date, super admins and the item&rsquo;s
+          owner are told so they can chase it. Between 1 and 14 days.
         </p>
       </div>
 

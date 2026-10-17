@@ -14,6 +14,7 @@ export function InviteStatus({
   expires,
   expired,
   emailOn,
+  canRenew = true,
 }: {
   inviteId: string;
   name: string;
@@ -22,6 +23,8 @@ export function InviteStatus({
   expires: string | null;
   expired: boolean;
   emailOn: boolean;
+  /** False when only a super admin may send it again (it gives more than the viewer can). */
+  canRenew?: boolean;
 }) {
   const router = useRouter();
   return (
@@ -42,7 +45,9 @@ export function InviteStatus({
         </p>
         <p className={expired ? "" : "text-muted-foreground"}>
           {expired
-            ? "The link no longer works. Send a new one — what's below still applies."
+            ? canRenew
+              ? "The link no longer works. Send a new one — what's below still applies."
+              : "The link no longer works. Only a super admin can send a new one: it gives access you can't give."
             : "Changes you save here apply when they accept."}
         </p>
       </div>
@@ -51,6 +56,7 @@ export function InviteStatus({
         name={name}
         email={email}
         emailOn={emailOn}
+        canRenew={canRenew}
         size="default"
         onCancelled={() => {
           router.push("/users");

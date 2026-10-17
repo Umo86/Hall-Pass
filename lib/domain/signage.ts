@@ -746,7 +746,7 @@ export async function submitItemInTx(
   // Items created by import (or before a workflow existed) get the default.
   const workflowId =
     i.workflowId ?? (await defaultSignageWorkflowId(tx, bundle.organisation.id, i.itemTypeId));
-  if (!workflowId) throw new Error("No sign-off workflow is set up yet — ask an admin");
+  if (!workflowId) throw new Error("No sign-off workflow is set up yet — ask a super admin");
   const next = signageTransition(i.status, "submit_for_review", {
     hasArtwork: Boolean(i.currentArtworkVersionId),
   });

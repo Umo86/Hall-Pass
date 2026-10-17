@@ -342,7 +342,7 @@ export async function deleteTask(input: unknown): Promise<ActionResult> {
           type: "task.delete",
           task: { assignedToUserId: task.assignedToUserId, createdByUserId: task.createdByUserId },
         });
-    if (!allowed) return fail("Only the task's creator (or an admin) can delete it");
+    if (!allowed) return fail("Only the task's creator (or a super admin) can delete it");
     await db.transaction(async (tx) => {
       await tx.delete(tasks).where(eq(tasks.id, task.id));
       await writeAudit(tx, {

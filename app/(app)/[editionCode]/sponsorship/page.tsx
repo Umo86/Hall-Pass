@@ -8,9 +8,10 @@ import { Page, PageHeader } from "@/components/page-header";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, hasFeature } from "@/lib/authz";
 import { formatDate, formatMoney } from "@/lib/format";
-import { and, count, eq, gt, inArray, isNull, or } from "drizzle-orm";
+import { count, eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { externalGrants, signageItems, sponsorEntitlements, sponsors } from "@/lib/db/schema";
+import { signageItems, sponsorEntitlements, sponsors } from "@/lib/db/schema";
+import { sponsorPortalAccess } from "@/lib/users/external";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { listSponsorshipRows } from "@/lib/queries/signage";
@@ -280,6 +281,7 @@ export default async function SponsorshipPage({
           canEdit={canSell}
           canSeeCosts={canSeeCosts}
           canInvite={can(session.actor, { type: "partners.invite" })}
+          organisationId={session.organisation.id}
         />
       )}
     </Page>
@@ -293,6 +295,7 @@ async function SponsorsTab({
   canEdit,
   canSeeCosts,
   canInvite,
+  organisationId,
 }: {
   editionId: string;
   editionCode: string;
@@ -300,10 +303,10 @@ async function SponsorsTab({
   canEdit: boolean;
   canSeeCosts: boolean;
   canInvite: boolean;
+  organisationId: string;
 }) {
   const ids = sponsorRows.map((sp) => sp.id);
-  const now = new Date();
-  const [items, entitlementRows, entitlementLinks, grants] = ids.length
+  const [items, entitlementRows, entitlementLinks, access] = ids.length
     ? await Promise.all([
         // Every item pointing at a sponsor, deleted ones too: they block removal.
         db
@@ -329,19 +332,10 @@ async function SponsorsTab({
           )
           .where(inArray(sponsorEntitlements.sponsorId, ids))
           .groupBy(signageItems.sponsorEntitlementId),
-        db
-          .select({ scopeId: externalGrants.scopeId, acceptedAt: externalGrants.acceptedAt })
-          .from(externalGrants)
-          .where(
-            and(
-              eq(externalGrants.scopeType, "sponsor"),
-              inArray(externalGrants.scopeId, ids),
-              isNull(externalGrants.revokedAt),
-              or(isNull(externalGrants.expiresAt), gt(externalGrants.expiresAt, now)),
-            ),
-          ),
+        // The same answer as the item page: live grants only.
+        sponsorPortalAccess(db, organisationId, ids),
       ])
-    : [[], [], [], []];
+    : [[], [], [], new Map<string, "access" | "invited">()];
   const linkedByEnt = new Map(entitlementLinks.map((l) => [l.id, Number(l.n)]));
   return (
     <SponsorsPanel
@@ -353,7 +347,7 @@ async function SponsorsTab({
         const all = items.filter((i) => i.sponsorId === sp.id);
         const live = all.filter((i) => !i.deletedAt);
         const states = live.map((i) => saleState({ ...i, sponsorId: sp.id }));
-        const theirGrants = grants.filter((g) => g.scopeId === sp.id);
+        const portal = access.get(sp.id) ?? null;
         return {
           id: sp.id,
           companyName: sp.companyName,
@@ -366,12 +360,8 @@ async function SponsorsTab({
           spend: canSeeCosts
             ? live.reduce((n, i) => n + (i.salePrice ? Number(i.salePrice) : 0), 0)
             : 0,
-          linked: all.length > 0 || theirGrants.length > 0,
-          portal: theirGrants.some((g) => g.acceptedAt)
-            ? "access"
-            : theirGrants.length > 0
-              ? "invited"
-              : null,
+          linked: all.length > 0 || portal !== null,
+          portal,
           entitlements: entitlementRows
             .filter((e) => e.sponsorId === sp.id)
             .map((e) => ({

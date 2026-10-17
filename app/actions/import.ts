@@ -394,6 +394,8 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
       isUpdate: Boolean(data.ref),
     }),
   );
+  // The template always has the column; report on it only when someone filled it in.
+  const ownersUsed = Boolean(ownerColumn) && parsed.some((p) => p.ownerEmail.trim() !== "");
   const ownerSummary = {
     fromSheet: owners.filter((o) => o && o.userId !== session.user.id).length,
     toYou: parsed.filter((p, i) => !p.data.ref && owners[i]?.userId === session.user.id).length,
@@ -438,7 +440,7 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
           locations: newLocations.size,
           suppliers: newSuppliers.size,
         },
-        ...(ownerColumn ? { owners: ownerSummary } : {}),
+        ...(ownersUsed ? { owners: ownerSummary } : {}),
       },
       `Checked: ${parsed.length - updated} new, ${updated} updated, nothing imported yet${ownerWords}`,
     );
@@ -618,7 +620,7 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
     });
     revalidatePath("/", "layout");
     return success(
-      { created, updated, errors: [], ...(ownerColumn ? { owners: ownerSummary } : {}) },
+      { created, updated, errors: [], ...(ownersUsed ? { owners: ownerSummary } : {}) },
       `Imported ${created + updated} rows (${created} new, ${updated} updated)${ownerWords}`,
     );
   } catch (err) {

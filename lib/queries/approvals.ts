@@ -22,10 +22,12 @@ import {
   events,
   exhibitors,
   memberships,
+  organisations,
   signageItems,
   sponsors,
   standSubmissions,
   users,
+  venues,
   approvers,
   reminderLog,
 } from "@/lib/db/schema";
@@ -38,8 +40,8 @@ import {
 } from "@/lib/authz";
 import { activeMembership } from "@/lib/users/active";
 import { requireSession, type Session } from "@/lib/auth/actor";
-import { itemAuthzCtx, loadItemBundle, stepIsMine } from "@/lib/domain/signage";
-import { loadStandBundle, standAuthzCtx } from "@/lib/domain/stand";
+import { itemAuthzCtx, stepIsMine, type ItemBundle } from "@/lib/domain/signage";
+import { standAuthzCtx, type StandBundle } from "@/lib/domain/stand";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { standsEnabled } from "@/lib/config";
 import { rowToInstance } from "@/lib/workflow/persist";
@@ -117,13 +119,13 @@ export async function pendingInstancesForUser(existing?: Session, opts: { all?: 
     )
     .orderBy(sql`${approvalInstances.dueAt} ASC NULLS LAST`);
 
-  const bundles = await Promise.all(
-    rows.map((row) =>
-      row.entityType === "signage_item"
-        ? loadItemBundle(db, row.entityId, { organisationId: session.organisation.id })
-        : loadStandBundle(db, row.entityId, { organisationId: session.organisation.id }),
-    ),
+  // Every row's record in two joined queries (not two queries per row).
+  const byId = await recordBundles(
+    session.organisation.id,
+    rows.filter((r) => r.entityType === "signage_item").map((r) => r.entityId),
+    rows.filter((r) => r.entityType === "stand_submission").map((r) => r.entityId),
   );
+  const bundles = rows.map((row) => byId.get(row.entityId) ?? null);
 
   const now = Date.now();
   const out = [];
@@ -133,7 +135,7 @@ export async function pendingInstancesForUser(existing?: Session, opts: { all?: 
     if (editionIsReadOnly(bundle.edition.status)) continue;
     const isSignage = row.entityType === "signage_item";
     if (isSignage) {
-      const item = (bundle as NonNullable<Awaited<ReturnType<typeof loadItemBundle>>>).item;
+      const item = (bundle as ItemBundle).item;
       if (item.deletedAt || item.status === "on_hold") continue;
     }
     const stepCtx: ApprovalStepCtx = {
@@ -152,6 +154,75 @@ export async function pendingInstancesForUser(existing?: Session, opts: { all?: 
       bundle,
       isSignage,
       isOverdue: Boolean(row.dueAt && row.dueAt.getTime() < now),
+    });
+  }
+  return out;
+}
+
+/**
+ * Items and stands with their show, venue and organisation (the shape of
+ * loadItemBundle / loadStandBundle), for many ids at once, in this
+ * organisation only.
+ */
+async function recordBundles(
+  organisationId: string,
+  itemIds: readonly string[],
+  subIds: readonly string[],
+): Promise<Map<string, ItemBundle | StandBundle>> {
+  const out = new Map<string, ItemBundle | StandBundle>();
+  if (itemIds.length === 0 && subIds.length === 0) return out;
+  const [org] = await db
+    .select()
+    .from(organisations)
+    .where(eq(organisations.id, organisationId))
+    .limit(1);
+  if (!org) return out;
+  const [items, subs] = await Promise.all([
+    itemIds.length
+      ? db
+          .select()
+          .from(signageItems)
+          .innerJoin(editions, eq(signageItems.editionId, editions.id))
+          .innerJoin(venues, eq(editions.venueId, venues.id))
+          .innerJoin(events, eq(editions.eventId, events.id))
+          .where(
+            and(
+              inArray(signageItems.id, [...new Set(itemIds)]),
+              eq(events.organisationId, organisationId),
+            ),
+          )
+      : [],
+    subIds.length
+      ? db
+          .select()
+          .from(standSubmissions)
+          .innerJoin(exhibitors, eq(standSubmissions.exhibitorId, exhibitors.id))
+          .innerJoin(editions, eq(standSubmissions.editionId, editions.id))
+          .innerJoin(venues, eq(editions.venueId, venues.id))
+          .innerJoin(events, eq(editions.eventId, events.id))
+          .where(
+            and(
+              inArray(standSubmissions.id, [...new Set(subIds)]),
+              eq(events.organisationId, organisationId),
+            ),
+          )
+      : [],
+  ]);
+  for (const r of items) {
+    out.set(r.signage_items.id, {
+      item: r.signage_items,
+      edition: r.editions,
+      venue: r.venues,
+      organisation: org,
+    });
+  }
+  for (const r of subs) {
+    out.set(r.stand_submissions.id, {
+      sub: r.stand_submissions,
+      exhibitor: r.exhibitors,
+      edition: r.editions,
+      venue: r.venues,
+      organisation: org,
     });
   }
   return out;

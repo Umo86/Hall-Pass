@@ -128,7 +128,7 @@ export default async function SetupPage({ params }: { params: Promise<{ editionC
   const [status, contacts, deadlines, halls, copySources, venueRows, seriesRows, logoUrl, source] =
     await Promise.all([
       getSetupStatus(edition, orgId, perms),
-      setupContacts(orgId),
+      setupContacts(orgId, "event.setup"),
       deadlinesForSetup(edition.id),
       hallsEditorData(edition.id),
       perms.halls ? hallCopySources(orgId, edition) : Promise.resolve([]),
@@ -372,7 +372,7 @@ export default async function SetupPage({ params }: { params: Promise<{ editionC
           </div>
           {!canSetup && !archived && (
             <p className="text-muted-foreground text-sm">
-              Admins and Operations finish these steps; you can follow along here.
+              People who set up events finish these steps; you can follow along here.
             </p>
           )}
         </div>

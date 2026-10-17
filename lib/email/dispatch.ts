@@ -1,8 +1,15 @@
 import { appUrl } from "@/lib/app-url";
 import "server-only";
-import { and, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, or } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { notifications, users } from "@/lib/db/schema";
+import {
+  externalGrants,
+  memberships,
+  notifications,
+  signageItems,
+  standSubmissions,
+  users,
+} from "@/lib/db/schema";
 import { brandName } from "@/lib/config";
 import { renderNotificationEmail } from "./template";
 import { sendEmail } from "./send";
@@ -48,21 +55,51 @@ export async function dispatchNotificationEmails(
     db,
     rows.map((r) => r.u.id),
   );
+  // Partners (no team membership) get portal links. Decided by membership,
+  // never by the users.is_external flag.
+  const members = new Set(
+    (
+      await db
+        .selectDistinct({ userId: memberships.userId })
+        .from(memberships)
+        .where(
+          inArray(
+            memberships.userId,
+            rows.map((r) => r.u.id),
+          ),
+        )
+    ).map((r) => r.userId),
+  );
+  // A partner is emailed about an item or stand only while they still hold
+  // live access to its event (it may have been revoked since the
+  // notification was made); ref and body never reach anyone else.
+  const partnerOk = await partnersStillOnEvent(
+    rows.filter((r) => !members.has(r.u.id)).map((r) => r.n),
+  );
   const base = appUrl();
   const doneIds: string[] = [];
   let sent = 0;
   for (const { n, u } of rows) {
     // Already seen in the app, never emailed, or no longer allowed: nothing to send.
-    if (n.readAt || IN_APP_ONLY.has(n.kind) || !allowed.has(u.id)) {
+    if (
+      n.readAt ||
+      IN_APP_ONLY.has(n.kind) ||
+      !allowed.has(u.id) ||
+      (!members.has(u.id) && !partnerOk.has(n.id))
+    ) {
       doneIds.push(n.id);
       continue;
     }
-    const link = u.isExternal ? `${base}/portal/approvals` : n.link ? `${base}${n.link}` : base;
+    const link = !members.has(u.id)
+      ? `${base}/portal/approvals`
+      : n.link
+        ? `${base}${n.link}`
+        : base;
     const { html, text } = await renderNotificationEmail({
       brandName,
       title: n.title,
       bodyText: n.body ?? "There is activity that needs your attention.",
-      ctaLabel: "Open in Hall Pass",
+      ctaLabel: `Open in ${brandName}`,
       ctaUrl: link,
     });
     const ok = await sendEmail({
@@ -86,4 +123,54 @@ export async function dispatchNotificationEmails(
       .where(inArray(notifications.id, doneIds));
   }
   return sent;
+}
+
+/**
+ * Of these partners' notifications, the ones they may still be emailed:
+ * those about something other than an item or stand, and those about an
+ * item or stand on an event where they hold a live grant now.
+ */
+async function partnersStillOnEvent(
+  rows: readonly (typeof notifications.$inferSelect)[],
+): Promise<Set<string>> {
+  const ok = new Set<string>();
+  const about = rows.filter(
+    (n) => n.entityId && (n.entityType === "signage_item" || n.entityType === "stand_submission"),
+  );
+  for (const n of rows) if (!about.includes(n)) ok.add(n.id);
+  if (about.length === 0) return ok;
+  const ids = (type: string) => [
+    ...new Set(about.filter((n) => n.entityType === type).map((n) => n.entityId!)),
+  ];
+  const [items, stands, grants] = await Promise.all([
+    ids("signage_item").length
+      ? db
+          .select({ id: signageItems.id, editionId: signageItems.editionId })
+          .from(signageItems)
+          .where(inArray(signageItems.id, ids("signage_item")))
+      : [],
+    ids("stand_submission").length
+      ? db
+          .select({ id: standSubmissions.id, editionId: standSubmissions.editionId })
+          .from(standSubmissions)
+          .where(inArray(standSubmissions.id, ids("stand_submission")))
+      : [],
+    db
+      .select({ userId: externalGrants.userId, editionId: externalGrants.editionId })
+      .from(externalGrants)
+      .where(
+        and(
+          inArray(externalGrants.userId, [...new Set(about.map((n) => n.userId))]),
+          isNull(externalGrants.revokedAt),
+          or(isNull(externalGrants.expiresAt), gt(externalGrants.expiresAt, new Date())),
+        ),
+      ),
+  ]);
+  const editionOf = new Map([...items, ...stands].map((r) => [r.id, r.editionId]));
+  const live = new Set(grants.map((g) => `${g.userId}:${g.editionId}`));
+  for (const n of about) {
+    const editionId = editionOf.get(n.entityId!);
+    if (editionId && live.has(`${n.userId}:${editionId}`)) ok.add(n.id);
+  }
+  return ok;
 }

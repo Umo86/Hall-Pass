@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 import { LoginCard, type DevUser } from "@/components/auth/login-card";
 import { brandName } from "@/lib/config";
@@ -48,15 +49,32 @@ async function devUserList(): Promise<DevUser[]> {
 
 /**
  * Why a suspended person, or one whose access has ended, can't get in, and
- * who to ask — by name, with their email when it is known.
+ * who to ask — by name, with their email as a link when it is known.
  */
-function blockedNotice(block: AccessBlock & { askEmail?: string | null }): string {
+function blockedNotice(block: AccessBlock): ReactNode {
   const name = block.askName?.trim();
   const email = block.askEmail?.trim();
-  const who = name ? `${name}${email ? ` (${email})` : ""}` : "a super admin";
-  return block.state === "suspended"
-    ? `Your access is paused for now. To get it back, ask ${who}.`
-    : `Your access has ended. If you still need it, ask ${who} to give you a new end date.`;
+  const who = name ? (
+    <>
+      {name}
+      {email && (
+        <>
+          {" ("}
+          <a href={`mailto:${email}`} className="font-medium underline underline-offset-2">
+            {email}
+          </a>
+          {")"}
+        </>
+      )}
+    </>
+  ) : (
+    "a super admin"
+  );
+  return block.state === "suspended" ? (
+    <>Your access is paused for now. To get it back, ask {who}.</>
+  ) : (
+    <>Your access has ended. If you still need it, ask {who} to give you a new end date.</>
+  );
 }
 
 const NOTICES: Record<string, string> = {

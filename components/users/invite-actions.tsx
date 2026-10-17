@@ -67,6 +67,7 @@ export function InviteActions({
   name,
   email,
   emailOn,
+  canRenew = true,
   size = "sm",
   onCancelled,
 }: {
@@ -74,6 +75,12 @@ export function InviteActions({
   name: string;
   email: string;
   emailOn: boolean;
+  /**
+   * False when the invitation gives access the viewer couldn't give (a
+   * super admin made it): only a super admin sends it again. The server
+   * refuses it either way.
+   */
+  canRenew?: boolean;
   size?: "sm" | "default";
   /** Where to go once cancelled (the person page has nothing left to show). */
   onCancelled?: () => void;
@@ -137,7 +144,7 @@ export function InviteActions({
   const touch = size === "sm" ? "h-11 sm:h-8" : "h-11 sm:h-9";
   return (
     <span className="inline-flex flex-wrap gap-2">
-      {emailOn ? (
+      {!canRenew ? null : emailOn ? (
         <Button
           type="button"
           size={size}

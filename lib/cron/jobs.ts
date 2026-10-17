@@ -30,8 +30,8 @@ import { editionIsReadOnly } from "@/lib/edition-lock";
 import { writeAudit } from "@/lib/audit";
 import { activeMembership } from "@/lib/users/active";
 import { accessEndPlan, londonDateOfAccessEnd } from "@/lib/access";
-import { signoffsWaitingOn } from "@/lib/users/manage";
-import { syncDepartmentSteps } from "@/lib/domain/departments";
+import { signoffsWaitingOn, stopSigningTx, strandedDepartmentSignoffs } from "@/lib/users/manage";
+import { departmentNames, syncDepartmentSteps } from "@/lib/domain/departments";
 import { formatDate } from "@/lib/format";
 import { itemPath } from "@/lib/edition-path";
 import { todayInLondon } from "@/lib/today";
@@ -245,13 +245,15 @@ function londonDate(at: Date): string {
   return todayInLondon(at);
 }
 
+/** Of these people, partners: no team membership (never the users.is_external flag). */
 async function externalUserIds(ids: string[]): Promise<Set<string>> {
   if (ids.length === 0) return new Set();
   const rows = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(and(inArray(users.id, ids), eq(users.isExternal, true)));
-  return new Set(rows.map((r) => r.id));
+    .selectDistinct({ userId: memberships.userId })
+    .from(memberships)
+    .where(inArray(memberships.userId, ids));
+  const members = new Set(rows.map((r) => r.userId));
+  return new Set(ids.filter((id) => !members.has(id)));
 }
 
 /**
@@ -859,9 +861,10 @@ async function accessOverseerIds(
 /**
  * Job — access end dates (Users v2). Access itself stops at read time the
  * moment the end date passes; this records "Access ended" once per person,
- * re-routes department sign-offs away from them, tells super admins and
- * their managers about sign-offs still waiting on them by name, and warns
- * those same people a week before an end date.
+ * hands sign-offs naming them back to each department where someone else
+ * can sign (stopSigningTx), re-routes department sign-offs away from them,
+ * tells super admins and their managers about sign-offs still waiting on
+ * them by name, and warns those same people a week before an end date.
  */
 export async function endExpiredAccess(today: string, now = new Date()): Promise<JobResult> {
   const rows = await db
@@ -917,13 +920,48 @@ export async function endExpiredAccess(today: string, now = new Date()): Promise
         subjectUserId: m.userId,
         subjectEmail: email,
       });
+      // Named sign-offs go back to their department where someone else can
+      // sign (the same rule as pausing someone); overseers hear about the rest.
+      await stopSigningTx(
+        tx,
+        { organisationId: m.organisationId, actorUserId: null, actorType: "cron" },
+        { userId: m.userId, who, why: "no longer has access", departmentIds: null },
+      );
       const waiting = await signoffsWaitingOn(tx, m.organisationId, m.userId);
-      if (waiting.length > 0) {
+      // Sign-offs waiting on a department nobody else can sign for now
+      // (they were its last signer): nobody can decide them either.
+      const stranded = (await strandedDepartmentSignoffs(tx, m.organisationId, m.userId)).filter(
+        (st) => st.status === "pending",
+      );
+      const total = waiting.length + stranded.length;
+      if (total > 0) {
+        const refs = (list: { ref: string }[]) =>
+          [...new Set(list.map((w) => w.ref))].slice(0, 5).join(", ");
+        const strandedDepts = [
+          ...new Set(
+            (
+              await departmentNames(
+                tx,
+                stranded.map((st) => st.departmentId),
+              )
+            ).values(),
+          ),
+        ];
+        const body = [
+          waiting.length > 0
+            ? `Hand ${waiting.length === 1 ? "it" : "them"} to someone else: ${refs(waiting)}.`
+            : null,
+          stranded.length > 0
+            ? `Nobody else signs off for ${strandedDepts.join(" or ") || "their department"}, so ${stranded.length === 1 ? "this sign-off waits" : "these sign-offs wait"} on nobody: ${refs(stranded)} — add an approver or hand ${stranded.length === 1 ? "it" : "them"} to someone from the item.`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" ");
         await notify(tx, {
           userIds: await accessOverseerIds(tx, m),
           kind: "access_ended",
-          title: `${who}'s access has ended — ${waiting.length === 1 ? "a sign-off still waits" : `${waiting.length} sign-offs still wait`} on them`,
-          body: `Hand ${waiting.length === 1 ? "it" : "them"} to someone else: ${[...new Set(waiting.map((w) => w.ref))].slice(0, 5).join(", ")}.`,
+          title: `${who}'s access has ended — ${total === 1 ? "a sign-off still waits" : `${total} sign-offs still wait`} on them`,
+          body,
           link: `/users/${m.userId}`,
         });
       }

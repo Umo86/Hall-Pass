@@ -85,12 +85,18 @@ type LoadOpts = { touch?: boolean };
 
 type MembershipRow = typeof memberships.$inferSelect;
 
+type AskWho = { askName: string | null; askEmail: string | null };
+const NOBODY: AskWho = { askName: null, askEmail: null };
+
 /**
  * Who a turned-away person should ask: whoever suspended them, else a
  * manager whose scope covers them, else a super admin (all with access).
  */
-async function whoToAsk(m: MembershipRow): Promise<string | null> {
-  const name = (u: { fullName: string; email: string }) => u.fullName || u.email;
+async function whoToAsk(m: MembershipRow): Promise<AskWho> {
+  const name = (u: { fullName: string; email: string }): AskWho => ({
+    askName: u.fullName || u.email,
+    askEmail: u.email,
+  });
   const rows = await db
     .select({
       userId: memberships.userId,
@@ -123,7 +129,7 @@ async function whoToAsk(m: MembershipRow): Promise<string | null> {
   );
   if (manager && m.role !== "admin" && !m.managerScope) return name(manager);
   const admin = others.find((r) => r.role === "admin");
-  return admin ? name(admin) : null;
+  return admin ? name(admin) : NOBODY;
 }
 
 const LAST_SEEN_EVERY_MS = 15 * 60 * 1000;
@@ -183,7 +189,7 @@ async function loadForUser(
     // Suspended, or access ended: turned away here, never on to the
     // partner-invitation branch below.
     const state = accessState(membership);
-    if (state !== "active") return { blocked: { state, askName: await whoToAsk(membership) } };
+    if (state !== "active") return { blocked: { state, ...(await whoToAsk(membership)) } };
     const org = await db.query.organisations.findFirst({
       where: eq(organisations.id, membership.organisationId),
     });
@@ -223,7 +229,7 @@ async function loadForUser(
   const picked = partnerSessionGrants(all, now);
   if (!picked) {
     // Everything was revoked or has ended: say so at sign-in, not an empty portal.
-    return { blocked: { state: "ended", askName: await partnerInviterName(all[0].invitedBy) } };
+    return { blocked: { state: "ended", ...(await partnerInviter(all[0].invitedBy)) } };
   }
   const grants = picked.grants;
   const org = await db.query.organisations.findFirst({
@@ -254,10 +260,10 @@ async function loadForUser(
 }
 
 /** Who a partner whose access is over should ask: whoever invited them. */
-async function partnerInviterName(invitedBy: string | null): Promise<string | null> {
-  if (!invitedBy) return null;
+async function partnerInviter(invitedBy: string | null): Promise<AskWho> {
+  if (!invitedBy) return NOBODY;
   const inviter = await db.query.users.findFirst({ where: eq(users.id, invitedBy) });
-  return inviter ? inviter.fullName || inviter.email : null;
+  return inviter ? { askName: inviter.fullName || inviter.email, askEmail: inviter.email } : NOBODY;
 }
 
 /** Who is signed in on this request (cached), or why they are turned away. */

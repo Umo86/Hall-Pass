@@ -1,7 +1,7 @@
 import "server-only";
 import ExcelJS from "exceljs";
 
-import { IMPORT_COLUMNS } from "./import-columns";
+import { IMPORT_COLUMN_HINTS, IMPORT_COLUMNS } from "./import-columns";
 
 export { IMPORT_COLUMNS };
 
@@ -10,6 +10,10 @@ export async function buildImportTemplate(): Promise<Buffer> {
   const ws = wb.addWorksheet("Schedule");
   ws.addRow([...IMPORT_COLUMNS]);
   ws.getRow(1).font = { bold: true };
+  IMPORT_COLUMNS.forEach((name, i) => {
+    const hint = IMPORT_COLUMN_HINTS[name];
+    if (hint) ws.getRow(1).getCell(i + 1).note = hint;
+  });
   ws.addRow([
     "",
     "Main entrance banner",
@@ -32,6 +36,7 @@ export async function buildImportTemplate(): Promise<Buffer> {
     "am",
     "Example row — delete before importing",
     "organiser",
+    "",
   ]);
   ws.views = [{ state: "frozen", ySplit: 1 }];
   ws.columns.forEach((c) => {

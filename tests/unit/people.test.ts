@@ -375,6 +375,15 @@ describe("where open department sign-offs go", () => {
     ).toEqual([]);
   });
 
+  it("keeps a step handed back to the whole department, even on the defaults", () => {
+    expect(
+      rerouteDepartmentSteps([step({ assignedUserId: null, delegatedFromUserId: "max" })], {
+        followsDefaults: true,
+        ...routing({ "d-mkt": "mia" }),
+      }),
+    ).toEqual([]);
+  });
+
   it("keeps a step delegated outside the department while the delegate can sign", () => {
     expect(
       rerouteDepartmentSteps([step({ assignedUserId: "olly", delegatedFromUserId: "mia" })], {
@@ -397,6 +406,30 @@ describe("where open department sign-offs go", () => {
         ...routing({}),
       }),
     ).toEqual([{ id: "s1", from: "gone", to: null }]);
+  });
+
+  it("never moves a step to a department nobody can sign for", () => {
+    const r = routing({});
+    for (const followsDefaults of [true, false]) {
+      expect(
+        rerouteDepartmentSteps([step({ assignedUserId: "gone", assignedDepartmentId: "d-none" })], {
+          followsDefaults,
+          ...r,
+        }),
+      ).toEqual([]);
+    }
+    expect(
+      rerouteDepartmentSteps(
+        [
+          step({
+            assignedUserId: "gone",
+            delegatedFromUserId: "x",
+            assignedDepartmentId: "d-none",
+          }),
+        ],
+        { followsDefaults: false, ...r },
+      ),
+    ).toEqual([]);
   });
 
   it("leaves decided steps, confirmations and non-department steps alone", () => {

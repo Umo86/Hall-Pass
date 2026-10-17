@@ -1,3 +1,5 @@
 node_modules
 .next
 pnpm-lock.yaml
+# drizzle-kit writes these; formatting them only adds noise to the next generate
+lib/db/migrations/meta

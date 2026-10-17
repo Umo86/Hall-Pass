@@ -49,4 +49,14 @@ FROM (
   WHERE a."after"->>'snagId' IS NOT NULL AND a."summary" LIKE 'Snag raised on %'
   ORDER BY a."after"->>'snagId', a."created_at"
 ) x
-WHERE s."raised_by_user_id" IS NULL AND s."id"::text = x."snag_id";
+WHERE s."raised_by_user_id" IS NULL AND s."id"::text = x."snag_id";--> statement-breakpoint
+-- Partners are people with a partner invitation and no team membership; the
+-- app decides by membership, and the is_external flag is brought into line for
+-- accounts created before claiming set it (they also self-heal at their next
+-- sign-in). Data only.
+UPDATE "users" SET "is_external" = true
+WHERE NOT "is_external"
+  AND "id" IN (SELECT "user_id" FROM "external_grants" WHERE "user_id" IS NOT NULL)
+  AND "id" NOT IN (SELECT "user_id" FROM "memberships");--> statement-breakpoint
+UPDATE "users" SET "is_external" = false
+WHERE "is_external" AND "id" IN (SELECT "user_id" FROM "memberships");

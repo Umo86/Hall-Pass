@@ -16,7 +16,7 @@ export function SectionUnavailable({ feature, backHref }: { feature: Feature; ba
       <EmptyState
         icon={Lock}
         title={`${label} isn't switched on for you`}
-        description={`Ask an admin to add ${label} to your sections in Users if you need it.`}
+        description={`Ask a super admin or your manager to add ${label} to your sections in Users if you need it.`}
         action={
           <Button asChild variant="outline">
             <Link href={backHref ?? "/my-work"}>Back to My Work</Link>

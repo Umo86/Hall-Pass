@@ -6,8 +6,9 @@
  * fixed; delegation and deciding on someone's behalf name the person in the
  * audit log and tell them; supplier and venue steps nobody can sign in for
  * tell the people who can act; open department sign-offs follow a new main
- * approver; tasks moved to someone else take their subtasks along; the
- * morning task reminder counts what My Work counts.
+ * approver (also when it is changed on Users → Departments); tasks moved to
+ * someone else take their subtasks along; the morning task reminder counts
+ * what My Work counts.
  */
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -40,6 +41,7 @@ let signageDomain: typeof import("@/lib/domain/signage");
 let people: typeof import("@/lib/people");
 let taskQueries: typeof import("@/lib/queries/tasks");
 let cron: typeof import("@/lib/cron/jobs");
+let approverActions: typeof import("@/app/actions/approvers");
 
 const n = Date.now() % 1_000_000;
 let orgId: string;
@@ -134,6 +136,7 @@ d("handing work to people", () => {
     people = await import("@/lib/people");
     taskQueries = await import("@/lib/queries/tasks");
     cron = await import("@/lib/cron/jobs");
+    approverActions = await import("@/app/actions/approvers");
 
     const [org] = await db
       .insert(schema.organisations)
@@ -735,13 +738,15 @@ d("handing work to people", () => {
     const wb = new ExcelJS.Workbook();
     const { IMPORT_COLUMNS } = await import("@/lib/exports/import-columns");
     const ws = wb.addWorksheet("Schedule");
-    // The template's columns, with "Owner email" added at the end.
-    ws.addRow([...IMPORT_COLUMNS, "Owner email"]);
+    // The template's columns, "Owner email" included.
+    expect(IMPORT_COLUMNS).toContain("Owner email");
+    ws.addRow([...IMPORT_COLUMNS]);
     const row = (name: string, owner: string) =>
-      ws.addRow([
-        ...IMPORT_COLUMNS.map((c) => (c === "Name" ? name : c === "Category" ? "Organiser" : "")),
-        owner,
-      ]);
+      ws.addRow(
+        IMPORT_COLUMNS.map((c) =>
+          c === "Name" ? name : c === "Category" ? "Organiser" : c === "Owner email" ? owner : "",
+        ),
+      );
     row(`Imported A ${n}`, `mia-${n}@people.test`);
     row(`Imported B ${n}`, `sales-${n}@people.test`);
     row(`Imported C ${n}`, "nobody@elsewhere.test");
@@ -814,5 +819,38 @@ d("handing work to people", () => {
       expect.arrayContaining([team.ops.id, team.ops2.id, team.inviter.id, team.admin.id]),
     );
     expect(confirmers).not.toContain(team.mia.id);
+  });
+
+  // Last: syncDepartmentSteps renames this workflow's step after the department.
+  it("a new main approver on Users → Departments takes open default sign-offs (syncDepartmentSteps)", async () => {
+    const byDefault = await inSignoff(team.mia.id, null);
+    const chosen = await inSignoff(team.mia.id, [{ stepId: mktStepId, userId: team.mia.id }]);
+    const rowOf = async (key: string) =>
+      (
+        await db.select().from(schema.approvers).where(eq(schema.approvers.userId, team[key].id))
+      )[0];
+    const assigned = async (id: string) =>
+      (
+        await db.select().from(schema.approvalInstances).where(eq(schema.approvalInstances.id, id))
+      )[0].assignedUserId;
+    as("admin");
+    try {
+      expect(
+        await approverActions.setMainApprover({ id: (await rowOf("max")).id, isMain: true }),
+      ).toMatchObject({ ok: true });
+      expect(await assigned(byDefault.inst.id)).toBe(team.max.id);
+      // A stored plan naming someone who still signs for Marketing stays.
+      expect(await assigned(chosen.inst.id)).toBe(team.mia.id);
+      const [row] = (await auditFor(byDefault.item.id)).filter((a) => a.action === "delegate");
+      expect(row).toMatchObject({ subjectUserId: team.mia.id, actorType: "system" });
+      expect(row.summary).toContain("main approver changed");
+      expect((await notesFor("max", byDefault.item.id)).map((x) => x.kind)).toContain(
+        "approval_requested",
+      );
+    } finally {
+      await approverActions.setMainApprover({ id: (await rowOf("mia")).id, isMain: true });
+    }
+    // Mia is main again: the default sign-off follows her back.
+    expect(await assigned(byDefault.inst.id)).toBe(team.mia.id);
   });
 });

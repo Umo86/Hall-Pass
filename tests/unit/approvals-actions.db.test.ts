@@ -303,6 +303,65 @@ d("sign-off actions", () => {
     });
   });
 
+  it("confirming several print steps at once decides each and refreshes the pages once (regressions-1)", async () => {
+    const { revalidatePath } = await import("next/cache");
+    const [printer] = await db
+      .insert(schema.suppliers)
+      .values({ organisationId: orgId, name: `Printer ${n}` })
+      .returning();
+    const printing = async () => {
+      const { item, approval } = await itemInSignoff({ role: "ops" });
+      await db
+        .update(schema.approvalInstances)
+        .set({ status: "approved", decidedAt: new Date(), decidedBy: people.ops.id })
+        .where(eq(schema.approvalInstances.id, approval.id));
+      await db
+        .update(schema.signageItems)
+        .set({ status: "approved", supplierId: printer.id })
+        .where(eq(schema.signageItems.id, item.id));
+      const [print] = await db
+        .update(schema.approvalInstances)
+        .set({ status: "pending", pendingSince: new Date() })
+        .where(
+          and(
+            eq(schema.approvalInstances.entityId, item.id),
+            eq(schema.approvalInstances.stepNameSnapshot, "Sent to print"),
+          ),
+        )
+        .returning();
+      return { item, print };
+    };
+    const a = await printing();
+    const b = await printing();
+    const done = await itemInSignoff({ role: "ops" }); // its approval isn't a confirmation
+    as("ops");
+    vi.mocked(revalidatePath).mockClear();
+    const res = await actions.confirmApprovals({
+      rows: [a.print, b.print, done.approval].map((r) => ({
+        instanceId: r.id,
+        expectedLockedVersionId: null,
+      })),
+      confirmedDate: (await import("@/lib/today")).todayInLondon(),
+    });
+    expect(res.ok).toBe(true);
+    const results = res.ok ? res.data!.results : [];
+    expect(results.map((r) => r.ok)).toEqual([true, true, false]);
+    expect(results[2].error).toMatch(/not confirmations/);
+    expect(vi.mocked(revalidatePath)).toHaveBeenCalledTimes(1);
+    for (const x of [a, b]) {
+      const [step] = await db
+        .select()
+        .from(schema.approvalInstances)
+        .where(eq(schema.approvalInstances.id, x.print.id));
+      expect(step.status).toBe("confirmed");
+      const audits = await db
+        .select()
+        .from(schema.auditLog)
+        .where(and(eq(schema.auditLog.entityId, x.item.id), eq(schema.auditLog.action, "decide")));
+      expect(audits).toHaveLength(1);
+    }
+  });
+
   it("delegating settles the request of whoever the step was with", async () => {
     const { item, approval } = await itemInSignoff({ role: "ops" });
     await db.insert(schema.notifications).values({

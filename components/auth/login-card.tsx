@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, type ReactNode } from "react";
 import Link from "next/link";
 import { ArrowLeft, Building2, Check, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -41,8 +41,8 @@ type Props = {
   photo: string | null;
   /** Where to continue after signing in. */
   next?: string | null;
-  /** A problem to explain, e.g. an expired sign-in link. */
-  notice?: string | null;
+  /** A problem to explain, e.g. an expired sign-in link (may hold a link, e.g. a mailto). */
+  notice?: ReactNode;
   /** Signed in with Supabase, but this email has no account here yet. */
   unprovisionedEmail?: string | null;
 };
@@ -116,7 +116,7 @@ export function LoginCard({
                 </h2>
                 <p className="text-muted-foreground">
                   You&apos;re signed in as <strong>{unprovisionedEmail}</strong>, but nobody has
-                  invited that address yet. Ask an admin to invite it, then sign in again.
+                  invited that address yet. Ask your contact there to invite it, then sign in again.
                 </p>
                 <form action={signOut}>
                   <Button type="submit" variant="outline">
@@ -240,8 +240,8 @@ function EmailSignIn({ next }: { next: string | null }) {
         {error && <p className="text-destructive text-sm">{error}</p>}
       </form>
       <p className="text-muted-foreground mt-6 text-xs leading-relaxed">
-        No account yet? Ask your admin to invite you — the invitation email has a link to set up
-        your profile and password.
+        No account yet? Ask your contact there to invite you — the invitation email has a link to
+        set up your profile and password.
       </p>
     </div>
   );

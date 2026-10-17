@@ -135,7 +135,7 @@ export default async function ReportsPage({
         <EmptyState
           icon={Lock}
           title="Downloads are limited to editors"
-          description="Ask an admin if you need the signage schedule or the venue pack."
+          description="Ask a super admin if you need the signage schedule or the venue pack."
         />
       </Page>
     );

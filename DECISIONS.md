@@ -2,23 +2,24 @@
 
 A one-line log of choices made where the build brief is silent, with the reason. Newest first.
 
-| Date       | Decision                                                       | Reason                                                                                                                                                                                                                                           |
-| ---------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2026-09-17 | Development sign-in (`DEV_AUTH=1`) assumes seeded users by cookie | Lets the platform be demonstrated with only a database. Superseded 2026-09-24: see "Demo sign-in safeguards" below — `DEV_AUTH=1` keeps it on even with Supabase configured, so it is now fenced to demo accounts and flagged on every page. |
-| 2026-09-17 | Storage falls back to the local filesystem when Supabase is unconfigured | Keeps uploads working in development/demo; production uses Supabase Storage private buckets with signed URLs. Vercel's filesystem is ephemeral, so demo uploads there do not persist across deploys. |
-| 2026-09-17 | Seeded artwork/documents are metadata-only (`seed/` paths, no real files) | Real files need object storage; hashes and versions still exercise the whole approval flow. |
-| 2026-09-17 | Default-workflow confirmation names drive item status (Sent to print → in_production, etc.) | Simplest testable mapping; custom workflows that rename confirmations record decisions without moving item status. |
-| 2026-09-17 | `locked_version_id` stored as text | It holds either an artwork version uuid or a stand submission version number. |
-| 2026-09-17 | Excel import commits only when every row validates; the error list is the preview | One transaction, no partial imports; matches "commit in one transaction" with a simpler flow than a separate preview step. |
-| 2026-09-17 | Grants are claimed by invited email on first Supabase sign-in | Avoids fragile uid pre-linking; the invite link flow still validates the hashed token. |
-| 2026-09-17 | TanStack Table pinned to v8 | v9 shipped mid-build with a breaking typed API. |
-| 2026-09-17 | Deferred from v1 (flagged, not silent): inline grid editing, saved views, floorplan and calendar views, artwork previews/compare/annotations, onsite mobile section and PWA, QR camera scanning, change-request UI, venue pack / contractor schedule / sponsor / cost / performance exports, iCal feed, workflow builder UI, email template editing, GDPR self-service | Section 14.10: scope not reduced silently — each is listed in PLAN.md as remaining work with the engine-level support already in place. |
-| 2026-09-17 | App shell (tasks 0.1–0.4, 0.17-lite) pushed straight to `main` | The owner asked for a first Vercel deployment; production tracks `main` and the repository is not yet connected to Vercel, so a pull request had nothing to preview against. Later phase work goes through branches and pull requests.           |
-| 2026-09-17 | shadcn/ui components vendored by hand (registry blocked)       | The build environment's egress proxy denies ui.shadcn.com, so `components.json`, the theme tokens and the base components were written manually from the standard shadcn sources; behaviourally identical, future components added the same way. |
-| 2026-09-17 | Cron endpoint accepts GET and POST                             | Vercel Cron invokes with GET while the brief specifies POST; both are served by the same handler behind the same `CRON_SECRET` bearer check.                                                                                                     |
-| 2026-09-17 | Initial planning docs pushed straight to `main`                | The repository was empty with no default branch yet.                                                                                                                                                                                             |
+| Date       | Decision                                                                                                                                                                                                                                                                                                                                                               | Reason                                                                                                                                                                                                                                           |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-09-17 | Development sign-in (`DEV_AUTH=1`) assumes seeded users by cookie                                                                                                                                                                                                                                                                                                      | Lets the platform be demonstrated with only a database. Superseded 2026-09-24: see "Demo sign-in safeguards" below — `DEV_AUTH=1` keeps it on even with Supabase configured, so it is now fenced to demo accounts and flagged on every page.     |
+| 2026-09-17 | Storage falls back to the local filesystem when Supabase is unconfigured                                                                                                                                                                                                                                                                                               | Keeps uploads working in development/demo; production uses Supabase Storage private buckets with signed URLs. Vercel's filesystem is ephemeral, so demo uploads there do not persist across deploys.                                             |
+| 2026-09-17 | Seeded artwork/documents are metadata-only (`seed/` paths, no real files)                                                                                                                                                                                                                                                                                              | Real files need object storage; hashes and versions still exercise the whole approval flow.                                                                                                                                                      |
+| 2026-09-17 | Default-workflow confirmation names drive item status (Sent to print → in_production, etc.)                                                                                                                                                                                                                                                                            | Simplest testable mapping; custom workflows that rename confirmations record decisions without moving item status.                                                                                                                               |
+| 2026-09-17 | `locked_version_id` stored as text                                                                                                                                                                                                                                                                                                                                     | It holds either an artwork version uuid or a stand submission version number.                                                                                                                                                                    |
+| 2026-09-17 | Excel import commits only when every row validates; the error list is the preview                                                                                                                                                                                                                                                                                      | One transaction, no partial imports; matches "commit in one transaction" with a simpler flow than a separate preview step.                                                                                                                       |
+| 2026-09-17 | Grants are claimed by invited email on first Supabase sign-in                                                                                                                                                                                                                                                                                                          | Avoids fragile uid pre-linking; the invite link flow still validates the hashed token.                                                                                                                                                           |
+| 2026-09-17 | TanStack Table pinned to v8                                                                                                                                                                                                                                                                                                                                            | v9 shipped mid-build with a breaking typed API.                                                                                                                                                                                                  |
+| 2026-09-17 | Deferred from v1 (flagged, not silent): inline grid editing, saved views, floorplan and calendar views, artwork previews/compare/annotations, onsite mobile section and PWA, QR camera scanning, change-request UI, venue pack / contractor schedule / sponsor / cost / performance exports, iCal feed, workflow builder UI, email template editing, GDPR self-service | Section 14.10: scope not reduced silently — each is listed in PLAN.md as remaining work with the engine-level support already in place.                                                                                                          |
+| 2026-09-17 | App shell (tasks 0.1–0.4, 0.17-lite) pushed straight to `main`                                                                                                                                                                                                                                                                                                         | The owner asked for a first Vercel deployment; production tracks `main` and the repository is not yet connected to Vercel, so a pull request had nothing to preview against. Later phase work goes through branches and pull requests.           |
+| 2026-09-17 | shadcn/ui components vendored by hand (registry blocked)                                                                                                                                                                                                                                                                                                               | The build environment's egress proxy denies ui.shadcn.com, so `components.json`, the theme tokens and the base components were written manually from the standard shadcn sources; behaviourally identical, future components added the same way. |
+| 2026-09-17 | Cron endpoint accepts GET and POST                                                                                                                                                                                                                                                                                                                                     | Vercel Cron invokes with GET while the brief specifies POST; both are served by the same handler behind the same `CRON_SECRET` bearer check.                                                                                                     |
+| 2026-09-17 | Initial planning docs pushed straight to `main`                                                                                                                                                                                                                                                                                                                        | The repository was empty with no default branch yet.                                                                                                                                                                                             |
 
 ## Vercel-first infrastructure (2026-09-22)
+
 The platform now targets Vercel end to end at the owner's request: Vercel
 Postgres (Neon) for the database and Vercel Blob for files. The db client
 accepts the integration's injected variables (POSTGRES_URL etc.) and probes
@@ -32,6 +33,7 @@ if artwork becomes sensitive. Supabase remains a supported alternative;
 supabase-setup.sql was renamed database-setup.sql and runs on any Postgres.
 
 ## v1.5 restructure (2026-09-24)
+
 At the owner's request the platform was reshaped for ops, sales and
 marketing teams together. The load-bearing choices:
 
@@ -69,7 +71,7 @@ A full process and code review (126 confirmed findings → 75 fixes, shipped in
 stages A–G). Owner decisions and the choices made along the way:
 
 - **Sign-off completes on the last approval.** The workflow engine treats a
-  run as approved once every *approval* step is settled; the confirmation
+  run as approved once every _approval_ step is settled; the confirmation
   steps (Sent to print, Delivered, Installed) then follow in order. Before
   this, real items stayed "in review" for ever.
 - **Approved items can still be edited; spec changes restart sign-off.**
@@ -106,7 +108,6 @@ stages A–G). Owner decisions and the choices made along the way:
 - **Seeded sponsorship items use refs 031/032** and "Other signage" / "Other
   sponsorship item" types exist so nothing is forced into a wrong type.
 - **Vercel functions run in Frankfurt (fra1)**, next to the database.
-
 
 ## Signage rework (2026-09-25)
 
@@ -552,7 +553,9 @@ useful fields for every item.
 - **One main approver per department** is a unique index; saves clear the
   other main first (the migration kept the oldest where there were two).
 - **Last super admin.** Demoting, suspending, ending or removing counts only
-  super admins with access, under a row lock.
+  super admins with access, under a row lock. (Tightened by the release
+  review: the other super admin must have no end date — see "Release review
+  fixes" below.)
 - **Access history.** `audit_log.subject_user_id`/`subject_email` name the
   person a people change is about (also sign-ins, written on password sign-in
   and the email-link callback); `accessHistory()` finds those and older rows by
@@ -564,3 +567,302 @@ useful fields for every item.
 - **Words.** The admin role is shown as "Super admin" ("Everything, including
   people, managers and system settings"). Refusals for a missing ability name
   it: "You need “Manage suppliers” for that — ask a super admin".
+
+## Users v2: abilities and managers (Oct 2026)
+
+Only what the core section above doesn't already say.
+
+- **Roles a manager can give** (`assignableRoles`) ignore abilities only a
+  super admin gives and hidden keys; those are switched off for the new
+  person instead of refusing the role.
+- **End dates** must be today or later (a London date, stored as the end of
+  that day, worked out on the wall clock so BST and GMT are both right).
+- **A paused person can still delegate** a step to someone else, exactly as
+  before the registry.
+- **The daily job** runs `endExpiredAccess` first; the reminder log gained
+  the `membership` target for the week-before warning.
+- **Import refusal** stays "You cannot import items" (tests rely on it);
+  other missing abilities use `missingAbilityMessage`.
+- **Viewers never sign off** now (see the next section), which replaces the
+  core note that invitations still allowed viewer approver rows.
+- **`snag.manage` is not gated by the Onsite section.** Mapping it to
+  "onsite" in `featureForAction` changes seven answers in the frozen v1
+  snapshot (Operations and Marketing with only other sections), so it stays
+  as it was; the Onsite page itself is behind the section.
+
+## Users v2: pages and hand-over (Oct 2026)
+
+- **Viewers can't sign off** (`canReceiveSignoff`): inviting, changing a
+  person or an invitation refuses sign-off rows for a viewer ("Viewers can't
+  sign off artwork — choose another role or untick sign-off"); the person
+  page clears them on save and says so; Departments shows older ones as
+  "Viewer — can't sign off".
+- **An invitation never takes "main approver"** from a main who can sign:
+  `setSignoffs` keeps the current main and says "{X} stays main approver
+  until {name} has accepted"; `setMainApprover` refuses invitee rows the same
+  way. **Known limitation:** nothing promotes the invitee when they accept —
+  make them main under Departments then (the Add form says so). Doing it
+  automatically needs a column (e.g. `approvers.main_on_accept`) plus claim
+  code; not added in this release.
+- **Hand-over is per department.** Each department's default is its main
+  approver, else another approver who can sign; "Everyone who signs off for
+  X" is offered only when someone else can sign. Steps outside a department,
+  or in one with nobody else, need a person picked. An older single
+  `handToUserId` still works as the fallback for every group. These selects
+  keep their own department-first layout; the removal "hand their work to"
+  picker is the one person picker (PersonPicker: you first, then your
+  department).
+- **What moves (P2.0):** in each item's current round, pending, waiting and
+  changes-requested steps naming the person (pending ones by delegation), and
+  approved or confirmed steps that redo on new artwork (who decided stays).
+  Item plans naming them are cleared on suspend, remove and stop-signing and
+  are not restored on reactivation.
+- **Stopping signing** (taken off a department, moved, made a viewer, paused
+  — `stopSigningTx`) sends named sign-offs back to the department only where
+  someone else can sign; otherwise they stay named and the toast and audit
+  say so. The daily job does the same when an access end date passes
+  (audited as the cron, no actor), then tells super admins and managers only
+  about what still waits on the person.
+- **Removal:** the person picked must have access and not be a viewer; only
+  items not deleted or complete in planning or live events move (finished
+  items and archived events keep the leaver); kinds the picked person can't
+  work on go to the remover; one audit row per task and item. Removal and the
+  person page count the same items. Its notice stays its own ("Fred left the
+  team; Alex gave you the items they owned", to My Work) rather than
+  `notifyOwnerChange`, because a leaver's items can span events. "Can work
+  on" here is still `canWorkOwnItem` (edit or upload, by kind), not the
+  owner rule in `lib/people.ts` (edit, upload and send, sponsored or not);
+  moving removal onto `peopleFor({ type: "owner" })` is left for later.
+- **Suspension keeps tasks and items**; only sign-offs are handed over. Bulk
+  Suspend uses each department's default and leaves out anyone without one,
+  with the reason.
+- **Sign-off on Add and the person page** offers all departments with
+  departments.manage, else the manager's own sign-off departments; main
+  approver needs departments.manage.
+- **Templates and role changes** by anyone who isn't a super admin switch off
+  abilities only a super admin gives that the role has by default
+  (`startingChoices`), instead of refusing the role.
+- **Order of refusals:** suspend, reactivate and end date check scope before
+  "last super admin", so someone out of scope only hears "You can't change
+  this person's access".
+- **Open invitations aren't replaced:** inviting an email with one open is
+  refused with a link to their page.
+- **Status filter:** Active includes people whose end date is still ahead;
+  "Access ends" is its own filter and colour. "Last active" counts London
+  days (year shown when not this year). Stale = 30 days or more, or never
+  signed in (members only).
+- **Add several:** tabs, else commas with quotes; an optional header sets the
+  column order; otherwise the field with an @ is the email and a line with
+  none reads Name, Email, Job title. Repeats are matched by lower-cased email;
+  a missing name is made from the email. `bulkPeople` lives in
+  `lib/users/manage.ts` so its checks are DB-tested.
+- **Turned away at sign-in** (suspended or ended): /login names who to ask
+  with their email as a mailto link (`AccessBlock.askEmail`); "a super admin"
+  when there is nobody. With no contacts to name, setup and Users notes say
+  "Ask a super admin".
+
+## Users v2: who work goes to (Oct 2026)
+
+- **Giving an item to someone** needs only the right to edit it, and the new
+  owner must be able to own that kind of item: an active member who could
+  edit it, upload its artwork and send it for sign-off as its owner (checked
+  through can(), sections included — "No longer has Signage"). No separate
+  item.assign ability.
+- **Sign-off routing follows departments.** Plans can't tell "chosen" from
+  "pre-filled", so they are never rewritten. Items with no stored plan follow
+  the department's current main approver (or anyone in it); items with a plan
+  keep the named person until they can no longer sign for the department.
+  Delegated or handed-over steps stay with the delegate while they can sign
+  at all, and steps handed back to the whole department stay there. A step
+  never moves to a department nobody can sign for: it stays named so it can
+  be handed on. `syncDepartmentSteps` now ends with
+  `rerouteDepartmentSignoffs`, so every approver, department, suspension,
+  pause or end-date change applies the rule; a round that starts or restarts
+  applies it too. Hand-overs (`stopSigningTx`, suspension, removal) run
+  before the re-sync, so their own messages and audit rows are the ones
+  people get. (Not done: an engine-level check when a later step turns
+  pending; the daily job and round start cover the gap.)
+- **A routing move** is audited as "delegate", actor system, about the person
+  it moved from; the new holder is asked to sign off and the old request is
+  settled.
+- **Snags** are always with the item's owner, read live
+  (`snags.assigned_user_id` is no longer written or read). A closed snag
+  tells whoever raised it and the owner, never the person who closed it.
+- **Panels** are owned by their stand's owner whatever their status; bulk
+  Change owner refuses panels ("a panel goes with its stand").
+- **New-item notices** go to active people in the owner's department who use
+  the item's section, never the creator or the owner (who gets
+  `item_assigned`); the old Operations/Marketing (+ Sales for sponsor items)
+  rule is the fallback when the owner has no department.
+- **`item_assigned`** ("An item is given to me") can be switched off under
+  Items on My account and is emailed. It goes to the new owner unless they
+  made the change, and to the previous owner unless they did; one message
+  per change.
+- **Import "Owner email"** (or "Owner") is a template column with the hint
+  "Email of an active team member; blank = you"; older sheets without it
+  read no fallback column. A new row is owned by the person named when they
+  can own it, otherwise by the importer; an update changes the owner only to
+  someone who can. The check lists how many rows went each way and why.
+- **Deciding on someone's behalf** names the step's person (or its only
+  holder) as the subject; with several possible holders it lists them all.
+- **"Approved but no supplier"** goes to people who can set the supplier
+  (costs.edit with Signage, active, not super admins).
+- **Nobody can sign in for a step:** a supplier confirmation tells the
+  production confirmers; a venue or sponsor sign-off tells active Operations
+  and the item owner. Partner inviters get the invite link, others are told
+  who can invite, and an unaccepted invitation is named.
+- **The task reminder** counts what My Work counts (`dueTaskCounts`).
+- **Pickers list people in a stable order** (`loadTeam` sorts by name), so
+  "ask A or B" reads the same every time.
+
+## Partners (Users v2) (Oct 2026)
+
+- **Staff means an active team membership**, never `users.is_external`:
+  staff-only comment recipients, email links (portal links for anyone
+  without a membership) and the overdue digest decide by membership. Claiming
+  a partner invitation marks the account external (audited) and it
+  self-heals at each sign-in; migration 0012 also brings the flag into line
+  once (idempotent UPDATEs). Accounts with any membership never claim; a
+  staff session can't accept a partner link.
+- **Grants are claimed on every sign-in**, each audited in its own
+  organisation, after a cheap SELECT. A partner's session organisation is
+  that of their newest live grant; an organisation switcher is left for
+  later. A partner whose grants are all over is told at /login that their
+  access has ended, naming whoever invited them.
+- **Who can invite partners** is "Invite partners" (partners.invite), not
+  only admins — this replaces the earlier "partner invitations are for
+  admins" and "only admins invite or revoke". The portal says "Inviting
+  people or taking access away needs “Invite partners” — ask a super admin."
+- **Sponsors upload artwork** for their own items while draft, awaiting
+  artwork or changes requested (later it is the team's call, as it would
+  supersede decisions); never stands or panels. The upload sends the item for
+  sign-off when its details are complete, otherwise the team is told; the
+  owner (else creator) gets `artwork_uploaded`. The rule needs the item's
+  status, which `itemAuthzCtx` always supplies, so the frozen snapshot is
+  unchanged.
+- **Duplicates:** same email, event, role and company, not revoked. Waiting →
+  Resend; active → said so; ended → Extend. No second row.
+- **Team and partner invitations don't collide.** An open team invitation
+  blocks a partner one (named here; "use a different email" elsewhere).
+  A staff invitation is blocked only by live partner access here ("This email
+  has portal access here (…) — revoke it in Users → External first, then
+  invite them to the team") or a neutral refusal for live access in another
+  organisation; ended and revoked access never blocks (Add several too).
+- **Venue grants** must be for the event's own venue. Changing an event's
+  venue revokes nothing but says how many people at the old venue no longer
+  see it (P4.4).
+- **Prefill:** suppliers use their contact name and email, sponsors and
+  exhibitors their contact, venues their rigging contact.
+- **Invite lists leave out archived events** (Suppliers, Venues, External);
+  the server refuses them anyway.
+- **One answer for "does this sponsor have portal access"**
+  (`sponsorPortalAccess`, live grants only) on the Sponsors tab and the item
+  page.
+- **Existing accounts** get our own "new access" email with the reason,
+  falling back to a Supabase sign-in link, then a link to pass on.
+- **Event copy:** partner end dates move with the event's breakdown end (end
+  of the London day); ended grants come across moved unless still past;
+  revoked never. An owner who can't own the copy is replaced by the copier.
+- **Supplier embargo** (`externalSeesArtwork`) lives in
+  `lib/users/external.ts` and reuses can(signage.view) without supplier
+  grants.
+- **Defence in depth:** the portal item list joins the event and filters by
+  the partner's organisation, and can() gets the organisation for its
+  tenancy check.
+- **Dates:** External shows end dates with the year ("ends 8 Oct 2027");
+  invitation dates day and month only.
+
+## Release review fixes (Oct 2026)
+
+- **Always a super admin whose access lasts.** Suspending, removing or
+  demoting a super admin, or giving one a new or moved end date, needs
+  another super admin who is not suspended and has no end date (the rows are
+  locked FOR UPDATE). "Has access right now" let two super admins give each
+  other end dates; "outlasts the new end date" still empties the
+  organisation once the later date passes, so the rule is no end date at
+  all. Clearing an end date is never refused, so an organisation already in
+  that state can recover. The person page's "only super admin" lock follows
+  the same rule.
+- **A new invitation link is a way in as that person.** A manager who isn't
+  a super admin may Resend or get a New link (singly or from the bulk bar)
+  only for an invitation they could have made themselves —
+  personChangeRefusal as if adding the person now, sign-off rows included.
+  Where invitations can be emailed, only super admins get a raw link by
+  hand; managers use Resend. The invitation page and the Team list hide both
+  buttons when the viewer can't renew (`canRenewInvite` in lib/authz.ts, the
+  same rule the server applies). Renewing also re-checks that the email hasn't since
+  got other access (portal access here, a team or portal account
+  elsewhere), as inviting does.
+- **Managers hand over within the departments' own approvers.** When a
+  manager who isn't a super admin suspends someone, each department's
+  sign-offs go only to that department's approvers (or back to the
+  department), and sign-offs outside a department never to the manager —
+  the same limit as rule 8 of personChangeRefusal. With nobody else in the
+  department, they are told to ask a super admin. The Suspend dialog offers
+  only those choices.
+- **A department's last signer takes its open department-wide sign-offs
+  with them.** Suspending or removing the only person who can sign for a
+  department hands over its pending, waiting and sent-back steps that name
+  nobody, with the person's own (a person must be picked; the audit row
+  records that the step was the department's). When such a person's access
+  ends, the daily job can't pick anyone, so the notice to super admins and
+  managers names those sign-offs too.
+- **Clearing an item's sign-off plan is recorded on the item**: one audit
+  row per item (before and after plan, the person as subject), when someone
+  is suspended, removed or stops signing for a department.
+- **Team members hold no live partner access in the same organisation.**
+  Removing someone from the team revokes their live grants here (one audit
+  row each; the Remove dialog lists them), so a leaver isn't signed in to
+  the portal. Partner access of a team member can be ended but not extended,
+  and copying an event leaves their grants behind (counted).
+- **People changes run one after another per organisation**
+  (pg_advisory_xact_lock on the organisation, taken first in suspend,
+  remove, end dates, person edits, stop-signing and taking someone off a
+  department's approvers), so two suspensions at once can't each hand
+  sign-offs to the other.
+- **Losing "main approver" to someone else is in the person's history**: an
+  approver audit row naming the demoted person, from the person page,
+  invitations and Users → Departments alike (`clearOtherMainsTx`).
+- **Comment and "approval superseded" notifications reach a partner only
+  while their live grants in this organisation still show them the record**
+  (can() on the item or stand), never for a staff-only comment. notify()
+  also takes the record's organisation and event, keeping a partner only
+  with a live grant there; the email dispatcher drops (and settles) a
+  partner's item or stand email once they have no live grant on that event.
+- **Event copy counts what it copies.** The "Portal access" count includes
+  ended grants that come across with their end date moved, leaves out
+  archived suppliers, other venues' grants (when the venue changes) and team
+  members, and is recounted in the form from the new dates and venue
+  (`copiedAccessCount`). A box with nothing to bring is never sent ticked.
+  The result says how many partners can sign in to the new event. Items
+  whose supplier has been archived are copied with no supplier (counted).
+- **Confirming several steps is one request** (`confirmApprovals`): each
+  step in its own transaction with the usual checks and audit row, the pages
+  revalidated once. Actions that revalidate aren't followed by a client
+  refresh (revalidatePath in a Server Function already updates the page).
+  Waiting on me loads every record in two joined queries instead of two per
+  step.
+- **Setup progress is loaded once per request** (React cache) and shared by
+  the layout and the Dashboard or Setup page; the side navigation leaves
+  Setup out once its card is dismissed ("still under Event details").
+- **Currency is shown, not chosen**, until costs, labels and exports use it
+  (they all show pounds); a currency sent to the settings action is ignored.
+- **Words:** copy never says "admins" or "an admin" on its own — "a super
+  admin", or missingAbilityMessage for a missing ability; partners and
+  sign-in pages say "the person who invited you" / "your contact there".
+  tests/unit/terminology.test.ts guards it. Halls says an archived event is
+  read-only before anything about permissions.
+- **Who to ask** about creating or setting up events is whoever has access
+  and holds the ability (events.create, or any event setup ability), super
+  admins first, falling back to super admins with access.
+- **My Work between seasons:** only an organisation with no events at all
+  sends people who create events to /start; when every event is archived,
+  My Work stays open with a "Create your next event" card.
+- **Releases migrate first, then deploy** (README → Releasing). /api/health
+  reports `"schema": "behind"` (and fails) when the database lacks this
+  code's newest migration. A rollback past 0012 is unsafe once anyone is
+  suspended or has an end date.
+- **drizzle-kit's migration metadata is left to drizzle-kit**
+  (`lib/db/migrations/meta` in .prettierignore): it rewrites the journal and
+  snapshots in its own format on every generate, so formatting them would
+  only churn.

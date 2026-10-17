@@ -16,6 +16,7 @@ import {
   canGrantManager,
   canManagePerson,
   canRemovePerson,
+  canRenewInvite,
   canSuspendPerson,
   FEATURES,
   isSuperAdmin,
@@ -466,6 +467,36 @@ describe("personChangeRefusal", () => {
     expect(
       refuse(deptManager, target, access(), access({ accessEndsAt: new Date("2027-01-01") })),
     ).toBeNull();
+  });
+
+  it("renewing an invitation: super admins any, managers only one they could have made (escalation-1)", () => {
+    // A new link is a way in as that person, so it is checked like adding them now.
+    const invite = access({ accessEndsAt: new Date("2027-01-01") });
+    expect(canRenewInvite(superAdmin, access({ role: "admin" }))).toBe(true);
+    expect(canRenewInvite(superAdmin, access({ overrides: { "departments.manage": true } }))).toBe(
+      true,
+    );
+    expect(canRenewInvite(deptManager, invite)).toBe(true);
+    expect(
+      canRenewInvite(deptManager, access({ signoffs: [{ departmentId: "d1", isMain: false }] })),
+    ).toBe(true);
+    // Whatever only a super admin gives, or the manager lacks, or another department.
+    expect(canRenewInvite(deptManager, access({ role: "admin" }))).toBe(false);
+    expect(canRenewInvite(deptManager, access({ managerScope: "department" }))).toBe(false);
+    for (const key of ["partners.invite", "departments.manage", "organisation.manage"] as const) {
+      expect(canRenewInvite(deptManager, access({ overrides: { [key]: true } }))).toBe(false);
+    }
+    expect(canRenewInvite(deptManager, access({ overrides: { "costs.edit": true } }))).toBe(false);
+    expect(canRenewInvite(deptManager, access({ departmentId: "d2" }))).toBe(false);
+    expect(
+      canRenewInvite(deptManager, access({ signoffs: [{ departmentId: "d2", isMain: false }] })),
+    ).toBe(false);
+    expect(
+      canRenewInvite(deptManager, access({ signoffs: [{ departmentId: "d1", isMain: true }] })),
+    ).toBe(false);
+    // Nobody without a manager scope, and never a partner.
+    expect(canRenewInvite(plainOps, invite)).toBe(false);
+    expect(canRenewInvite(external, invite)).toBe(false);
   });
 
   it("every registry key is covered by the ability rule", () => {

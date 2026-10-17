@@ -46,6 +46,7 @@ export function AccountCard({
   lockedReason,
   handover,
   candidates,
+  signersOnly = false,
   currentUserId,
   children,
 }: {
@@ -64,6 +65,8 @@ export function AccountCard({
   lockedReason: string | null;
   handover: HandoverGroup[];
   candidates: HandoverCandidateView[];
+  /** The viewer isn't a super admin: department sign-offs go to its own approvers only. */
+  signersOnly?: boolean;
   currentUserId: string;
   /** Remove…, below the rest (super admins). */
   children?: React.ReactNode;
@@ -242,7 +245,8 @@ export function AccountCard({
           {handover.length > 0 ? (
             <div className="space-y-2">
               <p className="text-sm">
-                Sign-offs that name {firstName} go to someone who can sign for that department:
+                Sign-offs waiting on {firstName} — by name, or in a department nobody else signs off
+                for — go to someone who can sign for that department:
               </p>
               <HandoverFields
                 idPrefix="suspend"
@@ -252,6 +256,7 @@ export function AccountCard({
                 onChange={setChoice}
                 who={firstName}
                 currentUserId={currentUserId}
+                signersOnly={signersOnly}
               />
             </div>
           ) : (

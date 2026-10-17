@@ -2,12 +2,11 @@
 
 import { useCallback, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { FileText } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { decideApproval } from "@/app/actions/approvals";
+import { confirmApprovals } from "@/app/actions/approvals";
 import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { DecideButtons, localToday } from "./decide-buttons";
@@ -25,11 +24,14 @@ export function ReviewQueue({
   approvals,
   confirmations,
   initialReviewId,
+  empty = null,
 }: {
   approvals: QueueRow[];
   confirmations: QueueRow[];
   /** Open the review sheet on this sign-off (from My Work's "Review"). */
   initialReviewId?: string | null;
+  /** Shown when nothing is waiting (the page's empty state); the review sheet stays mounted. */
+  empty?: React.ReactNode;
 }) {
   // Rows decided here leave the list straight away; the refresh confirms it.
   const [done, setDone] = useState<Set<string>>(() => new Set());
@@ -54,6 +56,7 @@ export function ReviewQueue({
 
   return (
     <div className="space-y-8">
+      {approvals.length + confirmations.length === 0 && empty}
       {visibleApprovals.length > 0 && (
         <section className="space-y-3" aria-labelledby="queue-artwork">
           <h2 id="queue-artwork" className="text-sm font-semibold">
@@ -232,10 +235,9 @@ function ConfirmationSection({
 }) {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [date, setDate] = useState(() => localToday());
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [progress, setProgress] = useState<{ total: number } | null>(null);
   const [failures, setFailures] = useState<BulkResult[]>([]);
   const [pending, start] = useTransition();
-  const router = useRouter();
   const chosen = rows.filter((r) => selected.has(r.instanceId));
   const steps = [...new Set(chosen.map((r) => r.stepName))];
   const allSelected = rows.length > 0 && chosen.length === rows.length;
@@ -253,25 +255,32 @@ function ConfirmationSection({
     const list = chosen;
     setFailures([]);
     start(async () => {
-      const results: BulkResult[] = [];
-      setProgress({ done: 0, total: list.length });
-      for (const [i, row] of list.entries()) {
-        if (row.requiresPhoto) {
-          results.push({ ref: row.ref, ok: false, needsPhoto: true });
+      // Steps that need a photo are confirmed one by one, with the photo.
+      const results: BulkResult[] = list
+        .filter((r) => r.requiresPhoto)
+        .map((r) => ({ ref: r.ref, ok: false, needsPhoto: true }));
+      const toSend = list.filter((r) => !r.requiresPhoto);
+      if (toSend.length > 0) {
+        setProgress({ total: toSend.length });
+        // One request for all of them: the server confirms each and refreshes the page once.
+        const res = await confirmApprovals({
+          rows: toSend.map((r) => ({
+            instanceId: r.instanceId,
+            expectedLockedVersionId: r.expectedLockedVersionId,
+          })),
+          confirmedDate: date,
+        });
+        if (!res.ok) {
+          for (const r of toSend) results.push({ ref: r.ref, ok: false, error: res.error });
         } else {
-          const res = await decideApproval({
-            instanceId: row.instanceId,
-            decision: "confirm",
-            confirmedDate: date,
-            expectedStatus: "pending",
-            expectedLockedVersionId: row.expectedLockedVersionId,
-          });
-          results.push(
-            res.ok ? { ref: row.ref, ok: true } : { ref: row.ref, ok: false, error: res.error },
-          );
-          if (res.ok) onConfirmed(row.instanceId);
+          for (const out of res.data!.results) {
+            const row = toSend.find((r) => r.instanceId === out.instanceId)!;
+            results.push(
+              out.ok ? { ref: row.ref, ok: true } : { ref: row.ref, ok: false, error: out.error },
+            );
+            if (out.ok) onConfirmed(row.instanceId);
+          }
         }
-        setProgress({ done: i + 1, total: list.length });
       }
       setProgress(null);
       setSelected(new Set());
@@ -280,7 +289,6 @@ function ConfirmationSection({
       if (failed.length === 0) toast.success(summary);
       else toast.warning(summary);
       setFailures(failed);
-      router.refresh();
     });
   }
 
@@ -392,7 +400,7 @@ function ConfirmationSection({
           </div>
           <Button disabled={pending || !date} onClick={confirmChosen}>
             {progress
-              ? `Confirming ${progress.done} of ${progress.total}…`
+              ? `Confirming ${progress.total}…`
               : `Confirm ${chosen.length}${steps.length === 1 ? ` as ${steps[0]}` : ""}`}
           </Button>
           <Button variant="ghost" disabled={pending} onClick={() => setSelected(new Set())}>

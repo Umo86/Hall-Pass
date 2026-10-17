@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { memberships, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
+import { brandName } from "@/lib/config";
 import { DEV_COOKIE, demoEmailAllowed, devAuthEnabled, getSession } from "@/lib/auth/actor";
 import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
 import { supabaseUrl } from "@/lib/auth/supabase-config";
@@ -56,7 +57,7 @@ export async function signInWithPassword(input: unknown): Promise<AuthResult> {
     await supabase.auth.signOut();
     return {
       ok: false,
-      error: "This account doesn't have access to Hall Pass — ask your admin for an invitation.",
+      error: `This account doesn't have access to ${brandName} — ask your contact there for an invitation.`,
     };
   }
   if (signedIn.user) await auditSignIn(signedIn.user, "password");
@@ -173,12 +174,15 @@ export async function completeAccount(input: unknown): Promise<AuthResult> {
   if (!user?.email) {
     return {
       ok: false,
-      error: "This link has expired — ask your admin to send the invitation again",
+      error: "This link has expired — ask the person who invited you to send it again",
     };
   }
   if (!(await emailIsInvited(user.email))) {
     await supabase.auth.signOut();
-    return { ok: false, error: "This invitation has been withdrawn — ask your admin" };
+    return {
+      ok: false,
+      error: "This invitation has been withdrawn — ask the person who invited you",
+    };
   }
   const { error } = await supabase.auth.updateUser({
     password: parsed.data.password,
@@ -202,7 +206,11 @@ export async function completeAccount(input: unknown): Promise<AuthResult> {
   });
   // Loading the session applies their invitation (membership or partner access).
   const session = await getSession();
-  if (!session) return { ok: false, error: "Your invitation couldn't be found — ask your admin" };
+  if (!session)
+    return {
+      ok: false,
+      error: "Your invitation couldn't be found — ask the person who invited you",
+    };
   redirect(session.actor.kind === "staff" ? STAFF_HOME : PORTAL_HOME);
 }
 

@@ -32,7 +32,9 @@ import {
 import {
   canManagePerson,
   canRemovePerson,
+  canRenewInvite,
   canSuspendPerson,
+  isSuperAdmin,
   parseFeatures,
   personChangeRefusal,
   signoffPaused,
@@ -73,7 +75,7 @@ import {
   type AbilityChoices,
   type Signoff,
 } from "./rules";
-import { externalAccountLabel } from "./external";
+import { externalAccountLabel, liveGrantSql, livePartnerGrantsFor } from "./external";
 import {
   canWorkOwnItem,
   handoverGroups,
@@ -104,6 +106,24 @@ export class UserError extends Error {
  * the messages people receive about hand-overs.
  */
 export type Ctx = { organisationId: string; actorUserId: string; actorName?: string };
+
+/**
+ * Nobody signed in: the daily job (an access end date passing) handing
+ * sign-offs back. Audited as the cron or the system, with no actor.
+ */
+export type SystemCtx = {
+  organisationId: string;
+  actorUserId: null;
+  actorName?: undefined;
+  actorType: "cron" | "system";
+};
+
+/** The audit actor for a person or the system. */
+function auditActor(ctx: Ctx | SystemCtx) {
+  return ctx.actorUserId === null
+    ? { actorUserId: null, actorType: ctx.actorType }
+    : { actorUserId: ctx.actorUserId, actorType: "user" as const };
+}
 
 /** What the Add person form and the person page both send. */
 export type PersonInput = {
@@ -206,10 +226,14 @@ function stable(value: unknown): string {
 
 /**
  * Lock the organisation's super admins and say whether someone other than
- * `exceptUserId` still has access — so two super admins can't demote,
- * suspend or remove each other at the same moment and leave nobody.
+ * `exceptUserId` has lasting access: not suspended and no end date. Every
+ * change that suspends, removes, demotes or puts an end date on a super
+ * admin needs one, so the organisation can never run out of super admins
+ * later — "has access right now" isn't enough, as two super admins could
+ * give each other end dates and nobody would be left once both passed.
+ * The lock stops two such changes at the same moment leaving nobody.
  */
-async function anotherActiveSuperAdmin(
+async function anotherLastingSuperAdmin(
   tx: Tx,
   organisationId: string,
   exceptUserId: string,
@@ -223,10 +247,25 @@ async function anotherActiveSuperAdmin(
     .from(memberships)
     .where(and(eq(memberships.organisationId, organisationId), eq(memberships.role, "admin")))
     .for("update");
-  return rows.some((r) => r.userId !== exceptUserId && accessLive(r));
+  return rows.some(
+    (r) => r.userId !== exceptUserId && r.suspendedAt == null && r.accessEndsAt == null,
+  );
 }
 
-const LAST_ADMIN = "There must always be at least one super admin with access";
+const LAST_ADMIN =
+  "There must always be a super admin whose access doesn't end — give another super admin access with no end date first";
+
+/**
+ * Take the organisation's people lock for the rest of the transaction, so
+ * changes that hand over sign-offs (suspend, remove, stop signing, end
+ * dates, edits) run one after another: two at once could each pick the
+ * other person as the one taking over, and both would end up suspended
+ * holding each other's sign-offs. Callers outside this file that end in
+ * stopSigningTx (Users → Departments) take it before changing anything.
+ */
+export async function lockPeople(tx: Tx, organisationId: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`people:${organisationId}`}))`);
+}
 
 /**
  * The department chosen in the form: an existing one of this organisation,
@@ -368,6 +407,56 @@ async function otherMain(tx: Tx, organisationId: string, departmentId: string, e
 }
 
 /**
+ * One main approver per department (a unique index): before someone becomes
+ * main, whoever is main now stops being it — with an audit row naming them,
+ * so their own access history shows it, in the same transaction. `keep`
+ * picks out the row becoming main (left alone). Used by the person page,
+ * invitations and Users → Departments.
+ */
+export async function clearOtherMainsTx(
+  tx: Tx,
+  opts: {
+    organisationId: string;
+    actorUserId: string;
+    departmentId: string;
+    keep: SQL;
+    newMainName: string;
+  },
+): Promise<number> {
+  const demoted = await tx
+    .update(approvers)
+    .set({ isMain: false })
+    .where(
+      and(
+        eq(approvers.organisationId, opts.organisationId),
+        eq(approvers.departmentId, opts.departmentId),
+        eq(approvers.isMain, true),
+        opts.keep,
+      ),
+    )
+    .returning();
+  if (demoted.length === 0) return 0;
+  const dept = await tx.query.departments.findFirst({
+    where: eq(departments.id, opts.departmentId),
+  });
+  for (const row of demoted) {
+    await writeAudit(tx, {
+      organisationId: opts.organisationId,
+      actorUserId: opts.actorUserId,
+      entityType: "approver",
+      entityId: row.id,
+      action: "settings_change",
+      before: { isMain: true, userId: row.userId, email: row.email },
+      after: { isMain: false, userId: row.userId, email: row.email, newMain: opts.newMainName },
+      summary: `${row.fullName || row.email} is no longer the main approver for ${dept?.name ?? "the department"} — ${opts.newMainName} is`,
+      subjectUserId: row.userId,
+      subjectEmail: row.email,
+    });
+  }
+  return demoted.length;
+}
+
+/**
  * Make the person an approver for exactly these departments. New ones must
  * be live departments that sign off; ones they already have are kept even
  * if since archived. One main approver per department. Someone only
@@ -425,16 +514,13 @@ export async function setSignoffs(
   // One main approver per department (a unique index): clear the others
   // before this person becomes main.
   for (const s of unique.filter((x) => x.isMain)) {
-    await tx
-      .update(approvers)
-      .set({ isMain: false })
-      .where(
-        and(
-          eq(approvers.organisationId, ctx.organisationId),
-          eq(approvers.departmentId, s.departmentId),
-          ne(approvers.email, person.email),
-        ),
-      );
+    await clearOtherMainsTx(tx, {
+      organisationId: ctx.organisationId,
+      actorUserId: ctx.actorUserId,
+      departmentId: s.departmentId,
+      keep: ne(approvers.email, person.email),
+      newMainName: person.fullName || person.email,
+    });
   }
   const where = personRows(ctx.organisationId, person);
   if (changes.remove.length > 0) {
@@ -502,6 +588,27 @@ async function openInviteFor(db: Db | Tx, organisationId: string, email: string)
  * silently — its page has Resend).
  */
 async function assertEmailFree(tx: Tx, ctx: Ctx, email: string) {
+  await assertNoOtherAccess(tx, ctx, email);
+  const open = await openInviteFor(tx, ctx.organisationId, email);
+  if (open) {
+    const who = open.fullName || email;
+    throw new UserError(
+      open.expired
+        ? `${who}'s invitation has expired — open their page to send a new one`
+        : `${who} is already invited — open their page to send it again`,
+      { existingInviteId: open.id },
+    );
+  }
+}
+
+/**
+ * Refuse an email whose owner already has other access: on the team here
+ * or in another organisation, or live partner access here or elsewhere.
+ * Checked when inviting and again when an invitation is sent again (it may
+ * have expired while they became a partner).
+ */
+async function assertNoOtherAccess(tx: Tx, ctx: Ctx, email: string) {
+  email = email.trim().toLowerCase();
   const user = await tx.query.users.findFirst({ where: eq(users.email, email) });
   if (user) {
     const member = await tx.query.memberships.findFirst({ where: eq(memberships.userId, user.id) });
@@ -516,32 +623,48 @@ async function assertEmailFree(tx: Tx, ctx: Ctx, email: string) {
       );
     }
   }
-  const grants = await tx
-    .select()
+  // Only live partner access blocks (expired and revoked grants don't): here,
+  // revoke it first; in another organisation, a neutral refusal.
+  let [here] = await livePartnerGrantsFor(tx, ctx.organisationId, email);
+  if (!here && user) {
+    // An account that claimed access here under another address.
+    [here] = await tx
+      .select()
+      .from(externalGrants)
+      .where(
+        and(
+          eq(externalGrants.organisationId, ctx.organisationId),
+          eq(externalGrants.userId, user.id),
+          liveGrantSql(),
+        ),
+      )
+      .limit(1);
+  }
+  if (here) {
+    const label = await externalAccountLabel(tx, ctx.organisationId, here);
+    throw new UserError(
+      `This email has portal access here (${label}) — revoke it in Users → External first, then invite them to the team`,
+    );
+  }
+  const [elsewhere] = await tx
+    .select({ id: externalGrants.id })
     .from(externalGrants)
     .where(
       and(
         user
-          ? or(eq(externalGrants.userId, user.id), eq(externalGrants.invitedEmail, email))
-          : eq(externalGrants.invitedEmail, email),
-        isNull(externalGrants.revokedAt),
+          ? or(
+              eq(externalGrants.userId, user.id),
+              sql`lower(${externalGrants.invitedEmail}) = ${email}`,
+            )
+          : sql`lower(${externalGrants.invitedEmail}) = ${email}`,
+        ne(externalGrants.organisationId, ctx.organisationId),
+        liveGrantSql(),
       ),
     )
     .limit(1);
-  if (grants.length > 0) {
-    const label = grants[0] ? await externalAccountLabel(tx, ctx.organisationId, grants[0]) : null;
+  if (elsewhere) {
     throw new UserError(
-      `This email is used by an external portal account${label ? ` (${label})` : ""}. Use a different email.`,
-    );
-  }
-  const open = await openInviteFor(tx, ctx.organisationId, email);
-  if (open) {
-    const who = open.fullName || email;
-    throw new UserError(
-      open.expired
-        ? `${who}'s invitation has expired — open their page to send a new one`
-        : `${who} is already invited — open their page to send it again`,
-      { existingInviteId: open.id },
+      "This email belongs to a portal account in another organisation. Use a different email.",
     );
   }
 }
@@ -641,6 +764,7 @@ export async function updateMemberTx(
   ctx: Ctx,
   input: PersonInput & { userId: string; signoffPaused: boolean },
 ): Promise<{ name: string; changed: string[]; signoffsMoved: number; signoffsKept: number }> {
+  await lockPeople(tx, ctx.organisationId);
   const actor = await loadActor(tx, ctx);
   const membership = await tx.query.memberships.findFirst({
     where: and(
@@ -706,11 +830,15 @@ export async function updateMemberTx(
   );
   if (input.role === "viewer" && input.signoffs.length > 0) throw new UserError(VIEWER_SIGNOFF);
   const losesAdmin = membership.role === "admin" && input.role !== "admin";
+  // A new or moved end date on a super admin (an unchanged one isn't re-checked).
   const adminGetsEnd =
-    membership.role === "admin" && input.role === "admin" && accessEndsAt != null;
+    membership.role === "admin" &&
+    input.role === "admin" &&
+    accessEndsAt != null &&
+    accessEndsAt.getTime() !== membership.accessEndsAt?.getTime();
   if (
     (losesAdmin || adminGetsEnd) &&
-    !(await anotherActiveSuperAdmin(tx, ctx.organisationId, user.id))
+    !(await anotherLastingSuperAdmin(tx, ctx.organisationId, user.id))
   ) {
     throw new UserError(LAST_ADMIN);
   }
@@ -739,15 +867,13 @@ export async function updateMemberTx(
       accessEndsAt,
     })
     .where(eq(memberships.id, membership.id));
-  // Main approver routing skips people who can't sign: re-sync when that changes.
   const wasPaused = signoffPaused(membership.permissionOverrides as PermissionOverrides);
   const pausedChanged = wasPaused !== input.signoffPaused;
   const roleSignChange = (membership.role === "viewer") !== (input.role === "viewer");
-  if (signoff.changed || pausedChanged || roleSignChange) {
-    await syncDepartmentSteps(tx, ctx.organisationId);
-  }
 
-  // Sign-offs naming them that they no longer sign for: back to the department.
+  // Sign-offs naming them that they no longer sign for: back to the department
+  // (before the re-sync below, whose routing would otherwise move them first,
+  // unannounced).
   const who = fullName || user.fullName || user.email;
   const stopsSigning =
     (input.role === "viewer" && membership.role !== "viewer") ||
@@ -765,6 +891,10 @@ export async function updateMemberTx(
             : "no longer signs off for the department",
         })
       : { moved: 0, kept: 0 };
+  // Main approver routing skips people who can't sign: re-sync when that changes.
+  if (signoff.changed || pausedChanged || roleSignChange) {
+    await syncDepartmentSteps(tx, ctx.organisationId);
+  }
 
   const beforeRow = {
     fullName: user.fullName,
@@ -993,17 +1123,44 @@ export async function cancelInviteTx(tx: Tx, ctx: Ctx, inviteId: string): Promis
   return invite.fullName || invite.invitedEmail;
 }
 
+/** What an open invitation will give whoever accepts it, as the people rules see it. */
+async function inviteAccess(tx: Tx, invite: OpenInvite): Promise<PersonAccess> {
+  return {
+    role: invite.role,
+    departmentId: invite.departmentId,
+    features: invite.role === "admin" ? null : normaliseFeatures(invite.features),
+    overrides: invite.permissionOverrides as PermissionOverrides,
+    managerScope: invite.managerScope,
+    signoffs: await currentSignoffs(tx, invite.organisationId, {
+      userId: null,
+      email: invite.invitedEmail,
+    }),
+    accessEndsAt: invite.accessEndsAt,
+  };
+}
+
+export const RENEW_NOT_YOURS =
+  "Only a super admin can send this invitation again — it gives access you can't give";
+
 /**
  * A fresh link for an open (or expired) invitation, valid for another
  * STAFF_INVITE_DAYS. The earlier link stops working: links are stored only
- * as hashes, so the old one can't be shown again.
+ * as hashes, so the old one can't be shown again. A new link is a working
+ * way in as that person, so a manager may only renew an invitation they
+ * could have made themselves (personChangeRefusal as if adding them now);
+ * and nobody renews one for an email that has since got other access (a
+ * partner account, or a team elsewhere).
  */
 export async function renewInviteLinkTx(
   tx: Tx,
   ctx: Ctx,
   inviteId: string,
 ): Promise<{ invite: OpenInvite; inviteUrl: string; expiresAt: Date }> {
-  const { invite } = await managedInvite(tx, ctx, inviteId);
+  const { actor, invite } = await managedInvite(tx, ctx, inviteId);
+  if (!isSuperAdmin(actor) && !canRenewInvite(actor, await inviteAccess(tx, invite))) {
+    throw new UserError(RENEW_NOT_YOURS);
+  }
+  await assertNoOtherAccess(tx, ctx, invite.invitedEmail);
   const token = generateInviteToken();
   const expiresAt = new Date(Date.now() + STAFF_INVITE_DAYS * DAY);
   await tx
@@ -1046,6 +1203,8 @@ export async function renewGrantLinkTx(tx: Tx, ctx: Ctx, grantId: string): Promi
     entityId: grant.id,
     action: "invite",
     summary: `New invitation link for ${grant.invitedEmail}`,
+    subjectUserId: grant.userId,
+    subjectEmail: grant.invitedEmail,
   });
   return `${appUrl()}/invite/${token}`;
 }
@@ -1099,30 +1258,12 @@ export async function signoffsWaitingOn(db: Db | Tx, organisationId: string, use
   return [...items, ...stands].sort((a, b) => a.ref.localeCompare(b.ref));
 }
 
-/**
- * Steps in an item's current round that name this person and can still
- * reach them: waiting on them now, not started yet, sent back for changes,
- * or decided but redone after new artwork (those are copied with the same
- * person). Optionally only some departments' steps. Deleted items and older
- * rounds are left alone.
- */
-export async function signoffsNaming(
+/** Steps in each item's (and stand's) current round matching `where`, with their pages. */
+async function currentRoundSteps(
   db: Db | Tx,
   organisationId: string,
-  userId: string,
-  opts: { departmentIds?: readonly string[] | null } = {},
+  where: SQL,
 ): Promise<(HandoverStep & { editionId: string })[]> {
-  if (opts.departmentIds && opts.departmentIds.length === 0) return [];
-  const live = or(
-    inArray(approvalInstances.status, ["pending", "waiting", "changes_requested"]),
-    and(
-      inArray(approvalInstances.status, ["approved", "approved_with_conditions", "confirmed"]),
-      eq(approvalInstances.invalidateOnNewVersionSnapshot, true),
-    ),
-  )!;
-  const dept: SQL | undefined = opts.departmentIds
-    ? inArray(approvalInstances.assignedDepartmentId, [...opts.departmentIds])
-    : undefined;
   const step = {
     id: approvalInstances.id,
     entityType: approvalInstances.entityType,
@@ -1150,9 +1291,7 @@ export async function signoffsNaming(
       .where(
         and(
           eq(approvalInstances.entityType, "signage_item"),
-          eq(approvalInstances.assignedUserId, userId),
-          live,
-          dept,
+          where,
           isNull(signageItems.deletedAt),
           eq(events.organisationId, organisationId),
         ),
@@ -1172,9 +1311,7 @@ export async function signoffsNaming(
       .where(
         and(
           eq(approvalInstances.entityType, "stand_submission"),
-          eq(approvalInstances.assignedUserId, userId),
-          live,
-          dept,
+          where,
           eq(events.organisationId, organisationId),
         ),
       ),
@@ -1205,6 +1342,73 @@ export async function signoffsNaming(
       href: `/${r.code}/stands/${encodeURIComponent(r.ref)}`,
     })),
   ].sort((a, b) => a.ref.localeCompare(b.ref));
+}
+
+/**
+ * Steps in an item's current round that name this person and can still
+ * reach them: waiting on them now, not started yet, sent back for changes,
+ * or decided but redone after new artwork (those are copied with the same
+ * person). Optionally only some departments' steps. Deleted items and older
+ * rounds are left alone.
+ */
+export async function signoffsNaming(
+  db: Db | Tx,
+  organisationId: string,
+  userId: string,
+  opts: { departmentIds?: readonly string[] | null } = {},
+): Promise<(HandoverStep & { editionId: string })[]> {
+  if (opts.departmentIds && opts.departmentIds.length === 0) return [];
+  const live = or(
+    inArray(approvalInstances.status, ["pending", "waiting", "changes_requested"]),
+    and(
+      inArray(approvalInstances.status, ["approved", "approved_with_conditions", "confirmed"]),
+      eq(approvalInstances.invalidateOnNewVersionSnapshot, true),
+    ),
+  )!;
+  const dept: SQL | undefined = opts.departmentIds
+    ? inArray(approvalInstances.assignedDepartmentId, [...opts.departmentIds])
+    : undefined;
+  return currentRoundSteps(
+    db,
+    organisationId,
+    and(eq(approvalInstances.assignedUserId, userId), live, dept)!,
+  );
+}
+
+/**
+ * Open sign-offs waiting on a whole department (naming nobody) where this
+ * person is the last one who can sign for it. Once they can't sign, nobody
+ * can decide these, so suspending or removing them hands these over with
+ * their own (a person must be picked), and the daily job's "access ended"
+ * notice lists them. `signers` is departmentSigners without them, when the
+ * caller already has it.
+ */
+export async function strandedDepartmentSignoffs(
+  db: Db | Tx,
+  organisationId: string,
+  userId: string,
+  signers?: ReadonlyMap<string, readonly HandoverSigner[]>,
+): Promise<(HandoverStep & { editionId: string })[]> {
+  const mine = await db
+    .select({ departmentId: approvers.departmentId })
+    .from(approvers)
+    .where(and(eq(approvers.organisationId, organisationId), eq(approvers.userId, userId)));
+  if (mine.length === 0) return [];
+  const others = signers ?? (await departmentSigners(db, organisationId, userId)).signers;
+  const lonely = [...new Set(mine.map((m) => m.departmentId))].filter(
+    (d) => (others.get(d)?.length ?? 0) === 0,
+  );
+  if (lonely.length === 0) return [];
+  const steps = await currentRoundSteps(
+    db,
+    organisationId,
+    and(
+      isNull(approvalInstances.assignedUserId),
+      inArray(approvalInstances.assignedDepartmentId, lonely),
+      inArray(approvalInstances.status, ["pending", "waiting", "changes_requested"]),
+    )!,
+  );
+  return steps.map((st) => ({ ...st, departmentWide: true }));
 }
 
 /**
@@ -1315,22 +1519,39 @@ export async function handoverCandidates(
 }
 
 /** What the Suspend and Remove dialogs offer for someone's sign-offs. */
-export type HandoverPlan = { groups: HandoverGroup[]; candidates: HandoverCandidate[] };
+export type HandoverPlan = {
+  groups: HandoverGroup[];
+  candidates: HandoverCandidate[];
+  /**
+   * The person looking isn't a super admin: a department's sign-offs go
+   * only to its own approvers or back to it (resolveHandover's limitedFor),
+   * so the dialog offers nobody else for them.
+   */
+  signersOnly?: boolean;
+};
 
-/** The sign-offs naming someone, grouped by department, with who could take each group. */
+/**
+ * The sign-offs naming someone (and those waiting on a department only
+ * they can sign for), grouped by department, with who could take each
+ * group. `viewer` is who will make the change, for what they may pick.
+ */
 export async function handoverPlan(
   db: Db | Tx,
   organisationId: string,
   userId: string,
+  opts: { viewer?: StaffActor | null } = {},
 ): Promise<HandoverPlan> {
   const [steps, { names, signers }, candidates] = await Promise.all([
     signoffsNaming(db, organisationId, userId),
     departmentSigners(db, organisationId, userId),
     handoverCandidates(db, organisationId, userId),
   ]);
+  const stranded = await strandedDepartmentSignoffs(db, organisationId, userId, signers);
+  const limitedFor = opts.viewer && !isSuperAdmin(opts.viewer) ? opts.viewer.userId : null;
   return {
-    groups: handoverGroups(steps, { departmentNames: names, signers }),
-    candidates,
+    groups: handoverGroups([...steps, ...stranded], { departmentNames: names, signers }),
+    candidates: limitedFor ? candidates.filter((c) => c.userId !== limitedFor) : candidates,
+    signersOnly: Boolean(limitedFor),
   };
 }
 
@@ -1379,6 +1600,10 @@ export type WorkCandidate = {
   role: StaffRole;
   features: Feature[] | null;
   overrides: PermissionOverrides;
+  /** For the person picker (grouped by department, "Name — Job title"). */
+  jobTitle: string | null;
+  departmentId: string | null;
+  departmentName: string | null;
 };
 
 export async function workCandidates(
@@ -1394,9 +1619,13 @@ export async function workCandidates(
       role: memberships.role,
       features: memberships.features,
       overrides: memberships.permissionOverrides,
+      jobTitle: memberships.jobTitle,
+      departmentId: memberships.departmentId,
+      departmentName: departments.name,
     })
     .from(memberships)
     .innerJoin(users, eq(users.id, memberships.userId))
+    .leftJoin(departments, eq(departments.id, memberships.departmentId))
     .where(
       and(
         eq(memberships.organisationId, organisationId),
@@ -1412,6 +1641,9 @@ export async function workCandidates(
     role: r.role,
     features: r.role === "admin" ? null : parseFeatures(r.features),
     overrides: (r.overrides ?? {}) as PermissionOverrides,
+    jobTitle: r.jobTitle?.trim() || null,
+    departmentId: r.departmentId,
+    departmentName: r.departmentName,
   }));
 }
 
@@ -1430,6 +1662,8 @@ export type RemovalImpact = {
   /** Who could be handed the sign-offs (kept for older callers). */
   candidates: HandoverCandidate[];
   workCandidates: WorkCandidate[];
+  /** Live partner access they hold here, revoked when they are removed. */
+  partnerAccess: string[];
 };
 
 /** What removing (or suspending) someone would change, for the confirm dialogs. */
@@ -1437,6 +1671,7 @@ export async function getRemovalImpact(
   db: Db | Tx,
   organisationId: string,
   userId: string,
+  opts: { viewer?: StaffActor | null } = {},
 ): Promise<RemovalImpact | null> {
   const [row] = await db
     .select({ user: users })
@@ -1457,7 +1692,7 @@ export async function getRemovalImpact(
         ),
       ),
     workableOwnedItems(db, organisationId, userId),
-    handoverPlan(db, organisationId, userId),
+    handoverPlan(db, organisationId, userId, opts),
     stepsNaming(db, organisationId, userId),
     db
       .select({ departmentId: approvers.departmentId, isMain: approvers.isMain, dept: departments })
@@ -1467,6 +1702,13 @@ export async function getRemovalImpact(
     workCandidates(db, organisationId, userId),
     departmentSigners(db, organisationId, userId),
   ]);
+  const grants = await livePartnerAccessOf(db, organisationId, {
+    userId,
+    email: row.user.email,
+  });
+  const partnerAccess = await Promise.all(
+    grants.map((g) => externalAccountLabel(db, organisationId, g)),
+  );
   const live = mine.filter((m) => !m.dept.isArchived && m.dept.signsOff);
   const steps = plan.groups.flatMap((g) => g.steps);
   const byKind: Partial<Record<ItemKind, number>> = {};
@@ -1491,36 +1733,66 @@ export async function getRemovalImpact(
     namedSteps: named.map((n) => `“${n.step}” (${n.workflow})`),
     candidates: plan.candidates,
     workCandidates: people,
+    partnerAccess,
   };
 }
 
 /**
  * Point the item plans (each item's chosen sign-off people for the next
- * round) that name this person back at the department. `stepIds` limits it
- * to some departments' steps; null = all of them.
+ * round) that name this person back at the department, with an audit row
+ * per item changed so its history shows the plan moving. `stepIds` limits
+ * it to some departments' steps; null = all of them.
  */
 async function clearPlanEntries(
   tx: Tx,
-  organisationId: string,
-  userId: string,
-  stepIds: readonly string[] | null,
-): Promise<void> {
-  if (stepIds && stepIds.length === 0) return;
-  const only = stepIds
-    ? sql`AND s->>'stepId' = ANY(string_to_array(${stepIds.join(",")}, ','))`
-    : sql``;
-  await tx.execute(sql`
-    UPDATE signage_items SET signoffs = (
-      SELECT jsonb_agg(
-        CASE WHEN s->>'userId' = ${userId} ${only} THEN s || '{"userId": null}'::jsonb ELSE s END
-      ) FROM jsonb_array_elements(signoffs) AS s
+  ctx: Ctx | SystemCtx,
+  opts: { userId: string; who: string; why: string; stepIds: readonly string[] | null },
+): Promise<number> {
+  const { userId, stepIds } = opts;
+  if (stepIds && stepIds.length === 0) return 0;
+  const orgEditions = tx
+    .select({ id: editions.id })
+    .from(editions)
+    .innerJoin(events, eq(events.id, editions.eventId))
+    .where(eq(events.organisationId, ctx.organisationId));
+  const rows = await tx
+    .select({
+      id: signageItems.id,
+      ref: signageItems.ref,
+      editionId: signageItems.editionId,
+      signoffs: signageItems.signoffs,
+    })
+    .from(signageItems)
+    .where(
+      and(
+        sql`${signageItems.signoffs} @> ${JSON.stringify([{ userId }])}::jsonb`,
+        inArray(signageItems.editionId, orgEditions),
+      ),
     )
-    WHERE signoffs @> ${JSON.stringify([{ userId }])}::jsonb
-      AND edition_id IN (
-        SELECT ed.id FROM editions ed JOIN events ev ON ev.id = ed.event_id
-        WHERE ev.organisation_id = ${organisationId}
-      )
-  `);
+    .for("update");
+  let changed = 0;
+  for (const r of rows) {
+    const before = r.signoffs ?? [];
+    const after = before.map((p) =>
+      p.userId === userId && (!stepIds || stepIds.includes(p.stepId)) ? { ...p, userId: null } : p,
+    );
+    if (after.every((p, i) => p.userId === before[i].userId)) continue;
+    await tx.update(signageItems).set({ signoffs: after }).where(eq(signageItems.id, r.id));
+    await writeAudit(tx, {
+      organisationId: ctx.organisationId,
+      editionId: r.editionId,
+      ...auditActor(ctx),
+      entityType: "signage_item",
+      entityId: r.id,
+      action: "update",
+      before: { signoffs: before },
+      after: { signoffs: after },
+      summary: `${r.ref}: the sign-off plan no longer names ${opts.who}, who ${opts.why} — that step goes to the department`,
+      subjectUserId: userId,
+    });
+    changed++;
+  }
+  return changed;
 }
 
 /** The workflow steps that belong to these departments (for clearing plans). */
@@ -1553,7 +1825,7 @@ async function nameOf(tx: Tx, userId: string): Promise<string> {
  */
 async function moveSignoffs(
   tx: Tx,
-  ctx: Ctx,
+  ctx: Ctx | SystemCtx,
   opts: {
     userId: string;
     who: string;
@@ -1614,11 +1886,13 @@ async function moveSignoffs(
       await writeAudit(tx, {
         organisationId: orgId,
         editionId: opts.editionOf.get(first.id) ?? null,
-        actorUserId: ctx.actorUserId,
+        ...auditActor(ctx),
         entityType: first.entityType,
         entityId,
         action: "delegate",
-        before: { assignedUserId: opts.userId },
+        before: first.departmentWide
+          ? { assignedUserId: null, assignedDepartmentId: first.departmentId }
+          : { assignedUserId: opts.userId },
         after: {
           steps: list.map((s) => ({ step: s.stepName, status: s.status })),
           fromUserId: opts.userId,
@@ -1662,15 +1936,18 @@ async function moveSignoffs(
 
 /**
  * Hand over every sign-off naming someone who is being suspended or
- * removed: each department's to the person picked for it (by default its
- * main approver, else another approver who can sign), or back to the
- * department. Refused when a group has nobody to go to. Their item plans
- * stop naming them too.
+ * removed — and those waiting on a department only they can sign for — each
+ * department's to the person picked for it (by default its main approver,
+ * else another approver who can sign), or back to the department. Refused
+ * when a group has nobody to go to. A manager who isn't a super admin may
+ * only hand a department's sign-offs to its own approvers or back to it
+ * (resolveHandover's limitedFor). Their item plans stop naming them too.
  */
 async function handOverSignoffsTx(
   tx: Tx,
   ctx: Ctx,
   opts: {
+    actor: StaffActor;
     userId: string;
     who: string;
     why: string;
@@ -1679,13 +1956,14 @@ async function handOverSignoffsTx(
   },
 ): Promise<number> {
   const orgId = ctx.organisationId;
-  const steps = await signoffsNaming(tx, orgId, opts.userId);
-  await clearPlanEntries(tx, orgId, opts.userId, null);
-  if (steps.length === 0) return 0;
+  const named = await signoffsNaming(tx, orgId, opts.userId);
+  await clearPlanEntries(tx, ctx, { ...opts, stepIds: null });
   const [{ names, signers }, candidates] = await Promise.all([
     departmentSigners(tx, orgId, opts.userId),
     handoverCandidates(tx, orgId, opts.userId),
   ]);
+  const steps = [...named, ...(await strandedDepartmentSignoffs(tx, orgId, opts.userId, signers))];
+  if (steps.length === 0) return 0;
   const groups = handoverGroups(steps, { departmentNames: names, signers });
   const ok = new Set(candidates.map((c) => c.userId));
   const res = resolveHandover(groups, opts.choice, {
@@ -1693,13 +1971,14 @@ async function handOverSignoffsTx(
     who: opts.who,
     canReceive: (id) => ok.has(id),
     fallback: opts.fallback,
+    limitedFor: isSuperAdmin(opts.actor) ? null : opts.actor.userId,
   });
   if (!res.ok) throw new UserError(res.error);
   return moveSignoffs(tx, ctx, {
     ...opts,
     groups,
     targets: res.targets,
-    editionOf: new Map(steps.map((s) => [s.id, s.editionId])),
+    editionOf: new Map(steps.map((st) => [st.id, st.editionId])),
   });
 }
 
@@ -1709,18 +1988,20 @@ async function handOverSignoffsTx(
  * departments go back to the department when someone else there can sign;
  * the rest stay with them (named, so they can still be handed on from the
  * item). Their item plans for those departments name nobody. Used by the
- * person page and Users → Departments.
+ * person page, Users → Departments and the daily job when someone's access
+ * ends (with a SystemCtx).
  */
 export async function stopSigningTx(
   tx: Tx,
-  ctx: Ctx,
+  ctx: Ctx | SystemCtx,
   opts: { userId: string; who: string; why: string; departmentIds: string[] | null },
 ): Promise<{ moved: number; kept: number }> {
   const orgId = ctx.organisationId;
+  await lockPeople(tx, orgId);
   const stepIds = opts.departmentIds
     ? await departmentStepIds(tx, orgId, opts.departmentIds)
     : null;
-  await clearPlanEntries(tx, orgId, opts.userId, stepIds);
+  await clearPlanEntries(tx, ctx, { ...opts, stepIds });
   const steps = await signoffsNaming(tx, orgId, opts.userId, {
     departmentIds: opts.departmentIds,
   });
@@ -1747,6 +2028,59 @@ async function loadMember(tx: Tx, ctx: Ctx, userId: string) {
   if (!membership) throw new UserError("This person isn't on the team any more — reload the page");
   const user = await tx.query.users.findFirst({ where: eq(users.id, membership.userId) });
   return { membership, user, who: user?.fullName || user?.email || "This person" };
+}
+
+/** Their live partner access in this organisation (by account or email), for the Remove dialog. */
+async function livePartnerAccessOf(
+  db: Db | Tx,
+  organisationId: string,
+  person: { userId: string; email: string | null },
+) {
+  return db
+    .select()
+    .from(externalGrants)
+    .where(
+      and(
+        eq(externalGrants.organisationId, organisationId),
+        person.email
+          ? or(
+              eq(externalGrants.userId, person.userId),
+              sql`lower(${externalGrants.invitedEmail}) = ${person.email.toLowerCase()}`,
+            )
+          : eq(externalGrants.userId, person.userId),
+        liveGrantSql(),
+      ),
+    );
+}
+
+/** Revoke someone's live partner access in this organisation, one audit row each. */
+async function revokeLivePartnerAccessTx(
+  tx: Tx,
+  ctx: Ctx,
+  person: { userId: string; email: string | null; why: string },
+): Promise<number> {
+  const live = await livePartnerAccessOf(tx, ctx.organisationId, person);
+  const now = new Date();
+  for (const g of live) {
+    await tx
+      .update(externalGrants)
+      .set({ revokedAt: now, updatedAt: now })
+      .where(eq(externalGrants.id, g.id));
+    await writeAudit(tx, {
+      organisationId: ctx.organisationId,
+      editionId: g.editionId,
+      actorUserId: ctx.actorUserId,
+      entityType: "external_grant",
+      entityId: g.id,
+      action: "grant_revoke",
+      before: { revokedAt: null, email: g.invitedEmail, role: g.role },
+      after: { revokedAt: now.toISOString() },
+      summary: `Portal access for ${g.invitedEmail} (${await externalAccountLabel(tx, ctx.organisationId, g)}) revoked ${person.why}`,
+      subjectUserId: g.userId ?? person.userId,
+      subjectEmail: g.invitedEmail,
+    });
+  }
+  return live.length;
 }
 
 /**
@@ -1776,8 +2110,10 @@ export async function removeMemberTx(
   handedOver: number;
   workToName: string;
   itemsToYou: number;
+  partnerAccessRevoked: number;
 }> {
   const orgId = ctx.organisationId;
+  await lockPeople(tx, orgId);
   const actor = await loadActor(tx, ctx);
   const { membership, user: member, who } = await loadMember(tx, ctx, input.userId);
   if (membership.userId === ctx.actorUserId) {
@@ -1788,7 +2124,7 @@ export async function removeMemberTx(
   }
   if (
     membership.role === "admin" &&
-    !(await anotherActiveSuperAdmin(tx, orgId, membership.userId))
+    !(await anotherLastingSuperAdmin(tx, orgId, membership.userId))
   ) {
     throw new UserError(LAST_ADMIN);
   }
@@ -1818,6 +2154,7 @@ export async function removeMemberTx(
   }
 
   const handedOver = await handOverSignoffsTx(tx, ctx, {
+    actor,
     userId: membership.userId,
     who,
     why: "left the team",
@@ -1925,6 +2262,13 @@ export async function removeMemberTx(
       });
     }
   }
+  // Partner access here ends too: without a membership the next page load
+  // would otherwise sign them in to the portal.
+  const grantsRevoked = await revokeLivePartnerAccessTx(tx, ctx, {
+    userId: membership.userId,
+    email: member?.email ?? null,
+    why: `when ${who} was removed from the team`,
+  });
   // They no longer sign off for anyone: each department's step falls back.
   const dropped = await tx
     .delete(approvers)
@@ -1959,6 +2303,7 @@ export async function removeMemberTx(
       itemsMovedTo: workTo,
       itemsMovedToRemover: itemsToYou,
       signoffsHandedOver: handedOver,
+      partnerAccessRevoked: grantsRevoked,
     },
     summary: `Removed ${member?.email ?? "a team member"} from the team`,
     subjectUserId: membership.userId,
@@ -1971,6 +2316,7 @@ export async function removeMemberTx(
     handedOver,
     workToName,
     itemsToYou,
+    partnerAccessRevoked: grantsRevoked,
   };
 }
 
@@ -1992,7 +2338,7 @@ async function suspendRefusal(
   const lastActiveAdmin =
     opts.removesAccess &&
     membership.role === "admin" &&
-    !(await anotherActiveSuperAdmin(tx, ctx.organisationId, membership.userId));
+    !(await anotherLastingSuperAdmin(tx, ctx.organisationId, membership.userId));
   if (lastActiveAdmin) return LAST_ADMIN;
   return null;
 }
@@ -2011,6 +2357,7 @@ export async function suspendMemberTx(
   ctx: Ctx & { actorName: string },
   input: { userId: string; handTo?: HandoverChoice | null; handToUserId?: string | null },
 ): Promise<{ name: string; handedOver: number }> {
+  await lockPeople(tx, ctx.organisationId);
   const actor = await loadActor(tx, ctx);
   const { membership, user, who } = await loadMember(tx, ctx, input.userId);
   refuse(await suspendRefusal(tx, ctx, actor, membership, { removesAccess: true }));
@@ -2022,6 +2369,7 @@ export async function suspendMemberTx(
     );
   }
   const handedOver = await handOverSignoffsTx(tx, ctx, {
+    actor,
     userId: membership.userId,
     who,
     why: "is suspended",
@@ -2119,6 +2467,7 @@ export async function setAccessEndTx(
     return { name: invite.fullName || invite.invitedEmail, endsAt };
   }
   if (!input.userId) throw new UserError("Choose a person");
+  await lockPeople(tx, ctx.organisationId);
   const actor = await loadActor(tx, ctx);
   const { membership, user, who } = await loadMember(tx, ctx, input.userId);
   refuse(await suspendRefusal(tx, ctx, actor, membership, { removesAccess: endsAt != null }));
@@ -2192,9 +2541,8 @@ export async function previewInviteRows(
         db
           .select({ email: externalGrants.invitedEmail, userId: externalGrants.userId })
           .from(externalGrants)
-          .where(
-            and(inArray(externalGrants.invitedEmail, emails), isNull(externalGrants.revokedAt)),
-          ),
+          // Live partner access only, as assertEmailFree: ended and revoked don't block.
+          .where(and(inArray(externalGrants.invitedEmail, emails), liveGrantSql())),
       ])
     : [[], [], []];
   const seen = new Set<string>();

@@ -265,7 +265,9 @@ test.describe("suppliers", () => {
       .click();
     const opsDialog = ops.getByRole("dialog", { name: "Portal access · Big Print Co" });
     await expect(
-      opsDialog.getByText("Only an admin can invite people or take access away."),
+      opsDialog.getByText(
+        "Inviting people or taking access away needs “Invite partners” — ask a super admin.",
+      ),
     ).toBeVisible();
     await expect(opsDialog.getByRole("button", { name: /Invite someone/ })).toHaveCount(0);
     await ops.context().close();

@@ -98,7 +98,9 @@ test.describe("setting up an event", () => {
     await expect(page.getByRole("button", { name: /^Save/ })).toHaveCount(0);
     // Halls are listed, but can't be added here.
     await page.goto(`${baseURL}/BIRM27/halls`);
-    await expect(page.getByText(/Only admins and Operations can add halls\./)).toBeVisible();
+    await expect(
+      page.getByText(/You need “Manage halls and locations” for that — ask a super admin\./),
+    ).toBeVisible();
     await expect(page.getByRole("button", { name: "Add hall" })).toHaveCount(0);
     await ctx.close();
   });

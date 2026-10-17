@@ -11,4 +11,4 @@ export function editionIsReadOnly(status: string): boolean {
 }
 
 export const EDITION_LOCKED_MESSAGE =
-  "This event is archived and read-only — nothing can be changed. An admin can bring it back from Events if follow-up work is needed.";
+  "This event is archived and read-only — nothing can be changed. A super admin can bring it back from Events if follow-up work is needed.";

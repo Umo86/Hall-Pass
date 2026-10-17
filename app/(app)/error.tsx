@@ -19,7 +19,7 @@ export default function PageError({
       <h1 className="text-xl font-semibold tracking-tight">Something went wrong</h1>
       <p className="text-muted-foreground text-sm">
         This page didn&apos;t load properly. It&apos;s usually a brief connection problem — try
-        again, and if it keeps happening let your admin know
+        again, and if it keeps happening let a super admin know
         {error.digest ? ` (reference ${error.digest})` : ""}.
       </p>
       <Button onClick={reset}>Try again</Button>

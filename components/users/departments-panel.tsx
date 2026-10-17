@@ -147,7 +147,7 @@ export function DepartmentsPanel({
         />
       )}
 
-      <div className="grid gap-3 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {live.map((d) => (
           <DepartmentCard
             key={d.id}
@@ -317,7 +317,10 @@ function DepartmentCard({
   }
 
   return (
-    <section className="flex flex-col rounded-lg border" aria-label={`${dept.name} department`}>
+    <section
+      className="flex min-w-0 flex-col rounded-lg border"
+      aria-label={`${dept.name} department`}
+    >
       <header className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b px-4 py-3">
         <div className="min-w-0 flex-1">
           <h3 className="font-semibold">{dept.name}</h3>

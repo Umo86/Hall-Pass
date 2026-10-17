@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarClock, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
@@ -113,7 +113,16 @@ export function AddUserForm({
   const [done, setDone] = useState<(InviteUserResult & { note?: string }) | null>(null);
   const [pending, start] = useTransition();
   const endRef = useRef<HTMLInputElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
+
+  // Ready to type on a computer, also after "Add another". Not on a phone:
+  // focusing there scrolls past "Start from" and can open the keyboard over it.
+  useEffect(() => {
+    if (!done && window.matchMedia("(min-width: 640px)").matches) {
+      nameRef.current?.focus({ preventScroll: true });
+    }
+  }, [done]);
 
   const chosen = useMemo(() => departments.find((d) => d.id === dept) ?? null, [departments, dept]);
   const canSignHere =
@@ -306,7 +315,7 @@ export function AddUserForm({
               maxLength={200}
               aria-invalid={Boolean(errors.fullName)}
               className="h-11 sm:h-9"
-              autoFocus
+              ref={nameRef}
             />
             <FieldError message={errors.fullName} />
           </div>

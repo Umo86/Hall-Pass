@@ -19,8 +19,9 @@ import { TaskBoard } from "@/components/tasks/task-board";
 import { EventFilter } from "@/components/tasks/event-filter";
 import { Page, PageHeader } from "@/components/page-header";
 import { SegmentedLinks } from "@/components/ui/segmented";
-import { countActiveEvents, setupContacts } from "@/lib/queries/setup";
-import { NoEventsYet } from "@/components/setup/no-events-state";
+import { countEvents, setupContacts } from "@/lib/queries/setup";
+import { noEventsStart } from "@/lib/setup-start";
+import { CreateNextEvent, NoEventsYet } from "@/components/setup/no-events-state";
 import { NeedsYou } from "./needs-you";
 
 export const metadata = { title: "My Work" };
@@ -39,10 +40,17 @@ export default async function MyWorkPage({
   searchParams: Promise<{ view?: string; event?: string; due?: string }>;
 }) {
   const session = await requireStaffSession();
-  // A brand-new organisation starts by creating its first event.
-  const activeEvents = await countActiveEvents(session.organisation.id);
-  if (activeEvents === 0 && can(session.actor, { type: "events.create" })) redirect("/start");
-  const contacts = activeEvents === 0 ? await setupContacts(session.organisation.id) : [];
+  // A brand-new organisation starts by creating its first event; between
+  // seasons (every event archived) My Work stays open with a card instead.
+  const eventCounts = await countEvents(session.organisation.id);
+  const activeEvents = eventCounts.active;
+  const start = noEventsStart({
+    totalEvents: eventCounts.total,
+    activeEvents,
+    canCreate: can(session.actor, { type: "events.create" }),
+  });
+  if (start === "redirect") redirect("/start");
+  const contacts = start === "ask" ? await setupContacts(session.organisation.id) : [];
   const { view, event, due } = await searchParams;
   // Everyone's tasks are for super admins.
   const isAdmin = isSuperAdmin(session.actor);
@@ -123,9 +131,14 @@ export default async function MyWorkPage({
         description="Everything you need to do across your events: sign-offs first, then your tasks. Tap a task to add subtasks, a deadline and files."
       />
 
-      {activeEvents === 0 && (
-        <NoEventsYet brandName={session.organisation.brandName} contacts={contacts} />
+      {start === "ask" && (
+        <NoEventsYet
+          brandName={session.organisation.brandName}
+          contacts={contacts}
+          betweenSeasons={eventCounts.total > 0}
+        />
       )}
+      {start === "create_next" && <CreateNextEvent />}
 
       <NeedsYou
         signoffs={signoffs}

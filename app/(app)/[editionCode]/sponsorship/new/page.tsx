@@ -30,6 +30,11 @@ export default async function NewSponsorshipItemPage({
     editionId: ed.edition.id,
     kind: "sponsorship_item",
     withWorkflows: true,
+    // "Me (Name)" first in the owner picker, grouped by the viewer's department.
+    viewer: {
+      id: session.user.id,
+      departmentId: session.actor.departmentId ?? null,
+    },
   });
 
   return (

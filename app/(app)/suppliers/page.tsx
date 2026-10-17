@@ -182,7 +182,10 @@ export default async function SuppliersPage({
             { supplierId: string | null; n: number }[],
           ]),
       canEdit ? portalGrantsByScope(orgId, "supplier") : Promise.resolve(new Map()),
-      canInvite ? externalEvents(db, orgId, today) : Promise.resolve([]),
+      // Archived events take no new invitations (the server refuses them too).
+      canInvite
+        ? externalEvents(db, orgId, today).then((list) => list.filter((e) => !e.archived))
+        : Promise.resolve([]),
     ]);
 
   const activeServices = serviceRows.filter((s) => !s.isArchived);

@@ -136,6 +136,7 @@ export function VenuesView({
         defaultEventId={v.defaultEventId}
         canInvite={canInvite}
         emailOn={emailOn}
+        contact={{ name: v.riggingContactName, email: v.riggingContactEmail }}
       />
     );
 
@@ -392,6 +393,7 @@ export function VenuesView({
           defaultEventId={portalFor.defaultEventId}
           canInvite={canInvite}
           emailOn={emailOn}
+          contact={{ name: portalFor.riggingContactName, email: portalFor.riggingContactEmail }}
         />
       )}
       {confirmDialog}

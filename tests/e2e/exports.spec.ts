@@ -80,7 +80,9 @@ test.describe("exports and the external item page", () => {
     await page.goto(`${baseURL}/BIRM27/reports`);
     const main = page.getByRole("main");
     await expect(main.getByText("Downloads are limited to editors")).toBeVisible();
-    await expect(main.getByText(/Ask an admin if you need the signage schedule/)).toBeVisible();
+    await expect(
+      main.getByText(/Ask a super admin if you need the signage schedule/),
+    ).toBeVisible();
     await expect(main.getByRole("button", { name: /^Download/ })).toHaveCount(0);
     // With nothing to download, Reports isn't in their menu.
     const nav = page.getByRole("navigation", { name: "Main navigation" });

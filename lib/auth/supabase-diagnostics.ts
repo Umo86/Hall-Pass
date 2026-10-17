@@ -11,7 +11,7 @@ export function signInErrorMessage(
   const msg = error.message ?? "";
   if (error.name === "AuthRetryableFetchError" || /fetch failed/i.test(msg)) {
     const where = serviceUrl ? ` at ${serviceUrl.replace(/^https?:\/\//, "")}` : "";
-    return `Sign-in isn't working right now: couldn't reach the sign-in service${where}. Please tell your admin.`;
+    return `Sign-in isn't working right now: couldn't reach the sign-in service${where}. Please tell the team who invited you.`;
   }
   if (error.code === "invalid_credentials" || /invalid login credentials/i.test(msg)) {
     return "Incorrect email or password";
@@ -20,7 +20,7 @@ export function signInErrorMessage(
     return "This email hasn't been confirmed yet — use the link in your invitation email";
   }
   const detail = msg.trim() || (error.status ? `error ${error.status}` : "no reply");
-  return `Sign-in isn't working right now (${detail}). Please tell your admin.`;
+  return `Sign-in isn't working right now (${detail}). Please tell the team who invited you.`;
 }
 
 /** The Supabase project id from its URL, for logs and set-up checks. */

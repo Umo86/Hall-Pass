@@ -14,7 +14,8 @@ import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { z } from "zod";
 import { db } from "@/lib/db/client";
-import { can, FEATURES, MANAGER_SCOPES, missingAbilityMessage } from "@/lib/authz";
+import { can, FEATURES, isSuperAdmin, MANAGER_SCOPES, missingAbilityMessage } from "@/lib/authz";
+import { invitesCanBeEmailed } from "@/lib/users/email";
 import { requireSession, type Session } from "@/lib/auth/actor";
 import { deliverInvite } from "@/lib/auth/staff-invite";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -376,7 +377,10 @@ export async function resendInvitation(
 
 /**
  * A new invitation link to pass on by hand (when email isn't set up). The
- * earlier link stops working: links are only stored as hashes.
+ * earlier link stops working: links are only stored as hashes. A link is a
+ * working way in as that person, so where invitations can be emailed only a
+ * super admin gets one by hand — managers use Resend, which sends it to the
+ * person's own inbox.
  */
 export async function newInvitationLink(
   input: unknown,
@@ -385,6 +389,9 @@ export async function newInvitationLink(
   if (!parsed.success) return fail("Invalid request");
   const session = await peopleSession();
   if (!session) return fail(NOT_ALLOWED);
+  if (!isSuperAdmin(session.actor) && invitesCanBeEmailed()) {
+    return fail("Email is set up here — use Resend to send them a new link");
+  }
   try {
     const { inviteUrl } = await db.transaction((tx) =>
       renewInviteLinkTx(tx, ctx(session), parsed.data.inviteId),

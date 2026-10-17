@@ -6,6 +6,8 @@ import { approvers, departments, memberships, workflowSteps, workflows } from "@
 import { signoffPaused, type PermissionOverrides } from "@/lib/authz";
 import { accessLive } from "@/lib/access";
 import { activeMembership } from "@/lib/users/active";
+// lib/people imports nothing from lib/domain, so there is no cycle.
+import { rerouteDepartmentSignoffs } from "@/lib/people";
 
 export type Department = typeof departments.$inferSelect;
 export type Approver = typeof approvers.$inferSelect;
@@ -57,8 +59,10 @@ export function orderSignageSteps(
  * Make every signage workflow match the departments: one sign-off step per
  * department (named after it, going to its main approver when they have an
  * account, otherwise anyone in it), archived with it, in the right order.
- * Run after any change to departments or approvers. Sign-offs already under
- * way keep what they were started with.
+ * Run after any change to departments or approvers. Open department
+ * sign-offs then follow (rerouteDepartmentSignoffs): items on their
+ * defaults go to the current main approver, and a step naming someone who
+ * no longer signs for the department goes back to it.
  */
 export async function syncDepartmentSteps(tx: Db | Tx, organisationId: string): Promise<void> {
   const depts = await tx
@@ -153,6 +157,7 @@ export async function syncDepartmentSteps(tx: Db | Tx, organisationId: string): 
         .where(eq(workflowSteps.id, o.id));
     }
   }
+  await rerouteDepartmentSignoffs(tx, organisationId);
 }
 
 /**

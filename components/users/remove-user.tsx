@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import type { Feature, PermissionOverrides, StaffRole } from "@/lib/authz";
-import { roleLabel } from "@/lib/format";
 import { departmentFallbackText, firstName } from "@/lib/users/rules";
 import {
   canWorkOwnItem,
@@ -16,7 +15,8 @@ import {
 import { removeUser } from "@/app/actions/users";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { SelectNative } from "@/components/ui/select-native";
+import { PersonPicker } from "@/components/people/person-picker";
+import type { PersonOption } from "@/components/people/groups";
 import {
   Dialog,
   DialogContent,
@@ -41,12 +41,17 @@ export type RemovalImpactView = {
   handover: { groups: HandoverGroup[]; candidates: HandoverCandidateView[] };
   departments: { id: string; name: string; isMain: boolean; others: string[] }[];
   namedSteps: string[];
+  /** Live partner access they hold here; removing them revokes it. */
+  partnerAccess?: string[];
   workCandidates: {
     userId: string;
     name: string;
     role: StaffRole;
     features: Feature[] | null;
     overrides: PermissionOverrides;
+    jobTitle: string | null;
+    departmentId: string | null;
+    departmentName: string | null;
   }[];
 };
 
@@ -89,7 +94,30 @@ export function RemoveUser({
       ([kind]) => !canWorkOwnItem(worker, kind),
     );
   }, [worker, impact.ownedByKind]);
-  const others = impact.workCandidates.filter((c) => c.userId !== currentUserId);
+  // The one person picker: you first, then your department, then the rest.
+  const me = impact.workCandidates.find((c) => c.userId === currentUserId);
+  const people: PersonOption[] = [
+    ...(me
+      ? []
+      : [
+          {
+            id: currentUserId,
+            name: currentUserName,
+            jobTitle: null,
+            departmentId: null,
+            departmentName: null,
+            unavailable: null,
+          },
+        ]),
+    ...impact.workCandidates.map((c) => ({
+      id: c.userId,
+      name: c.name,
+      jobTitle: c.jobTitle,
+      departmentId: c.departmentId,
+      departmentName: c.departmentName,
+      unavailable: null,
+    })),
+  ];
 
   function confirm() {
     setError(null);
@@ -167,19 +195,15 @@ export function RemoveUser({
                   <Label htmlFor="remove-work-to">
                     {name} has {moves.join(" and ")} — hand them to:
                   </Label>
-                  <SelectNative
+                  <PersonPicker
                     id="remove-work-to"
+                    people={people}
+                    meId={currentUserId}
+                    meDepartmentId={me?.departmentId ?? null}
                     value={workTo}
-                    onChange={(e) => setWorkTo(e.target.value)}
+                    onChange={setWorkTo}
                     className="h-11 sm:h-9"
-                  >
-                    <option value={currentUserId}>{currentUserName} (you)</option>
-                    {others.map((c) => (
-                      <option key={c.userId} value={c.userId}>
-                        {c.name} — {roleLabel(c.role)}
-                      </option>
-                    ))}
-                  </SelectNative>
+                  />
                   {toYou.length > 0 && (
                     <p className="text-muted-foreground text-xs">
                       {worker?.name} can&apos;t work on{" "}
@@ -226,6 +250,12 @@ export function RemoveUser({
                     </li>
                   ))}
                 </ul>
+              )}
+              {(impact.partnerAccess?.length ?? 0) > 0 && (
+                <p>
+                  {name} also has portal access here ({impact.partnerAccess!.join(", ")}). Removing
+                  them revokes it, so they can&apos;t sign in to the portal either.
+                </p>
               )}
             </div>
           )}

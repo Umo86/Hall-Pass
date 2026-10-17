@@ -382,6 +382,7 @@ export function SuppliersView({
           defaultEventId={defaultEventId}
           canInvite={canInvite}
           emailOn={emailOn}
+          contact={{ name: portalFor.contactName, email: portalFor.email }}
         />
       )}
       <Dialog open={manageOpen} onOpenChange={(o) => !o && closeManage()}>

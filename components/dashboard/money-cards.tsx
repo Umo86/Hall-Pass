@@ -60,7 +60,9 @@ export function BudgetCard({
               <Link href={`/${code}/setup#details`}>Set a budget</Link>
             </Button>
           ) : (
-            <p className="text-muted-foreground text-xs">An admin or Operations can set one.</p>
+            <p className="text-muted-foreground text-xs">
+              Someone who can edit event details can set one.
+            </p>
           )}
         </div>
       ) : (

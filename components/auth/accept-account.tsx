@@ -49,7 +49,7 @@ export function AcceptAccount({
         setState({
           step: "error",
           message: /expired|invalid/i.test(failure)
-            ? "This link has expired or was already used. Ask your admin to send the invitation again."
+            ? "This link has expired or was already used. Ask the person who invited you to send it again."
             : failure,
         });
         return;
@@ -62,7 +62,7 @@ export function AcceptAccount({
         if (sessionError) {
           setState({
             step: "error",
-            message: "This link has expired. Ask your admin to send the invitation again.",
+            message: "This link has expired. Ask the person who invited you to send it again.",
           });
           return;
         }

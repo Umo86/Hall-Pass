@@ -16,11 +16,22 @@ See `PLAN.md` for the build plan and current status, `CLAUDE.md` for conventions
 - **Fewer, clearer fields** — each form shows only what that kind of item needs (sponsorship: item, buying, sale; signage: what and where, size and fixing, supplier, cost and install); everything else sits in a closed "More details" section. Item pages open with an at-a-glance summary. Cost and sale prices are visible to the whole team.
 - **My Work board** — To do (red), In progress (orange) and Complete (green). Drag cards between columns or use each card's menu; assign jobs to each other; each task has a deadline, subtasks with their own deadlines, and attachments on the task and each subtask. Anything past its deadline is highlighted in red on the card and counted at the top.
 - **Calendar** — every deadline in red (event deadlines, print deadlines, artwork due, sponsorship order-by dates, sign-offs due, your task deadlines), solid dark red once passed; event dates, deliveries and installs colour-coded, with a key.
-- **Users** (General → Users) — **Team**: add people with their name, email, job title, department, role, the sections they can use and which department's artwork they sign off; invited people show with Resend or Copy link; each person's page changes all of it in one save, and "Remove from team" hands their waiting sign-offs to someone else. **Departments**: which ones sign off artwork, their rules and order, and the approvers. **External**: portal access for partners (venue, suppliers, sponsors), per event. Only admins make changes; everyone else sees a read-only directory.
+- **Users** (General → Users) — **Team**: add people with their name, email, job title, department, role, the sections they can use and which department's artwork they sign off; invited people show with Resend or Copy link; each person's page changes all of it in one save, and "Remove from team" hands their waiting sign-offs to someone else. **Departments**: which ones sign off artwork, their rules and order, and the approvers. **External**: portal access for partners (venue, suppliers, sponsors), per event. Super admins and managers change people, Departments needs “Manage departments and who signs off” and External needs “Invite partners” (see [Users and managers](#users-and-managers)); everyone else sees a read-only directory.
 - **My account** (from the account menu) — your name, your personal calendar feed and which notifications you get.
 - **Stand design approvals** — structure questionnaire with automatic complex-structure classification, required documents with expiry flags, venue-rules checklist, engineer/H&S/venue review chain, exhibitor portal with submit/resubmit.
 - **Shared engine** — configurable workflows with conditions, parallel groups, SLAs, delegation and optimistic locking; creation and assignment notifications with a self-updating bell; internal/external comments; transactional email; daily cron (reminders, escalation, chasers, expiry, digest) with idempotency; append-only audit trail enforced by the database; deny-by-default RLS; every record checked against the caller's organisation (no cross-tenant access, admins included); parameterised queries only; external portals scoped per grant; mobile navigation throughout.
-- **Tests** — 1,048 unit tests (authz + override matrix, status machines, workflow engine, department routing and ordering, deadlines, exports and labels, DB-backed ref concurrency/RLS/audit-trigger/cron idempotency/staff invitations/departments) and 107 Playwright end-to-end tests (every page for every role, hostile input, signed-out access, the task board with subtasks and files, full signage lifecycle to installed with a photo, three-department sign-off with a named approver, adding a department and approver who sets up an account and signs off, sponsor signage, selling a sponsorship item with a photo, suppliers and services, new event with logo, exports, partner item page, team, phone layouts).
+- **Tests** — 1,570 unit tests (authz with the abilities registry and the frozen v1 snapshot, managers and access state, status machines, workflow engine, department routing and re-routing, deadlines, exports and labels, DB-backed ref concurrency/RLS/audit-trigger/cron idempotency/staff and partner invitations/departments/suspension and end dates/hand-over/owners) and 122 Playwright end-to-end tests (Users v2: managers, suspension, end dates, templates, add several and partner access; every page for every role, hostile input, signed-out access, the task board with subtasks and files, full signage lifecycle to installed with a photo, three-department sign-off with a named approver, adding a department and approver who sets up an account and signs off, sponsor signage, selling a sponsorship item with a photo, suppliers and services, new event with logo, exports, partner item page, team, phone layouts).
+
+## Users and managers
+
+Everything is under General → Users, and every change shows in the person's access history.
+
+- **Super admin** — everything, including people, managers and system settings. Only a super admin makes someone a super admin or a manager, removes people, archives events or changes System (storage, email, calendar feeds). There is always at least one super admin whose access doesn't end (not suspended, no end date), so a super admin can only be suspended, removed, demoted or given an end date while another one has lasting access.
+- **Managers** — someone can manage their own department or everyone. A manager adds and changes people in that scope (never themselves, super admins or other managers) and can only give what they have themselves: roles, sections, abilities and sign-off for the departments they sign off for.
+- **Abilities** — on top of the role, each person's page lists what they can be given or refused, one list for the whole app (`ABILITIES` in `lib/authz.ts`: Add signage, Edit costs and PO numbers, Confirm print, delivery and install, Invite partners…). Invite partners, Manage departments and who signs off, and Organisation settings can only be given by a super admin.
+- **Suspend and end dates** — Suspend pauses access at once: sign-offs waiting on them by name are handed to whoever you pick (each department's main approver by default); their tasks and items stay, and Reactivate puts everything back. An access end date (a London date) stops access at the end of that day; super admins and their managers are warned a week before, and the daily job hands their named sign-offs back to the department. Anyone turned away at sign-in is told who to ask, with a link to email them.
+- **Templates** — Add person starts from a template (Marketing executive, Freelance installer, Sales manager, Operations coordinator, or Blank) that fills in the role, sections, abilities and job title, and suggests an end date for freelancers.
+- **Add several** — paste names and emails (from a spreadsheet or an email), see what will happen to each line (ready, already on the team, already invited, a portal account…), then invite them all with the same settings.
 
 ## Local development
 
@@ -97,6 +108,43 @@ pnpm build
    computes "today" in Europe/London so clock changes don't break it. Verify at
    `/api/health` — it should return `"ok":true` and states which database variable and
    storage backend are active.
+
+## Releasing a new version (upgrading the live database)
+
+Every staff and partner page load reads the signed-in person's membership, which selects
+every column the code knows about. If the code is deployed before its migrations have run,
+every signed-in page fails with `column … does not exist` until they do. The build doesn't
+migrate (`next build` only; `vercel.json` has no migration step), so, in this order:
+
+1. **Migrate first.** From a checkout of the release, with the live database's _unpooled_
+   URL (Neon: `DATABASE_URL_UNPOOLED` / `POSTGRES_URL_NON_POOLING`; Supabase: the direct or
+   session-pooler URL) as `DIRECT_DATABASE_URL`:
+
+   ```bash
+   DIRECT_DATABASE_URL='postgres://…' pnpm db:migrate
+   ```
+
+   These migrations add and backfill (tables, columns with defaults, indexes) and drop or
+   rename nothing, so the code that is live now keeps working on the migrated schema, with
+   the one exception below.
+
+2. **Then deploy**: push to `main` (or promote the preview deployment) straight after.
+   Keep the gap between the two steps short.
+3. **Check** `/api/health`: `"schema": "current"` and `"ok": true`. `"schema": "behind"`
+   (status 503, with a `schemaNote`) means step 1 hasn't run against this database.
+
+**Between migrating and deploying** (the release with migration 0012): the old code can't
+make someone main approver of a department that already has one. 0012 adds a unique index
+(one main approver per department) and the old code sets the new main before clearing the
+old one, so it fails, saying "That email is already an approver in this department". Don't
+change main approvers until the new deployment is live.
+
+**Rolling back.** A Vercel rollback to a deployment from before 0012 is unsafe once anyone
+has been suspended or given an access end date: that code ignores `suspended_at` and
+`access_ends_at`, so suspended people and people whose access has ended could sign in
+again, and the main-approver problem above comes back. Roll forward with a fix instead. If
+a rollback can't be avoided, first remove from the team anyone suspended or past their end
+date who must stay out (removal works the same in every version).
 
 Supabase remains supported as an alternative (its pooler URIs in `DATABASE_URL`/
 `DIRECT_DATABASE_URL`, Storage private buckets named `artwork`, `documents`, `photos`,

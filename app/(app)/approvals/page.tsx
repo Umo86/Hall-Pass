@@ -321,28 +321,29 @@ async function WaitingOnMe({
           keep={{ tab: "mine", overdue: params.overdue }}
         />
       </div>
-      {rows.length === 0 ? (
-        filtered && all.length > 0 ? (
-          <EmptyState
-            icon={SearchX}
-            title="Nothing matches these filters"
-            description="Try another event, or clear the search."
-            action={
-              <Button asChild variant="outline">
-                <Link href="/approvals?tab=mine">Clear filters</Link>
-              </Button>
-            }
-          />
-        ) : (
-          <NothingWaiting organisationId={session.organisation.id} />
-        )
-      ) : (
-        <ReviewQueue
-          approvals={rows.filter((r) => r.kind === "approval")}
-          confirmations={rows.filter((r) => r.kind === "confirmation")}
-          initialReviewId={params.review ?? null}
-        />
-      )}
+      {/* Always mounted, so a review open when the last item is decided stays
+          open ("All done") instead of disappearing with the list. */}
+      <ReviewQueue
+        approvals={rows.filter((r) => r.kind === "approval")}
+        confirmations={rows.filter((r) => r.kind === "confirmation")}
+        initialReviewId={params.review ?? null}
+        empty={
+          rows.length > 0 ? null : filtered && all.length > 0 ? (
+            <EmptyState
+              icon={SearchX}
+              title="Nothing matches these filters"
+              description="Try another event, or clear the search."
+              action={
+                <Button asChild variant="outline">
+                  <Link href="/approvals?tab=mine">Clear filters</Link>
+                </Button>
+              }
+            />
+          ) : (
+            <NothingWaiting organisationId={session.organisation.id} />
+          )
+        }
+      />
     </section>
   );
 }

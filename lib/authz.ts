@@ -1454,6 +1454,19 @@ export function personChangeRefusal(
   return null;
 }
 
+/**
+ * May this person send an open team invitation again (Resend, New link)?
+ * A new link is a working way in as whoever accepts it, so someone who
+ * isn't a super admin may renew only an invitation they could have made
+ * themselves: personChangeRefusal as if adding the person now, with
+ * `access` being what the invitation gives. Whether the invitation is in
+ * their scope at all is canManagePerson, checked first by the server.
+ */
+export function canRenewInvite(actor: Actor, access: PersonAccess): boolean {
+  if (actor.kind !== "staff") return false;
+  return isSuperAdmin(actor) || personChangeRefusal(actor, null, null, access) === null;
+}
+
 /** The refusal shown when someone lacks an ability (the server's own words). */
 export function missingAbilityMessage(key: AbilityKey): string {
   return `You need “${ABILITIES[key].label}” for that — ask a super admin`;

@@ -7,13 +7,14 @@ describe("importColumnFinder", () => {
     IMPORT_COLUMNS.forEach((name, i) => expect(find(name)).toBe(i + 1));
   });
 
-  it("still reads sheets made before Stand no. was added", () => {
-    const old = IMPORT_COLUMNS.filter((c) => c !== "Stand no.");
+  it("still reads sheets made before Stand no. and Owner email were added", () => {
+    const old = IMPORT_COLUMNS.filter((c) => c !== "Stand no." && c !== "Owner email");
     const find = importColumnFinder([...old]);
     expect(find("Location")).toBe(5);
     expect(find("Width mm")).toBe(6);
     expect(find("Category")).toBe(20);
     expect(find("Stand no.")).toBeNull();
+    expect(find("Owner email")).toBeNull();
   });
 
   it("ignores case and punctuation, and knows other names for Stand no.", () => {
@@ -29,5 +30,6 @@ describe("importColumnFinder", () => {
     expect(find("Ref")).toBe(1);
     expect(find("Supplier")).toBe(14);
     expect(find("Stand no.")).toBeNull();
+    expect(find("Owner email")).toBeNull();
   });
 });

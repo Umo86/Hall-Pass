@@ -9,6 +9,7 @@ import {
 } from "@/lib/auth/supabase-diagnostics";
 import { resolveSupabaseUrl } from "@/lib/auth/supabase-config";
 import { blobEnabled, s3Enabled, s3Probe, storageBackend } from "@/lib/storage";
+import { latestMigration, schemaState, type SchemaState } from "@/lib/db/schema-state";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +36,7 @@ export async function GET() {
   let database: "ok" | "unreachable" | "unconfigured" = "unconfigured";
   let databaseError: string | undefined;
   let seeded = false;
+  let schema: SchemaState = "unknown";
   if (process.env.DATABASE_URL) {
     try {
       const { sql } = await import("drizzle-orm");
@@ -44,6 +46,16 @@ export async function GET() {
       );
       database = "ok";
       seeded = Number(rows[0]?.n ?? 0) > 0;
+      // Has `pnpm db:migrate` run for this release? (README → Releasing.)
+      try {
+        const applied = await db.execute<{ at: string | number | null }>(
+          sql`SELECT max(created_at) AS at FROM drizzle.__drizzle_migrations`,
+        );
+        const at = applied[0]?.at;
+        schema = schemaState(at == null ? null : Number(at));
+      } catch {
+        schema = "unknown";
+      }
       if (databaseVia && databaseVia !== "DATABASE_URL") {
         databaseError = `Running on ${databaseVia} because an earlier database variable is unreachable — everything works, but remove or fix the stale variable when convenient.`;
       }
@@ -55,13 +67,18 @@ export async function GET() {
   }
   const supabase = resolveSupabaseUrl();
   const auth = devAuthEnabled() ? "demo" : supabaseConfigured() ? "supabase" : "none";
-  const ok = database === "ok" && seeded && auth !== "none";
+  const ok = database === "ok" && seeded && auth !== "none" && schema !== "behind";
   return NextResponse.json(
     {
       ok,
       database,
       ...(databaseError ? { databaseError } : {}),
       seeded,
+      // "behind": this code expects migrations the database hasn't had yet.
+      schema,
+      ...(schema === "behind"
+        ? { schemaNote: `Run pnpm db:migrate (expects ${latestMigration().tag})` }
+        : {}),
       auth,
       // Project ids are public (they're in every page's sign-in requests).
       // When the database is itself a Supabase project, sign-in must use the

@@ -32,6 +32,11 @@ export type HandoverStep = {
   departmentId: string | null;
   /** The item's page, when it has one. */
   href: string | null;
+  /**
+   * Waits on the whole department rather than on them by name — included
+   * because they are the last person who can sign for it.
+   */
+  departmentWide?: boolean;
 };
 
 export type HandoverSigner = { userId: string; name: string; isMain: boolean };
@@ -104,11 +109,22 @@ function sentence(n: number, who: string, dept: string | null): string {
   return `${what} waiting on ${who}${dept ? ` (${dept})` : ""} — choose who takes ${n === 1 ? "it" : "them"} over`;
 }
 
+/** Nobody else signs for the department, and the person acting may not choose who does. */
+function askSuperAdmin(g: Pick<HandoverGroup, "departmentName">): string {
+  return `Nobody else can sign off for ${g.departmentName ?? "the department"} — ask a super admin to choose who takes these sign-offs over`;
+}
+
 /**
  * Where each group goes: a user id, or null for "back to the department".
  * `fallback` is a single person picked for everything (older callers).
  * Refused with the words to show when a group has no one to go to, or the
  * person picked can't sign.
+ *
+ * `limitedFor` is the acting manager's user id when they aren't a super
+ * admin. A manager can't give sign-off for a department they don't sign
+ * for (rule 8 of personChangeRefusal), so a department's sign-offs go only
+ * to that department's own approvers or back to the department, and
+ * nobody hands sign-offs outside a department to themselves.
  */
 export function resolveHandover(
   groups: readonly HandoverGroup[],
@@ -118,12 +134,19 @@ export function resolveHandover(
     who: string;
     canReceive: (userId: string) => boolean;
     fallback?: string | null;
+    limitedFor?: string | null;
   },
 ): { ok: true; targets: Map<string, string | null> } | { ok: false; error: string } {
   const targets = new Map<string, string | null>();
+  const limited = opts.limitedFor ?? null;
   for (const g of groups) {
     const picked = choice?.[g.key] || opts.fallback || g.defaultTo;
-    if (!picked) return { ok: false, error: sentence(g.steps.length, opts.who, g.departmentName) };
+    if (!picked) {
+      if (limited && g.departmentId && g.signers.length === 0) {
+        return { ok: false, error: askSuperAdmin(g) };
+      }
+      return { ok: false, error: sentence(g.steps.length, opts.who, g.departmentName) };
+    }
     if (picked === BACK_TO_DEPARTMENT) {
       if (!g.departmentId || g.signers.length === 0) {
         return {
@@ -138,6 +161,20 @@ export function resolveHandover(
     }
     if (picked === opts.personId || !opts.canReceive(picked)) {
       return { ok: false, error: "Pick a team member who can sign off" };
+    }
+    if (limited) {
+      if (g.departmentId && !g.signers.some((s) => s.userId === picked)) {
+        return {
+          ok: false,
+          error:
+            g.signers.length === 0
+              ? askSuperAdmin(g)
+              : `Hand these ${g.departmentName ?? "department"} sign-offs to one of its approvers, or back to the department`,
+        };
+      }
+      if (!g.departmentId && picked === limited) {
+        return { ok: false, error: "Pick someone else to take these sign-offs over" };
+      }
     }
     targets.set(g.key, picked);
   }

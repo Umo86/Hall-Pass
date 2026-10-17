@@ -225,8 +225,27 @@ d("users", () => {
       ),
     ).catch((e) => e);
     expect(ext.message).toBe(
-      "This email is used by an external portal account (Venue – Users Hall). Use a different email.",
+      "This email has portal access here (Venue – Users Hall) — revoke it in Users → External first, then invite them to the team",
     );
+    // Revoked or ended access doesn't block.
+    await db
+      .update(schema.externalGrants)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(schema.externalGrants.inviteTokenHash, `grant-${n}`));
+    const ended = await run((tx) =>
+      manage.inviteUserTx(
+        tx,
+        { organisationId: orgId, actorUserId: adminId },
+        {
+          ...person,
+          email: `venue-${n}@users.test`,
+          fullName: "Vee",
+          departmentId: null,
+          role: "viewer",
+        },
+      ),
+    );
+    expect(ended.inviteId).toBeTruthy();
   });
 
   it("creates a new department as a team with no sign-off step", async () => {

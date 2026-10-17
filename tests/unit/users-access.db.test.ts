@@ -435,4 +435,126 @@ d("users v2: access", () => {
       );
     expect(again).toHaveLength(1);
   });
+
+  it("when access ends, the daily job hands named sign-offs back where someone else can sign", async () => {
+    const ella = await addMember("Ella", "marketing", {
+      departmentId: mkt.id,
+      accessEndsAt: new Date(Date.now() - 3_600_000),
+    });
+    // Ella signs for Marketing (others can too) and Sales (nobody else can).
+    await db.insert(schema.approvers).values([
+      {
+        organisationId: orgId,
+        departmentId: mkt.id,
+        fullName: "Ella",
+        email: email("Ella"),
+        userId: ella,
+      },
+      {
+        organisationId: orgId,
+        departmentId: sales.id,
+        fullName: "Ella",
+        email: email("Ella"),
+        userId: ella,
+      },
+    ]);
+    const [event] = await db
+      .insert(schema.events)
+      .values({ organisationId: orgId, name: "Ended Show", code: `ES${n % 10000}` })
+      .returning();
+    const [venue] = await db
+      .insert(schema.venues)
+      .values({ organisationId: orgId, name: "Ended Hall", code: `EH${n % 10000}` })
+      .returning();
+    const [edition] = await db
+      .insert(schema.editions)
+      .values({
+        eventId: event.id,
+        venueId: venue.id,
+        name: "Ended Show 2027",
+        code: `EZ${n % 10000}`,
+        buildStart: "2027-03-01",
+        buildEnd: "2027-03-02",
+        openStart: "2027-03-03",
+        openEnd: "2027-03-04",
+        breakdownEnd: "2027-03-05",
+      })
+      .returning();
+    const mktStep = await deptStep(mkt.id);
+    const salesStep = await deptStep(sales.id);
+    const [item] = await db
+      .insert(schema.signageItems)
+      .values({
+        editionId: edition.id,
+        ref: `SIG-EZ${n}-001`,
+        seq: 1,
+        name: "Hall banner",
+        ownerUserId: adminId,
+        status: "in_review",
+        workflowId,
+        currentRunNumber: 1,
+        createdBy: adminId,
+        signoffs: [
+          { stepId: mktStep.id, userId: ella },
+          { stepId: salesStep.id, userId: ella },
+        ],
+      })
+      .returning();
+    const step = (id: string, name: string, departmentId: string) => ({
+      entityType: "signage_item" as const,
+      entityId: item.id,
+      runNumber: 1,
+      workflowStepId: id,
+      stepNameSnapshot: name,
+      stepKindSnapshot: "approval" as const,
+      sortOrderSnapshot: 1,
+      status: "pending" as const,
+      assignedUserId: ella,
+      assignedDepartmentId: departmentId,
+    });
+    const [mktInst, salesInst] = await db
+      .insert(schema.approvalInstances)
+      .values([
+        step(mktStep.id, "Marketing sign-off", mkt.id),
+        step(salesStep.id, "Sales sign-off", sales.id),
+      ])
+      .returning();
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London" }).format(
+      new Date(),
+    );
+    await jobs.endExpiredAccess(today);
+    const now = async (id: string) =>
+      (
+        await db.select().from(schema.approvalInstances).where(eq(schema.approvalInstances.id, id))
+      )[0];
+    // Marketing has other signers: back to the department (or its main approver).
+    expect((await now(mktInst.id)).assignedUserId).not.toBe(ella);
+    // Nobody else signs for Sales: it stays named, and the super admin hears about it.
+    expect((await now(salesInst.id)).assignedUserId).toBe(ella);
+    const told = await db
+      .select()
+      .from(schema.notifications)
+      .where(
+        and(
+          eq(schema.notifications.userId, adminId),
+          eq(schema.notifications.kind, "access_ended"),
+        ),
+      );
+    expect(told.map((t) => t.title)).toContain(
+      "Ella's access has ended — a sign-off still waits on them",
+    );
+    // The hand-back is audited as the daily job, about Ella; her item plan names nobody now.
+    const [handed] = await db
+      .select()
+      .from(schema.auditLog)
+      .where(and(eq(schema.auditLog.entityId, item.id), eq(schema.auditLog.action, "delegate")))
+      .orderBy(schema.auditLog.createdAt);
+    expect(handed).toMatchObject({ actorType: "cron", actorUserId: null, subjectUserId: ella });
+    expect(handed.summary).toContain("Ella no longer has access");
+    const [plan] = await db
+      .select({ signoffs: schema.signageItems.signoffs })
+      .from(schema.signageItems)
+      .where(eq(schema.signageItems.id, item.id));
+    expect(JSON.stringify(plan.signoffs)).not.toContain(ella);
+  });
 });

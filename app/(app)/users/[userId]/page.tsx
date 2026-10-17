@@ -9,8 +9,10 @@ import {
   assignableSignoffDepartments,
   can,
   canGrantManager,
+  canRenewInvite,
   isSuperAdmin,
   managerScope,
+  type PermissionOverrides,
   type PersonCtx,
 } from "@/lib/authz";
 import { londonDateOfAccessEnd } from "@/lib/access";
@@ -168,7 +170,9 @@ export default async function PersonPage({
       userId: member ? person.id : null,
       email: person.email,
     }),
-    member && !person.isSelf ? getRemovalImpact(db, orgId, person.id) : Promise.resolve(null),
+    member && !person.isSelf
+      ? getRemovalImpact(db, orgId, person.id, { viewer: actor })
+      : Promise.resolve(null),
     member ? workableOwnedItems(db, orgId, person.id) : Promise.resolve([]),
     accessHistory(
       db,
@@ -190,7 +194,7 @@ export default async function PersonPage({
   const accountLocked = person.isSelf
     ? "You can't change your own access — ask another super admin."
     : !canSuspend && person.isOnlyAdmin
-      ? "There must always be at least one super admin with access, so their access can't be paused or ended."
+      ? "There must always be a super admin whose access doesn't end, so their access can't be paused or ended — give another super admin access with no end date first."
       : !canSuspend
         ? "You can't change this person's access."
         : null;
@@ -214,6 +218,15 @@ export default async function PersonPage({
           expires={person.expiresAt ? formatDate(person.expiresAt) : null}
           expired={person.status === "expired"}
           emailOn={invitesCanBeEmailed()}
+          canRenew={canRenewInvite(actor, {
+            role: person.role,
+            departmentId: person.departmentId,
+            features: person.role === "admin" ? null : person.features,
+            overrides: person.overrides as PermissionOverrides,
+            managerScope: person.managerScope,
+            signoffs: person.allSignoffs,
+            accessEndsAt: person.accessEndsAt,
+          })}
         />
       )}
       <PersonEditor
@@ -275,6 +288,7 @@ export default async function PersonPage({
         lockedReason={accountLocked}
         handover={handover.groups}
         candidates={handover.candidates}
+        signersOnly={handover.signersOnly}
         currentUserId={session.user.id}
       >
         {impact && canRemove && (

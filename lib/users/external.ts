@@ -559,6 +559,60 @@ export async function staffMemberIds(
   return new Set(rows.map((r) => r.userId));
 }
 
+/**
+ * Of the people about to be told about a record, the ones who may be:
+ * team members here (active), and partners whose live grants in this
+ * organisation still show them the record (`sees`, a can() check on it) —
+ * never a partner for a staff-only message. Earlier commenters and
+ * approvers can lose sight of a record (a supplier moved off an item, a
+ * contractor's grant for one stand revoked while they keep another) and
+ * must not keep hearing about it (non-negotiable 4).
+ */
+export async function recipientsWhoCanSee(
+  db: Db | Tx,
+  organisationId: string,
+  userIds: readonly string[],
+  opts: { staffOnly?: boolean; sees: (actor: ExternalActor) => boolean; now?: Date },
+): Promise<string[]> {
+  const ids = [...new Set(userIds)].filter(Boolean);
+  if (ids.length === 0) return [];
+  const staff = await staffMemberIds(db, organisationId, ids);
+  const partners = ids.filter((id) => !staff.has(id));
+  const sees = new Set<string>();
+  if (partners.length > 0 && !opts.staffOnly) {
+    const now = opts.now ?? new Date();
+    const grants = await db
+      .select()
+      .from(externalGrants)
+      .where(
+        and(
+          eq(externalGrants.organisationId, organisationId),
+          inArray(externalGrants.userId, partners),
+          liveGrantSql(now),
+        ),
+      );
+    for (const id of partners) {
+      const mine = grants.filter((g) => g.userId === id);
+      if (mine.length === 0) continue;
+      const actor: ExternalActor = {
+        kind: "external",
+        userId: id,
+        organisationId,
+        grants: mine.map((g) => ({
+          role: g.role,
+          editionId: g.editionId,
+          scopeType: g.scopeType,
+          scopeId: g.scopeId,
+          expiresAt: g.expiresAt,
+          revokedAt: g.revokedAt,
+        })),
+      };
+      if (opts.sees(actor)) sees.add(id);
+    }
+  }
+  return ids.filter((id) => staff.has(id) || sees.has(id));
+}
+
 /** This email's live partner grants in the organisation (for staff invitations). */
 export async function livePartnerGrantsFor(
   db: Db | Tx,
@@ -791,6 +845,34 @@ export async function renewGrantInviteTx(
   return { grant, inviteUrl: `${appUrl()}/invite/${token}` };
 }
 
+/**
+ * Is the person a grant is for on this organisation's team (by account, or
+ * an account with the invited email)? Their partner access is then never
+ * extended or copied: team members see everything already, and the grant
+ * would sign them in to the portal once they leave the team.
+ */
+export async function isTeamMember(
+  db: Db | Tx,
+  organisationId: string,
+  grant: Pick<Grant, "userId" | "invitedEmail">,
+): Promise<boolean> {
+  const email = grant.invitedEmail.trim().toLowerCase();
+  const [member] = await db
+    .select({ id: memberships.id })
+    .from(memberships)
+    .innerJoin(users, eq(users.id, memberships.userId))
+    .where(
+      and(
+        eq(memberships.organisationId, organisationId),
+        grant.userId
+          ? or(eq(memberships.userId, grant.userId), sql`lower(${users.email}) = ${email}`)
+          : sql`lower(${users.email}) = ${email}`,
+      ),
+    )
+    .limit(1);
+  return Boolean(member);
+}
+
 /** Change when a grant ends (or take the end date away), audited before and after. */
 export async function setGrantEndTx(
   tx: Tx,
@@ -816,6 +898,14 @@ export async function setGrantEndTx(
   if (!before) throw new PartnerError("That access no longer exists — reload the page");
   if (before.revokedAt) {
     throw new PartnerError("That access was revoked — invite them again instead");
+  }
+  // Someone on the team holds no live partner access here (partner
+  // invitations refuse team members too): it may be ended, never extended.
+  const keepsAccess = opts.expiresAt == null || opts.expiresAt.getTime() > now.getTime();
+  if (keepsAccess && (await isTeamMember(tx, opts.organisationId, before))) {
+    throw new PartnerError(
+      "They're on your team now and already see everything — revoke this partner access instead",
+    );
   }
   const [after] = await tx
     .update(externalGrants)

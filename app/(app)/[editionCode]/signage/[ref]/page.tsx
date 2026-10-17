@@ -1,12 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, count, eq, inArray, isNull } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
 import { X } from "lucide-react";
 import { db } from "@/lib/db/client";
 import {
   comments as commentsTable,
   contractors,
-  externalGrants,
   halls,
   signageItems,
   snags as snagsTable,
@@ -38,6 +37,7 @@ import {
   type NextStepPending,
 } from "@/lib/domain/signage";
 import { departmentNames } from "@/lib/domain/departments";
+import { sponsorPortalAccess } from "@/lib/users/external";
 import {
   getEntityAudit,
   getEntityComments,
@@ -241,7 +241,7 @@ export default async function ItemDetailPage({
   const requiresInstallPhoto =
     item.kind === "signage" && session.organisation.settings.install_photo_required;
   const uploadBlocked = ["installed", "snagged", "closed"].includes(item.status)
-    ? "This item is installed — to upload new artwork, Operations or an admin can use More → Undo install first."
+    ? "This item is installed — to upload new artwork, Operations or a super admin can use More → Undo install first."
     : isPanel && artworkBlockedReason(item.status, { parentStatus: parent?.status ?? null })
       ? `${PANEL_BLOCKED_MESSAGE}.`
       : null;
@@ -1328,7 +1328,7 @@ async function ArtworkAndSignOff({
     ) : null;
 
   return (
-    <div className="grid gap-8">
+    <div className="grid min-w-0 grid-cols-1 gap-8">
       <ArtworkTab
         itemId={item.id}
         versions={versionRows}
@@ -1656,24 +1656,16 @@ async function sponsorshipContext({
   readOnly: boolean;
 }) {
   const canInvite = can(session.actor, { type: "partners.invite" });
-  const [sponsorRows, grants] = await Promise.all([
+  const [sponsorRows, access] = await Promise.all([
     db
       .select({ id: sponsorsTable.id, name: sponsorsTable.companyName })
       .from(sponsorsTable)
       .where(eq(sponsorsTable.editionId, bundle.edition.id))
       .orderBy(sponsorsTable.companyName),
+    // Live grants only (an ended one is no access), as on the Sponsors tab.
     canInvite && item.sponsorId
-      ? db
-          .select({ n: count() })
-          .from(externalGrants)
-          .where(
-            and(
-              eq(externalGrants.scopeType, "sponsor"),
-              eq(externalGrants.scopeId, item.sponsorId),
-              isNull(externalGrants.revokedAt),
-            ),
-          )
-      : [{ n: 0 }],
+      ? sponsorPortalAccess(db, session.organisation.id, [item.sponsorId])
+      : new Map<string, "access" | "invited">(),
   ]);
   return {
     sponsors: sponsorRows,
@@ -1681,7 +1673,7 @@ async function sponsorshipContext({
     canSell: can(session.actor, { type: "sponsorship.sell" }) && canEdit,
     // Whoever invites partners invites the sponsor, unless someone there already has access.
     inviteHref:
-      canInvite && !readOnly && item.sponsorId && Number(grants[0]?.n ?? 0) === 0
+      canInvite && !readOnly && item.sponsorId && !access.has(item.sponsorId)
         ? `/users?tab=external&invite=1&role=sponsor&scopeId=${item.sponsorId}&edition=${bundle.edition.id}`
         : null,
   };

@@ -3,7 +3,7 @@ import { and, count, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { Trash2 } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { auditLog, editions, events, signageItems, users } from "@/lib/db/schema";
-import { can } from "@/lib/authz";
+import { ABILITIES, can } from "@/lib/authz";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { formatDateTime, plural } from "@/lib/format";
 import { PageHeader } from "@/components/page-header";
@@ -167,7 +167,8 @@ export default async function RecycleBinPage({
           <p className="text-muted-foreground -mt-2 text-sm">
             {plural(total, "deleted item")}
             {chosen ? ` on ${chosen.code}` : ""}
-            {!canRestore && " · only Operations and admins can restore them"}
+            {!canRestore &&
+              ` · restoring them needs “${ABILITIES["signage.delete"].label}” — ask a super admin`}
           </p>
           <div className="hidden rounded-lg border md:block">
             <Table>

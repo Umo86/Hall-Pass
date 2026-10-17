@@ -43,7 +43,12 @@ import { LAST_EVENT_COOKIE, LAST_EVENT_COOKIE_MAX_AGE } from "@/lib/queries/edit
 import { CONFIRMABLE_STEPS } from "@/lib/queries/setup";
 import { seriesNameFor } from "@/components/setup/naming";
 import { loadTeam, ownerRefusal, ownerRoleOf } from "@/lib/people";
-import { copiedAccessEnd, grantAuditPayload } from "@/lib/users/external";
+import {
+  copiedAccessEnd,
+  grantAuditPayload,
+  isTeamMember,
+  liveGrantSql,
+} from "@/lib/users/external";
 
 const DATE_ORDER: Array<keyof EventDates> = [
   "buildStart",
@@ -367,6 +372,10 @@ export type CloneCounts = {
   accessEnded: number;
   /** Items whose owner is no longer active (or can't work them): the copier owns them now. */
   ownersReplaced: number;
+  /** Items whose supplier has since been archived: copied with no supplier. */
+  suppliersDropped: number;
+  /** Partner access left behind because the person is on the team now. */
+  accessTeam: number;
 };
 
 /**
@@ -438,6 +447,8 @@ export async function cloneEdition(
     accessSkipped: 0,
     accessEnded: 0,
     ownersReplaced: 0,
+    suppliersDropped: 0,
+    accessTeam: 0,
   };
 
   try {
@@ -534,6 +545,16 @@ export async function cloneEdition(
             .where(and(eq(signageItems.editionId, source.id), isNull(signageItems.deletedAt)))
             .orderBy(signageItems.seq)
         : [];
+      // Suppliers still in use: an archived one isn't offered anywhere and
+      // nobody can sign in for it, so copies of its items have no supplier.
+      const liveSuppliers = new Set(
+        (
+          await tx
+            .select({ id: suppliers.id })
+            .from(suppliers)
+            .where(and(eq(suppliers.organisationId, orgId), eq(suppliers.isArchived, false)))
+        ).map((s) => s.id),
+      );
       let seq = 0;
       let standNo = 0;
       let standSeq = 0;
@@ -589,6 +610,9 @@ export async function cloneEdition(
         const sponsorId =
           forSale || !item.sponsorId ? null : (sponsorMap.get(item.sponsorId) ?? null);
         const owner = ownerFor(item, sponsorId);
+        const supplierId =
+          item.supplierId && liveSuppliers.has(item.supplierId) ? item.supplierId : null;
+        if (item.supplierId && !supplierId) counts.suppliersDropped += 1;
         const [created] = await tx
           .insert(signageItems)
           .values({
@@ -625,7 +649,7 @@ export async function cloneEdition(
             requiresEventDirector: item.requiresEventDirector,
             budgetLine: item.budgetLine,
             costEstimate: item.costEstimate,
-            supplierId: item.supplierId,
+            supplierId,
             workflowId: item.workflowId,
             status: "draft",
             createdBy: session.user.id,
@@ -656,14 +680,6 @@ export async function cloneEdition(
               isNull(externalGrants.revokedAt),
             ),
           );
-        const liveSuppliers = new Set(
-          (
-            await tx
-              .select({ id: suppliers.id })
-              .from(suppliers)
-              .where(and(eq(suppliers.organisationId, orgId), eq(suppliers.isArchived, false)))
-          ).map((s) => s.id),
-        );
         for (const g of grants) {
           const keep =
             g.scopeType === null
@@ -682,6 +698,11 @@ export async function cloneEdition(
           const expiresAt = copiedAccessEnd(g.expiresAt, source.breakdownEnd, target.breakdownEnd);
           if (expiresAt && expiresAt.getTime() <= Date.now()) {
             counts.accessEnded += 1;
+            continue;
+          }
+          // Someone who has joined the team since holds no partner access here.
+          if (await isTeamMember(tx, orgId, g)) {
+            counts.accessTeam += 1;
             continue;
           }
           const [copy] = await tx
@@ -740,8 +761,14 @@ export async function cloneEdition(
     counts.ownersReplaced > 0
       ? `${counts.ownersReplaced} ${counts.ownersReplaced === 1 ? "item was" : "items were"} owned by people no longer able to work them, so ${counts.ownersReplaced === 1 ? "it's" : "they're"} yours now`
       : null,
+    counts.access > 0
+      ? `${counts.access} ${counts.access === 1 ? "partner can" : "partners can"} sign in to the new event now`
+      : null,
     counts.accessEnded > 0
       ? `${counts.accessEnded} partner ${counts.accessEnded === 1 ? "access" : "accesses"} had already ended and stayed behind`
+      : null,
+    counts.suppliersDropped > 0
+      ? `${counts.suppliersDropped} ${counts.suppliersDropped === 1 ? "item's supplier is" : "items' suppliers are"} archived, so ${counts.suppliersDropped === 1 ? "it has" : "they have"} no supplier yet`
       : null,
   ].filter(Boolean);
   return success(
@@ -818,6 +845,38 @@ const detailsSchema = datesSchema
   });
 
 /**
+ * Live partner access for this event at a venue. Venue access follows the
+ * event's venue, so it stops applying when the event moves (P4.4): the
+ * save says so rather than revoking anything.
+ */
+async function venueAccessCount(
+  organisationId: string,
+  editionId: string,
+  venueId: string,
+): Promise<number> {
+  const rows = await db
+    .select({ id: externalGrants.id })
+    .from(externalGrants)
+    .where(
+      and(
+        eq(externalGrants.organisationId, organisationId),
+        eq(externalGrants.editionId, editionId),
+        eq(externalGrants.scopeType, "venue"),
+        eq(externalGrants.scopeId, venueId),
+        liveGrantSql(),
+      ),
+    );
+  return rows.length;
+}
+
+/** "Details saved. 2 people at the old venue no longer see this event — …". */
+function venueMovedMessage(saved: string, oldVenueAccess: number): string {
+  if (oldVenueAccess === 0) return saved;
+  const who = oldVenueAccess === 1 ? "1 person" : `${oldVenueAccess} people`;
+  return `${saved}. ${who} at the old venue no longer ${oldVenueAccess === 1 ? "sees" : "see"} this event — invite the new venue's team from Users → External`;
+}
+
+/**
  * Setup step 1: the event's name, dates, venue (and its address, shared by
  * every event there), series and signage budget. Saving marks the step done.
  */
@@ -851,6 +910,10 @@ export async function saveEventDetails(input: unknown): Promise<ActionResult> {
     return fail(message, { venueId: message });
   }
   if (data.eventId && !series) return fail("That event series wasn't found");
+  const oldVenueAccess =
+    (venue?.id ?? null) !== current.venueId
+      ? await venueAccessCount(orgId, current.id, current.venueId)
+      : 0;
   try {
     await db.transaction(async (tx) => {
       let venueId = venue?.id;
@@ -916,7 +979,7 @@ export async function saveEventDetails(input: unknown): Promise<ActionResult> {
     return fail("The details couldn't be saved — please try again");
   }
   revalidatePath("/", "layout");
-  return success(undefined, "Details saved");
+  return success(undefined, venueMovedMessage("Details saved", oldVenueAccess));
 }
 
 const deadlineRowSchema = z.object({
@@ -1150,6 +1213,14 @@ export async function updateEdition(input: unknown): Promise<ActionResult> {
     if (venue.isArchived && venue.id !== current.venueId)
       return fail(archivedVenueMessage(venue.name));
   }
+  // A new venue: access given to the old venue's people for this event no
+  // longer applies (venue access follows the event's venue). Say so.
+  const venueMoved = Boolean(
+    data.venueId && data.venueId !== current.venueId && current.status !== "archived",
+  );
+  const oldVenueGrants = venueMoved
+    ? await venueAccessCount(session.organisation.id, current.id, current.venueId)
+    : 0;
   try {
     await db.transaction(async (tx) => {
       await tx.update(editions).set(set).where(eq(editions.id, current.id));
@@ -1198,7 +1269,11 @@ export async function updateEdition(input: unknown): Promise<ActionResult> {
           buildStart: current.buildStart,
           breakdownEnd: current.breakdownEnd,
         },
-        after: { ...set, ...(data.deadlines ? { deadlines: data.deadlines } : {}) },
+        after: {
+          ...set,
+          ...(data.deadlines ? { deadlines: data.deadlines } : {}),
+          ...(venueMoved ? { venueId: data.venueId, oldVenueGrants } : {}),
+        },
         summary: `Updated event ${current.code}`,
       });
     });
@@ -1207,7 +1282,7 @@ export async function updateEdition(input: unknown): Promise<ActionResult> {
     return fail("The event couldn't be saved — please try again");
   }
   revalidatePath("/", "layout");
-  return success(undefined, `${current.code} saved`);
+  return success(undefined, venueMovedMessage(`${current.code} saved`, oldVenueGrants));
 }
 
 const LOGO_TYPES = ["image/png", "image/jpeg", "image/webp", "image/svg+xml", "image/gif"];

@@ -23,7 +23,7 @@ describe("signInErrorMessage", () => {
 
   it("reports set-up problems instead of blaming the password", () => {
     expect(signInErrorMessage({ status: 401, message: "Invalid API key" })).toBe(
-      "Sign-in isn't working right now (Invalid API key). Please tell your admin.",
+      "Sign-in isn't working right now (Invalid API key). Please tell the team who invited you.",
     );
     expect(
       signInErrorMessage({ code: "email_provider_disabled", message: "Email logins are disabled" }),
@@ -92,7 +92,7 @@ describe("sign-in service unreachable", () => {
         "https://abc.supabase.co",
       ),
     ).toBe(
-      "Sign-in isn't working right now: couldn't reach the sign-in service at abc.supabase.co. Please tell your admin.",
+      "Sign-in isn't working right now: couldn't reach the sign-in service at abc.supabase.co. Please tell the team who invited you.",
     );
   });
 });

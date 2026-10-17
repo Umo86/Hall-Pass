@@ -155,7 +155,9 @@ test.describe("event dashboard", () => {
       await expect(main.getByText(/^Build-up starts in \d+ days$/)).toBeVisible();
       // Marketing can't set the budget; they are told who can.
       const budget = main.getByRole("region", { name: "Signage budget" });
-      await expect(budget.getByText("An admin or Operations can set one.")).toBeVisible();
+      await expect(
+        budget.getByText("Someone who can edit event details can set one."),
+      ).toBeVisible();
 
       await signInAs(ctx, "ops@media10.test", baseURL!);
       await page.goto(`${baseURL}/${code}/dashboard`);

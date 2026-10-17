@@ -22,6 +22,7 @@ import {
 import { cn } from "@/lib/utils";
 import { bumpYear, exampleSignRef, seriesNameFor, suggestCode } from "./naming";
 import { dateRange, shortDate } from "./format";
+import { copiedAccessCount, type CopyableGrant } from "@/lib/copy-access";
 
 export type CopySource = {
   id: string;
@@ -38,7 +39,10 @@ export type CopySource = {
     deadlines: number;
     sponsors: number;
     items: number;
+    /** Partner grants a copy to the same venue could bring across (ended ones included). */
     access: number;
+    /** Each of them, counted against the new dates and venue (copiedAccessCount). */
+    accessGrants?: CopyableGrant[];
     accessLeftBehind: number;
   };
 };
@@ -175,6 +179,7 @@ export function CreateEventForm({
   series,
   takenCodes,
   canCopyAccess,
+  today,
 }: {
   initialMode: Mode;
   sources: CopySource[];
@@ -182,6 +187,8 @@ export function CreateEventForm({
   series: SeriesOption[];
   takenCodes: string[];
   canCopyAccess: boolean;
+  /** Today in London, for which partners' access a copy brings across. */
+  today: string;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -293,7 +300,14 @@ export function CreateEventForm({
               openStart: copyOpenStart,
               openEnd: copyOpenEnd,
               venueId: copyVenueId || null,
-              include: { ...include, access: canCopyAccess && include.access },
+              // A box that is disabled (nothing to bring) is never sent as ticked.
+              include: {
+                halls: include.halls && copyCounts.halls > 0,
+                deadlines: include.deadlines && copyCounts.deadlines > 0,
+                sponsors: include.sponsors && copyCounts.sponsors > 0,
+                items: include.items && copyCounts.items > 0,
+                access: canCopyAccess && include.access && copyCounts.access > 0,
+              },
             });
       if (!res.ok) {
         showErrors(res);
@@ -322,6 +336,23 @@ export function CreateEventForm({
       ? [...venues, { id: source.venueId, name: source.venueName, address: null }]
       : venues;
   const differentVenue = mode === "copy" && source && copyVenueId !== source.venueId;
+  // What each box would bring across with the dates and venue chosen now —
+  // the same rule cloneEdition applies to partner access.
+  const copyCounts: Record<keyof Include, number> = {
+    halls: source?.counts.halls ?? 0,
+    deadlines: source?.counts.deadlines ?? 0,
+    sponsors: source?.counts.sponsors ?? 0,
+    items: source?.counts.items ?? 0,
+    access: source
+      ? source.counts.accessGrants
+        ? copiedAccessCount(source.counts.accessGrants, {
+            breakdownEnd: mode === "copy" && assumed ? assumed.breakdownEnd : null,
+            sameVenue: !differentVenue,
+            today,
+          })
+        : source.counts.access
+      : 0,
+  };
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-6">
@@ -618,8 +649,8 @@ export function CreateEventForm({
                     ? ([
                         [
                           "access",
-                          `Portal access for the venue and suppliers (${source.counts.access})`,
-                          source.counts.access,
+                          `Portal access for the venue and suppliers (${copyCounts.access})`,
+                          copyCounts.access,
                         ],
                       ] as const)
                     : []),

@@ -32,6 +32,11 @@ export default async function NewItemPage({
       editionId: ed.edition.id,
       kind: "signage",
       withWorkflows: true,
+      // "Me (Name)" first in the owner picker, grouped by the viewer's department.
+      viewer: {
+        id: session.user.id,
+        departmentId: session.actor.departmentId ?? null,
+      },
     }),
     editionForDeadlines(ed.edition.id),
   ]);

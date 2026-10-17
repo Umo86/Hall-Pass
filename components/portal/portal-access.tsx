@@ -173,7 +173,7 @@ function PortalAccessPanel({
         ) : events.length === 0 ? (
           <p className="text-muted-foreground text-sm">
             {scopeType === "venue"
-              ? `There are no events at ${scopeName} yet. Create one first; then you can invite people from the venue.`
+              ? `There are no events at ${scopeName} to invite people to (archived events take no invitations). Create one first; then you can invite people from the venue.`
               : "Create an event first; then you can invite people from this company."}
           </p>
         ) : (

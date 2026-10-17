@@ -33,7 +33,7 @@ const VIEWS: { id: EventGroup; label: string }[] = [
 const EMPTY_TEXT: Record<EventGroup, string> = {
   upcoming: "Nothing coming up. Past events are under Past.",
   past: "No past events yet.",
-  archived: "Nothing archived. Admins archive an event once it's finished with.",
+  archived: "Nothing archived. A super admin archives an event once it's finished with.",
 };
 
 export default async function EventsPage({

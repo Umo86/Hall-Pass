@@ -4,8 +4,8 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { comments, users } from "@/lib/db/schema";
-import { can } from "@/lib/authz";
+import { comments } from "@/lib/db/schema";
+import { can, type ExternalActor } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -15,6 +15,7 @@ import { loadStandBundle, standAuthzCtx, stepActiveFlags } from "@/lib/domain/st
 import { loadRun } from "@/lib/workflow/persist";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { itemPath } from "@/lib/edition-path";
+import { recipientsWhoCanSee, staffMemberIds } from "@/lib/users/external";
 
 const addSchema = z.object({
   entityType: z.enum(["signage_item", "stand_submission"]),
@@ -44,6 +45,8 @@ export async function addComment(input: unknown): Promise<ActionResult> {
   let link = "";
   let ownerId: string | null = null;
   let createdBy: string | null = null;
+  // Can a partner (from their live grants here) still see this record?
+  let partnerSees: (actor: ExternalActor) => boolean = () => false;
   if (data.entityType === "signage_item") {
     const bundle = await loadItemBundle(db, data.entityId, {
       organisationId: session.organisation.id,
@@ -55,6 +58,8 @@ export async function addComment(input: unknown): Promise<ActionResult> {
     ownerId = bundle.item.ownerUserId;
     createdBy = bundle.item.createdBy;
     link = `${itemPath(bundle.edition.code, bundle.item)}?tab=comments`;
+    const itemCtx = itemAuthzCtx(bundle);
+    partnerSees = (a) => can(a, { type: "signage.view", item: itemCtx });
     if (!data.isInternal) {
       if (!can(session.actor, { type: "comment.external.write", entity: itemAuthzCtx(bundle) })) {
         return fail("You cannot comment on this item");
@@ -71,12 +76,13 @@ export async function addComment(input: unknown): Promise<ActionResult> {
     editionId = bundle.edition.id;
     ref = bundle.sub.ref;
     link = `/${bundle.edition.code}/stands/${bundle.sub.ref}`;
+    const run =
+      bundle.sub.currentRunNumber > 0
+        ? await loadRun(db, "stand_submission", bundle.sub.id, bundle.sub.currentRunNumber)
+        : [];
+    const ctx = standAuthzCtx(bundle, stepActiveFlags(run));
+    partnerSees = (a) => can(a, { type: "stand.view", sub: ctx });
     if (!data.isInternal) {
-      const run =
-        bundle.sub.currentRunNumber > 0
-          ? await loadRun(db, "stand_submission", bundle.sub.id, bundle.sub.currentRunNumber)
-          : [];
-      const ctx = standAuthzCtx(bundle, stepActiveFlags(run));
       if (!can(session.actor, { type: "comment.external.write", entity: ctx })) {
         return fail("You cannot comment on this submission");
       }
@@ -116,21 +122,34 @@ export async function addComment(input: unknown): Promise<ActionResult> {
         .returning();
 
       // The owner and everyone already in the conversation hear about it.
-      const priorAuthors = await tx
-        .selectDistinct({ id: users.id, isExternal: users.isExternal })
-        .from(comments)
-        .innerJoin(users, eq(comments.authorId, users.id))
-        .where(and(eq(comments.entityType, data.entityType), eq(comments.entityId, data.entityId)));
-      const recipients = commentRecipients({
+      // Staff means an active membership here, never the users.is_external flag.
+      const authorIds = (
+        await tx
+          .selectDistinct({ id: comments.authorId })
+          .from(comments)
+          .where(
+            and(eq(comments.entityType, data.entityType), eq(comments.entityId, data.entityId)),
+          )
+      ).map((r) => r.id);
+      const staff = await staffMemberIds(tx, session.organisation.id, authorIds);
+      const wanted = commentRecipients({
         authorId: session.user.id,
         ownerId,
         createdBy,
-        priorAuthors,
+        priorAuthors: authorIds.map((id) => ({ id, isExternal: !staff.has(id) })),
         isInternal: data.isInternal,
+      });
+      // Partners only while their live grants here still show them this
+      // record (an earlier commenter may have lost access since); never for
+      // a staff-only comment.
+      const recipients = await recipientsWhoCanSee(tx, session.organisation.id, wanted, {
+        staffOnly: data.isInternal,
+        sees: partnerSees,
       });
       if (recipients.length > 0) {
         await notify(tx, {
           userIds: recipients,
+          scope: { organisationId: session.organisation.id, editionId },
           kind: "comment",
           title: `Comment on ${ref}`,
           body: data.body.slice(0, 200),
