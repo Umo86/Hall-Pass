@@ -270,6 +270,17 @@ function mainApproverWords(p: {
 }
 
 /**
+ * A "main approver when they accept" that was cancelled, in words:
+ * "Sam won't become the main approver for Marketing — Jo stays main
+ * approver". `currentMain` null = the department has no main approver.
+ */
+export function askCancelledText(who: string, department: string, currentMain: string | null) {
+  return currentMain
+    ? `${who} won't become the main approver for ${department} — ${currentMain} stays main approver`
+    : `${who} won't become the main approver for ${department} — ${department} has no main approver, so everyone in it is asked`;
+}
+
+/**
  * What changes between the departments someone signs off for now and what
  * the form asks for: rows to add, rows to remove and main-approver changes.
  */

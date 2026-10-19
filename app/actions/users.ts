@@ -20,10 +20,11 @@ import { requireSession, type Session } from "@/lib/auth/actor";
 import { deliverInvite } from "@/lib/auth/staff-invite";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { roleLabel } from "@/lib/format";
-import { EDITABLE_ABILITY_KEYS, firstName, STAFF_ROLES } from "@/lib/users/rules";
+import { askCancelledText, EDITABLE_ABILITY_KEYS, firstName, STAFF_ROLES } from "@/lib/users/rules";
 import {
   bulkPeople,
   cancelInviteTx,
+  type AskCancelled,
   type MainOnAcceptNote,
   type PendingDropped,
   inviteRowsTx,
@@ -175,12 +176,18 @@ function inviterName(session: Session) {
 
 /**
  * What a sign-off change did to main approvers, in words: "Sam becomes the
- * main approver for Marketing when they accept — Jo stays until then", and
- * "Alex won't take over Marketing when they accept" for each ask it replaced.
+ * main approver for Marketing when they accept — Jo stays until then",
+ * "Alex won't take over Marketing when they accept" for each ask it replaced,
+ * and "Sam won't become the main approver for Marketing — Jo stays main
+ * approver" for each of their own asks it cancelled.
  */
 function mainWords(
   name: string,
-  out: { mainOnAccept?: readonly MainOnAcceptNote[]; pendingDropped: readonly PendingDropped[] },
+  out: {
+    mainOnAccept?: readonly MainOnAcceptNote[];
+    pendingDropped: readonly PendingDropped[];
+    askCancelled?: readonly AskCancelled[];
+  },
   opts: { limited?: boolean } = {},
 ): string[] {
   return [
@@ -194,6 +201,9 @@ function mainWords(
     ),
     ...out.pendingDropped.map(
       (p) => `${p.name} won't take over ${p.departmentName} when they accept`,
+    ),
+    ...(out.askCancelled ?? []).map((c) =>
+      askCancelledText(firstName(name), c.departmentName, c.currentMain),
     ),
   ];
 }

@@ -492,6 +492,14 @@ export async function clearOtherMainsTx(
 /** Someone else's "main when they accept" that a newer choice replaced. */
 export type PendingDropped = { departmentId: string; departmentName: string; name: string };
 
+/** A department where this save cancelled the person's own "main when they accept". */
+export type AskCancelled = {
+  departmentId: string;
+  departmentName: string;
+  /** Who stays main approver; null when the department has none. */
+  currentMain: string | null;
+};
+
 /** A department where the person takes over as main approver when they accept. */
 export type MainOnAcceptNote = {
   departmentId: string;
@@ -580,6 +588,8 @@ export async function setSignoffs(
   mainOnAccept: MainOnAcceptNote[];
   /** Other people's pending asks this change replaced (newest choice wins). */
   pendingDropped: PendingDropped[];
+  /** Their own pending asks this change cancelled (unticked, moved, or no longer signing). */
+  askCancelled: AskCancelled[];
 }> {
   // Approver rows keep emails in lower case.
   person = { ...person, email: person.email.toLowerCase() };
@@ -761,6 +771,15 @@ export async function setSignoffs(
       subjectEmail: person.email,
     });
   }
+  const cancelledNotes: AskCancelled[] = [];
+  for (const r of askCancelled) {
+    const main = await otherMain(tx, ctx.organisationId, r.departmentId, person.email);
+    cancelledNotes.push({
+      departmentId: r.departmentId,
+      departmentName: deptName(r.departmentId),
+      currentMain: main?.name ?? null,
+    });
+  }
   const changed = changes.add.length + changes.remove.length + changes.update.length > 0;
   return {
     changed,
@@ -769,6 +788,7 @@ export async function setSignoffs(
     removed: changes.remove,
     mainOnAccept,
     pendingDropped,
+    askCancelled: cancelledNotes,
   };
 }
 
@@ -1327,7 +1347,12 @@ export async function updateInviteTx(
   tx: Tx,
   ctx: Ctx,
   input: PersonInput & { inviteId: string },
-): Promise<{ name: string; mainOnAccept: MainOnAcceptNote[]; pendingDropped: PendingDropped[] }> {
+): Promise<{
+  name: string;
+  mainOnAccept: MainOnAcceptNote[];
+  pendingDropped: PendingDropped[];
+  askCancelled: AskCancelled[];
+}> {
   // First, so an invitation accepted meanwhile is refused by openInvite.
   await lockPeople(tx, ctx.organisationId);
   const actor = await loadActor(tx, ctx);
@@ -1448,6 +1473,7 @@ export async function updateInviteTx(
     name: fullName || invite.invitedEmail,
     mainOnAccept: signoff.mainOnAccept,
     pendingDropped: signoff.pendingDropped,
+    askCancelled: signoff.askCancelled,
   };
 }
 

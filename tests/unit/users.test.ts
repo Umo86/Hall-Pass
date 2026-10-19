@@ -8,6 +8,7 @@ import {
   abilityChanged,
   abilityChoices,
   abilityGroups,
+  askCancelledText,
   defaultAbilities,
   departmentFallbackText,
   EDITABLE_ABILITY_KEYS,
@@ -399,6 +400,19 @@ describe("list words", () => {
     ).toBe("Sign-offs for Sales will go to A, B and 2 more.");
     expect(departmentFallbackText({ name: "Legal", isMain: true, others: [] })).toBe(
       "Legal will have no approvers — add one first or its sign-offs will wait.",
+    );
+  });
+});
+
+describe("a cancelled main-approver ask, in words", () => {
+  it("names who stays main approver", () => {
+    expect(askCancelledText("Sam", "Marketing", "Jo Bloggs")).toBe(
+      "Sam won't become the main approver for Marketing — Jo Bloggs stays main approver",
+    );
+  });
+  it("says everyone is asked when the department has no main approver", () => {
+    expect(askCancelledText("Sam", "Marketing", null)).toBe(
+      "Sam won't become the main approver for Marketing — Marketing has no main approver, so everyone in it is asked",
     );
   });
 });

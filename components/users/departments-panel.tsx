@@ -314,7 +314,9 @@ function DepartmentCard({
   ].filter(Boolean);
   const listed = new Set(dept.approvers.map((a) => a.userId).filter(Boolean));
   const choices = members.filter((m) => !listed.has(m.userId));
-  const hasMain = dept.approvers.some((a) => a.isMain);
+  // A pending "main when they accept" counts: pre-ticking Main approver for
+  // someone added here would quietly cancel it.
+  const hasMain = dept.approvers.some((a) => a.isMain || a.mainOnAccept);
 
   async function archive() {
     const ok = await confirm({

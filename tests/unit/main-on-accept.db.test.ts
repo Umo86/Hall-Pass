@@ -585,18 +585,27 @@ d("main approver when they accept", () => {
           signoffs,
         }),
       );
-    await edit([{ departmentId: a.dept.id, isMain: false }]);
+    const unticked = await edit([{ departmentId: a.dept.id, isMain: false }]);
     expect(await rowOf("Sam Nine", a.dept.id)).toMatchObject({
       mainOnAccept: false,
       isMain: false,
     });
+    // The save reports the cancelled ask, so the toast can say so.
+    expect(unticked.askCancelled).toEqual([
+      { departmentId: a.dept.id, departmentName: a.dept.name, currentMain: a.mainName },
+    ]);
     expect((await auditAbout(email("Sam Nine"))).map((x) => x.summary)).toContain(
       `Sam Nine will no longer become the main approver for ${a.dept.name} when they accept`,
     );
     const again = await edit([{ departmentId: a.dept.id, isMain: true }]);
     expect(again.mainOnAccept.map((m) => m.departmentId)).toEqual([a.dept.id]);
-    // Moved to another department whose main can sign: asked there instead.
+    expect(again.askCancelled).toEqual([]);
+    // Moved to another department whose main can sign: asked there instead,
+    // and the ask in the first department is reported as cancelled.
     const moved = await edit([{ departmentId: b.dept.id, isMain: true }]);
+    expect(moved.askCancelled).toEqual([
+      { departmentId: a.dept.id, departmentName: a.dept.name, currentMain: a.mainName },
+    ]);
     expect(await rowOf("Sam Nine", a.dept.id)).toBeUndefined();
     expect(moved.mainOnAccept).toEqual([
       { departmentId: b.dept.id, departmentName: b.dept.name, currentMain: b.mainName },

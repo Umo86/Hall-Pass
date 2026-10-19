@@ -25,7 +25,7 @@ import {
   UserError,
   type PendingDropped,
 } from "@/lib/users/manage";
-import { mainTakeover } from "@/lib/users/rules";
+import { askCancelledText, mainTakeover } from "@/lib/users/rules";
 
 /**
  * Departments and who signs off for each (Users → Departments). A
@@ -456,9 +456,7 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
 
 /** "Sam won't become the main approver for Marketing — Jo stays main approver". */
 function cancelledWords(who: string, dept: string, main: { name: string } | null): string {
-  return main
-    ? `${who} won't become the main approver for ${dept} — ${main.name} stays main approver`
-    : `${who} won't become the main approver for ${dept} — ${dept} has no main approver, so everyone in it is asked`;
+  return askCancelledText(who, dept, main?.name ?? null);
 }
 
 /** Clear a pending ask (Don't make main, or the outlined star), audited on the invitee. */
