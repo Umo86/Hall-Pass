@@ -120,6 +120,12 @@ export const memberships = pgTable(
     suspendedBy: uuid("suspended_by").references(() => users.id),
     /** Access ends at this moment (the end of a London day); null = no end. */
     accessEndsAt: timestamp("access_ends_at", { withTimezone: true }),
+    /**
+     * Events (editions) they work on (Users → Events). Null = every event,
+     * including ones created later — what everyone had before. Never set for
+     * super admins; never an empty list.
+     */
+    editionIds: uuid("edition_ids").array(),
     ...timestamps,
   },
   (t) => [
@@ -131,6 +137,14 @@ export const memberships = pgTable(
     check(
       "memberships_manager_scope_not_admin",
       sql`${t.role} <> 'admin' OR ${t.managerScope} IS NULL`,
+    ),
+    check(
+      "memberships_edition_ids_not_admin",
+      sql`${t.role} <> 'admin' OR ${t.editionIds} IS NULL`,
+    ),
+    check(
+      "memberships_edition_ids_not_empty",
+      sql`${t.editionIds} IS NULL OR cardinality(${t.editionIds}) > 0`,
     ),
   ],
 );
@@ -193,6 +207,12 @@ export const staffInvites = pgTable(
     /** Copied onto the membership when accepted. */
     managerScope: managerScope("manager_scope"),
     accessEndsAt: timestamp("access_ends_at", { withTimezone: true }),
+    /**
+     * Events (editions) they will work on; null = every event, including
+     * ones created later. Copied onto the membership when accepted. Never set
+     * for super admins; never an empty list.
+     */
+    editionIds: uuid("edition_ids").array(),
     /** Null on invitations sent before expiry existed: they never expire. */
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     invitedBy: uuid("invited_by").references(() => users.id),
@@ -207,6 +227,14 @@ export const staffInvites = pgTable(
     index("staff_invites_invited_by_idx").on(t.invitedBy),
     index("staff_invites_token_idx").on(t.inviteTokenHash),
     index("staff_invites_department_idx").on(t.departmentId),
+    check(
+      "staff_invites_edition_ids_not_admin",
+      sql`${t.role} <> 'admin' OR ${t.editionIds} IS NULL`,
+    ),
+    check(
+      "staff_invites_edition_ids_not_empty",
+      sql`${t.editionIds} IS NULL OR cardinality(${t.editionIds}) > 0`,
+    ),
   ],
 );
 

@@ -133,6 +133,8 @@ export const notifications = pgTable(
     title: text("title").notNull(),
     body: text("body"),
     link: text("link"),
+    /** The event it is about (from its record or its link); null = not about one event. */
+    editionId: uuid("edition_id").references(() => editions.id, { onDelete: "set null" }),
     readAt: timestamp("read_at", { withTimezone: true }),
     emailedAt: timestamp("emailed_at", { withTimezone: true }),
     ...timestamps,
@@ -140,6 +142,7 @@ export const notifications = pgTable(
   (t) => [
     index("notifications_user_idx").on(t.userId),
     index("notifications_user_unread_idx").on(t.userId, t.readAt),
+    index("notifications_edition_idx").on(t.editionId),
   ],
 );
 

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   date,
   index,
   integer,
@@ -56,6 +57,16 @@ export const approvers = pgTable(
     userId: uuid("user_id").references(() => users.id),
     /** The department's main approver gets items unless someone else is picked. */
     isMain: boolean("is_main").notNull().default(false),
+    /**
+     * Invited as the department's main approver while someone who can sign is
+     * main: they take over when they accept (lib/auth/claim-staff-invite.ts).
+     * Only on rows without an account that aren't main already; one per department.
+     */
+    mainOnAccept: boolean("main_on_accept").notNull().default(false),
+    /** Who asked for it (told if it can't be carried out when they accept). */
+    mainOnAcceptBy: uuid("main_on_accept_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
     ...timestamps,
   },
   (t) => [
@@ -63,10 +74,19 @@ export const approvers = pgTable(
     index("approvers_org_idx").on(t.organisationId),
     index("approvers_user_idx").on(t.userId),
     index("approvers_email_idx").on(t.email),
+    index("approvers_main_on_accept_by_idx").on(t.mainOnAcceptBy),
     // At most one main approver per department.
     uniqueIndex("approvers_one_main")
       .on(t.departmentId)
       .where(sql`${t.isMain}`),
+    // At most one "main approver when they accept" per department.
+    uniqueIndex("approvers_one_main_on_accept")
+      .on(t.departmentId)
+      .where(sql`${t.mainOnAccept}`),
+    check(
+      "approvers_main_on_accept_invite_only",
+      sql`NOT ${t.mainOnAccept} OR (${t.userId} IS NULL AND NOT ${t.isMain})`,
+    ),
   ],
 );
 

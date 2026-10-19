@@ -1,5 +1,8 @@
+import { sql } from "drizzle-orm";
 import {
+  check,
   date,
+  foreignKey,
   index,
   integer,
   numeric,
@@ -7,7 +10,9 @@ import {
   primaryKey,
   boolean,
   text,
+  timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { standType, supplierKind } from "./enums";
@@ -85,6 +90,53 @@ export const contractors = pgTable(
   (t) => [index("contractors_org_idx").on(t.organisationId)],
 );
 
+/** What sponsors can buy as a package at one event: a price, what's included, how many. */
+export const sponsorshipPackages = pgTable(
+  "sponsorship_packages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    editionId: uuid("edition_id")
+      .notNull()
+      .references(() => editions.id),
+    name: text("name").notNull(),
+    description: text("description"),
+    /** List price in the organisation's currency; null = "No price yet". */
+    price: numeric("price", { precision: 12, scale: 2 }),
+    /** How many can be sold; null = no limit. */
+    places: integer("places"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    /** No longer offered; its sales stay. */
+    isArchived: boolean("is_archived").notNull().default(false),
+    ...timestamps,
+  },
+  (t) => [
+    index("sponsorship_packages_edition_idx").on(t.editionId, t.sortOrder),
+    uniqueIndex("sponsorship_packages_edition_name_unique").on(t.editionId, sql`lower(${t.name})`),
+    unique("sponsorship_packages_id_edition_unique").on(t.id, t.editionId),
+    check("sponsorship_packages_price_not_negative", sql`${t.price} IS NULL OR ${t.price} >= 0`),
+    check("sponsorship_packages_places_positive", sql`${t.places} IS NULL OR ${t.places} >= 1`),
+  ],
+);
+
+/** A package's "what's included" line; copied into a sponsor's entitlements when sold. */
+export const sponsorshipPackageLines = pgTable(
+  "sponsorship_package_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    packageId: uuid("package_id")
+      .notNull()
+      .references(() => sponsorshipPackages.id, { onDelete: "cascade" }),
+    description: text("description").notNull(),
+    quantity: integer("quantity").notNull().default(1),
+    sortOrder: integer("sort_order").notNull().default(0),
+    ...timestamps,
+  },
+  (t) => [
+    index("sponsorship_package_lines_package_idx").on(t.packageId, t.sortOrder),
+    check("sponsorship_package_lines_quantity_positive", sql`${t.quantity} >= 1`),
+  ],
+);
+
 export const sponsors = pgTable(
   "sponsors",
   {
@@ -95,11 +147,37 @@ export const sponsors = pgTable(
     companyName: text("company_name").notNull(),
     contactName: text("contact_name"),
     contactEmail: text("contact_email"),
+    /** Kept in step with the linked package's name (older code reads it); not edited directly. */
     packageName: text("package_name"),
+    /** The package they bought (one per sponsor), always one of their own event's. */
+    packageId: uuid("package_id"),
+    /** The agreed price; defaults to the package price when sold. */
+    packagePrice: numeric("package_price", { precision: 12, scale: 2 }),
+    /** Why the agreed price differs from the package price (e.g. a discount). */
+    packagePriceNote: text("package_price_note"),
+    /** When it was sold. */
+    packageSoldAt: timestamp("package_sold_at", { withTimezone: true }),
     notes: text("notes"),
     ...timestamps,
   },
-  (t) => [index("sponsors_edition_idx").on(t.editionId)],
+  (t) => [
+    index("sponsors_edition_idx").on(t.editionId),
+    index("sponsors_package_idx").on(t.packageId),
+    // A sponsor's package is always one of their own event's packages.
+    foreignKey({
+      name: "sponsors_package_same_event_fk",
+      columns: [t.packageId, t.editionId],
+      foreignColumns: [sponsorshipPackages.id, sponsorshipPackages.editionId],
+    }),
+    check(
+      "sponsors_package_sale_fields",
+      sql`${t.packageId} IS NOT NULL OR (${t.packagePrice} IS NULL AND ${t.packagePriceNote} IS NULL AND ${t.packageSoldAt} IS NULL)`,
+    ),
+    check(
+      "sponsors_package_price_not_negative",
+      sql`${t.packagePrice} IS NULL OR ${t.packagePrice} >= 0`,
+    ),
+  ],
 );
 
 export const sponsorEntitlements = pgTable(
@@ -111,9 +189,14 @@ export const sponsorEntitlements = pgTable(
       .references(() => sponsors.id),
     description: text("description").notNull(),
     quantity: integer("quantity").notNull().default(1),
+    /** The package whose sale added this line; null = added by hand. */
+    fromPackageId: uuid("from_package_id").references(() => sponsorshipPackages.id),
     ...timestamps,
   },
-  (t) => [index("sponsor_entitlements_sponsor_idx").on(t.sponsorId)],
+  (t) => [
+    index("sponsor_entitlements_sponsor_idx").on(t.sponsorId),
+    index("sponsor_entitlements_from_package_idx").on(t.fromPackageId),
+  ],
 );
 
 export const exhibitors = pgTable(
