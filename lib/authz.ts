@@ -5,9 +5,9 @@
  * permission-matrix row, including negatives (tests/unit/authz*.test.ts,
  * with a frozen snapshot of the rules before the abilities registry).
  *
- * can() runs in this order: tenancy → external people → sections → abilities
- * → the role, item or assignment rule. Who may add and change people (super
- * admins and managers) is at the end of the file.
+ * can() runs in this order: tenancy → external people → events → sections →
+ * abilities → the role, item or assignment rule. Who may add and change
+ * people (super admins and managers) is at the end of the file.
  */
 import { roleLabel } from "./format";
 
@@ -400,6 +400,9 @@ export const OVERRIDE_KEYS = [
 /** @deprecated See OVERRIDE_KEYS. */
 export type OverrideKey = (typeof OVERRIDE_KEYS)[number];
 
+/** Events (editions) someone works on: a list, or null for every event. */
+export type EditionScope = readonly string[] | null;
+
 export type StaffActor = {
   kind: "staff";
   userId: string;
@@ -414,6 +417,11 @@ export type StaffActor = {
   features?: Feature[] | null;
   /** Managers add and change people in this scope; super admins manage everyone. */
   managerScope?: ManagerScope | null;
+  /**
+   * Events they work on (Users → Events); null or missing = every event,
+   * including ones created later. Super admins are never limited.
+   */
+  editionIds?: string[] | null;
 };
 
 export type ExternalActor = {
@@ -425,8 +433,13 @@ export type ExternalActor = {
 
 export type Actor = StaffActor | ExternalActor;
 
-/** Just what abilities depend on: a role and what is stored for the person. */
-export type AbilityHolder = { role: StaffRole; overrides?: PermissionOverrides | null };
+/** Just what abilities and events depend on: a role and what is stored for the person. */
+export type AbilityHolder = {
+  role: StaffRole;
+  overrides?: PermissionOverrides | null;
+  /** Events they work on; null or missing = every event. */
+  editionIds?: readonly string[] | null;
+};
 
 /** A signage item, reduced to the fields authorisation depends on. */
 export type SignageItemCtx = {
@@ -446,6 +459,8 @@ export type SignageItemCtx = {
 export type TaskCtx = {
   assignedToUserId: string;
   createdByUserId: string;
+  /** The task's event, if it has one. */
+  editionId?: string | null;
 };
 
 export type StandSubmissionCtx = {
@@ -487,22 +502,22 @@ export type PersonCtx = {
 };
 
 export type Action =
-  | { type: "view_edition" }
+  | { type: "view_edition"; editionId?: string }
   | { type: "signage.view"; item: SignageItemCtx }
-  | { type: "signage.create" }
-  | { type: "sponsorship.create" }
-  | { type: "stand_design.create" }
-  | { type: "task.create" }
-  | { type: "task.assign" }
+  | { type: "signage.create"; editionId?: string }
+  | { type: "sponsorship.create"; editionId?: string }
+  | { type: "stand_design.create"; editionId?: string }
+  | { type: "task.create"; editionId?: string }
+  | { type: "task.assign"; editionId?: string }
   | { type: "task.update"; task: TaskCtx }
   | { type: "task.delete"; task: TaskCtx }
   | { type: "signage.edit"; item: SignageItemCtx }
-  | { type: "signage.delete" }
-  | { type: "signage.restore" }
+  | { type: "signage.delete"; editionId?: string }
+  | { type: "signage.restore"; editionId?: string }
   /** Change many items at once (each item still checks its own rule). */
-  | { type: "signage.bulk" }
+  | { type: "signage.bulk"; editionId?: string }
   /** Import a schedule from Excel: bulk and adding signage. */
-  | { type: "signage.import" }
+  | { type: "signage.import"; editionId?: string }
   | { type: "artwork.upload"; item: SignageItemCtx }
   | { type: "signage.submit"; item: SignageItemCtx }
   | { type: "approval.decide"; step: ApprovalStepCtx }
@@ -510,34 +525,34 @@ export type Action =
   /** Chase someone else's sign-off (Remind on Approvals → Everyone's). */
   | { type: "approval.remind"; step: ApprovalStepCtx }
   /** See everyone's sign-offs (Approvals → Everyone's, the team views). */
-  | { type: "approval.chase" }
-  | { type: "signage.hold" }
-  | { type: "signage.resume" }
-  | { type: "signage.reopen" }
-  | { type: "signage.close" }
+  | { type: "approval.chase"; editionId?: string }
+  | { type: "signage.hold"; editionId?: string }
+  | { type: "signage.resume"; editionId?: string }
+  | { type: "signage.reopen"; editionId?: string }
+  | { type: "signage.close"; editionId?: string }
   | { type: "stand.view"; sub: StandSubmissionCtx }
-  | { type: "stand.review" }
+  | { type: "stand.review"; editionId?: string }
   | { type: "stand.submit"; sub: StandSubmissionCtx }
-  | { type: "costs.view" }
+  | { type: "costs.view"; editionId?: string }
   /** With an item: sponsorship items also let whoever may edit them set costs. */
   | { type: "costs.edit"; item?: SignageItemCtx }
-  | { type: "sponsorship.sell" }
-  | { type: "comment.internal.write" }
-  | { type: "comment.internal.read" }
+  | { type: "sponsorship.sell"; editionId?: string }
+  | { type: "comment.internal.write"; editionId?: string }
+  | { type: "comment.internal.read"; editionId?: string }
   | { type: "comment.external.write"; entity: SignageItemCtx | StandSubmissionCtx }
-  | { type: "snag.manage" }
-  | { type: "export.run"; kind: string }
+  | { type: "snag.manage"; editionId?: string }
+  | { type: "export.run"; kind: string; editionId?: string }
   | { type: "events.create" }
-  | { type: "events.edit" }
-  | { type: "halls.manage" }
+  | { type: "events.edit"; editionId?: string }
+  | { type: "halls.manage"; editionId?: string }
   | { type: "suppliers.manage" }
   | { type: "lists.manage" }
   | { type: "organisation.manage" }
   /** Derived: any of the six setup abilities (opens Settings). */
   | { type: "settings.manage" }
   /** Derived: dates, halls, lists or suppliers (opens an event's Setup). */
-  | { type: "event.setup" }
-  | { type: "partners.invite" }
+  | { type: "event.setup"; editionId?: string }
+  | { type: "partners.invite"; editionId?: string }
   | { type: "departments.manage" }
   /** Super admins only: grant super admin or manager, remove people, removal impact. */
   | { type: "users.manage" }
@@ -882,6 +897,78 @@ function recordOrganisation(action: Action): string | undefined {
   return a.entity?.organisationId;
 }
 
+// ---------------------------------------------------------------------------
+// Events per person (Users → Events). Super admins and anyone without a list
+// see every event; a list limits a team member to those events. Partners
+// have their own per-event grants, which their rules below decide.
+// ---------------------------------------------------------------------------
+
+/** The events this person works on: null = every event (super admins, unlimited staff). */
+export function editionScope(actor: Actor | AbilityHolder): EditionScope {
+  if ("kind" in actor && actor.kind === "external") {
+    return [...new Set(activeGrants(actor).map((g) => g.editionId))];
+  }
+  const h = actor as AbilityHolder;
+  if (h.role === "admin" || h.editionIds == null) return null;
+  return h.editionIds;
+}
+
+/**
+ * Can this team member open the event at all? Super admins and people
+ * without a list: always. Partners: false (their grant rules decide).
+ */
+export function seesEdition(actor: Actor | AbilityHolder, editionId: string): boolean {
+  if ("kind" in actor && actor.kind === "external") return false;
+  const scope = editionScope(actor);
+  return scope === null || scope.includes(editionId);
+}
+
+/** Does `who` see every one of these events? */
+export function seesAllEditions(
+  who: Actor | AbilityHolder,
+  editionIds: readonly string[],
+): boolean {
+  return editionIds.every((id) => seesEdition(who, id));
+}
+
+/**
+ * The loaders' check (record bundles, ownEdition, getEditionByCode):
+ * partners pass, because their grant rules in can() decide each record;
+ * team members need seesEdition.
+ */
+export function opensEdition(actor: Actor, editionId: string): boolean {
+  if (actor.kind === "external") return true;
+  return seesEdition(actor, editionId);
+}
+
+/**
+ * The event of the record an action is about, if it names one: its item,
+ * stand, step, entity or task, else its editionId. "" (the people rules'
+ * role probes) counts as none.
+ */
+export function editionOf(action: Action): string | undefined {
+  const a = action as {
+    editionId?: string;
+    item?: { editionId?: string };
+    sub?: { editionId?: string };
+    step?: ApprovalStepCtx;
+    entity?: { editionId?: string };
+    task?: { editionId?: string | null };
+  };
+  const id =
+    a.item?.editionId ||
+    a.sub?.editionId ||
+    (a.step
+      ? a.step.entity.type === "signage_item"
+        ? a.step.entity.item.editionId
+        : a.step.entity.sub.editionId
+      : undefined) ||
+    a.entity?.editionId ||
+    a.task?.editionId ||
+    a.editionId;
+  return id || undefined;
+}
+
 /** Can this person use the section? See FEATURES. */
 export function hasFeature(actor: Actor, feature: Feature): boolean {
   if (actor.kind !== "staff") return false;
@@ -973,6 +1060,12 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
     }
   }
 
+  // Events (Users → Events): a team member limited to some events can do
+  // nothing — view, change, decide or be counted — in any other. Super admins
+  // are never limited. Before sections and abilities, so no ability reopens it.
+  const editionId = editionOf(action);
+  if (editionId !== undefined && !seesEdition(actor, editionId)) return false;
+
   const role = actor.role;
 
   // Sections switched off for this person (admins are immune). Checked
@@ -1003,7 +1096,9 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
 
   switch (action.type) {
     case "view_edition":
-      return true; // every staff role views all editions and records
+      // Every staff role views every event they work on (the events rule
+      // above has already refused one outside their list).
+      return true;
     case "signage.view":
       return true;
     case "stand.view":
@@ -1326,6 +1421,11 @@ export type PersonAccess = {
   /** isMain: main approver now, or (for an invitation) when they accept. */
   signoffs: readonly { departmentId: string; isMain: boolean }[];
   accessEndsAt?: Date | null;
+  /**
+   * Events they work on: undefined = not part of this check (templates,
+   * callers that don't touch events); null = every event.
+   */
+  editionIds?: readonly string[] | null;
 };
 
 /**
@@ -1339,7 +1439,9 @@ export type PersonAccess = {
  * and never one only a super admin gives; (8) sign-off rows only for the
  * actor's own sign-off departments, and main approvers (including "main
  * when they accept") only with departments.manage; (9) a paused actor can't resume someone else's
- * sign-off. An access end date within scope is fine.
+ * sign-off; (6b) events the actor can open (ones the person already had may
+ * stay; none can be taken away that the actor can't open; a list is never
+ * empty, for super admins too). An access end date within scope is fine.
  */
 export function personChangeRefusal(
   actor: Actor,
@@ -1356,6 +1458,10 @@ export function personChangeRefusal(
     if (!canManagePerson(actor, target)) return "You can't change this person's access";
   } else if (!managerScope(actor)) {
     return "You can't add people — ask a super admin";
+  }
+  // 6b (for everyone). "Only these events" needs at least one event.
+  if (after.editionIds != null && after.editionIds.length === 0) {
+    return "Tick at least one event, or choose All events";
   }
   if (isSuperAdmin(actor)) return null;
   const scope = managerScope(actor);
@@ -1395,6 +1501,10 @@ export function personChangeRefusal(
       }
     }
   }
+
+  // 6b. Events: only the events the actor can open themselves.
+  const events = eventsRefusal(actor, before, after);
+  if (events) return events;
 
   // 7. Role powers and abilities newly gained.
   if (
@@ -1454,6 +1564,58 @@ export function personChangeRefusal(
 
   // 10. An access end date within scope is fine.
   return null;
+}
+
+/** Rule 6b for an actor limited to some events (see personChangeRefusal). */
+function eventsRefusal(
+  actor: Actor,
+  before: PersonAccess | null,
+  after: PersonAccess,
+): string | null {
+  if (after.editionIds === undefined) return null;
+  const mine = editionScope(actor);
+  if (mine === null) return null;
+  const had: EditionScope = before ? (before.editionIds ?? null) : [];
+  if (after.editionIds === null) {
+    return had === null
+      ? null
+      : "You can only give the events you can open yourself — tick them one by one";
+  }
+  if (had === null) {
+    return "You can only take away events you can open yourself — ask a super admin";
+  }
+  for (const id of after.editionIds) {
+    if (!had.includes(id) && !mine.includes(id)) {
+      return "You can only give the events you can open yourself";
+    }
+  }
+  for (const id of had) {
+    if (!after.editionIds.includes(id) && !mine.includes(id)) {
+      return "You can only take away events you can open yourself — ask a super admin";
+    }
+  }
+  return null;
+}
+
+/**
+ * The events this person may give (Users → Events): "all" for super admins
+ * and anyone who sees every event, otherwise those of `all` they can open.
+ */
+export function assignableEditions(actor: Actor, all: readonly string[]): "all" | string[] {
+  if (actor.kind !== "staff") return [];
+  const mine = editionScope(actor);
+  if (mine === null) return "all";
+  return all.filter((id) => mine.includes(id));
+}
+
+/**
+ * Copying an event may give the copy to someone limited to the source:
+ * super admins anyone; managers people they may change, when they can open
+ * the source themselves.
+ */
+export function canExtendToCopy(actor: Actor, person: PersonCtx, sourceEditionId: string): boolean {
+  if (isSuperAdmin(actor)) return person.organisationId === actor.organisationId;
+  return canManagePerson(actor, person) && seesEdition(actor, sourceEditionId);
 }
 
 /**

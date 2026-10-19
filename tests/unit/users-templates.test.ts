@@ -58,6 +58,13 @@ describe("templates", () => {
     expect(templateById("nope")).toBeNull();
   });
 
+  it("only the installer starts at Only these events with the current event", () => {
+    expect(PERSON_TEMPLATES.filter((t) => t.events === "current").map((t) => t.id)).toEqual([
+      "freelance_installer",
+    ]);
+    expect(PERSON_TEMPLATES.every((t) => t.events === "keep" || t.events === "current")).toBe(true);
+  });
+
   it("only the installer suggests an end date", () => {
     expect(PERSON_TEMPLATES.filter((t) => t.suggestEndDate).map((t) => t.id)).toEqual([
       "freelance_installer",

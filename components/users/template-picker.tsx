@@ -55,6 +55,7 @@ export function TemplatePicker({
                 <span className="text-muted-foreground block text-xs">
                   {t.role ? `${roleLabel(t.role)} · ` : ""}
                   {t.description}
+                  {t.events === "current" ? " Usually for one event." : ""}
                 </span>
               </span>
             </label>

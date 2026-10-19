@@ -35,6 +35,12 @@ export type PersonTemplate = {
   jobTitle: string | null;
   /** Usually someone with an end date (a freelancer): the form asks for one. */
   suggestEndDate: boolean;
+  /**
+   * Users → Events: "keep" leaves the form's choice as it is; "current" sets
+   * Only these events with the current event (freelancers are usually hired
+   * for one event).
+   */
+  events: "keep" | "current";
 };
 
 export const PERSON_TEMPLATES: readonly PersonTemplate[] = [
@@ -47,6 +53,7 @@ export const PERSON_TEMPLATES: readonly PersonTemplate[] = [
     abilities: {},
     jobTitle: null,
     suggestEndDate: false,
+    events: "keep",
   },
   {
     id: "marketing_executive",
@@ -57,6 +64,7 @@ export const PERSON_TEMPLATES: readonly PersonTemplate[] = [
     abilities: {},
     jobTitle: "Marketing executive",
     suggestEndDate: false,
+    events: "keep",
   },
   {
     id: "freelance_installer",
@@ -68,6 +76,7 @@ export const PERSON_TEMPLATES: readonly PersonTemplate[] = [
     abilities: { "snag.manage": true, "signage.confirm": true },
     jobTitle: "Installer",
     suggestEndDate: true,
+    events: "current",
   },
   {
     id: "sales_manager",
@@ -78,6 +87,7 @@ export const PERSON_TEMPLATES: readonly PersonTemplate[] = [
     abilities: { "reports.download": true },
     jobTitle: "Sales manager",
     suggestEndDate: false,
+    events: "keep",
   },
   {
     id: "operations_coordinator",
@@ -88,6 +98,7 @@ export const PERSON_TEMPLATES: readonly PersonTemplate[] = [
     abilities: {},
     jobTitle: "Operations coordinator",
     suggestEndDate: false,
+    events: "keep",
   },
 ];
 

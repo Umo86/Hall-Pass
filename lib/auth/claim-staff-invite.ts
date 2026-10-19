@@ -63,6 +63,9 @@ export async function claimStaffInvite(invite: StaffInvite, userId: string, full
         // Users v2: a manager's scope and an access end date come across too.
         managerScope: invite.role === "admin" ? null : invite.managerScope,
         accessEndsAt: invite.accessEndsAt,
+        // Users → Events: the events come across too (an event archived
+        // meanwhile still counts). Super admins are never limited.
+        editionIds: invite.role === "admin" ? null : (invite.editionIds ?? null),
       })
       .onConflictDoNothing();
     // Asks for them as main approver, read before linking clears them.

@@ -39,6 +39,8 @@ export async function createStaffInvite(
     /** Copied onto the membership when accepted. */
     managerScope?: ManagerScope | null;
     accessEndsAt?: Date | null;
+    /** Events they will work on (Users → Events); null or missing = every event. */
+    editionIds?: string[] | null;
     invitedBy: string;
     summary: string;
   },
@@ -70,6 +72,7 @@ export async function createStaffInvite(
       features: opts.features ?? null,
       managerScope: opts.role === "admin" ? null : (opts.managerScope ?? null),
       accessEndsAt: opts.accessEndsAt ?? null,
+      editionIds: opts.role === "admin" ? null : (opts.editionIds ?? null),
       expiresAt,
       invitedBy: opts.invitedBy,
       inviteTokenHash: hashInviteToken(token),
@@ -88,6 +91,7 @@ export async function createStaffInvite(
       features: opts.features ?? null,
       managerScope: opts.managerScope ?? null,
       accessEndsAt: opts.accessEndsAt ?? null,
+      ...(opts.role !== "admin" && opts.editionIds ? { editionIds: opts.editionIds } : {}),
     },
     summary: opts.summary,
     subjectEmail: email,

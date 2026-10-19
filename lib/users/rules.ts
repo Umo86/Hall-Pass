@@ -237,6 +237,21 @@ export function mainApproverNote(p: {
   invited: boolean;
   current: { name: string; canSign: boolean } | null;
   pending: string | null;
+  /** eventsSummary of a new main limited to some events; null/omitted = every event. */
+  newMainEvents?: string | null;
+}): string {
+  const events = p.newMainEvents
+    ? ` ${p.person} only works on ${p.newMainEvents.replace(/ only$/, "")}, so ${p.department} sign-offs in other events go to everyone in ${p.department}.`
+    : "";
+  return mainApproverWords(p) + events;
+}
+
+function mainApproverWords(p: {
+  person: string;
+  department: string;
+  invited: boolean;
+  current: { name: string; canSign: boolean } | null;
+  pending: string | null;
 }): string {
   const waits = p.invited && Boolean(p.current?.canSign);
   const first = !p.current
@@ -338,4 +353,72 @@ export function startingChoices(
     if (abilityLevel({ role, overrides: out }, k) !== "no") out[k] = false;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Events per person (Users → Events). A list of edition ids, or null for
+// every event including new ones.
+// ---------------------------------------------------------------------------
+
+/** Clean an events list for storing: null stays null; no repeats, sorted. An empty list stays empty (refused). */
+export function normaliseEditionIds(ids: readonly string[] | null | undefined): string[] | null {
+  if (ids == null) return null;
+  return [...new Set(ids)].sort();
+}
+
+/** Are these the same events? (null = every event) */
+export function sameEditions(
+  a: readonly string[] | null | undefined,
+  b: readonly string[] | null | undefined,
+): boolean {
+  const x = normaliseEditionIds(a);
+  const y = normaliseEditionIds(b);
+  if (x === null || y === null) return x === y;
+  return x.length === y.length && x.every((id, i) => id === y[i]);
+}
+
+/**
+ * "All events", "BIRM27 only" or "3 events". `codeOf` gives a code only for
+ * events the viewer can open (null otherwise), so nothing names an event
+ * they haven't been given.
+ */
+export function eventsSummary(
+  ids: readonly string[] | null,
+  codeOf: (id: string) => string | null,
+): string {
+  if (ids === null) return "All events";
+  if (ids.length === 1) {
+    const code = codeOf(ids[0]);
+    return code ? `${code} only` : "1 event";
+  }
+  return `${ids.length} events`;
+}
+
+/** The chip's title: "Only 3 events: BIRM27, LOND27 and 1 other" (codes the viewer can open). */
+export function eventsTitle(
+  ids: readonly string[] | null,
+  codeOf: (id: string) => string | null,
+): string {
+  if (ids === null) return "All events";
+  const known = ids.map(codeOf).filter((c): c is string => Boolean(c));
+  const hidden = ids.length - known.length;
+  if (ids.length === 1) return known.length ? `Only ${known[0]}` : "Only 1 event";
+  if (known.length === 0) return `Only ${ids.length} events`;
+  const parts = [...known];
+  if (hidden > 0) parts.push(`${hidden} other${hidden === 1 ? "" : "s"}`);
+  const list =
+    parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+  return `Only ${ids.length} events: ${list}`;
+}
+
+/** The events someone loses with this change (before null = every event; after null = none lost). */
+export function removedEditions(
+  before: readonly string[] | null,
+  after: readonly string[] | null,
+  all: readonly string[],
+): string[] {
+  if (after === null) return [];
+  const had = before === null ? all : before;
+  const keep = new Set(after);
+  return [...new Set(had)].filter((id) => !keep.has(id));
 }

@@ -204,6 +204,8 @@ async function loadForUser(
       departmentId: membership.departmentId,
       features: parseFeatures(membership.features),
       managerScope: membership.role === "admin" ? null : membership.managerScope,
+      // Users → Events: null = every event (super admins always).
+      editionIds: membership.role === "admin" ? null : (membership.editionIds ?? null),
     };
     if (opts.touch !== false) touchLastSeen(user);
     return {

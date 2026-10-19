@@ -13,15 +13,20 @@ import {
   EDITABLE_ABILITY_KEYS,
   effectiveAbilities,
   effectiveAbility,
+  eventsSummary,
+  eventsTitle,
   featuresSummary,
   firstName,
   inviteStatusText,
   mainApproverNote,
   mainOnAcceptOutcome,
   mainTakeover,
+  normaliseEditionIds,
   normaliseFeatures,
   overridesFor,
+  removedEditions,
   roleForDepartment,
+  sameEditions,
   sameFeatures,
   signoffChanges,
   signoffPaused,
@@ -264,6 +269,77 @@ describe("main approver when they accept", () => {
     ).toBe("Replaces Jo, who can't sign off at the moment. Alex won't take over when they accept.");
     expect(mainApproverNote({ ...base, pending: "Alex", invited: true, current: null })).toBe(
       "Marketing has no main approver yet. Alex won't take over when they accept.",
+    );
+  });
+});
+
+describe("events per person", () => {
+  const codes: Record<string, string> = { a: "BIRM27", b: "LOND27", c: "BIRM28" };
+  const all = (id: string) => codes[id] ?? null;
+  const onlyA = (id: string) => (id === "a" ? "BIRM27" : null);
+
+  it("normaliseEditionIds: null stays null; lists are de-duplicated and sorted; empty stays empty", () => {
+    expect(normaliseEditionIds(null)).toBeNull();
+    expect(normaliseEditionIds(undefined)).toBeNull();
+    expect(normaliseEditionIds(["b", "a", "b"])).toEqual(["a", "b"]);
+    expect(normaliseEditionIds([])).toEqual([]);
+  });
+
+  it("sameEditions: order and repeats don't matter; null is only the same as null", () => {
+    expect(sameEditions(null, null)).toBe(true);
+    expect(sameEditions(["a", "b"], ["b", "a", "a"])).toBe(true);
+    expect(sameEditions(["a"], ["a", "b"])).toBe(false);
+    expect(sameEditions(null, ["a"])).toBe(false);
+    expect(sameEditions(["a"], null)).toBe(false);
+  });
+
+  it("eventsSummary: All events, one event by code when the viewer can open it, else a count", () => {
+    expect(eventsSummary(null, all)).toBe("All events");
+    expect(eventsSummary(["a"], all)).toBe("BIRM27 only");
+    expect(eventsSummary(["b"], onlyA)).toBe("1 event");
+    expect(eventsSummary(["a", "b", "c"], all)).toBe("3 events");
+    expect(eventsSummary(["a", "b"], onlyA)).toBe("2 events");
+  });
+
+  it("eventsTitle names only the codes the viewer can open", () => {
+    expect(eventsTitle(null, all)).toBe("All events");
+    expect(eventsTitle(["a"], all)).toBe("Only BIRM27");
+    expect(eventsTitle(["b"], onlyA)).toBe("Only 1 event");
+    expect(eventsTitle(["a", "b", "c"], all)).toBe("Only 3 events: BIRM27, LOND27 and BIRM28");
+    expect(eventsTitle(["a", "b", "c"], onlyA)).toBe("Only 3 events: BIRM27 and 2 others");
+    expect(eventsTitle(["a", "b"], onlyA)).toBe("Only 2 events: BIRM27 and 1 other");
+    expect(eventsTitle(["b", "c"], onlyA)).toBe("Only 2 events");
+  });
+
+  it("removedEditions: what someone loses (All = every event; to All loses nothing)", () => {
+    const every = ["a", "b", "c"];
+    expect(removedEditions(null, ["a"], every)).toEqual(["b", "c"]);
+    expect(removedEditions(["a", "b"], ["a"], every)).toEqual(["b"]);
+    expect(removedEditions(["a", "b"], null, every)).toEqual([]);
+    expect(removedEditions(null, null, every)).toEqual([]);
+    expect(removedEditions(["a"], ["a", "b"], every)).toEqual([]);
+  });
+
+  it("mainApproverNote adds where a limited new main's sign-offs go in other events", () => {
+    const base = { person: "Sam", department: "Marketing", pending: null };
+    expect(
+      mainApproverNote({ ...base, invited: false, current: null, newMainEvents: "BIRM27 only" }),
+    ).toBe(
+      "Marketing has no main approver yet. Sam only works on BIRM27, so Marketing sign-offs in other events go to everyone in Marketing.",
+    );
+    expect(
+      mainApproverNote({
+        ...base,
+        invited: true,
+        current: { name: "Jo", canSign: true },
+        pending: "Alex",
+        newMainEvents: "3 events",
+      }),
+    ).toBe(
+      "Jo stays main approver until Sam accepts, then Sam takes over. Alex was going to take over when they accept — Sam will instead. Sam only works on 3 events, so Marketing sign-offs in other events go to everyone in Marketing.",
+    );
+    expect(mainApproverNote({ ...base, invited: false, current: null, newMainEvents: null })).toBe(
+      "Marketing has no main approver yet.",
     );
   });
 });
