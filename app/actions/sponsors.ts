@@ -11,8 +11,11 @@ import {
   signageItems,
   sponsorEntitlements,
   sponsors,
+  sponsorshipPackages,
 } from "@/lib/db/schema";
 import { can, missingAbilityMessage, opensEdition, type Actor } from "@/lib/authz";
+import { lineKey, parseIncludedLines } from "@/lib/domain/sponsorship-packages";
+import { ownSponsor } from "@/lib/sponsorship/own";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -38,24 +41,11 @@ const schema = z.object({
     .nullable()
     .transform((v) => (v ? v : null))
     .refine((v) => v === null || z.string().email().safeParse(v).success, "Enter a valid email"),
-  packageName: optText,
+  // No packageName: a sponsor's package is sold from the Packages tab (an
+  // older client's value is stripped by zod and never written).
   /** One entitlement per line, e.g. "6 x Logo on hanging banners". */
   entitlements: z.string().max(5000).optional().default(""),
 });
-
-/** "6 x Logo on banners" → { quantity: 6, description: "Logo on banners" }. */
-function parseEntitlements(text: string) {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const m = line.match(/^(\d+)\s*[x×]\s*(.+)$/i);
-      return m
-        ? { quantity: Math.max(1, Number(m[1])), description: m[2].trim() }
-        : { quantity: 1, description: line };
-    });
-}
 
 /**
  * Add or edit a sponsor for a show. New entitlement lines are added;
@@ -84,7 +74,6 @@ export async function saveSponsor(input: unknown): Promise<ActionResult<{ id: st
     companyName: data.companyName,
     contactName: data.contactName,
     contactEmail: data.contactEmail,
-    packageName: data.packageName,
   };
   let savedId: string;
   try {
@@ -108,10 +97,15 @@ export async function saveSponsor(input: unknown): Promise<ActionResult<{ id: st
         .select({ description: sponsorEntitlements.description })
         .from(sponsorEntitlements)
         .where(eq(sponsorEntitlements.sponsorId, sponsorId));
-      const known = new Set(existing.map((e) => e.description.toLowerCase()));
-      const fresh = parseEntitlements(data.entitlements).filter(
-        (e) => !known.has(e.description.toLowerCase()),
-      );
+      // Duplicates matched as package sales match them: trimmed, spaces
+      // collapsed, any case — including a line repeated in what was typed.
+      const known = new Set(existing.map((e) => lineKey(e.description)));
+      const fresh = parseIncludedLines(data.entitlements).filter((e) => {
+        const k = lineKey(e.description);
+        if (known.has(k)) return false;
+        known.add(k);
+        return true;
+      });
       if (fresh.length > 0) {
         await tx
           .insert(sponsorEntitlements)
@@ -137,31 +131,6 @@ export async function saveSponsor(input: unknown): Promise<ActionResult<{ id: st
     { id: savedId },
     data.id ? `${data.companyName} saved` : `${data.companyName} added`,
   );
-}
-
-type Found =
-  | { error: string; sponsor?: never; edition?: never }
-  | {
-      error?: never;
-      sponsor: typeof sponsors.$inferSelect;
-      edition: typeof editions.$inferSelect;
-    };
-
-/**
- * A sponsor of one of this organisation's events that the actor can open
- * (Users → Events), if it may be changed now.
- */
-async function ownSponsor(sponsorId: string, organisationId: string, actor: Actor): Promise<Found> {
-  const [row] = await db
-    .select({ sponsor: sponsors, edition: editions })
-    .from(sponsors)
-    .innerJoin(editions, eq(sponsors.editionId, editions.id))
-    .innerJoin(events, eq(editions.eventId, events.id))
-    .where(and(eq(sponsors.id, sponsorId), eq(events.organisationId, organisationId)))
-    .limit(1);
-  if (!row || !opensEdition(actor, row.edition.id)) return { error: "Sponsor not found" };
-  if (editionIsReadOnly(row.edition.status)) return { error: EDITION_LOCKED_MESSAGE };
-  return row;
 }
 
 /** How many items (deleted ones too — they still point at it) use an entitlement. */
@@ -278,6 +247,16 @@ export async function removeSponsor(input: unknown): Promise<ActionResult> {
   const found = await ownSponsor(parsed.data.sponsorId, session.organisation.id, session.actor);
   if (found.error !== undefined) return fail(found.error);
   const { sponsor, edition } = found;
+  if (sponsor.packageId) {
+    const [pkg] = await db
+      .select({ name: sponsorshipPackages.name })
+      .from(sponsorshipPackages)
+      .where(eq(sponsorshipPackages.id, sponsor.packageId));
+    const name = pkg?.name ?? sponsor.packageName;
+    return fail(
+      `${sponsor.companyName} has ${name ? `the ${name}` : "a"} package — remove it from their card first`,
+    );
+  }
   const [[items], [grants]] = await Promise.all([
     db.select({ n: count() }).from(signageItems).where(eq(signageItems.sponsorId, sponsor.id)),
     db
@@ -321,6 +300,10 @@ export async function removeSponsor(input: unknown): Promise<ActionResult> {
         contactName: sponsor.contactName,
         contactEmail: sponsor.contactEmail,
         packageName: sponsor.packageName,
+        packageId: sponsor.packageId,
+        packagePrice: sponsor.packagePrice,
+        packagePriceNote: sponsor.packagePriceNote,
+        packageSoldAt: sponsor.packageSoldAt,
         entitlements: ents.map((e) => ({ description: e.description, quantity: e.quantity })),
       },
       summary: `Removed sponsor ${sponsor.companyName}`,

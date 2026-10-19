@@ -37,6 +37,8 @@ export type CopySource = {
     halls: number;
     locations: number;
     deadlines: number;
+    /** Live sponsorship packages (archived ones stay behind). */
+    packages?: number;
     sponsors: number;
     items: number;
     /** Partner grants a copy to the same venue could bring across (ended ones included). */
@@ -57,6 +59,7 @@ type Mode = "fresh" | "copy";
 type Include = {
   halls: boolean;
   deadlines: boolean;
+  packages: boolean;
   sponsors: boolean;
   items: boolean;
   access: boolean;
@@ -232,6 +235,7 @@ export function CreateEventForm({
   const [include, setInclude] = useState<Include>({
     halls: true,
     deadlines: true,
+    packages: true,
     sponsors: true,
     items: true,
     access: true,
@@ -257,6 +261,7 @@ export function CreateEventForm({
     setInclude({
       halls: true,
       deadlines: true,
+      packages: true,
       sponsors: true,
       items: true,
       access: true,
@@ -317,6 +322,7 @@ export function CreateEventForm({
               include: {
                 halls: include.halls && copyCounts.halls > 0,
                 deadlines: include.deadlines && copyCounts.deadlines > 0,
+                packages: include.packages && copyCounts.packages > 0,
                 sponsors: include.sponsors && copyCounts.sponsors > 0,
                 items: include.items && copyCounts.items > 0,
                 access: canCopyAccess && include.access && copyCounts.access > 0,
@@ -355,6 +361,7 @@ export function CreateEventForm({
   const copyCounts: Record<keyof Include, number> = {
     halls: source?.counts.halls ?? 0,
     deadlines: source?.counts.deadlines ?? 0,
+    packages: source?.counts.packages ?? 0,
     sponsors: source?.counts.sponsors ?? 0,
     items: source?.counts.items ?? 0,
     access: source
@@ -650,11 +657,17 @@ export function CreateEventForm({
                     source.counts.halls,
                   ],
                   ["deadlines", `Deadlines (${source.counts.deadlines})`, source.counts.deadlines],
-                  [
-                    "sponsors",
-                    `Sponsors & packages (${source.counts.sponsors})`,
-                    source.counts.sponsors,
-                  ],
+                  // Shown only when the event has packages (events without look as before).
+                  ...(copyCounts.packages > 0
+                    ? ([
+                        [
+                          "packages",
+                          `Sponsorship packages (${copyCounts.packages})`,
+                          copyCounts.packages,
+                        ],
+                      ] as const)
+                    : []),
+                  ["sponsors", `Sponsors (${source.counts.sponsors})`, source.counts.sponsors],
                   [
                     "items",
                     `Signs and sponsorship items as drafts (${source.counts.items})`,
@@ -698,6 +711,12 @@ export function CreateEventForm({
                   <span>{label}</span>
                 </label>
               ))}
+              {include.sponsors && copyCounts.sponsors > 0 && copyCounts.packages > 0 && (
+                <p className="text-muted-foreground text-xs">
+                  Sponsors come across without the packages they bought; sell them again in the new
+                  event.
+                </p>
+              )}
               {canCopyAccess && source.counts.accessLeftBehind > 0 && (
                 <p className="text-muted-foreground text-xs">
                   {plural(

@@ -32,7 +32,10 @@ import {
   saveSponsor,
   updateEntitlement,
 } from "@/app/actions/sponsors";
-import { formatMoney, plural } from "@/lib/format";
+import { removeSponsorPackage } from "@/app/actions/sponsorship-packages";
+import type { PlanEntitlement } from "@/lib/domain/sponsorship-packages";
+import { formatDate, formatMoney, plural } from "@/lib/format";
+import { SellPackageButton, type SellPackage, type SellSponsor } from "./sell-package-dialog";
 
 export type SponsorEntitlement = {
   id: string;
@@ -40,6 +43,20 @@ export type SponsorEntitlement = {
   quantity: number;
   /** Items that count towards it (deleted ones too: they still point at it). */
   linkedItems: number;
+  /** The package whose sale added it; null = added by hand. */
+  fromPackageId: string | null;
+  fromPackageName: string | null;
+};
+
+/** The package a sponsor bought; money is null for people who can't see costs. */
+export type SponsorPackage = {
+  id: string;
+  name: string;
+  archived: boolean;
+  agreedPrice: string | null;
+  listPrice: string | null;
+  note: string | null;
+  soldAt: string | null;
 };
 
 export type SponsorRow = {
@@ -47,7 +64,7 @@ export type SponsorRow = {
   companyName: string;
   contactName: string | null;
   contactEmail: string | null;
-  packageName: string | null;
+  package: SponsorPackage | null;
   entitlements: SponsorEntitlement[];
   /** Live items with this sponsor: bought, and signage in their package. */
   itemCount: number;
@@ -55,7 +72,7 @@ export type SponsorRow = {
   inPackageCount: number;
   /** What they've bought, from sale prices. */
   spend: number;
-  /** Anything at all points at them (items, deleted ones too, or portal access). */
+  /** Anything at all points at them (items, deleted ones too, portal access or a package). */
   linked: boolean;
   /** Someone at the sponsor can sign in to the portal, or has been invited to. */
   portal: "access" | "invited" | null;
@@ -72,6 +89,9 @@ export function SponsorsPanel({
   sponsors,
   canEdit,
   canInvite,
+  canSeeCosts,
+  packages,
+  currency,
 }: {
   editionId: string;
   editionCode: string;
@@ -79,6 +99,10 @@ export function SponsorsPanel({
   canEdit: boolean;
   /** Admins invite partners (Users → External). */
   canInvite: boolean;
+  canSeeCosts: boolean;
+  /** The event's packages, for selling one from a sponsor's card. */
+  packages: SellPackage[];
+  currency: string;
 }) {
   const [editing, setEditing] = useState<SponsorRow | "new" | null>(null);
   const [editingEnt, setEditingEnt] = useState<{
@@ -141,6 +165,54 @@ export function SponsorsPanel({
   const inviteHref = (sp: SponsorRow) =>
     `/users?tab=external&invite=1&role=sponsor&scopeId=${sp.id}&edition=${editionId}`;
 
+  // The sell dialog's view of every sponsor, and their entitlements for its preview.
+  const sellSponsors: SellSponsor[] = sponsors.map((sp) => ({
+    id: sp.id,
+    name: sp.companyName,
+    packageId: sp.package?.id ?? null,
+    packageName: sp.package?.name ?? null,
+    agreedPrice: sp.package?.agreedPrice ?? null,
+    priceNote: sp.package?.note ?? null,
+  }));
+  const entitlementsBySponsor: Record<string, PlanEntitlement[]> = Object.fromEntries(
+    sponsors.map((sp) => [sp.id, sp.entitlements]),
+  );
+  const hasLivePackages = packages.some((p) => !p.isArchived);
+
+  async function onRemovePackage(sp: SponsorRow) {
+    const pkg = sp.package;
+    if (!pkg) return;
+    const fromIt = sp.entitlements.filter((e) => e.fromPackageId === pkg.id);
+    const removed = fromIt.filter((e) => e.linkedItems === 0);
+    const kept = fromIt.filter((e) => e.linkedItems > 0);
+    const words = (e: SponsorEntitlement) =>
+      `${e.quantity > 1 ? `${e.quantity} × ` : ""}${e.description}`;
+    const parts = [
+      pkg.agreedPrice != null
+        ? `Their agreed price (${formatMoney(pkg.agreedPrice, currency)}) comes off sponsorship revenue.`
+        : null,
+      removed.length > 0
+        ? `${plural(removed.length, "entitlement")} from the package that nothing counts towards ${removed.length === 1 ? "is" : "are"} removed: ${removed.map(words).join(", ")}${kept.length > 0 ? `; ${kept.length} ${kept.length === 1 ? "stays" : "stay"} because items count towards ${kept.length === 1 ? "it" : "them"}` : ""}.`
+        : kept.length > 0
+          ? `${plural(kept.length, "entitlement")} from the package ${kept.length === 1 ? "stays" : "stay"} because items count towards ${kept.length === 1 ? "it" : "them"}.`
+          : null,
+      "Lines they had before the package stay.",
+    ].filter(Boolean);
+    const ok = await confirm({
+      title: `Remove ${pkg.name} from ${sp.companyName}?`,
+      description: parts.join(" "),
+      confirmLabel: "Remove package",
+      destructive: true,
+    });
+    if (!ok) return;
+    start(async () => {
+      const res = await removeSponsorPackage({ sponsorId: sp.id });
+      if (res.ok) toast.success(res.message ?? `Removed ${pkg.name} from ${sp.companyName}`);
+      else toast.error(res.error);
+      router.refresh();
+    });
+  }
+
   return (
     <section className="space-y-3" aria-label="Sponsors">
       {sponsors.length === 0 ? (
@@ -161,16 +233,20 @@ export function SponsorsPanel({
           }
         />
       ) : (
-        <ul className="grid gap-3 lg:grid-cols-2">
+        <ul className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           {sponsors.map((sp) => (
-            <li key={sp.id} aria-label={sp.companyName} className="rounded-lg border p-3 text-sm">
+            <li
+              key={sp.id}
+              id={`sponsor-${sp.id}`}
+              aria-label={sp.companyName}
+              className="min-w-0 scroll-mt-20 rounded-lg border p-3 text-sm"
+            >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="font-medium">{sp.companyName}</p>
-                  <p className="text-muted-foreground text-xs">
-                    {[sp.packageName, sp.contactName, sp.contactEmail]
-                      .filter(Boolean)
-                      .join(" · ") || "No contact yet"}
+                  <p className="font-medium break-words">{sp.companyName}</p>
+                  <p className="text-muted-foreground text-xs break-words">
+                    {[sp.contactName, sp.contactEmail].filter(Boolean).join(" · ") ||
+                      "No contact yet"}
                   </p>
                 </div>
                 {canEdit && (
@@ -211,6 +287,87 @@ export function SponsorsPanel({
                 )}
               </div>
 
+              <div className="mt-3 min-w-0" aria-label={`${sp.companyName}'s package`}>
+                <p className="text-muted-foreground text-xs font-medium">Package</p>
+                {sp.package ? (
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <p className="min-w-0 text-xs break-words">
+                      <span className="font-medium">
+                        {sp.package.name}
+                        {sp.package.archived ? " (archived)" : ""}
+                      </span>
+                      {canSeeCosts &&
+                        (sp.package.agreedPrice != null
+                          ? ` · ${formatMoney(sp.package.agreedPrice, currency)}`
+                          : " · No price agreed yet")}
+                      {canSeeCosts && sp.package.note ? ` · ${sp.package.note}` : ""}
+                      {sp.package.soldAt ? ` · Sold ${formatDate(sp.package.soldAt)}` : ""}
+                    </p>
+                    {canEdit && (
+                      <span className="flex flex-wrap gap-1">
+                        {sp.package.agreedPrice == null && canSeeCosts && (
+                          <SellPackageButton
+                            fixed={{ sponsorId: sp.id }}
+                            initialPackageId={sp.package.id}
+                            packages={packages}
+                            sponsors={sellSponsors}
+                            entitlements={entitlementsBySponsor}
+                            currency={currency}
+                            label="Add price"
+                            variant="outline"
+                          />
+                        )}
+                        {hasLivePackages && (
+                          <SellPackageButton
+                            fixed={{ sponsorId: sp.id }}
+                            initialPackageId=""
+                            packages={packages}
+                            sponsors={sellSponsors}
+                            entitlements={entitlementsBySponsor}
+                            currency={currency}
+                            label="Change"
+                            variant="outline"
+                          />
+                        )}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="min-h-11 sm:min-h-9"
+                          disabled={pending}
+                          onClick={() => void onRemovePackage(sp)}
+                        >
+                          Remove
+                        </Button>
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <p className="text-muted-foreground text-xs">No package</p>
+                    {canEdit &&
+                      (hasLivePackages ? (
+                        <SellPackageButton
+                          fixed={{ sponsorId: sp.id }}
+                          initialPackageId=""
+                          packages={packages}
+                          sponsors={sellSponsors}
+                          entitlements={entitlementsBySponsor}
+                          currency={currency}
+                          label="Sell a package"
+                          variant="outline"
+                        />
+                      ) : (
+                        <Button asChild size="sm" variant="outline" className="min-h-11 sm:min-h-9">
+                          <Link href={`/${editionCode}/sponsorship?tab=packages`}>
+                            Set up packages
+                          </Link>
+                        </Button>
+                      ))}
+                  </div>
+                )}
+              </div>
+
               {sp.entitlements.length > 0 && (
                 <div className="mt-3">
                   <p className="text-muted-foreground text-xs font-medium">Entitled to</p>
@@ -224,6 +381,12 @@ export function SponsorsPanel({
                         <span className="min-w-0 flex-1">
                           {e.quantity > 1 ? `${e.quantity} × ` : ""}
                           {e.description}
+                          {e.fromPackageName && (
+                            <span className="text-muted-foreground">
+                              {" "}
+                              · from {e.fromPackageName}
+                            </span>
+                          )}
                           {e.linkedItems > 0 && (
                             <span className="text-muted-foreground">
                               {" "}
@@ -318,8 +481,8 @@ export function SponsorsPanel({
           <DialogHeader>
             <DialogTitle>{current ? `Edit ${current.companyName}` : "Add sponsor"}</DialogTitle>
             <DialogDescription>
-              What they bought goes under entitlements, one per line (e.g. &ldquo;6 x Logo on
-              hanging banners&rdquo;).
+              What they&apos;re entitled to goes under entitlements, one per line (e.g. &ldquo;6 x
+              Logo on hanging banners&rdquo;). Their package and its price are on their card.
             </DialogDescription>
           </DialogHeader>
           <form
@@ -349,15 +512,7 @@ export function SponsorsPanel({
               <Input id="sp-name" name="companyName" defaultValue={current?.companyName} required />
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="sp-package">Package (optional)</Label>
-                <Input
-                  id="sp-package"
-                  name="packageName"
-                  defaultValue={current?.packageName ?? ""}
-                />
-              </div>
-              <div className="space-y-1.5">
+              <div className="min-w-0 space-y-1.5">
                 <Label htmlFor="sp-contact">Contact name (optional)</Label>
                 <Input
                   id="sp-contact"
@@ -365,15 +520,15 @@ export function SponsorsPanel({
                   defaultValue={current?.contactName ?? ""}
                 />
               </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="sp-email">Contact email (optional)</Label>
-              <Input
-                id="sp-email"
-                name="contactEmail"
-                type="email"
-                defaultValue={current?.contactEmail ?? ""}
-              />
+              <div className="min-w-0 space-y-1.5">
+                <Label htmlFor="sp-email">Contact email (optional)</Label>
+                <Input
+                  id="sp-email"
+                  name="contactEmail"
+                  type="email"
+                  defaultValue={current?.contactEmail ?? ""}
+                />
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="sp-ent">

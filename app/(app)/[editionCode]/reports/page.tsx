@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   ChevronRight,
   FileSpreadsheet,
@@ -11,7 +11,14 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { db } from "@/lib/db/client";
-import { exhibitors, exports as exportsTable, halls, signageItems, users } from "@/lib/db/schema";
+import {
+  exhibitors,
+  exports as exportsTable,
+  halls,
+  signageItems,
+  sponsors,
+  users,
+} from "@/lib/db/schema";
 import { standsEnabled } from "@/lib/config";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, hasFeature } from "@/lib/authz";
@@ -142,57 +149,63 @@ export default async function ReportsPage({
   }
 
   const live = and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt));
-  const [recent, lastByKind, hallRows, signageRow, allRows, exhibitorRow] = await Promise.all([
-    db
-      .select({ exp: exportsTable, user: users })
-      .from(exportsTable)
-      .leftJoin(users, eq(exportsTable.generatedBy, users.id))
-      .where(eq(exportsTable.editionId, editionId))
-      .orderBy(desc(exportsTable.createdAt))
-      .limit(10),
-    db
-      .selectDistinctOn([exportsTable.kind], {
-        kind: exportsTable.kind,
-        at: exportsTable.createdAt,
-        name: users.fullName,
-        email: users.email,
-      })
-      .from(exportsTable)
-      .leftJoin(users, eq(exportsTable.generatedBy, users.id))
-      .where(eq(exportsTable.editionId, editionId))
-      .orderBy(exportsTable.kind, desc(exportsTable.createdAt)),
-    db
-      .select({ id: halls.id, name: halls.name })
-      .from(halls)
-      .where(eq(halls.editionId, editionId))
-      .orderBy(asc(halls.sortOrder), asc(halls.name)),
-    // The schedule, install and sponsor exports cover signage and sponsorship items.
-    db
-      .select({
-        items: sql<number>`count(*)::int`,
-        withInstallDate: sql<number>`(count(*) filter (where ${signageItems.installDate} is not null))::int`,
-        sponsored: sql<number>`(count(*) filter (where ${signageItems.sponsorId} is not null))::int`,
-        sponsors: sql<number>`count(distinct ${signageItems.sponsorId})::int`,
-      })
-      .from(signageItems)
-      .where(and(live, inArray(signageItems.kind, [...SIGNAGE_KINDS]))),
-    // The venue pack and the labels cover every live item.
-    db
-      .select({
-        hallId: signageItems.hallId,
-        n: sql<number>`count(*)::int`,
-        venue: sql<number>`(count(*) filter (where ${signageItems.requiresVenueApproval}))::int`,
-      })
-      .from(signageItems)
-      .where(live)
-      .groupBy(signageItems.hallId),
-    standsEnabled
-      ? db
-          .select({ n: sql<number>`count(*)::int` })
-          .from(exhibitors)
-          .where(eq(exhibitors.editionId, editionId))
-      : Promise.resolve([{ n: 0 }]),
-  ]);
+  const [recent, lastByKind, hallRows, signageRow, allRows, exhibitorRow, packageRow] =
+    await Promise.all([
+      db
+        .select({ exp: exportsTable, user: users })
+        .from(exportsTable)
+        .leftJoin(users, eq(exportsTable.generatedBy, users.id))
+        .where(eq(exportsTable.editionId, editionId))
+        .orderBy(desc(exportsTable.createdAt))
+        .limit(10),
+      db
+        .selectDistinctOn([exportsTable.kind], {
+          kind: exportsTable.kind,
+          at: exportsTable.createdAt,
+          name: users.fullName,
+          email: users.email,
+        })
+        .from(exportsTable)
+        .leftJoin(users, eq(exportsTable.generatedBy, users.id))
+        .where(eq(exportsTable.editionId, editionId))
+        .orderBy(exportsTable.kind, desc(exportsTable.createdAt)),
+      db
+        .select({ id: halls.id, name: halls.name })
+        .from(halls)
+        .where(eq(halls.editionId, editionId))
+        .orderBy(asc(halls.sortOrder), asc(halls.name)),
+      // The schedule, install and sponsor exports cover signage and sponsorship items.
+      db
+        .select({
+          items: sql<number>`count(*)::int`,
+          withInstallDate: sql<number>`(count(*) filter (where ${signageItems.installDate} is not null))::int`,
+          sponsored: sql<number>`(count(*) filter (where ${signageItems.sponsorId} is not null))::int`,
+          sponsors: sql<number>`count(distinct ${signageItems.sponsorId})::int`,
+        })
+        .from(signageItems)
+        .where(and(live, inArray(signageItems.kind, [...SIGNAGE_KINDS]))),
+      // The venue pack and the labels cover every live item.
+      db
+        .select({
+          hallId: signageItems.hallId,
+          n: sql<number>`count(*)::int`,
+          venue: sql<number>`(count(*) filter (where ${signageItems.requiresVenueApproval}))::int`,
+        })
+        .from(signageItems)
+        .where(live)
+        .groupBy(signageItems.hallId),
+      standsEnabled
+        ? db
+            .select({ n: sql<number>`count(*)::int` })
+            .from(exhibitors)
+            .where(eq(exhibitors.editionId, editionId))
+        : Promise.resolve([{ n: 0 }]),
+      // Sponsors with a package (the sponsor report's Packages sheet).
+      db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(sponsors)
+        .where(and(eq(sponsors.editionId, editionId), isNotNull(sponsors.packageId))),
+    ]);
 
   const perHall = new Map(allRows.map((r) => [r.hallId, Number(r.n)]));
   const counts: ReportCounts = {
@@ -204,6 +217,7 @@ export default async function ReportsPage({
     venueItems: allRows.reduce((n, r) => n + Number(r.venue), 0),
     labels: allRows.reduce((n, r) => n + Number(r.n), 0),
     exhibitors: Number(exhibitorRow[0]?.n ?? 0),
+    packagesSold: Number(packageRow[0]?.n ?? 0),
   };
   const last = new Map(lastByKind.map((r) => [r.kind, r]));
   const canImport =

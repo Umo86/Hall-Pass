@@ -10,6 +10,7 @@ import {
   signageItems,
   snags as snagsTable,
   sponsors as sponsorsTable,
+  sponsorshipPackages,
   suppliers,
 } from "@/lib/db/schema";
 import { getSession, requireStaffSession } from "@/lib/auth/actor";
@@ -1668,8 +1669,14 @@ async function sponsorshipContext({
   const canInvite = can(session.actor, { type: "partners.invite" });
   const [sponsorRows, access] = await Promise.all([
     db
-      .select({ id: sponsorsTable.id, name: sponsorsTable.companyName })
+      .select({
+        id: sponsorsTable.id,
+        name: sponsorsTable.companyName,
+        // Mark as sold hints at entering 0 when it comes with their package.
+        packageName: sponsorshipPackages.name,
+      })
       .from(sponsorsTable)
+      .leftJoin(sponsorshipPackages, eq(sponsorshipPackages.id, sponsorsTable.packageId))
       .where(eq(sponsorsTable.editionId, bundle.edition.id))
       .orderBy(sponsorsTable.companyName),
     // Live grants only (an ended one is no access), as on the Sponsors tab.

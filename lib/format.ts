@@ -42,6 +42,27 @@ export function formatMoney(value: string | number | null | undefined, currency 
   }).format(n);
 }
 
+/** The currencies an organisation can be set to; every organisation is GBP today. */
+const CURRENCIES = ["GBP", "EUR", "USD"] as const;
+
+/** The organisation's currency (GBP, EUR or USD, else GBP). */
+export function organisationCurrency(
+  settings: { currency?: string | null } | null | undefined,
+): string {
+  const c = settings?.currency;
+  return c && (CURRENCIES as readonly string[]).includes(c) ? c : "GBP";
+}
+
+/** "£" for GBP, "€", "US$" (as en-GB writes them), for labels like "Price (£)". */
+export function currencySymbol(currency: string): string {
+  try {
+    const parts = new Intl.NumberFormat("en-GB", { style: "currency", currency }).formatToParts(0);
+    return parts.find((p) => p.type === "currency")?.value ?? currency;
+  } catch {
+    return currency;
+  }
+}
+
 /**
  * The words people see for each status (decided once for the whole app),
  * and labels that plain "replace the underscores" gets wrong. Item

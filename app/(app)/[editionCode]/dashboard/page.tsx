@@ -6,7 +6,7 @@ import { can, hasFeature, type Feature } from "@/lib/authz";
 import { standsEnabled } from "@/lib/config";
 import { getEditionByCode, showLogoUrl } from "@/lib/queries/editions";
 import { dashboardData } from "@/lib/queries/dashboard";
-import { plural } from "@/lib/format";
+import { organisationCurrency, plural } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { getSetupStatus, setupPermissionsFor } from "@/lib/queries/setup";
@@ -73,7 +73,7 @@ export default async function DashboardPage({
   const canSetup = can(actor, { type: "event.setup" }) && !archived;
   const canEditEvent = can(actor, { type: "events.edit" }) && !archived;
   const canAddSigns = can(actor, { type: "signage.create" }) && !archived;
-  const canSeeCosts = can(actor, { type: "costs.view" });
+  const canSeeCosts = can(actor, { type: "costs.view", editionId: edition.id });
   const has = (f: Feature) => hasFeature(actor, f);
   const [data, logoUrl, setup] = await Promise.all([
     dashboardData({ edition, actor, today }),
@@ -258,6 +258,9 @@ export default async function DashboardPage({
                   // Sales figures only for people who see prices.
                   summary={canSeeCosts ? data.sponsorship : { ...data.sponsorship, sales: 0 }}
                   canAdd={can(actor, { type: "sponsorship.create" }) && !archived}
+                  packages={data.sponsorshipPackages}
+                  revenue={canSeeCosts ? data.sponsorshipRevenue : null}
+                  currency={organisationCurrency(session.organisation.settings)}
                 />
               )}
             </div>

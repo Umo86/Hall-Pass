@@ -243,7 +243,8 @@ export const ABILITIES: Record<AbilityKey, AbilityDef> = {
   },
   "costs.view": {
     label: "See costs and prices",
-    description: "Cost estimates, actual costs, budgets, sale prices and sponsor spend.",
+    description:
+      "Cost estimates, actual costs, budgets, sale prices, package prices and sponsor spend.",
     group: "money",
     roles: EVERYONE,
     kind: "grant",
@@ -268,7 +269,8 @@ export const ABILITIES: Record<AbilityKey, AbilityDef> = {
   },
   "sponsorship.sell": {
     label: "Mark sold and manage sponsors and packages",
-    description: "Record and undo sales; add or change sponsors and what their package includes.",
+    description:
+      "Record and undo sales; add or change sponsors, sponsorship packages and their prices, and what each package includes.",
     group: "sponsorship",
     roles: ["admin", "ops", "sales"],
     kind: "grant",

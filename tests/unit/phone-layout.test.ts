@@ -30,6 +30,23 @@ describe("phone layout", () => {
     expect(classesWith(src, ["flex", "flex-col", "rounded-lg", "border"])).toContain("min-w-0");
   });
 
+  it("Sponsorship → Packages: one shrinkable column below lg, cards that can shrink, footers that wrap", () => {
+    const src = read("components/sponsorship/packages-panel.tsx");
+    expect(classesWith(src, ["grid", "lg:grid-cols-2"])).toContain("grid-cols-1");
+    expect(classesWith(src, ["flex", "flex-col", "rounded-lg", "border"])).toContain("min-w-0");
+    expect(classesWith(src, ["font-medium", "break-words"]).length).toBeGreaterThan(0);
+    expect(classesWith(src, ["flex", "shrink-0", "flex-col"]).length).toBeGreaterThan(0);
+    expect(classesWith(src, ["flex", "justify-between", "border-t"])).toContain("flex-wrap");
+    // The revenue tiles: two to a row on a phone, each able to shrink.
+    const page = read("app/(app)/[editionCode]/sponsorship/page.tsx");
+    expect(classesWith(page, ["grid", "grid-cols-2", "gap-2"]).length).toBeGreaterThan(0);
+    expect(classesWith(page, ["rounded-lg", "border", "p-3", "min-w-0"]).length).toBeGreaterThan(0);
+    // The editor's price and places stack on a phone.
+    expect(
+      classesWith(read("components/sponsorship/package-editor.tsx"), ["grid", "sm:grid-cols-2"]),
+    ).toContain("grid-cols-1");
+  });
+
   it("the sign-off chain's buttons wrap, and the artwork tab can't be widened by them", () => {
     expect(
       classesWith(read("components/approvals/chain.tsx"), ["sm:ml-auto", "sm:w-auto"]),

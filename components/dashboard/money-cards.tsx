@@ -1,6 +1,11 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { formatMoney, plural } from "@/lib/format";
+import {
+  packagesLine,
+  type PackageCounts,
+  type SponsorshipRevenue,
+} from "@/lib/domain/sponsorship-packages";
 import { cn } from "@/lib/utils";
 import { DashCard } from "./card";
 import type { BudgetSummary } from "./rules";
@@ -114,11 +119,16 @@ export function BudgetCard({
 /**
  * Sponsorship at a glance: sold of what is for sale, sales, and what must
  * be ordered soon — each a link to the Sponsorship page filtered to it.
+ * With packages: how many are sold and, for people who see costs, the
+ * revenue they and items bring (the same figures as the Packages tab).
  */
 export function SponsorshipCard({
   code,
   summary,
   canAdd,
+  packages = null,
+  revenue = null,
+  currency = "GBP",
 }: {
   code: string;
   summary: {
@@ -131,9 +141,15 @@ export function SponsorshipCard({
     urgentUnsold: number;
   };
   canAdd: boolean;
+  /** Null when the event has no packages (the card reads as it always did). */
+  packages?: PackageCounts | null;
+  /** Only for people who see costs, and only with packages. */
+  revenue?: SponsorshipRevenue | null;
+  currency?: string;
 }) {
   const page = `/${code}/sponsorship`;
-  if (summary.forSale === 0 && summary.inPackage === 0) {
+  const hasPackages = (packages?.count ?? 0) > 0 || (packages?.sold ?? 0) > 0;
+  if (summary.forSale === 0 && summary.inPackage === 0 && !hasPackages) {
     return (
       <DashCard title="Sponsorship" titleHref={page}>
         <p className="text-muted-foreground text-sm">Nothing is for sale to sponsors yet.</p>
@@ -148,18 +164,27 @@ export function SponsorshipCard({
   const pct = summary.forSale ? Math.round((summary.sold / summary.forSale) * 100) : 0;
   return (
     <DashCard title="Sponsorship" titleHref={page}>
-      <div className="space-y-2">
-        <p className="text-sm">
-          <Link href={`${page}?filter=sold`} className="text-base font-semibold hover:underline">
-            {summary.sold} of {summary.forSale} sold
-          </Link>
-          {summary.sales > 0 && (
-            <span className="text-muted-foreground"> · {formatMoney(summary.sales)} sales</span>
-          )}
-        </p>
-        <Bar pct={pct} tone="good" label={`${pct}% of sponsorship items sold`} />
-      </div>
+      {summary.forSale > 0 && (
+        <div className="space-y-2">
+          <p className="text-sm">
+            <Link href={`${page}?filter=sold`} className="text-base font-semibold hover:underline">
+              {summary.sold} of {summary.forSale} sold
+            </Link>
+            {summary.sales > 0 && (
+              <span className="text-muted-foreground"> · {formatMoney(summary.sales)} sales</span>
+            )}
+          </p>
+          <Bar pct={pct} tone="good" label={`${pct}% of sponsorship items sold`} />
+        </div>
+      )}
       <ul className="space-y-1.5 text-sm">
+        {packages && hasPackages && (
+          <li>
+            <Link href={`${page}?tab=packages`} className="font-medium hover:underline">
+              {packagesLine(packages)}
+            </Link>
+          </li>
+        )}
         {summary.available > 0 && (
           <li>
             <Link href={`${page}?filter=available`} className="hover:underline">
@@ -186,6 +211,32 @@ export function SponsorshipCard({
           </li>
         )}
       </ul>
+      {revenue && hasPackages && (
+        <dl className="space-y-1.5 border-t pt-2 text-sm" aria-label="Sponsorship revenue">
+          <div className="flex justify-between gap-3">
+            <dt className="text-muted-foreground">Packages · {revenue.packages.sold} sold</dt>
+            <dd className="font-medium tabular-nums">
+              {formatMoney(revenue.packages.value, currency)}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt className="text-muted-foreground">Items · {revenue.items.sold} sold</dt>
+            <dd className="font-medium tabular-nums">
+              {formatMoney(revenue.items.value, currency)}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt className="font-medium">Total revenue</dt>
+            <dd className="font-semibold tabular-nums">{formatMoney(revenue.total, currency)}</dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt className="text-muted-foreground">Still to sell in packages</dt>
+            <dd className="font-medium tabular-nums">
+              {formatMoney(revenue.remaining.value, currency)}
+            </dd>
+          </div>
+        </dl>
+      )}
     </DashCard>
   );
 }

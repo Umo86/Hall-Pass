@@ -7,10 +7,10 @@ import { EmptyState } from "@/components/empty-state";
 import { Page, PageHeader } from "@/components/page-header";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { can, hasFeature } from "@/lib/authz";
-import { formatDate, formatMoney } from "@/lib/format";
-import { count, eq, inArray } from "drizzle-orm";
+import { formatDate, formatMoney, organisationCurrency, plural } from "@/lib/format";
+import { eq, inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { signageItems, sponsorEntitlements, sponsors } from "@/lib/db/schema";
+import { signageItems, sponsors, sponsorshipPackages } from "@/lib/db/schema";
 import { sponsorPortalAccess } from "@/lib/users/external";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { getEditionByCode } from "@/lib/queries/editions";
@@ -19,6 +19,23 @@ import { getInlineUrl } from "@/lib/storage";
 import { orderCountdown } from "@/lib/countdown";
 import { todayInLondon } from "@/lib/today";
 import { SponsorsPanel } from "@/components/sponsorship/sponsors-panel";
+import { PackagesPanel } from "@/components/sponsorship/packages-panel";
+import type { SellSponsor } from "@/components/sponsorship/sell-package-dialog";
+import {
+  listPackages,
+  sponsorEntitlementRows,
+  toRevenuePackages,
+  type PackageRow,
+  type SponsorEntitlementRow,
+} from "@/lib/queries/sponsorship-packages";
+import {
+  packageCards,
+  packageCounts,
+  sponsorshipRevenue,
+  stillToSellNote,
+  toSellPackage,
+  type PlanEntitlement,
+} from "@/lib/domain/sponsorship-packages";
 import { SponsorshipCards, type SponsorshipCard } from "@/components/sponsorship/sponsorship-cards";
 import { itemPath } from "@/lib/edition-path";
 import {
@@ -38,7 +55,8 @@ export const dynamic = "force-dynamic";
  * with its stage and what happens next — plus the sponsors themselves.
  * Detail pages are shared with signage. Filters live in the address
  * (`?filter=available|sold|in_package|overdue|soon|urgent`, `?q=`,
- * `?sponsor=`, `?view=`, `?group=`).
+ * `?sponsor=`, `?view=`, `?group=`). Packages (`?tab=packages`) are what
+ * sponsors buy as a whole, at an agreed price, with revenue beside items.
  */
 export default async function SponsorshipPage({
   params,
@@ -53,25 +71,40 @@ export default async function SponsorshipPage({
     return <SectionUnavailable feature="sponsorship" backHref={`/${editionCode}/dashboard`} />;
   }
   const { tab: rawTab } = await searchParams;
-  const tab = rawTab === "sponsors" ? "sponsors" : "items";
+  const tab = rawTab === "sponsors" || rawTab === "packages" ? rawTab : "items";
   const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
 
-  const [rows, sponsorRows] = await Promise.all([
-    listSponsorshipRows(ed.edition.id),
+  const editionId = ed.edition.id;
+  const [rows, sponsorRows, packages] = await Promise.all([
+    listSponsorshipRows(editionId),
     db
-      .select()
+      .select({
+        sponsor: sponsors,
+        packageName: sponsorshipPackages.name,
+        packageArchived: sponsorshipPackages.isArchived,
+        packageListPrice: sponsorshipPackages.price,
+      })
       .from(sponsors)
-      .where(eq(sponsors.editionId, ed.edition.id))
+      .leftJoin(sponsorshipPackages, eq(sponsorshipPackages.id, sponsors.packageId))
+      .where(eq(sponsors.editionId, editionId))
       .orderBy(sponsors.companyName),
+    // Every tab: the tab counts and the sell options need them.
+    listPackages(db, editionId),
   ]);
-  const canExport = can(session.actor, { type: "export.run", kind: "sponsor_report" });
+  const canExport = can(session.actor, {
+    type: "export.run",
+    kind: "sponsor_report",
+    editionId,
+  });
   const readOnly = editionIsReadOnly(ed.edition.status);
   const canAdd = can(session.actor, { type: "sponsorship.create" }) && !readOnly;
   // Recording sales and managing sponsors and packages is its own ability.
-  const canSell = can(session.actor, { type: "sponsorship.sell" }) && !readOnly;
+  const canSell = can(session.actor, { type: "sponsorship.sell", editionId }) && !readOnly;
   // Prices, costs and sponsor spend only for people who see costs.
-  const canSeeCosts = can(session.actor, { type: "costs.view" });
+  const canSeeCosts = can(session.actor, { type: "costs.view", editionId });
+  const currency = organisationCurrency(session.organisation.settings);
+  const livePackages = packages.filter((p) => !p.isArchived).length;
   // What can be sold (lanyards, bags…) is a list kept in Settings → Item types.
   const canManageTypes = can(session.actor, { type: "lists.manage" });
 
@@ -80,6 +113,7 @@ export default async function SponsorshipPage({
 
   const tabs = [
     { id: "items", label: `Items (${rows.length})` },
+    { id: "packages", label: `Packages (${livePackages})` },
     { id: "sponsors", label: `Sponsors (${sponsorRows.length})` },
   ];
 
@@ -184,6 +218,23 @@ export default async function SponsorshipPage({
                 </Button>
               )}
             </>
+          ) : tab === "packages" ? (
+            <>
+              {canExport && (
+                <Button asChild size="sm" variant="outline">
+                  <a href={`/api/exports/sponsorship/${ed.edition.code}`}>
+                    <Download className="size-4" /> Sponsor report
+                  </a>
+                </Button>
+              )}
+              {canSell && (
+                <Button asChild size="sm">
+                  <Link href={`/${editionCode}/sponsorship?tab=packages&add=1`} scroll={false}>
+                    <Plus className="size-4" /> Add package
+                  </Link>
+                </Button>
+              )}
+            </>
           ) : (
             canSell && (
               <Button asChild size="sm">
@@ -265,7 +316,11 @@ export default async function SponsorshipPage({
           ) : (
             <SponsorshipCards
               canSell={canSell}
-              sponsors={sponsorRows.map((s) => ({ id: s.id, name: s.companyName }))}
+              sponsors={sponsorRows.map((s) => ({
+                id: s.sponsor.id,
+                name: s.sponsor.companyName,
+                packageName: s.packageName,
+              }))}
               cards={cards}
               today={today}
             />
@@ -273,18 +328,154 @@ export default async function SponsorshipPage({
         </>
       )}
 
+      {tab === "packages" && (
+        <PackagesTab
+          editionId={editionId}
+          editionCode={editionCode}
+          packages={packages}
+          sponsorRows={sponsorRows}
+          itemTotals={totals}
+          canSell={canSell}
+          canSeeCosts={canSeeCosts}
+          currency={currency}
+        />
+      )}
+
       {tab === "sponsors" && (
         <SponsorsTab
-          editionId={ed.edition.id}
+          editionId={editionId}
           editionCode={editionCode}
           sponsorRows={sponsorRows}
+          packages={packages}
           canEdit={canSell}
           canSeeCosts={canSeeCosts}
           canInvite={can(session.actor, { type: "partners.invite" })}
           organisationId={session.organisation.id}
+          currency={currency}
         />
       )}
     </Page>
+  );
+}
+
+type SponsorWithPackage = {
+  sponsor: typeof sponsors.$inferSelect;
+  packageName: string | null;
+  packageArchived: boolean | null;
+  packageListPrice: string | null;
+};
+
+/** The sell dialog's sponsors: each with the package they have and its agreed price. */
+function sellSponsors(rows: SponsorWithPackage[], canSeeCosts: boolean): SellSponsor[] {
+  return rows.map((r) => ({
+    id: r.sponsor.id,
+    name: r.sponsor.companyName,
+    packageId: r.sponsor.packageId,
+    packageName: r.packageName,
+    agreedPrice: canSeeCosts ? r.sponsor.packagePrice : null,
+    priceNote: canSeeCosts ? r.sponsor.packagePriceNote : null,
+  }));
+}
+
+function bySponsor(rows: SponsorEntitlementRow[]): Record<string, PlanEntitlement[]> {
+  const out: Record<string, PlanEntitlement[]> = {};
+  for (const r of rows) (out[r.sponsorId] ??= []).push(r);
+  return out;
+}
+
+/**
+ * Packages: revenue tiles (money only with costs), then a card per package.
+ * Revenue is sponsorshipRevenue over the packages and the Items tab's own
+ * totals, so the page, dashboard and sponsor report agree.
+ */
+async function PackagesTab({
+  editionId,
+  editionCode,
+  packages,
+  sponsorRows,
+  itemTotals,
+  canSell,
+  canSeeCosts,
+  currency,
+}: {
+  editionId: string;
+  editionCode: string;
+  packages: PackageRow[];
+  sponsorRows: SponsorWithPackage[];
+  itemTotals: { sold: number; sales: number };
+  canSell: boolean;
+  canSeeCosts: boolean;
+  currency: string;
+}) {
+  const entitlementRows = canSell
+    ? await sponsorEntitlementRows(
+        db,
+        sponsorRows.map((r) => r.sponsor.id),
+      )
+    : [];
+  const revenuePackages = toRevenuePackages(packages);
+  const revenue = sponsorshipRevenue(revenuePackages, itemTotals);
+  const counts = packageCounts(revenuePackages);
+  const note = stillToSellNote(revenue);
+  const money = (v: number) => formatMoney(v, currency);
+  const tiles: { label: string; value: string; sub?: string }[] = canSeeCosts
+    ? [
+        {
+          label: "Packages sold",
+          value: String(revenue.packages.sold),
+          sub:
+            money(revenue.packages.value) +
+            (revenue.packages.unpriced > 0
+              ? ` · ${revenue.packages.unpriced} ${revenue.packages.unpriced === 1 ? "has" : "have"} no price yet`
+              : ""),
+        },
+        { label: "Items sold", value: String(revenue.items.sold), sub: money(revenue.items.value) },
+        { label: "Total revenue", value: money(revenue.total) },
+        {
+          label: "Still to sell",
+          value: money(revenue.remaining.value),
+          sub: plural(revenue.remaining.places, "place"),
+        },
+      ]
+    : [
+        { label: "Packages sold", value: String(counts.sold) },
+        {
+          label: "Places left",
+          value: String(counts.placesLeft),
+          sub: counts.unlimited > 0 ? `${counts.unlimited} with no limit` : undefined,
+        },
+      ];
+  return (
+    <>
+      {packages.length > 0 && (
+        <div className="space-y-1.5">
+          <dl
+            data-money={canSeeCosts || undefined}
+            className="grid grid-cols-2 gap-2 sm:data-[money]:grid-cols-4"
+            aria-label="Revenue summary"
+          >
+            {tiles.map((t) => (
+              <div key={t.label} className="min-w-0 rounded-lg border p-3">
+                <dt className="text-muted-foreground truncate text-xs">{t.label}</dt>
+                <dd className="truncate text-lg font-semibold tabular-nums">{t.value}</dd>
+                {t.sub && <dd className="text-muted-foreground truncate text-xs">{t.sub}</dd>}
+              </div>
+            ))}
+          </dl>
+          {canSeeCosts && note && <p className="text-muted-foreground text-xs">{note}</p>}
+        </div>
+      )}
+      <PackagesPanel
+        editionId={editionId}
+        editionCode={editionCode}
+        packages={packageCards(packages, { canSeeCosts })}
+        canSell={canSell}
+        canSeeCosts={canSeeCosts}
+        currency={currency}
+        sponsors={canSell ? sellSponsors(sponsorRows, canSeeCosts) : []}
+        entitlements={bySponsor(entitlementRows)}
+      />
+    </>
   );
 }
 
@@ -292,21 +483,25 @@ async function SponsorsTab({
   editionId,
   editionCode,
   sponsorRows,
+  packages,
   canEdit,
   canSeeCosts,
   canInvite,
   organisationId,
+  currency,
 }: {
   editionId: string;
   editionCode: string;
-  sponsorRows: (typeof sponsors.$inferSelect)[];
+  sponsorRows: SponsorWithPackage[];
+  packages: PackageRow[];
   canEdit: boolean;
   canSeeCosts: boolean;
   canInvite: boolean;
   organisationId: string;
+  currency: string;
 }) {
-  const ids = sponsorRows.map((sp) => sp.id);
-  const [items, entitlementRows, entitlementLinks, access] = ids.length
+  const ids = sponsorRows.map((r) => r.sponsor.id);
+  const [items, entitlementRows, access] = ids.length
     ? await Promise.all([
         // Every item pointing at a sponsor, deleted ones too: they block removal.
         db
@@ -318,60 +513,65 @@ async function SponsorsTab({
           })
           .from(signageItems)
           .where(inArray(signageItems.sponsorId, ids)),
-        db
-          .select()
-          .from(sponsorEntitlements)
-          .where(inArray(sponsorEntitlements.sponsorId, ids))
-          .orderBy(sponsorEntitlements.createdAt),
-        db
-          .select({ id: signageItems.sponsorEntitlementId, n: count() })
-          .from(signageItems)
-          .innerJoin(
-            sponsorEntitlements,
-            eq(signageItems.sponsorEntitlementId, sponsorEntitlements.id),
-          )
-          .where(inArray(sponsorEntitlements.sponsorId, ids))
-          .groupBy(signageItems.sponsorEntitlementId),
+        sponsorEntitlementRows(db, ids),
         // The same answer as the item page: live grants only.
         sponsorPortalAccess(db, organisationId, ids),
       ])
-    : [[], [], [], new Map<string, "access" | "invited">()];
-  const linkedByEnt = new Map(entitlementLinks.map((l) => [l.id, Number(l.n)]));
+    : [[], [], new Map<string, "access" | "invited">()];
+  // Sellers always see costs, so the sell options carry prices.
+  const sellPackages = packageCards(packages, { canSeeCosts }).map(toSellPackage);
   return (
     <SponsorsPanel
       editionId={editionId}
       editionCode={editionCode}
       canEdit={canEdit}
       canInvite={canInvite}
-      sponsors={sponsorRows.map((sp) => {
-        const all = items.filter((i) => i.sponsorId === sp.id);
-        const live = all.filter((i) => !i.deletedAt);
-        const states = live.map((i) => saleState({ ...i, sponsorId: sp.id }));
-        const portal = access.get(sp.id) ?? null;
-        return {
-          id: sp.id,
-          companyName: sp.companyName,
-          contactName: sp.contactName,
-          contactEmail: sp.contactEmail,
-          packageName: sp.packageName,
-          itemCount: live.length,
-          soldCount: states.filter((s) => s === "sold").length,
-          inPackageCount: states.filter((s) => s === "in_package").length,
-          spend: canSeeCosts
-            ? live.reduce((n, i) => n + (i.salePrice ? Number(i.salePrice) : 0), 0)
-            : 0,
-          linked: all.length > 0 || portal !== null,
-          portal,
-          entitlements: entitlementRows
-            .filter((e) => e.sponsorId === sp.id)
-            .map((e) => ({
-              id: e.id,
-              description: e.description,
-              quantity: e.quantity,
-              linkedItems: linkedByEnt.get(e.id) ?? 0,
-            })),
-        };
-      })}
+      canSeeCosts={canSeeCosts}
+      packages={sellPackages}
+      currency={currency}
+      sponsors={sponsorRows.map(
+        ({ sponsor: sp, packageName, packageArchived, packageListPrice }) => {
+          const all = items.filter((i) => i.sponsorId === sp.id);
+          const live = all.filter((i) => !i.deletedAt);
+          const states = live.map((i) => saleState({ ...i, sponsorId: sp.id }));
+          const portal = access.get(sp.id) ?? null;
+          return {
+            id: sp.id,
+            companyName: sp.companyName,
+            contactName: sp.contactName,
+            contactEmail: sp.contactEmail,
+            package: sp.packageId
+              ? {
+                  id: sp.packageId,
+                  name: packageName ?? sp.packageName ?? "Package",
+                  archived: Boolean(packageArchived),
+                  agreedPrice: canSeeCosts ? sp.packagePrice : null,
+                  listPrice: canSeeCosts ? packageListPrice : null,
+                  note: canSeeCosts ? sp.packagePriceNote : null,
+                  soldAt: sp.packageSoldAt ? sp.packageSoldAt.toISOString() : null,
+                }
+              : null,
+            itemCount: live.length,
+            soldCount: states.filter((s) => s === "sold").length,
+            inPackageCount: states.filter((s) => s === "in_package").length,
+            spend: canSeeCosts
+              ? live.reduce((n, i) => n + (i.salePrice ? Number(i.salePrice) : 0), 0)
+              : 0,
+            linked: all.length > 0 || portal !== null || sp.packageId !== null,
+            portal,
+            entitlements: entitlementRows
+              .filter((e) => e.sponsorId === sp.id)
+              .map((e) => ({
+                id: e.id,
+                description: e.description,
+                quantity: e.quantity,
+                linkedItems: e.linkedItems,
+                fromPackageId: e.fromPackageId,
+                fromPackageName: e.fromPackageName,
+              })),
+          };
+        },
+      )}
     />
   );
 }

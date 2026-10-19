@@ -21,6 +21,12 @@ import { stepIsMine } from "@/lib/domain/signage";
 import { signoffPaused, type Feature, type StaffActor } from "@/lib/authz";
 import { daysOverdue } from "@/components/approvals/step-words";
 import { signoffGroupKey } from "@/lib/queries/approvals";
+import { listPackages } from "@/lib/queries/sponsorship-packages";
+import {
+  packageCounts,
+  sponsorshipRevenue,
+  toRevenuePackages,
+} from "@/lib/domain/sponsorship-packages";
 import {
   DEADLINE_FEATURE,
   deadlineWorkLabel,
@@ -85,7 +91,7 @@ export async function dashboardData(opts: {
   const live = and(eq(signageItems.editionId, editionId), isNull(signageItems.deletedAt));
   const assignee = alias(users, "assignee");
 
-  const [items, standCounts, pendingRows, forDeadlines, taskRow] = await Promise.all([
+  const [items, standCounts, pendingRows, forDeadlines, taskRow, packageRows] = await Promise.all([
     // Every live item of the event, once; the counts and dates come from here.
     db
       .select({
@@ -190,6 +196,8 @@ export async function dashboardData(opts: {
           lte(tasks.dueDate, weekEnd),
         ),
       ),
+    // Sponsorship packages (revenue and places; nothing without packages).
+    listPackages(db, editionId),
   ]);
 
   // ------------------------------------------------ signage and budget
@@ -213,6 +221,13 @@ export async function dashboardData(opts: {
       .map((i) => ({ ...i, hasArtwork: i.currentArtworkVersionId != null })),
     today,
   );
+  // Packages: the same revenue as the Sponsorship page (null without packages).
+  const revenuePackages = toRevenuePackages(packageRows);
+  const sponsorshipPackages = packageRows.length > 0 ? packageCounts(revenuePackages) : null;
+  const sponsorshipRevenueFigures =
+    packageRows.length > 0
+      ? sponsorshipRevenue(revenuePackages, { sold: sponsorship.sold, sales: sponsorship.sales })
+      : null;
 
   const work: DeadlineWork = {
     needsArtwork: signage.filter(
@@ -363,6 +378,10 @@ export async function dashboardData(opts: {
     >,
     budget: { budget: edition.signageBudget, estimate, actual },
     sponsorship,
+    /** Live packages, sold and places left; null when the event has none. */
+    sponsorshipPackages,
+    /** Package and item revenue (money: show only with costs.view); null without packages. */
+    sponsorshipRevenue: sponsorshipRevenueFigures,
     sittingWith: [...sittingWith.entries()]
       .map(([label, v]) => ({ label, count: v.count, overdue: v.overdue, who: [...v.who].sort() }))
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)),

@@ -212,6 +212,24 @@ describe("first signs after a copy", () => {
   });
 });
 
+describe("sponsorship", () => {
+  it("the sponsorship step lists packages first", () => {
+    const s = byKey(
+      buildSetupSteps(
+        { code: "LON27" },
+        facts({ packageCount: 3, sponsorCount: 2, sponsorshipItemCount: 4 }),
+        org(),
+        everyone,
+      ),
+    );
+    expect(s.sponsorship.detail).toBe("3 packages · 2 sponsors · 4 sponsorship items");
+    const without = byKey(
+      buildSetupSteps({ code: "LON27" }, facts({ sponsorCount: 1 }), org(), everyone),
+    );
+    expect(without.sponsorship.detail).toBe("1 sponsor");
+  });
+});
+
 describe("people", () => {
   it("is done with a second person or an open invitation", () => {
     expect(

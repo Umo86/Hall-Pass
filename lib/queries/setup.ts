@@ -13,6 +13,7 @@ import {
   memberships,
   signageItems,
   sponsors,
+  sponsorshipPackages,
   staffInvites,
   suppliers,
   users,
@@ -128,6 +129,8 @@ export type EditionSetupFacts = {
   signCount: number;
   draftSignCount: number;
   sponsorCount: number;
+  /** Live sponsorship packages (optional for older callers: none). */
+  packageCount?: number;
   sponsorshipItemCount: number;
   deadlines: { key: DeadlineKey; label: string; date: string | null }[];
 };
@@ -273,6 +276,7 @@ export function buildSetupSteps(
     .filter(Boolean)
     .join(" · ");
   const sponsorParts = [
+    (facts.packageCount ?? 0) > 0 ? plural(facts.packageCount ?? 0, "package") : null,
     facts.sponsorCount > 0 ? plural(facts.sponsorCount, "sponsor") : null,
     facts.sponsorshipItemCount > 0 ? plural(facts.sponsorshipItemCount, "sponsorship item") : null,
   ].filter(Boolean);
@@ -568,7 +572,7 @@ export async function loadEditionSetupFacts(
   const ids = rows.map((r) => r.id);
   const out = new Map<string, EditionSetupFacts>();
   if (ids.length === 0) return out;
-  const [hallRows, itemRows, sponsorRows, deadlineRows] = await Promise.all([
+  const [hallRows, itemRows, sponsorRows, deadlineRows, packageRows] = await Promise.all([
     db
       .select({
         editionId: halls.editionId,
@@ -597,6 +601,13 @@ export async function loadEditionSetupFacts(
       .where(inArray(sponsors.editionId, ids))
       .groupBy(sponsors.editionId),
     db.select().from(editionDeadlines).where(inArray(editionDeadlines.editionId, ids)),
+    db
+      .select({ editionId: sponsorshipPackages.editionId, n: count() })
+      .from(sponsorshipPackages)
+      .where(
+        and(inArray(sponsorshipPackages.editionId, ids), eq(sponsorshipPackages.isArchived, false)),
+      )
+      .groupBy(sponsorshipPackages.editionId),
   ]);
   for (const r of rows) {
     const items = itemRows.filter((i) => i.editionId === r.id);
@@ -616,6 +627,7 @@ export async function loadEditionSetupFacts(
       signCount: signs.reduce((n, i) => n + Number(i.n), 0),
       draftSignCount: signs.filter((i) => i.draft).reduce((n, i) => n + Number(i.n), 0),
       sponsorCount: Number(sponsorRows.find((s) => s.editionId === r.id)?.n ?? 0),
+      packageCount: Number(packageRows.find((p) => p.editionId === r.id)?.n ?? 0),
       sponsorshipItemCount: items
         .filter((i) => i.kind === "sponsorship_item")
         .reduce((n, i) => n + Number(i.n), 0),
@@ -878,52 +890,65 @@ export async function copySourceCounts(organisationId: string, viewer: Actor) {
     .from(editions)
     .innerJoin(events, eq(editions.eventId, events.id))
     .where(eq(events.organisationId, organisationId));
-  const [hallRows, deadlineRows, sponsorRows, itemRows, grantRows] = await Promise.all([
-    db
-      .select({
-        editionId: halls.editionId,
-        halls: sql<number>`count(distinct ${halls.id})`,
-        locations: sql<number>`count(${locations.id})`,
-      })
-      .from(halls)
-      .leftJoin(locations, eq(locations.hallId, halls.id))
-      .where(inArray(halls.editionId, orgEditions))
-      .groupBy(halls.editionId),
-    db
-      .select({ editionId: editionDeadlines.editionId, n: count() })
-      .from(editionDeadlines)
-      .where(inArray(editionDeadlines.editionId, orgEditions))
-      .groupBy(editionDeadlines.editionId),
-    db
-      .select({ editionId: sponsors.editionId, n: count() })
-      .from(sponsors)
-      .where(inArray(sponsors.editionId, orgEditions))
-      .groupBy(sponsors.editionId),
-    db
-      .select({ editionId: signageItems.editionId, n: count() })
-      .from(signageItems)
-      .where(and(inArray(signageItems.editionId, orgEditions), isNull(signageItems.deletedAt)))
-      .groupBy(signageItems.editionId),
-    // Every grant that isn't revoked, ended ones included: cloneEdition
-    // copies those too, with the end date moved to the new event.
-    db
-      .select({
-        editionId: externalGrants.editionId,
-        scopeType: externalGrants.scopeType,
-        scopeId: externalGrants.scopeId,
-        role: externalGrants.role,
-        expiresAt: externalGrants.expiresAt,
-        userId: externalGrants.userId,
-        email: externalGrants.invitedEmail,
-        venueId: editions.venueId,
-        breakdownEnd: editions.breakdownEnd,
-      })
-      .from(externalGrants)
-      .innerJoin(editions, eq(editions.id, externalGrants.editionId))
-      .where(
-        and(eq(externalGrants.organisationId, organisationId), isNull(externalGrants.revokedAt)),
-      ),
-  ]);
+  const [hallRows, deadlineRows, sponsorRows, itemRows, grantRows, packageRows] = await Promise.all(
+    [
+      db
+        .select({
+          editionId: halls.editionId,
+          halls: sql<number>`count(distinct ${halls.id})`,
+          locations: sql<number>`count(${locations.id})`,
+        })
+        .from(halls)
+        .leftJoin(locations, eq(locations.hallId, halls.id))
+        .where(inArray(halls.editionId, orgEditions))
+        .groupBy(halls.editionId),
+      db
+        .select({ editionId: editionDeadlines.editionId, n: count() })
+        .from(editionDeadlines)
+        .where(inArray(editionDeadlines.editionId, orgEditions))
+        .groupBy(editionDeadlines.editionId),
+      db
+        .select({ editionId: sponsors.editionId, n: count() })
+        .from(sponsors)
+        .where(inArray(sponsors.editionId, orgEditions))
+        .groupBy(sponsors.editionId),
+      db
+        .select({ editionId: signageItems.editionId, n: count() })
+        .from(signageItems)
+        .where(and(inArray(signageItems.editionId, orgEditions), isNull(signageItems.deletedAt)))
+        .groupBy(signageItems.editionId),
+      // Every grant that isn't revoked, ended ones included: cloneEdition
+      // copies those too, with the end date moved to the new event.
+      db
+        .select({
+          editionId: externalGrants.editionId,
+          scopeType: externalGrants.scopeType,
+          scopeId: externalGrants.scopeId,
+          role: externalGrants.role,
+          expiresAt: externalGrants.expiresAt,
+          userId: externalGrants.userId,
+          email: externalGrants.invitedEmail,
+          venueId: editions.venueId,
+          breakdownEnd: editions.breakdownEnd,
+        })
+        .from(externalGrants)
+        .innerJoin(editions, eq(editions.id, externalGrants.editionId))
+        .where(
+          and(eq(externalGrants.organisationId, organisationId), isNull(externalGrants.revokedAt)),
+        ),
+      // Live sponsorship packages: what cloneEdition brings across.
+      db
+        .select({ editionId: sponsorshipPackages.editionId, n: count() })
+        .from(sponsorshipPackages)
+        .where(
+          and(
+            inArray(sponsorshipPackages.editionId, orgEditions),
+            eq(sponsorshipPackages.isArchived, false),
+          ),
+        )
+        .groupBy(sponsorshipPackages.editionId),
+    ],
+  );
   const [liveSupplierRows, teamRows, limitedInvites] = await Promise.all([
     db
       .select({ id: suppliers.id })
@@ -1015,6 +1040,7 @@ export async function copySourceCounts(organisationId: string, viewer: Actor) {
       halls: num(h?.halls),
       locations: num(h?.locations),
       deadlines: num(deadlineRows.find((r) => r.editionId === editionId)?.n),
+      packages: num(packageRows.find((r) => r.editionId === editionId)?.n),
       sponsors: num(sponsorRows.find((r) => r.editionId === editionId)?.n),
       items: num(itemRows.find((r) => r.editionId === editionId)?.n),
       /** Grants a copy to the same venue could bring across (ended ones included). */

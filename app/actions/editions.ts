@@ -19,6 +19,8 @@ import {
   signageItems,
   sponsorEntitlements,
   sponsors,
+  sponsorshipPackageLines,
+  sponsorshipPackages,
   staffInvites,
   suppliers,
   users,
@@ -396,6 +398,8 @@ const cloneSchema = z
       .object({
         halls: z.boolean().default(true),
         deadlines: z.boolean().default(true),
+        /** Live sponsorship packages with what each includes (never their sales). */
+        packages: z.boolean().default(true),
         sponsors: z.boolean().default(true),
         items: z.boolean().default(true),
         access: z.boolean().default(true),
@@ -405,6 +409,7 @@ const cloneSchema = z
       .default({
         halls: true,
         deadlines: true,
+        packages: true,
         sponsors: true,
         items: true,
         access: true,
@@ -425,6 +430,8 @@ export type CloneCounts = {
   halls: number;
   locations: number;
   deadlines: number;
+  /** Live sponsorship packages brought across (with what each includes). */
+  packages: number;
   sponsors: number;
   items: number;
   access: number;
@@ -446,7 +453,7 @@ export type CloneCounts = {
 
 /**
  * Copy an event (brief §9): whatever is ticked of halls and locations,
- * deadline offsets, sponsors with their packages, items as drafts, and
+ * deadline offsets, the sponsorship package catalogue, sponsors (without what they bought), items as drafts, and
  * partner portal access. Artwork, sign-offs, actual costs and PO numbers
  * always start again.
  */
@@ -494,7 +501,12 @@ export async function cloneEdition(
   const copyAccess = data.include.access && can(session.actor, { type: "partners.invite" });
   const include = {
     ...data.include,
-    sponsors: data.include.sponsors && can(session.actor, { type: "sponsorship.sell" }),
+    sponsors:
+      data.include.sponsors &&
+      can(session.actor, { type: "sponsorship.sell", editionId: source.id }),
+    packages:
+      data.include.packages &&
+      can(session.actor, { type: "sponsorship.sell", editionId: source.id }),
   };
   const canStands = can(session.actor, { type: "stand_design.create" });
   const copiesKind: Record<string, boolean> = {
@@ -507,6 +519,7 @@ export async function cloneEdition(
     halls: 0,
     locations: 0,
     deadlines: 0,
+    packages: 0,
     sponsors: 0,
     items: 0,
     access: 0,
@@ -690,8 +703,55 @@ export async function cloneEdition(
         counts.locations = copied.locations.size;
       }
 
+      // The package catalogue: live packages in their order, with price,
+      // places and what each includes — never their sales (a copied sale
+      // would double the new event's revenue). Archived ones stay behind.
+      if (include.packages) {
+        const pkgs = await tx
+          .select()
+          .from(sponsorshipPackages)
+          .where(
+            and(
+              eq(sponsorshipPackages.editionId, source.id),
+              eq(sponsorshipPackages.isArchived, false),
+            ),
+          )
+          .orderBy(sponsorshipPackages.sortOrder, sql`lower(${sponsorshipPackages.name})`);
+        for (const [i, p] of pkgs.entries()) {
+          const [np] = await tx
+            .insert(sponsorshipPackages)
+            .values({
+              editionId: target.id,
+              name: p.name,
+              description: p.description,
+              price: p.price,
+              places: p.places,
+              sortOrder: i + 1,
+              isArchived: false,
+            })
+            .returning({ id: sponsorshipPackages.id });
+          const lines = await tx
+            .select()
+            .from(sponsorshipPackageLines)
+            .where(eq(sponsorshipPackageLines.packageId, p.id))
+            .orderBy(sponsorshipPackageLines.sortOrder, sponsorshipPackageLines.createdAt);
+          if (lines.length > 0) {
+            await tx.insert(sponsorshipPackageLines).values(
+              lines.map((l, j) => ({
+                packageId: np.id,
+                description: l.description,
+                quantity: l.quantity,
+                sortOrder: j + 1,
+              })),
+            );
+          }
+        }
+        counts.packages = pkgs.length;
+      }
+
       // Sponsors come across (the same companies usually return), with what
-      // they're entitled to; what they've bought starts again.
+      // they're entitled to by hand; what they've bought — items and their
+      // package, with the lines it added — starts again.
       const sponsorMap = new Map<string, string>();
       if (include.sponsors) {
         const sponsorRows = await tx
@@ -706,7 +766,7 @@ export async function cloneEdition(
               companyName: sp.companyName,
               contactName: sp.contactName,
               contactEmail: sp.contactEmail,
-              packageName: sp.packageName,
+              packageName: null,
               notes: sp.notes,
             })
             .returning();
@@ -714,7 +774,12 @@ export async function cloneEdition(
           const ents = await tx
             .select()
             .from(sponsorEntitlements)
-            .where(eq(sponsorEntitlements.sponsorId, sp.id));
+            .where(
+              and(
+                eq(sponsorEntitlements.sponsorId, sp.id),
+                isNull(sponsorEntitlements.fromPackageId),
+              ),
+            );
           if (ents.length > 0) {
             await tx.insert(sponsorEntitlements).values(
               ents.map((e) => ({

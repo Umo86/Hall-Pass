@@ -4,6 +4,7 @@ import { organisations } from "@/lib/db/schema";
 import { PageHeader } from "@/components/page-header";
 import { SectionLocked, settingsAccess } from "@/components/settings/access";
 import { OrganisationForm } from "@/components/settings/organisation-form";
+import { organisationCurrency } from "@/lib/format";
 
 export const metadata = { title: "Organisation · Settings" };
 export const dynamic = "force-dynamic";
@@ -34,7 +35,7 @@ export default async function OrganisationSettingsPage() {
       <OrganisationForm
         initial={{
           brandName: org?.brandName ?? session.organisation.brandName,
-          currency: ["GBP", "EUR", "USD"].includes(settings.currency) ? settings.currency : "GBP",
+          currency: organisationCurrency(settings),
           escalateAfterDays: Math.min(14, Math.max(1, settings.escalate_after_days ?? 2)),
           installPhotoRequired: settings.install_photo_required ?? true,
         }}

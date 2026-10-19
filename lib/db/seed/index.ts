@@ -14,7 +14,7 @@
  *     ORG_NAME="Media10" BRAND_NAME="Hall Pass" pnpm db:seed
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import "dotenv/config";
@@ -33,6 +33,7 @@ import { loadRun, persistRun } from "@/lib/workflow/persist";
 import { ensureSignageWorkflow, syncDepartmentSteps } from "@/lib/domain/departments";
 import { formatSignageRef, formatStandDesignRef, formatStandRef, STAND_SEQ_BASE } from "@/lib/refs";
 import { ensureStandDesignWorkflow } from "@/lib/domain/stand-designs";
+import { savePackageTx, sellPackageTx } from "@/lib/sponsorship/packages";
 
 const url =
   process.env.DIRECT_DATABASE_URL ??
@@ -518,7 +519,6 @@ async function main() {
           editionId: edition.id,
           companyName: sp.companyName,
           contactEmail: sp.contactEmail,
-          packageName: sp.packageName,
         })
         .returning();
     }
@@ -538,6 +538,118 @@ async function main() {
       }
       entitlementRows[ent.description] = e;
     }
+  }
+
+  // ------------------------------------------------------- sponsorship packages
+  // The catalogue and two sales, through the same helpers the actions use.
+  // Idempotent: a package is created when missing (or filled in when it is
+  // the empty one migration 0013 made from a sponsor's package name); a
+  // sponsor is sold one only while they have none (or given its agreed
+  // price when the backfill linked them without one); matching hand-added
+  // lines are tagged with the package only while untagged.
+  const packageDefs = [
+    {
+      name: "Headline sponsor",
+      price: 25000,
+      places: 1,
+      description: "Top billing across the venue",
+      lines: [
+        { description: "Logo on 6 hanging banners", quantity: 6 },
+        { description: "Entrance feature branding", quantity: 1 },
+      ],
+      sale: { sponsor: "BuildCo", price: 22500, note: "Early-booking discount" },
+    },
+    {
+      name: "Seminar theatre sponsor",
+      price: 8000,
+      places: 2,
+      description: "Branding in the seminar theatre",
+      lines: [{ description: "Seminar theatre branding", quantity: 1 }],
+      sale: { sponsor: "ToolMart", price: 8000, note: null },
+    },
+    {
+      name: "Feature area sponsor",
+      price: 12000,
+      places: 3,
+      description: "Branding around the feature area",
+      lines: [
+        { description: "Feature area banners", quantity: 2 },
+        { description: "Logo in the event guide", quantity: 1 },
+      ],
+      sale: null,
+    },
+  ];
+  const seedWho = { organisationId: org.id, actorUserId: null, currency: "GBP" };
+  const soldDaysAgo = new Date(NOW.getTime() - 10 * 86_400_000);
+  for (const def of packageDefs) {
+    await db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(s.sponsorshipPackages)
+        .where(
+          and(
+            eq(s.sponsorshipPackages.editionId, edition.id),
+            sql`lower(${s.sponsorshipPackages.name}) = lower(${def.name})`,
+          ),
+        );
+      const lineCount = existing
+        ? (
+            await tx
+              .select({ id: s.sponsorshipPackageLines.id })
+              .from(s.sponsorshipPackageLines)
+              .where(eq(s.sponsorshipPackageLines.packageId, existing.id))
+          ).length
+        : 0;
+      let packageId = existing?.id;
+      if (!existing || (existing.price === null && lineCount === 0)) {
+        const saved = await savePackageTx(tx, seedWho, edition, {
+          id: existing?.id,
+          name: def.name,
+          price: def.price,
+          places: def.places,
+          description: def.description,
+          lines: def.lines,
+          applyPriceToUnpriced: false,
+        });
+        packageId = saved.id;
+      }
+      if (!def.sale || !packageId) return;
+      const sponsor = sponsorRows[def.sale.sponsor];
+      const [current] = await tx.select().from(s.sponsors).where(eq(s.sponsors.id, sponsor.id));
+      if (current.packageId === null) {
+        await sellPackageTx(tx, seedWho, {
+          editionId: edition.id,
+          packageId,
+          sponsorId: sponsor.id,
+          newSponsorName: null,
+          agreedPrice: def.sale.price,
+          priceNote: def.sale.note,
+          soldAt: soldDaysAgo,
+        });
+      } else if (current.packageId === packageId && current.packagePrice === null) {
+        await tx
+          .update(s.sponsors)
+          .set({
+            packagePrice: def.sale.price.toFixed(2),
+            packagePriceNote: def.sale.price === def.price ? null : def.sale.note,
+            packageSoldAt: soldDaysAgo,
+          })
+          .where(eq(s.sponsors.id, sponsor.id));
+      }
+      // Their own lines that match the package's came with it.
+      for (const line of def.lines) {
+        await tx
+          .update(s.sponsorEntitlements)
+          .set({ fromPackageId: packageId })
+          .where(
+            and(
+              eq(s.sponsorEntitlements.sponsorId, sponsor.id),
+              eq(s.sponsorEntitlements.description, line.description),
+              isNull(s.sponsorEntitlements.fromPackageId),
+            ),
+          );
+      }
+    });
   }
 
   // ------------------------------------------------------------------ workflows

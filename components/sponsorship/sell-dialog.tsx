@@ -48,7 +48,8 @@ export function SellButton({
   className,
 }: {
   item: SellItem;
-  sponsors: { id: string; name: string }[];
+  /** packageName: the package they bought, for the "enter 0" hint. */
+  sponsors: { id: string; name: string; packageName?: string | null }[];
   variant?: "default" | "outline";
   size?: "sm" | "default";
   className?: string;
@@ -58,6 +59,7 @@ export function SellButton({
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const router = useRouter();
+  const chosen = sponsors.find((s) => s.id === sponsorId);
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -146,6 +148,12 @@ export function SellButton({
               {item.costEstimate && (
                 <p className="text-muted-foreground text-xs">
                   Cost price {formatMoney(item.costEstimate)}
+                </p>
+              )}
+              {chosen?.packageName && (
+                <p className="text-muted-foreground text-xs">
+                  {chosen.name} has the {chosen.packageName} package. If this comes with it, enter 0
+                  so it isn&apos;t counted twice.
                 </p>
               )}
             </div>

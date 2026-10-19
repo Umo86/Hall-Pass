@@ -1046,3 +1046,98 @@ Where the build spec and the code differ:
   on." isn't shown to super admins.
 - The cron additions sit in their own `describe` (own organisation) at the end
   of `cron.db.test.ts`, as the daily jobs run across every organisation.
+
+## Sponsorship packages (Oct 2026)
+
+A priced package catalogue per event (Sponsorship → Packages), selling a
+package to a sponsor at an agreed price, and package revenue beside item
+sales on the Sponsorship page, the dashboard card and the sponsor report.
+Events without packages look as they did (apart from an empty Packages tab).
+
+1. **One package per sponsor** (`sponsors.package_id`); anything extra is a
+   sponsorship item or a hand-added entitlement.
+2. **What's included is copied into entitlements when sold** (a snapshot);
+   editing a package changes future sales only, and the editor says so.
+3. **Entitlements remember their package** (`from_package_id`), so a change
+   or removal can tell the package's lines from the sponsor's own.
+4. **Duplicate lines are matched by `lineKey`** (trimmed, spaces collapsed,
+   any case) for package sales and `saveSponsor` alike; a line they already
+   have is left as it is and shown "Already on their list".
+5. **Changing or removing a package removes only the current package's lines
+   nothing counts towards** (deleted items count); lines items count towards
+   stay, still tagged; lines they had before are never touched.
+6. **The agreed price is required on every sale** and starts at the package
+   price; a reason is required only when it differs from a set price, and is
+   stored only then.
+7. **Sold date = the moment of sale**, not editable; editing the price keeps
+   it; the backfill used the sponsor's `created_at`.
+8. **Places: empty = no limit, else at least 1, never below sold**; the last
+   place is race-safe (lock the package row, then the sponsor).
+9. **Archive, don't delete**: Delete is offered only while nothing points at a
+   package; archived packages can't be sold, keep their sales in revenue and
+   leave "Still to sell".
+10. **Prices follow `sale_price`**: `can(costs.view, { editionId })`, stripped
+    on the server in pure `packageCards`; counts, names and lines go with the
+    Sponsorship section.
+11. **Managing and selling is `sponsorship.sell` for the event**; no new
+    action, ability or section (the frozen snapshot is unchanged; only two
+    ability descriptions changed).
+12. **Money in `organisationCurrency()`** (GBP/EUR/USD, else GBP; GBP today).
+13. **`sponsors.package_name` is kept and mirrored** on sell, rename and
+    remove; the free-text Package field left the sponsor form.
+14. **Copying an event brings live packages** (price, places, description,
+    lines, order) **but no sales**; sponsors come across without their package
+    or the lines it added.
+15. **Revenue is defined once** in pure `sponsorshipRevenue()`: packages sold
+    (agreed prices) + items sold (`sponsorshipTotals`), still to sell = places
+    left × price over live packages with both, naming what it leaves out.
+16. **Events without packages look as before**: the dashboard card, Items tab,
+    copy form and sponsor workbook change only once an event has a package.
+17. **Mark as sold hints at 0** when the sponsor has a package ("If this comes
+    with it, enter 0 so it isn't counted twice"); no new rule.
+18. **Move up / Move down** (renumbered 1..n), not drag and drop; new
+    packages go last.
+19. **A new sponsor made while selling is refused** when the name (any case,
+    trimmed) is already a sponsor of the event.
+20. **Setting a price on a package sold before it had one** offers a ticked
+    box to fill those sponsors' agreed price, each audited.
+21. **Event-scoped like everything else** (C12): `ownEdition`, `ownPackage`
+    and `ownSponsor` with the actor; every `can()` passes `editionId`; nothing
+    adds revenue across events.
+
+Where the build spec and the code differ:
+
+- `ownSponsor` moved from `app/actions/sponsors.ts` to
+  `lib/sponsorship/own.ts` beside `ownPackage`: exporting a helper from a
+  `"use server"` file would make it callable from the browser.
+- `lib/sponsorship/packages.ts` and `lib/queries/sponsorship-packages.ts`
+  carry no `server-only` marker and don't import the database client: the
+  seed (a plain `tsx` script, where the client's top-level `await` can't
+  load) sells the demo packages through them. Their audit rows from the
+  seed are written as the system.
+- `savePackageTx` returns the names of sponsors whose price was filled in
+  (`pricedSales: string[]`), not a count, so the toast can name one.
+- The dashboard's package counts are `{ count, sold, placesLeft, unlimited }`
+  rather than `placesLeft: null` when any package has no limit, so the line
+  still says how many limited places are left ("2 packages sold · 4 places
+  left · 1 with no limit"). People without costs see the same counts in the
+  Places left tile.
+- The copy form shows "Sponsorship packages (n)", and the "Sponsors come
+  across without the packages they bought" hint, only when the source has
+  live packages (D16).
+- The seed fills in the empty packages migration 0013 made from the demo's
+  package names (no price and no lines yet) and gives their sponsors the
+  agreed price, so an already-seeded database gets the demo catalogue too.
+- A disabled Sell button sits in a span carrying the reason as its title
+  (disabled buttons get no hover); the reason is the spec's wording.
+- Lines a sale adds are stamped a millisecond apart so a sponsor's card lists
+  them in the package's order.
+- `saveSponsor` also drops a line repeated within what was typed, not only
+  lines the sponsor already has.
+- A package edit's audit summary names a rename ("renamed from Gold"); an
+  edit that changes nothing still writes its row ("…: nothing").
+- The sponsor report's Revenue sheet adds a line for sales without an agreed
+  price yet, which revenue counts as nothing.
+- `cloneEdition` checks `sponsorship.sell` for the source event for sponsors
+  too (it was event-blind); the Sponsorship page's sell, costs and export
+  checks pass the event.

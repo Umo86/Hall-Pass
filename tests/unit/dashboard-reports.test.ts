@@ -38,6 +38,32 @@ describe("reports by audience", () => {
   });
 });
 
+describe("scopeLine with packages", () => {
+  const c = {
+    items: 138,
+    halls: 2,
+    withInstallDate: 90,
+    sponsored: 10,
+    sponsors: 2,
+    venueItems: 1,
+    labels: 138,
+    exhibitors: 0,
+  };
+  it("the sponsor report counts packages sold, and reads as before without any", () => {
+    expect(scopeLine("sponsor_report", { ...c, packagesSold: 2 })).toBe(
+      "2 packages sold · 10 items for 2 sponsors",
+    );
+    expect(scopeLine("sponsor_report", { ...c, packagesSold: 1, sponsored: 0 })).toBe(
+      "1 package sold",
+    );
+    expect(scopeLine("sponsor_report", { ...c, packagesSold: 0 })).toBe("10 items for 2 sponsors");
+    expect(scopeLine("sponsor_report", c)).toBe("10 items for 2 sponsors");
+    expect(scopeLine("sponsor_report", { ...c, sponsored: 0 })).toBe(
+      "Nothing sold to sponsors yet",
+    );
+  });
+});
+
 describe("scopeLine", () => {
   const c: ReportCounts = {
     items: 138,

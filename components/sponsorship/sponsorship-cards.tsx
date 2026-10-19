@@ -61,7 +61,7 @@ export type SponsorshipCard = {
   countdown: { label: string; tone: CountdownTone; warning: string | null } | null;
 };
 
-type Sponsors = { id: string; name: string }[];
+type Sponsors = { id: string; name: string; packageName?: string | null }[];
 
 const TONE: Record<CountdownTone, string> = {
   ok: "text-muted-foreground",

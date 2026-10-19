@@ -1,5 +1,6 @@
 import { can } from "@/lib/authz";
 import { buildSponsorWorkbook } from "@/lib/exports/excel";
+import { organisationCurrency } from "@/lib/format";
 import {
   exportEdition,
   exportError,
@@ -22,6 +23,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ editionC
     const { workbook } = await buildSponsorWorkbook(
       edition.id,
       can(session.actor, { type: "costs.view", editionId: edition.id }),
+      organisationCurrency(session.organisation.settings),
     );
     const data = Buffer.from(await workbook.xlsx.writeBuffer());
     return recordAndServeExport({

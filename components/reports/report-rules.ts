@@ -50,6 +50,8 @@ export type ReportCounts = {
   venueItems: number;
   labels: number;
   exhibitors: number;
+  /** Sponsors with a package (sponsor report); 0 or missing reads as before. */
+  packagesSold?: number;
 };
 
 /** What a report covers, in a few words: "138 items · 2 halls". */
@@ -63,10 +65,14 @@ export function scopeLine(kind: ReportKind, c: ReportCounts): string {
       return c.venueItems > 0
         ? `${plural(c.venueItems, "item")} needing venue approval`
         : "No items need venue approval yet";
-    case "sponsor_report":
-      return c.sponsored > 0
-        ? `${plural(c.sponsored, "item")} for ${plural(c.sponsors, "sponsor")}`
-        : "Nothing sold to sponsors yet";
+    case "sponsor_report": {
+      const items =
+        c.sponsored > 0
+          ? `${plural(c.sponsored, "item")} for ${plural(c.sponsors, "sponsor")}`
+          : null;
+      const packages = c.packagesSold ? `${plural(c.packagesSold, "package")} sold` : null;
+      return [packages, items].filter(Boolean).join(" · ") || "Nothing sold to sponsors yet";
+    }
     case "spec_labels":
       return c.labels > 0 ? `${plural(c.labels, "label")}, one per item` : "No items to label yet";
     case "stand_register":

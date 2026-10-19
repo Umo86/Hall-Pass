@@ -120,6 +120,21 @@ describe("event scope guard", () => {
     expect(missing).toEqual([]);
   });
 
+  it("ownPackage is given the actor", () => {
+    const missing: string[] = [];
+    let seen = 0;
+    for (const file of staffFiles) {
+      const src = readFileSync(path.join(ROOT, file), "utf8");
+      for (const inner of calls(src, "ownPackage")) {
+        if (isDefinition(src, "ownPackage", inner)) continue;
+        seen += 1;
+        if (!/\bactor\b/.test(args(inner)[3] ?? "")) missing.push(`${file}: ownPackage(${inner})`);
+      }
+    }
+    expect(seen).toBeGreaterThan(0);
+    expect(missing).toEqual([]);
+  });
+
   it("every listEditions passes a scope", () => {
     const missing: string[] = [];
     for (const file of allFiles) {

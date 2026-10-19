@@ -13,11 +13,20 @@ import {
   locations,
   signageItems,
   sponsors,
+  sponsorshipPackages,
   standSubmissions,
   suppliers,
   users,
 } from "@/lib/db/schema";
-import { formatDate, statusLabel } from "@/lib/format";
+import { currencySymbol, formatDate, statusLabel } from "@/lib/format";
+import { sponsorshipTotals } from "@/lib/domain/sponsorship";
+import {
+  placesLeft,
+  sponsorshipRevenue,
+  stillToSellNote,
+  toRevenuePackages,
+} from "@/lib/domain/sponsorship-packages";
+import { listPackages } from "@/lib/queries/sponsorship-packages";
 import { safeSheetName } from "./sheet-name";
 
 const STATUS_FILLS: Record<string, string> = {
@@ -229,17 +238,27 @@ export async function buildScheduleWorkbook(editionId: string, includeCosts: boo
  * items), a summary plus one sheet per sponsor — what they bought and where
  * its sign-off stands. Built for sales to send on.
  */
-export async function buildSponsorWorkbook(editionId: string, includeCosts: boolean) {
+export async function buildSponsorWorkbook(
+  editionId: string,
+  includeCosts: boolean,
+  currency = "GBP",
+) {
   const [edition] = await db.select().from(editions).where(eq(editions.id, editionId));
+  // Packages add a Package column and the Packages and Revenue sheets;
+  // without any the workbook is as it always was.
+  const packages = await listPackages(db, editionId);
+  const hasPackages = packages.length > 0;
   const rows = await db
     .select({
       item: signageItems,
       typeName: itemTypes.name,
       sponsorName: sponsors.companyName,
+      packageName: sponsorshipPackages.name,
       supplierName: suppliers.name,
     })
     .from(signageItems)
     .innerJoin(sponsors, eq(signageItems.sponsorId, sponsors.id))
+    .leftJoin(sponsorshipPackages, eq(sponsorshipPackages.id, sponsors.packageId))
     .leftJoin(itemTypes, eq(signageItems.itemTypeId, itemTypes.id))
     .leftJoin(suppliers, eq(signageItems.supplierId, suppliers.id))
     .where(
@@ -258,6 +277,7 @@ export async function buildSponsorWorkbook(editionId: string, includeCosts: bool
   wb.creator = "Hall Pass";
   const columns = [
     { header: "Sponsor", key: "sponsor", width: 22 },
+    ...(hasPackages ? [{ header: "Package", key: "package", width: 20 }] : []),
     { header: "Ref", key: "ref", width: 16 },
     { header: "Name", key: "name", width: 36 },
     { header: "Kind", key: "kind", width: 16 },
@@ -285,6 +305,7 @@ export async function buildSponsorWorkbook(editionId: string, includeCosts: bool
       const steps = (byItem.get(r.item.id) ?? []).sort((a, b) => a.order - b.order);
       const row = ws.addRow({
         sponsor: r.sponsorName,
+        ...(hasPackages ? { package: r.packageName ?? "" } : {}),
         ref: r.item.ref,
         name: r.item.name,
         kind: r.item.kind === "sponsorship_item" ? "Sponsorship item" : "Signage",
@@ -334,8 +355,30 @@ export async function buildSponsorWorkbook(editionId: string, includeCosts: bool
   if (unsold.length > 0) {
     fill(
       wb.addWorksheet(safeSheetName("Still to sell", used)),
-      unsold.map((u) => ({ ...u, sponsorName: "— not sold —" })),
+      unsold.map((u) => ({ ...u, sponsorName: "— not sold —", packageName: null })),
     );
+  }
+  if (hasPackages) {
+    const items = sponsorshipTotals(
+      await db
+        .select({
+          kind: signageItems.kind,
+          sponsorId: signageItems.sponsorId,
+          salePrice: signageItems.salePrice,
+          costEstimate: signageItems.costEstimate,
+        })
+        .from(signageItems)
+        .where(
+          and(
+            eq(signageItems.editionId, editionId),
+            isNull(signageItems.deletedAt),
+            inArray(signageItems.kind, [...SIGNAGE_KINDS]),
+            // The Sponsorship page's rows (listSponsorshipRows), so the figures agree.
+            sql`(${signageItems.kind} = 'sponsorship_item' OR ${signageItems.sponsorId} IS NOT NULL)`,
+          ),
+        ),
+    );
+    addPackageSheets(wb, used, packages, items, includeCosts, currency);
   }
   for (const name of [...new Set(rows.map((r) => r.sponsorName))]) {
     fill(
@@ -344,6 +387,110 @@ export async function buildSponsorWorkbook(editionId: string, includeCosts: bool
     );
   }
   return { workbook: wb, edition };
+}
+
+/**
+ * The sponsor report's Packages sheet (one row per sale, one per package not
+ * sold yet) and Revenue sheet (the figures the Sponsorship page shows).
+ * Money columns only for people who see costs.
+ */
+function addPackageSheets(
+  wb: ExcelJS.Workbook,
+  used: Set<string>,
+  packages: Awaited<ReturnType<typeof listPackages>>,
+  items: { sold: number; sales: number },
+  includeCosts: boolean,
+  currency: string,
+) {
+  const sym = currencySymbol(currency);
+  const amount = (v: string | number | null) => (v == null || v === "" ? "" : Number(v));
+
+  const ps = wb.addWorksheet(safeSheetName("Packages", used));
+  ps.columns = [
+    { header: "Package", key: "package", width: 26 },
+    ...(includeCosts ? [{ header: `Price ${sym}`, key: "price", width: 12 }] : []),
+    { header: "Places", key: "places", width: 10 },
+    { header: "Sold", key: "sold", width: 8 },
+    { header: "Left", key: "left", width: 8 },
+    { header: "Sponsor", key: "sponsor", width: 24 },
+    ...(includeCosts
+      ? [
+          { header: `Agreed ${sym}`, key: "agreed", width: 12 },
+          { header: `Difference ${sym}`, key: "difference", width: 14 },
+          { header: "Why", key: "why", width: 30 },
+        ]
+      : []),
+    { header: "Sold on", key: "soldOn", width: 14 },
+    { header: "Archived", key: "archived", width: 10 },
+  ] as ExcelJS.Column[];
+  styleHeader(ps.getRow(1));
+  ps.views = [{ state: "frozen", ySplit: 1, xSplit: 1 }];
+  for (const p of packages) {
+    const left = placesLeft(p.places, p.sales.length);
+    const base = {
+      package: p.name,
+      ...(includeCosts ? { price: amount(p.price) } : {}),
+      places: p.places ?? "No limit",
+      sold: p.sales.length,
+      left: left ?? "",
+      archived: p.isArchived ? "Yes" : "",
+    };
+    if (p.sales.length === 0) {
+      ps.addRow({ ...base, sponsor: "— not sold —" });
+      continue;
+    }
+    for (const sale of p.sales) {
+      ps.addRow({
+        ...base,
+        sponsor: sale.companyName,
+        ...(includeCosts
+          ? {
+              agreed: amount(sale.agreedPrice),
+              difference:
+                sale.agreedPrice != null && p.price != null
+                  ? Number(sale.agreedPrice) - Number(p.price)
+                  : "",
+              why: sale.priceNote ?? "",
+            }
+          : {}),
+        soldOn: sale.soldAt ? formatDate(sale.soldAt) : "",
+      });
+    }
+  }
+
+  const revenue = sponsorshipRevenue(toRevenuePackages(packages), items);
+  const rs = wb.addWorksheet(safeSheetName("Revenue", used));
+  rs.columns = [
+    { header: "Figure", key: "figure", width: 32 },
+    { header: "Count", key: "count", width: 10 },
+    ...(includeCosts ? [{ header: `Value ${sym}`, key: "value", width: 14 }] : []),
+  ] as ExcelJS.Column[];
+  styleHeader(rs.getRow(1));
+  const money = (v: number) => (includeCosts ? { value: v } : {});
+  rs.addRow({
+    figure: "Packages sold",
+    count: revenue.packages.sold,
+    ...money(revenue.packages.value),
+  });
+  rs.addRow({ figure: "Items sold", count: revenue.items.sold, ...money(revenue.items.value) });
+  const total = rs.addRow({
+    figure: "Total sponsorship revenue",
+    count: "",
+    ...money(revenue.total),
+  });
+  total.font = { bold: true };
+  rs.addRow({
+    figure: "Still to sell in packages",
+    count: revenue.remaining.places,
+    ...money(revenue.remaining.value),
+  });
+  const note = stillToSellNote(revenue);
+  if (note) rs.addRow({ figure: note });
+  if (includeCosts && revenue.packages.unpriced > 0) {
+    rs.addRow({
+      figure: `${revenue.packages.unpriced} sold without an agreed price yet (counted as nothing)`,
+    });
+  }
 }
 
 /**
