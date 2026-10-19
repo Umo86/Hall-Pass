@@ -1190,3 +1190,9 @@ Where the build spec and the code differ:
   teams. A database created fresh (migrations, then seed) otherwise had no
   departments on the demo staff, so the owner picker and "Owner: Marcus
   Marketing · Marketing" lost the department and the people e2e failed.
+- **Another event's pages answer with the not-found page, not an HTTP 404**:
+  `app/(app)/loading.tsx` streams the shell first, so `notFound()` renders the
+  not-found page with status 200 and `noindex`, exactly as for an event code
+  that doesn't exist; nothing tells the two apart. Exports, files and other
+  route handlers still return 404. Removing the loading state for a status
+  code nobody sees wasn't worth the slower-feeling navigation.
