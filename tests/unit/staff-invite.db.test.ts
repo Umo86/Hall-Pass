@@ -1,7 +1,8 @@
 /**
  * Staff invitations against a real database (TEST_DATABASE_URL): the newest
  * open invite wins, claiming creates the membership once with the invited
- * role and permissions, and a used or revoked invite can't be claimed.
+ * role and permissions, and a used or revoked invite can't be claimed; a
+ * "main approver when they accept" is carried out once.
  */
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -144,6 +145,80 @@ d("staff invitations", () => {
     // The name from the invitation is used when none is typed.
     const [u] = await db.select().from(schema.users).where(eq(schema.users.id, freshUser));
     expect(u.fullName).toBe("Fran Fresh");
+  });
+
+  it("accepting twice promotes once (main approver when they accept)", async () => {
+    const [dept] = await db
+      .insert(schema.departments)
+      .values({ organisationId: orgId, name: `Press ${suffix}` })
+      .returning();
+    const joId = randomUUID();
+    const joEmail = `jo-${suffix}@invite.test`;
+    await db.insert(schema.users).values({ id: joId, email: joEmail, fullName: "Jo Main" });
+    await db
+      .insert(schema.memberships)
+      .values({ userId: joId, organisationId: orgId, role: "marketing" });
+    const samEmail = `sam-${suffix}@invite.test`;
+    await db.insert(schema.approvers).values([
+      {
+        organisationId: orgId,
+        departmentId: dept.id,
+        fullName: "Jo Main",
+        email: joEmail,
+        userId: joId,
+        isMain: true,
+      },
+      {
+        organisationId: orgId,
+        departmentId: dept.id,
+        fullName: "Sam Asked",
+        email: samEmail,
+        mainOnAccept: true,
+      },
+    ]);
+    const [invite] = await db
+      .insert(schema.staffInvites)
+      .values({
+        organisationId: orgId,
+        invitedEmail: samEmail,
+        role: "marketing",
+        inviteTokenHash: `ask-${suffix}`,
+      })
+      .returning();
+    const samId = randomUUID();
+    await db.insert(schema.users).values({ id: samId, email: samEmail });
+    await invites.claimStaffInvite(invite, samId, "Sam Asked");
+    await invites.claimStaffInvite(invite, samId, "Sam Asked");
+    const rows = await db
+      .select()
+      .from(schema.approvers)
+      .where(eq(schema.approvers.departmentId, dept.id));
+    expect(rows.find((r) => r.email === samEmail)).toMatchObject({
+      userId: samId,
+      isMain: true,
+      mainOnAccept: false,
+    });
+    expect(rows.find((r) => r.email === joEmail)?.isMain).toBe(false);
+    const promoted = await db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.subjectUserId, samId),
+          eq(schema.auditLog.entityType, "approver"),
+          eq(schema.auditLog.actorType, "system"),
+        ),
+      );
+    expect(promoted.map((a) => a.summary)).toEqual([
+      `Sam Asked is now the main approver for Press ${suffix} — they accepted their invitation`,
+    ]);
+    const told = await db
+      .select()
+      .from(schema.notifications)
+      .where(
+        and(eq(schema.notifications.userId, joId), eq(schema.notifications.kind, "main_approver")),
+      );
+    expect(told).toHaveLength(1);
   });
 
   it("does not claim a revoked invitation", async () => {

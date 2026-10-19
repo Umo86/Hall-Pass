@@ -4,7 +4,7 @@ import "server-only";
  * external grant or a staff invitation — and say why it can't be used
  * when it can't (revoked, used, expired, unknown).
  */
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvers,
@@ -100,6 +100,8 @@ export type InviteDetails =
       departmentName: string | null;
       /** They were also added to sign off artwork. */
       signsOff: boolean;
+      /** Departments (live, signing off) they become main approver for when they accept. */
+      mainFor: string[];
     }
   | ({ ok: false } & InviteProblem);
 
@@ -120,6 +122,7 @@ export async function inviteDetails(token: string): Promise<InviteDetails> {
       fullName: "",
       departmentName: null,
       signsOff: false,
+      mainFor: [],
     };
   }
   const s = await findValidStaffInvite(token);
@@ -130,7 +133,7 @@ export async function inviteDetails(token: string): Promise<InviteDetails> {
       : { ok: false, error: "This invitation link is not valid.", reason: "invalid" };
   }
   const invite = s.invite;
-  const [org, dept, approver] = await Promise.all([
+  const [org, dept, approver, asks] = await Promise.all([
     db.query.organisations.findFirst({ where: eq(organisations.id, invite.organisationId) }),
     invite.departmentId
       ? db.query.departments.findFirst({
@@ -147,6 +150,22 @@ export async function inviteDetails(token: string): Promise<InviteDetails> {
         eq(approvers.email, invite.invitedEmail.toLowerCase()),
       ),
     }),
+    // Departments still signing off that asked for them as main approver.
+    db
+      .select({ name: departments.name })
+      .from(approvers)
+      .innerJoin(departments, eq(departments.id, approvers.departmentId))
+      .where(
+        and(
+          eq(approvers.organisationId, invite.organisationId),
+          eq(approvers.email, invite.invitedEmail.toLowerCase()),
+          isNull(approvers.userId),
+          eq(approvers.mainOnAccept, true),
+          eq(departments.signsOff, true),
+          eq(departments.isArchived, false),
+        ),
+      )
+      .orderBy(asc(departments.sortOrder), asc(departments.name)),
   ]);
   return {
     ok: true,
@@ -158,5 +177,6 @@ export async function inviteDetails(token: string): Promise<InviteDetails> {
     fullName: invite.fullName || approver?.fullName || "",
     departmentName: dept && !dept.isArchived ? dept.name : null,
     signsOff: Boolean(approver),
+    mainFor: asks.map((a) => a.name),
   };
 }

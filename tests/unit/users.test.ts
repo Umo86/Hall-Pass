@@ -16,6 +16,9 @@ import {
   featuresSummary,
   firstName,
   inviteStatusText,
+  mainApproverNote,
+  mainOnAcceptOutcome,
+  mainTakeover,
   normaliseFeatures,
   overridesFor,
   roleForDepartment,
@@ -190,6 +193,78 @@ describe("sign-off changes", () => {
   it("is empty when nothing changed", () => {
     const same = [{ departmentId: "a", isMain: true }];
     expect(signoffChanges(same, same)).toEqual({ add: [], remove: [], update: [] });
+  });
+});
+
+describe("main approver when they accept", () => {
+  it("mainTakeover: an invitee waits while the main can sign; otherwise, and for members, it is now", () => {
+    expect(mainTakeover({ hasAccount: false, currentMainCanSign: true })).toBe("on_accept");
+    expect(mainTakeover({ hasAccount: false, currentMainCanSign: false })).toBe("now");
+    expect(mainTakeover({ hasAccount: true, currentMainCanSign: true })).toBe("now");
+    expect(mainTakeover({ hasAccount: true, currentMainCanSign: false })).toBe("now");
+  });
+
+  it("mainOnAcceptOutcome: promotes; an archived or non-signing department comes first; someone who can't sign isn't promoted", () => {
+    const at = (departmentArchived: boolean, signsOff: boolean, canSign: boolean) =>
+      mainOnAcceptOutcome({ departmentArchived, signsOff, canSign });
+    expect(at(false, true, true)).toBe("promote");
+    expect(at(false, true, false)).toBe("cant_sign");
+    expect(at(true, true, true)).toBe("department_off");
+    expect(at(false, false, true)).toBe("department_off");
+    expect(at(true, false, false)).toBe("department_off");
+    expect(at(false, false, false)).toBe("department_off");
+  });
+
+  it("mainApproverNote: no main, a main who can't sign, a main who can (invited and member), and someone else's pending ask", () => {
+    const base = { person: "Sam", department: "Marketing", pending: null };
+    expect(mainApproverNote({ ...base, invited: true, current: null })).toBe(
+      "Marketing has no main approver yet.",
+    );
+    expect(mainApproverNote({ ...base, invited: false, current: null })).toBe(
+      "Marketing has no main approver yet.",
+    );
+    expect(
+      mainApproverNote({ ...base, invited: true, current: { name: "Jo", canSign: false } }),
+    ).toBe("Replaces Jo, who can't sign off at the moment.");
+    expect(
+      mainApproverNote({ ...base, invited: false, current: { name: "Jo", canSign: false } }),
+    ).toBe("Replaces Jo, who can't sign off at the moment.");
+    expect(
+      mainApproverNote({ ...base, invited: true, current: { name: "Jo", canSign: true } }),
+    ).toBe("Jo stays main approver until Sam accepts, then Sam takes over.");
+    expect(
+      mainApproverNote({ ...base, invited: false, current: { name: "Jo", canSign: true } }),
+    ).toBe("Replaces Jo as main approver.");
+    // Someone else's ask: the newest choice wins.
+    expect(
+      mainApproverNote({
+        ...base,
+        pending: "Alex",
+        invited: true,
+        current: { name: "Jo", canSign: true },
+      }),
+    ).toBe(
+      "Jo stays main approver until Sam accepts, then Sam takes over. Alex was going to take over when they accept — Sam will instead.",
+    );
+    expect(
+      mainApproverNote({
+        ...base,
+        pending: "Alex",
+        invited: false,
+        current: { name: "Jo", canSign: true },
+      }),
+    ).toBe("Replaces Jo as main approver. Alex won't take over when they accept.");
+    expect(
+      mainApproverNote({
+        ...base,
+        pending: "Alex",
+        invited: true,
+        current: { name: "Jo", canSign: false },
+      }),
+    ).toBe("Replaces Jo, who can't sign off at the moment. Alex won't take over when they accept.");
+    expect(mainApproverNote({ ...base, pending: "Alex", invited: true, current: null })).toBe(
+      "Marketing has no main approver yet. Alex won't take over when they accept.",
+    );
   });
 });
 

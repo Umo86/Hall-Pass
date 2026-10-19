@@ -378,7 +378,8 @@ export function AddSeveral({
           </>
         )}
         <p className="text-muted-foreground text-xs">
-          Sign-off, manager and anything else can be set on each person&apos;s page afterwards.
+          Sign-off, main approver, manager and anything else can be set on each person&apos;s page
+          afterwards.
         </p>
       </section>
 

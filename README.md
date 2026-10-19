@@ -146,6 +146,50 @@ again, and the main-approver problem above comes back. Roll forward with a fix i
 a rollback can't be avoided, first remove from the team anyone suspended or past their end
 date who must stay out (removal works the same in every version).
 
+### Release 0013 (`0013_users_events_packages`)
+
+Main approver when they accept, events per person and sponsorship packages ship on one
+migration. It adds and backfills only (no enum value), so the live code keeps working on it.
+
+1. **Migrate first, by hand** (from a checkout of the release, with the live direct/session
+   URL):
+
+   ```bash
+   HASH=$(sha256sum lib/db/migrations/0013_users_events_packages.sql | cut -d' ' -f1)
+   WHEN=$(node -p "require('./lib/db/migrations/meta/_journal.json').entries.at(-1).when")
+   psql "$DIRECT_DATABASE_URL" -v ON_ERROR_STOP=1 <<SQL
+   BEGIN;
+   \i lib/db/migrations/0013_users_events_packages.sql
+   INSERT INTO drizzle.__drizzle_migrations (hash, created_at)
+   SELECT '$HASH', $WHEN
+   WHERE NOT EXISTS (SELECT 1 FROM drizzle.__drizzle_migrations WHERE created_at = $WHEN);
+   COMMIT;
+   SQL
+   ```
+
+   (`DIRECT_DATABASE_URL=… pnpm db:migrate` does the same and records the row itself.)
+
+2. **Deploy straight after.** In the gap the old code is running on the new schema: don't
+   change main approvers, edit sponsors, or copy events until the new deployment is live (an
+   old sponsor edit can rewrite `package_name` away from its package; an old copy brings
+   package names across as free text).
+3. **Run the file once more** after the deploy (without the bookkeeping insert): it is
+   idempotent and picks up notifications and sponsors the old code wrote in the gap.
+4. **Check** `/api/health`: `"schema": "current"`, `"ok": true`.
+
+**Rolling back past 0013** is unsafe once anyone is limited to events (older code ignores
+`edition_ids`, so they would see every event) or an ask is pending (older code links approver
+rows without clearing `main_on_accept`, the CHECK refuses, and that person can't finish
+signing in). Roll forward instead. If a rollback can't be avoided, first:
+
+```sql
+UPDATE approvers SET main_on_accept = false, main_on_accept_by = NULL WHERE main_on_accept;
+```
+
+and suspend (Users → Suspend) everyone limited to events who must not see the others. Package
+prices entered after the release stay in the database but aren't shown until the roll-forward;
+`package_name` is mirrored, so names still show.
+
 Supabase remains supported as an alternative (its pooler URIs in `DATABASE_URL`/
 `DIRECT_DATABASE_URL`, Storage private buckets named `artwork`, `documents`, `photos`,
 `floorplans`, `exports`, and `NEXT_PUBLIC_SUPABASE_URL` + publishable key for real email

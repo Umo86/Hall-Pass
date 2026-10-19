@@ -34,7 +34,13 @@ import { inviteStatusText, sortPeople } from "./rules";
 import { activeMembership } from "./active";
 import { filterPeople, lacksDepartment, type ListFilters } from "./list";
 
-export type SignsOffFor = { departmentId: string; name: string; isMain: boolean };
+export type SignsOffFor = {
+  departmentId: string;
+  name: string;
+  isMain: boolean;
+  /** Invited: becomes main approver when they accept. */
+  mainOnAccept: boolean;
+};
 
 export type TeamRow = {
   kind: "member" | "invite";
@@ -149,6 +155,7 @@ export async function listTeam(
         userId: approvers.userId,
         email: approvers.email,
         isMain: approvers.isMain,
+        mainOnAccept: approvers.mainOnAccept,
       })
       .from(approvers)
       .where(eq(approvers.organisationId, organisationId)),
@@ -160,7 +167,12 @@ export async function listTeam(
       .map((a) => ({ a, d: deptById.get(a.departmentId) }))
       .filter((x) => x.d && !x.d.isArchived && x.d.signsOff)
       .sort((x, y) => x.d!.sortOrder - y.d!.sortOrder)
-      .map(({ a, d }) => ({ departmentId: a.departmentId, name: d!.name, isMain: a.isMain }));
+      .map(({ a, d }) => ({
+        departmentId: a.departmentId,
+        name: d!.name,
+        isMain: a.isMain,
+        mainOnAccept: a.mainOnAccept,
+      }));
 
   const memberEmails = new Set(members.map(({ u }) => u.email.toLowerCase()));
   const rows: TeamRow[] = [
@@ -249,8 +261,13 @@ export function filterTeam(rows: TeamRow[], f: TeamFilters, now = new Date()): T
 
 export type PersonDetail = TeamRow & {
   membershipId: string | null;
-  /** Every department they sign off for, archived or switched-off ones included. */
+  /**
+   * Every department they sign off for, archived or switched-off ones
+   * included. isMain: main approver now, or (invited) when they accept.
+   */
   allSignoffs: { departmentId: string; isMain: boolean }[];
+  /** Invited: departments they become main approver for when they accept. */
+  pendingMainFor: string[];
   /** Items they own, by section — shown when that section is switched off. */
   owned: Partial<Record<Feature, number>>;
   isOnlyAdmin: boolean;
@@ -307,7 +324,11 @@ export async function loadPerson(
       r.kind === "member" && r.role === "admin" && r.access === "active" && r.accessEndsAt == null,
   );
   const signoffRows = await db
-    .select({ departmentId: approvers.departmentId, isMain: approvers.isMain })
+    .select({
+      departmentId: approvers.departmentId,
+      isMain: approvers.isMain,
+      mainOnAccept: approvers.mainOnAccept,
+    })
     .from(approvers)
     .where(
       and(
@@ -324,7 +345,17 @@ export async function loadPerson(
     person: {
       ...row,
       membershipId,
-      allSignoffs: [...new Map(signoffRows.map((s) => [s.departmentId, s])).values()],
+      allSignoffs: [
+        ...new Map(
+          signoffRows.map((s) => [
+            s.departmentId,
+            { departmentId: s.departmentId, isMain: s.isMain || s.mainOnAccept },
+          ]),
+        ).values(),
+      ],
+      pendingMainFor: [
+        ...new Set(signoffRows.filter((s) => s.mainOnAccept).map((s) => s.departmentId)),
+      ],
       owned,
       isOnlyAdmin:
         row.kind === "member" &&
@@ -354,6 +385,8 @@ export type DepartmentCard = DepartmentInfo & {
     jobTitle: string | null;
     email: string;
     isMain: boolean;
+    /** Invited: becomes the main approver when they accept. */
+    mainOnAccept: boolean;
     /** active: can sign off; paused: can't sign now; invited: waiting for them to accept; none: no account or a lapsed invitation. */
     state: "active" | "paused" | "invited" | "none";
     /** Why, in a few words, when they can't sign now ("Suspended", "Invitation expired — resend"…). */
@@ -461,6 +494,7 @@ export async function listDepartmentCards(
           jobTitle: a.jobTitle,
           email: a.email,
           isMain: a.isMain,
+          mainOnAccept: a.mainOnAccept,
           state,
           stateText,
           href: memberUserId ? `/users/${memberUserId}` : invite ? `/users/${invite.id}` : null,
@@ -513,8 +547,9 @@ export async function memberOptions(db: Db | Tx, organisationId: string) {
 /**
  * Departments for the person form, with each one's main approver (so the
  * form can say who a new main approver replaces, and that someone only
- * invited doesn't replace a main who can sign). `person` marks rows that
- * are theirs.
+ * invited takes over from a main who can sign when they accept) and anyone
+ * else's pending "main when they accept" (which a new choice replaces).
+ * `person` marks rows that are theirs.
  */
 export async function departmentOptions(
   db: Db | Tx,
@@ -530,6 +565,8 @@ export async function departmentOptions(
         email: approvers.email,
         name: approvers.fullName,
         userName: users.fullName,
+        isMain: approvers.isMain,
+        mainOnAccept: approvers.mainOnAccept,
         role: memberships.role,
         overrides: memberships.permissionOverrides,
         suspendedAt: memberships.suspendedAt,
@@ -544,15 +581,25 @@ export async function departmentOptions(
           eq(memberships.organisationId, approvers.organisationId),
         ),
       )
-      .where(and(eq(approvers.organisationId, organisationId), eq(approvers.isMain, true))),
+      .where(
+        and(
+          eq(approvers.organisationId, organisationId),
+          or(eq(approvers.isMain, true), eq(approvers.mainOnAccept, true)),
+        ),
+      ),
   ]);
+  const isPerson = (row: { userId: string | null; email: string }) =>
+    person
+      ? Boolean(
+          (person.userId && row.userId === person.userId) ||
+          (!row.userId && row.email === person.email.toLowerCase()),
+        )
+      : false;
   return depts.map((d) => {
-    const main = mains.find((m) => m.departmentId === d.id);
-    const mine =
-      main && person
-        ? (person.userId && main.userId === person.userId) ||
-          (!main.userId && main.email === person.email.toLowerCase())
-        : false;
+    const main = mains.find((m) => m.departmentId === d.id && m.isMain);
+    const pending = mains.find((m) => m.departmentId === d.id && m.mainOnAccept);
+    const mine = main ? isPerson(main) : false;
+    const pendingMine = pending ? isPerson(pending) : false;
     return {
       id: d.id,
       name: d.name,
@@ -570,6 +617,10 @@ export async function departmentOptions(
           accessEndsAt: main.accessEndsAt,
         }),
       ),
+      /** Someone else's "main approver when they accept" (a new choice replaces it). */
+      pendingMain: pending && !pendingMine ? pending.userName || pending.name : null,
+      /** This person is to become main approver when they accept. */
+      pendingIsThisPerson: pendingMine,
     };
   });
 }

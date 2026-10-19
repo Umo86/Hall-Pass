@@ -1323,6 +1323,7 @@ export type PersonAccess = {
   /** As stored (a paused sign-off is approval.decide: false). */
   overrides: PermissionOverrides;
   managerScope: ManagerScope | null;
+  /** isMain: main approver now, or (for an invitation) when they accept. */
   signoffs: readonly { departmentId: string; isMain: boolean }[];
   accessEndsAt?: Date | null;
 };
@@ -1336,8 +1337,8 @@ export type PersonAccess = {
  * the actor has (ones the person already had may stay); (7) role powers and
  * abilities the person would newly gain must be ones the actor fully has,
  * and never one only a super admin gives; (8) sign-off rows only for the
- * actor's own sign-off departments, and main approvers only with
- * departments.manage; (9) a paused actor can't resume someone else's
+ * actor's own sign-off departments, and main approvers (including "main
+ * when they accept") only with departments.manage; (9) a paused actor can't resume someone else's
  * sign-off. An access end date within scope is fine.
  */
 export function personChangeRefusal(
@@ -1418,7 +1419,8 @@ export function personChangeRefusal(
     }
   }
 
-  // 8. Sign-off rows and main approvers.
+  // 8. Sign-off rows and main approvers (including "main when they accept",
+  // which an invitation's rows report as isMain).
   if (!can(actor, { type: "departments.manage" })) {
     const prevRows = new Map((before?.signoffs ?? []).map((s) => [s.departmentId, s.isMain]));
     const nextRows = new Map(after.signoffs.map((s) => [s.departmentId, s.isMain]));

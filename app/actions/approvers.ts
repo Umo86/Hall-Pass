@@ -16,7 +16,16 @@ import {
   syncDepartmentSteps,
 } from "@/lib/domain/departments";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
-import { clearOtherMainsTx, lockPeople, stopSigningTx, UserError } from "@/lib/users/manage";
+import {
+  clearOtherMainsTx,
+  dropPendingMainsTx,
+  lockPeople,
+  openInviteFor,
+  stopSigningTx,
+  UserError,
+  type PendingDropped,
+} from "@/lib/users/manage";
+import { mainTakeover } from "@/lib/users/rules";
 
 /**
  * Departments and who signs off for each (Users → Departments). A
@@ -33,6 +42,36 @@ function refresh() {
   revalidatePath("/users", "layout");
   revalidatePath("/approvals");
   revalidatePath("/", "layout");
+}
+
+/** ". Sam won't take over Marketing when they accept" for each ask a choice replaced. */
+function droppedWords(dropped: readonly PendingDropped[]): string {
+  return dropped
+    .map((d) => `. ${d.name} won't take over ${d.departmentName} when they accept`)
+    .join("");
+}
+
+/** The department's main approver now (other than `exceptId`) and whether they can sign. */
+async function currentMain(tx: Tx, organisationId: string, departmentId: string, exceptId: string) {
+  const [row] = await tx
+    .select({ userId: approvers.userId, name: approvers.fullName, userName: users.fullName })
+    .from(approvers)
+    .leftJoin(users, eq(users.id, approvers.userId))
+    .where(
+      and(
+        eq(approvers.organisationId, organisationId),
+        eq(approvers.departmentId, departmentId),
+        eq(approvers.isMain, true),
+        ne(approvers.id, exceptId),
+      ),
+    )
+    .limit(1);
+  if (!row) return null;
+  const signers = await departmentSignerIds(tx, organisationId, departmentId);
+  return {
+    name: row.userName || row.name,
+    canSign: Boolean(row.userId && signers.includes(row.userId)),
+  };
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -323,6 +362,8 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
   const data = parsed.data;
   try {
     const name = await db.transaction(async (tx) => {
+      // People changes (main approvers included) run one after another.
+      await lockPeople(tx, orgId);
       const dept = await orgDepartment(tx, orgId, data.departmentId);
       if (dept.isArchived || !dept.signsOff) {
         throw new UserError(`${dept.name} doesn't sign off artwork — reload the page`);
@@ -347,6 +388,7 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
         throw new UserError(`${who} can't sign off at the moment — pick someone else`);
       }
       const email = member.user.email.toLowerCase();
+      let dropped: PendingDropped[] = [];
       if (data.isMain) {
         // One main approver per department: clear the others first (audited).
         await clearOtherMainsTx(tx, {
@@ -355,6 +397,15 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
           departmentId: dept.id,
           keep: ne(approvers.email, email),
           newMainName: who,
+        });
+        // The newest choice wins: a pending "main when they accept" is cancelled.
+        dropped = await dropPendingMainsTx(tx, {
+          organisationId: orgId,
+          actorUserId: session.user.id,
+          departmentId: dept.id,
+          keep: ne(approvers.email, email),
+          newMainName: who,
+          newMainWhen: "now",
         });
       }
       const [row] = await tx
@@ -370,7 +421,13 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
         })
         .onConflictDoUpdate({
           target: [approvers.departmentId, approvers.email],
-          set: { userId: member.user.id, fullName: who, isMain: data.isMain },
+          set: {
+            userId: member.user.id,
+            fullName: who,
+            isMain: data.isMain,
+            mainOnAccept: false,
+            mainOnAcceptBy: null,
+          },
         })
         .returning();
       await writeAudit(tx, {
@@ -385,7 +442,7 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
         summary: `${who} added as an approver for ${dept.name}`,
       });
       await syncDepartmentSteps(tx, orgId);
-      return `${who} now signs off for ${dept.name}`;
+      return `${who} now signs off for ${dept.name}${droppedWords(dropped)}`;
     });
     refresh();
     return success(undefined, name);
@@ -397,7 +454,50 @@ export async function addApprover(input: unknown): Promise<ActionResult> {
   }
 }
 
-/** Make an approver the department's main approver (or stop them being it). */
+/** "Sam won't become the main approver for Marketing — Jo stays main approver". */
+function cancelledWords(who: string, dept: string, main: { name: string } | null): string {
+  return main
+    ? `${who} won't become the main approver for ${dept} — ${main.name} stays main approver`
+    : `${who} won't become the main approver for ${dept} — ${dept} has no main approver, so everyone in it is asked`;
+}
+
+/** Clear a pending ask (Don't make main, or the outlined star), audited on the invitee. */
+async function cancelAskTx(
+  tx: Tx,
+  session: { user: { id: string } },
+  orgId: string,
+  row: typeof approvers.$inferSelect,
+  deptName: string,
+) {
+  await tx
+    .update(approvers)
+    .set({ mainOnAccept: false, mainOnAcceptBy: null })
+    .where(eq(approvers.id, row.id));
+  await writeAudit(tx, {
+    organisationId: orgId,
+    actorUserId: session.user.id,
+    entityType: "approver",
+    entityId: row.id,
+    action: "settings_change",
+    before: { mainOnAccept: true },
+    after: { mainOnAccept: false, email: row.email },
+    subjectUserId: row.userId,
+    subjectEmail: row.email,
+    summary: `${row.fullName} will no longer become the main approver for ${deptName} when they accept`,
+  });
+  return cancelledWords(
+    row.fullName,
+    deptName,
+    await currentMain(tx, orgId, row.departmentId, row.id),
+  );
+}
+
+/**
+ * Make an approver the department's main approver (or stop them being it).
+ * Someone only invited, while the main can sign, becomes main when they
+ * accept (an ask on their row); anyone else is main now. The newest choice
+ * wins: a pending ask in the department is cancelled.
+ */
 export async function setMainApprover(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid(), isMain: z.boolean() }).strict().safeParse(input);
   if (!parsed.success) return fail("Invalid request");
@@ -406,25 +506,58 @@ export async function setMainApprover(input: unknown): Promise<ActionResult> {
   const orgId = session.organisation.id;
   try {
     const message = await db.transaction(async (tx) => {
+      // People changes run one after another (an acceptance can't interleave).
+      await lockPeople(tx, orgId);
       const row = await tx.query.approvers.findFirst({
         where: and(eq(approvers.id, parsed.data.id), eq(approvers.organisationId, orgId)),
       });
       if (!row) throw new UserError("Approver not found — reload the page");
       const dept = await orgDepartment(tx, orgId, row.departmentId);
-      if (parsed.data.isMain && !row.userId) {
-        // Someone only invited doesn't take over from a main approver who can sign now.
-        const signers = await departmentSignerIds(tx, orgId, dept.id);
-        const [current] = await tx
-          .select({ userId: approvers.userId, name: approvers.fullName })
-          .from(approvers)
-          .where(and(eq(approvers.departmentId, dept.id), eq(approvers.isMain, true)))
-          .limit(1);
-        if (current?.userId && signers.includes(current.userId)) {
-          throw new UserError(
-            `${row.fullName} hasn't accepted their invitation yet — ${current.name} stays main approver until they have`,
-          );
+      if (!parsed.data.isMain && row.mainOnAccept) {
+        return cancelAskTx(tx, session, orgId, row, dept.name);
+      }
+      if (parsed.data.isMain) {
+        const current = row.userId ? null : await currentMain(tx, orgId, dept.id, row.id);
+        const when = mainTakeover({
+          hasAccount: Boolean(row.userId),
+          currentMainCanSign: Boolean(current?.canSign),
+        });
+        if (when === "on_accept") {
+          if (!(await openInviteFor(tx, orgId, row.email))) {
+            throw new UserError(
+              `${row.fullName} hasn't been invited — add them under Users → Add person first, then make them main`,
+            );
+          }
+          const words = `${row.fullName} becomes the main approver for ${dept.name} when they accept — ${current!.name} stays until then`;
+          if (row.mainOnAccept) return words;
+          const dropped = await dropPendingMainsTx(tx, {
+            organisationId: orgId,
+            actorUserId: session.user.id,
+            departmentId: dept.id,
+            keep: ne(approvers.id, row.id),
+            newMainName: row.fullName || row.email,
+            newMainWhen: "on_accept",
+          });
+          await tx
+            .update(approvers)
+            .set({ mainOnAccept: true, mainOnAcceptBy: session.user.id })
+            .where(eq(approvers.id, row.id));
+          await writeAudit(tx, {
+            organisationId: orgId,
+            actorUserId: session.user.id,
+            entityType: "approver",
+            entityId: row.id,
+            action: "settings_change",
+            before: { mainOnAccept: false },
+            after: { mainOnAccept: true, email: row.email, currentMain: current!.name },
+            subjectUserId: row.userId,
+            subjectEmail: row.email,
+            summary: `${row.fullName} will become the main approver for ${dept.name} when they accept — ${current!.name} stays until then`,
+          });
+          return `${words}${droppedWords(dropped)}`;
         }
       }
+      let dropped: PendingDropped[] = [];
       if (parsed.data.isMain) {
         // One main approver per department: clear the others first (audited).
         await clearOtherMainsTx(tx, {
@@ -434,10 +567,23 @@ export async function setMainApprover(input: unknown): Promise<ActionResult> {
           keep: ne(approvers.id, row.id),
           newMainName: row.fullName || row.email,
         });
+        dropped = await dropPendingMainsTx(tx, {
+          organisationId: orgId,
+          actorUserId: session.user.id,
+          departmentId: dept.id,
+          keep: ne(approvers.id, row.id),
+          newMainName: row.fullName || row.email,
+          newMainWhen: "now",
+        });
       }
       await tx
         .update(approvers)
-        .set({ isMain: parsed.data.isMain })
+        // Main now replaces their own ask, if they had one (it can't be both).
+        .set(
+          parsed.data.isMain
+            ? { isMain: true, mainOnAccept: false, mainOnAcceptBy: null }
+            : { isMain: false },
+        )
         .where(eq(approvers.id, row.id));
       await writeAudit(tx, {
         organisationId: orgId,
@@ -455,7 +601,7 @@ export async function setMainApprover(input: unknown): Promise<ActionResult> {
       });
       await syncDepartmentSteps(tx, orgId);
       return parsed.data.isMain
-        ? `${row.fullName} is now the main approver for ${dept.name}`
+        ? `${row.fullName} is now the main approver for ${dept.name}${droppedWords(dropped)}`
         : `${dept.name} has no main approver — everyone in it is asked`;
     });
     refresh();
@@ -463,7 +609,46 @@ export async function setMainApprover(input: unknown): Promise<ActionResult> {
   } catch (err) {
     unstable_rethrow(err);
     if (err instanceof UserError) return fail(err.message);
+    if (isUniqueViolation(err)) return fail("Could not save — please try again");
     console.error("setMainApprover", err);
+    return fail("Could not save — please try again");
+  }
+}
+
+/**
+ * Departments → Don't make main: the invitee won't take over as main
+ * approver when they accept. Its own action (not setMainApprover with
+ * false), so a stale page can't demote someone who has just accepted.
+ */
+export async function cancelMainOnAccept(input: unknown): Promise<ActionResult> {
+  const parsed = z.object({ id: z.string().uuid() }).strict().safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await requireSession();
+  if (!can(session.actor, { type: "departments.manage" })) return fail(NOT_ALLOWED);
+  const orgId = session.organisation.id;
+  try {
+    const message = await db.transaction(async (tx) => {
+      await lockPeople(tx, orgId);
+      const row = await tx.query.approvers.findFirst({
+        where: and(eq(approvers.id, parsed.data.id), eq(approvers.organisationId, orgId)),
+      });
+      if (!row) throw new UserError("Approver not found — reload the page");
+      if (!row.mainOnAccept) {
+        throw new UserError(
+          row.userId
+            ? `${row.fullName} has accepted their invitation — reload the page`
+            : `${row.fullName} isn't due to become main approver — reload the page`,
+        );
+      }
+      const dept = await orgDepartment(tx, orgId, row.departmentId);
+      return cancelAskTx(tx, session, orgId, row, dept.name);
+    });
+    refresh();
+    return success(undefined, message);
+  } catch (err) {
+    unstable_rethrow(err);
+    if (err instanceof UserError) return fail(err.message);
+    console.error("cancelMainOnAccept", err);
     return fail("Could not save — please try again");
   }
 }
@@ -503,6 +688,7 @@ export async function removeApprover(input: unknown): Promise<ActionResult> {
           email: row.email,
           userId: row.userId,
           department: dept.name,
+          mainOnAccept: row.mainOnAccept,
         },
         subjectUserId: row.userId,
         subjectEmail: row.email,
@@ -528,7 +714,9 @@ export async function removeApprover(input: unknown): Promise<ActionResult> {
       await syncDepartmentSteps(tx, orgId);
       const left = (await departmentSignerIds(tx, orgId, dept.id)).length;
       return [
-        `${row.fullName} removed from ${dept.name} approvers`,
+        `${row.fullName} removed from ${dept.name} approvers${
+          row.mainOnAccept ? " — they won't become main approver when they accept" : ""
+        }`,
         handed.moved > 0
           ? `${handed.moved} sign-off${handed.moved === 1 ? "" : "s"} went back to ${dept.name}`
           : null,

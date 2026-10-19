@@ -600,10 +600,7 @@ Only what the core section above doesn't already say.
 - **An invitation never takes "main approver"** from a main who can sign:
   `setSignoffs` keeps the current main and says "{X} stays main approver
   until {name} has accepted"; `setMainApprover` refuses invitee rows the same
-  way. **Known limitation:** nothing promotes the invitee when they accept —
-  make them main under Departments then (the Add form says so). Doing it
-  automatically needs a column (e.g. `approvers.main_on_accept`) plus claim
-  code; not added in this release.
+  way. See "Main approver when they accept (Oct 2026)".
 - **Hand-over is per department.** Each department's default is its main
   approver, else another approver who can sign; "Everyone who signs off for
   X" is offered only when someone else can sign. Steps outside a department,
@@ -866,3 +863,96 @@ Only what the core section above doesn't already say.
   (`lib/db/migrations/meta` in .prettierignore): it rewrites the journal and
   snapshots in its own format on every generate, so formatting them would
   only churn.
+
+## Main approver when they accept (Oct 2026)
+
+Someone invited as a department's main approver while the main can sign now
+takes over when they accept (before: "you set that under Departments").
+
+1. **The ask lives on the invitee's email-keyed approver row**
+   (`approvers.main_on_accept` + `main_on_accept_by`), not on
+   `staff_invites`: it is per department, goes with the row on cancel,
+   removal or a department cascade, and is kept through resends and expiry.
+   A CHECK allows it only on rows without an account that aren't main; a
+   partial unique index allows one per department.
+2. **An ask is stored only when a main who can sign exists**
+   (`mainTakeover`); otherwise the invitee is main straight away as before,
+   so nobody who isn't asked sees a change.
+3. **Newest choice wins, one ask per department**: a newer ask, or anyone
+   made main now (Departments star, Add approver as main, the person page,
+   an invitation that takes over now), cancels the older ask
+   (`dropPendingMainsTx`, audited on the invitee, said in the toast).
+4. **A main who merely stops signing doesn't cancel the ask** (suspended,
+   ended, paused, taken off the department); only a choice does.
+5. **Carried out only if** the department still signs off and the person can
+   sign off when they accept (`mainOnAcceptOutcome`; event-blind, as
+   `canReceiveSignoff`); otherwise nothing changes and whoever asked is told.
+6. **The asker's abilities aren't re-checked at acceptance** (the rest of
+   the invitation isn't either).
+7. **One new notification kind `main_approver`**: always sent (not in
+   `MUTABLE_KINDS`), emailed, grouped with sign-offs, never shown as Done;
+   to the old main, the new main, and the asker when it can't be done.
+8. **Hand-over rows at acceptance are by the system**, naming who arranged
+   it; the invitee stays the actor of "Staff invitation accepted" (whose
+   `after.mainApproverFor` lists the department ids).
+9. **Main approver stays unticked by default on Add one** when a main who
+   can sign exists; it is never disabled for people with departments.manage.
+10. **Add several still sets no sign-off**; its hint points to the person's
+    page.
+11. **Departments has an explicit "Don't make main" button** (not "Cancel",
+    which reads like cancelling the invitation), served by its own action
+    (`cancelMainOnAccept`), so a stale page can't demote someone who has
+    just accepted ("… has accepted their invitation — reload the page").
+12. **`lockPeople` first** in claim, invite (once before Add several's
+    loop), invitation edits, cancel, and the Departments main actions; the
+    partial unique index is the backstop.
+13. **An ask counts as main approver for the people rules** (rule 8,
+    `canRenewInvite`): a manager without departments.manage can't ask, can
+    keep a super admin's ask when saving, and can't Resend or get a New link
+    for an invitation that carries one.
+
+Where the build spec and the code differed:
+
+- `setSignoffs` clears other mains only for rows newly made main now. The
+  spec kept running `clearOtherMainsTx` for unchanged main rows as a no-op;
+  for an unchanged _ask_ that would have demoted the current main.
+- "Ask cancelled" is audited when a pending row is removed (moved to another
+  department, sign-off unticked), not only when it is updated to not main.
+- The helper on Add one and the person page uses first names ("Olivia stays
+  main approver until Pia accepts, then Pia takes over."); toasts keep the
+  current main's full name ("— Olivia Ops stays until then").
+- The event Setup's "Who signs off" reads `loadOrgSetupFacts`, not
+  `WhoSignsOff`, so `SignoffDepartmentFact.approvers[].mainOnAccept` is
+  passed through there (readiness unchanged: an ask routes nothing).
+- The invitation box and the invitation link page name only departments
+  that still sign off and aren't archived.
+- Making a pending invitee main _now_ (their main can no longer sign)
+  clears their own ask in the same update (the CHECK forbids both).
+- Departments rows group their buttons and give the name at least 10rem,
+  so "Don't make main" and Remove wrap under the name on phones instead of
+  squeezing it to one word a line.
+- The routing half of "accepting makes them main" is in
+  `main-on-accept.db.test.ts` with the rest, not `people.db.test.ts`.
+
+## Release 0013 (Oct 2026)
+
+- **One migration for three features** (C1): `0013_users_events_packages`
+  (main approver when they accept, events per person, sponsorship packages),
+  one journal entry and snapshot, with the Drizzle schema of all three
+  landed together, so later parts never regenerate. The SQL is hand-written
+  and re-runnable (`IF NOT EXISTS`, `duplicate_object` guards), adds and
+  backfills only, and adds no enum value.
+- **The package backfill only links sponsors not linked yet** (C2),
+  numbering new packages after the event's existing ones, so re-running the
+  file after deploy picks up sponsors the old code wrote in the gap and
+  never clashes.
+- **`notifications.edition_id` is `ON DELETE SET NULL`** (C3): editions are
+  never deleted in the app, and test clean-ups that delete them aren't
+  blocked; a cleared row reads as "not about one event".
+- **One Releasing runbook** (C16, README → Releasing): migrate by hand (or
+  `pnpm db:migrate`), deploy straight after, run the file once more, check
+  `/api/health`. Roll forward rather than back; a rollback first clears
+  pending asks and suspends anyone limited to events who must not see the
+  others.
+- `database-setup.sql` was regenerated with the migration (Part 1) and is
+  regenerated again after the package seed (Part 3).

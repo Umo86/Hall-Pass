@@ -4,8 +4,8 @@
  * handed to someone who can sign for each department on suspension —
  * including steps that haven't started yet — the Suspend dialog's data,
  * removal handing tasks and items to the person picked, taking someone off
- * a department sending its sign-offs back, and an invitation never taking
- * "main approver" from someone who can sign.
+ * a department sending its sign-offs back. (An invitation asking to be
+ * main approver while the main can sign: main-on-accept.db.test.ts.)
  */
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -543,33 +543,5 @@ d("users v2: pages and hand-over", () => {
       manage.removeMemberTx(tx, admin(), { userId: kim, workToUserId: vic }),
     ).catch((e) => e);
     expect(bad.message).toMatch(/isn't a viewer/);
-  });
-
-  it("an invitation doesn't take main approver from someone who can sign", async () => {
-    const mel = await addMember("Mel", "sales", { departmentId: sales.id });
-    await db
-      .update(schema.approvers)
-      .set({ isMain: false })
-      .where(eq(schema.approvers.departmentId, sales.id));
-    await approve(mel, "Mel", sales.id, true);
-    await db.transaction((tx) => departments.syncDepartmentSteps(tx, orgId));
-    const out = await run((tx) =>
-      manage.inviteUserTx(tx, admin(), {
-        ...person,
-        email: email("Newt"),
-        fullName: "Newt",
-        departmentId: sales.id,
-        role: "sales",
-        signoffs: [{ departmentId: sales.id, isMain: true }],
-      }),
-    );
-    expect(out.mainKept).toEqual([{ departmentId: sales.id, name: "Mel" }]);
-    const rows = await db
-      .select()
-      .from(schema.approvers)
-      .where(eq(schema.approvers.departmentId, sales.id));
-    expect(rows.find((r) => r.email === email("Mel"))?.isMain).toBe(true);
-    expect(rows.find((r) => r.email === email("Newt"))?.isMain).toBe(false);
-    expect((await deptStep(sales.id)).approverUserId).toBe(mel);
   });
 });

@@ -154,7 +154,12 @@ export default async function PersonPage({
               {person.signsOffFor.length === 0
                 ? "—"
                 : person.signsOffFor.map((s) => (
-                    <DepartmentChip key={s.departmentId} name={s.name} main={s.isMain} />
+                    <DepartmentChip
+                      key={s.departmentId}
+                      name={s.name}
+                      main={s.isMain}
+                      pending={s.mainOnAccept}
+                    />
                   ))}
             </dd>
           </dl>
@@ -218,6 +223,9 @@ export default async function PersonPage({
           expires={person.expiresAt ? formatDate(person.expiresAt) : null}
           expired={person.status === "expired"}
           emailOn={invitesCanBeEmailed()}
+          mainFor={departments
+            .filter((d) => person.pendingMainFor.includes(d.id) && d.signsOff && !d.isArchived)
+            .map((d) => d.name)}
           canRenew={canRenewInvite(actor, {
             role: person.role,
             departmentId: person.departmentId,
@@ -231,7 +239,7 @@ export default async function PersonPage({
       )}
       <PersonEditor
         // Fresh state whenever the saved person changes (e.g. after a save).
-        key={`${person.id}:${person.departmentId}:${person.role}:${person.managerScope}:${JSON.stringify(person.features)}:${JSON.stringify(person.allSignoffs)}:${JSON.stringify(person.overrides)}`}
+        key={`${person.id}:${person.departmentId}:${person.role}:${person.managerScope}:${JSON.stringify(person.features)}:${JSON.stringify(person.allSignoffs)}:${person.pendingMainFor.join()}:${JSON.stringify(person.overrides)}`}
         kind={person.kind}
         id={person.id}
         email={person.email}

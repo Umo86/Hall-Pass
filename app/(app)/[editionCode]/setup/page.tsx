@@ -66,14 +66,20 @@ function SignoffPanel({
         <ul className="divide-y rounded-md border text-sm">
           {org.signoffDepartments.map((d) => {
             const main = d.approvers.find((a) => a.isMain);
+            const asked = d.approvers.find((a) => a.mainOnAccept);
             const active = d.approvers.filter((a) => a.active);
-            const who = main
-              ? `${main.name} (main approver)${main.active ? "" : " — hasn't accepted their invitation yet"}`
-              : active.length > 0
-                ? `Anyone of ${active.map((a) => a.name).join(", ")}`
-                : d.approvers.length > 0
-                  ? `Waiting for ${d.approvers[0].email} to accept`
-                  : "Nobody yet";
+            const who = [
+              main
+                ? `${main.name} (main approver)${main.active ? "" : " — hasn't accepted their invitation yet"}`
+                : active.length > 0
+                  ? `Anyone of ${active.map((a) => a.name).join(", ")}`
+                  : d.approvers.length > 0
+                    ? `Waiting for ${d.approvers[0].email} to accept`
+                    : "Nobody yet",
+              asked ? `${asked.name} · main approver when they accept` : null,
+            ]
+              .filter(Boolean)
+              .join("; ");
             const ready = main ? main.active || active.length > 0 : active.length > 0;
             return (
               <li

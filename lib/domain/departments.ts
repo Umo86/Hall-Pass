@@ -161,10 +161,12 @@ export async function syncDepartmentSteps(tx: Db | Tx, organisationId: string): 
 }
 
 /**
- * Connect approver entries to a person's account by email — when they join,
- * or when an admin adds someone who is already on the team. Only the
- * organisation they joined counts when one is given. Returns the
- * organisations whose steps may need a new main approver.
+ * Connect approver entries to a person's account by email when they join
+ * (lib/auth/claim-staff-invite.ts). Only the organisation they joined counts
+ * when one is given. A "main approver when they accept" on those rows is
+ * cleared here (only rows without an account may carry one) — the caller
+ * reads and carries out those asks first. Returns the organisations whose
+ * steps may need a new main approver.
  */
 export async function linkApproversToUser(
   tx: Tx,
@@ -173,7 +175,7 @@ export async function linkApproversToUser(
 ): Promise<string[]> {
   const linked = await tx
     .update(approvers)
-    .set({ userId: user.id })
+    .set({ userId: user.id, mainOnAccept: false, mainOnAcceptBy: null })
     .where(
       and(
         isNull(approvers.userId),

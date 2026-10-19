@@ -51,8 +51,12 @@ export type DepartmentOption = {
   mainApprover: string | null;
   /** The main approver is this person. */
   mainIsThisPerson?: boolean;
-  /** The main approver can sign off now (an invitee doesn't replace them). */
+  /** The main approver can sign off now (an invitee takes over when they accept). */
   mainCanSign?: boolean;
+  /** Someone else becomes main approver when they accept (a new choice replaces it). */
+  pendingMain?: string | null;
+  /** This person becomes main approver when they accept. */
+  pendingIsThisPerson?: boolean;
 };
 
 export const FEATURE_ICONS: Record<Feature, React.ComponentType<{ className?: string }>> = {
@@ -612,11 +616,14 @@ export function DepartmentChip({
   name,
   archived,
   main,
+  pending,
   className,
 }: {
   name: string;
   archived?: boolean;
   main?: boolean;
+  /** Becomes main approver when they accept (an outlined star). */
+  pending?: boolean;
   className?: string;
 }) {
   return (
@@ -632,6 +639,13 @@ export function DepartmentChip({
           className="size-3 fill-amber-400 text-amber-500"
           role="img"
           aria-label="Main approver"
+        />
+      )}
+      {!main && pending && (
+        <Star
+          className="size-3 text-amber-500"
+          role="img"
+          aria-label="Main approver when they accept"
         />
       )}
       <span className="truncate">

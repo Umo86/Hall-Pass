@@ -190,8 +190,67 @@ export function roleForDepartment(name: string | null | undefined): StaffRole | 
   return null;
 }
 
-/** One department someone signs off for. */
+/**
+ * One department someone signs off for. isMain: main approver — for someone
+ * only invited, now or when they accept, whichever setSignoffs decided
+ * (mainTakeover).
+ */
 export type Signoff = { departmentId: string; isMain: boolean };
+
+export type MainTakeover = "now" | "on_accept";
+
+/**
+ * When someone chosen as main approver takes over: now, unless they are
+ * only invited and the current main can sign — then when they accept.
+ */
+export function mainTakeover(p: {
+  hasAccount: boolean;
+  currentMainCanSign: boolean;
+}): MainTakeover {
+  return !p.hasAccount && p.currentMainCanSign ? "on_accept" : "now";
+}
+
+export type MainOnAcceptOutcome = "promote" | "department_off" | "cant_sign";
+
+/**
+ * At acceptance: carried out only if the department still signs off and they
+ * can sign off now (canReceiveSignoff — event-blind on purpose).
+ */
+export function mainOnAcceptOutcome(p: {
+  departmentArchived: boolean;
+  signsOff: boolean;
+  canSign: boolean;
+}): MainOnAcceptOutcome {
+  if (p.departmentArchived || !p.signsOff) return "department_off";
+  return p.canSign ? "promote" : "cant_sign";
+}
+
+/**
+ * What choosing this person as main approver does, in words (Add one, the
+ * person and invitation pages). `current` is someone else who is main now;
+ * `pending` someone else's "main when they accept", which this choice
+ * replaces (the newest choice wins).
+ */
+export function mainApproverNote(p: {
+  person: string;
+  department: string;
+  invited: boolean;
+  current: { name: string; canSign: boolean } | null;
+  pending: string | null;
+}): string {
+  const waits = p.invited && Boolean(p.current?.canSign);
+  const first = !p.current
+    ? `${p.department} has no main approver yet.`
+    : !p.current.canSign
+      ? `Replaces ${p.current.name}, who can't sign off at the moment.`
+      : waits
+        ? `${p.current.name} stays main approver until ${p.person} accepts, then ${p.person} takes over.`
+        : `Replaces ${p.current.name} as main approver.`;
+  if (!p.pending) return first;
+  return waits
+    ? `${first} ${p.pending} was going to take over when they accept — ${p.person} will instead.`
+    : `${first} ${p.pending} won't take over when they accept.`;
+}
 
 /**
  * What changes between the departments someone signs off for now and what

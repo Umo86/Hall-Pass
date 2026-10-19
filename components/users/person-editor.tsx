@@ -9,6 +9,7 @@ import type { AbilityKey, Feature, ManagerScope, StaffRole } from "@/lib/authz";
 import { roleLabel } from "@/lib/format";
 import {
   firstName,
+  mainApproverNote,
   overridesFor,
   startingChoices,
   type AbilityChoices,
@@ -254,7 +255,10 @@ export function PersonEditor({
             {
               departmentId,
               isMain:
-                can.canChooseMain && (d?.mainApprover === null || d?.mainIsThisPerson === true),
+                can.canChooseMain &&
+                (d?.mainApprover === null ||
+                  d?.mainIsThisPerson === true ||
+                  d?.pendingIsThisPerson === true),
             },
           ]
         : f.signoffs.filter((s) => s.departmentId !== departmentId),
@@ -668,11 +672,24 @@ function SignoffRow({
   editable: boolean;
   /** The viewer may choose the main approver (departments.manage). */
   canMain: boolean;
-  /** An invitation: they don't replace a main approver who can sign until they accept. */
+  /** An invitation: they take over from a main approver who can sign when they accept. */
   invited: boolean;
 }) {
   const other = dept.mainApprover && !dept.mainIsThisPerson ? dept.mainApprover : null;
-  const mainBlocked = invited && Boolean(other) && dept.mainCanSign && !isMain;
+  // Main "when they accept": already asked, or an invitee chosen while the main can sign.
+  const onAccept =
+    invited && (dept.pendingIsThisPerson === true || (Boolean(other) && dept.mainCanSign === true));
+  const offNow = dept.isArchived || !dept.signsOff;
+  const note =
+    invited && offNow
+      ? `Only if ${dept.name} signs off artwork when they accept.`
+      : mainApproverNote({
+          person,
+          department: dept.name,
+          invited,
+          current: other ? { name: firstName(other), canSign: Boolean(dept.mainCanSign) } : null,
+          pending: dept.pendingMain ? firstName(dept.pendingMain) : null,
+        });
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md px-2 py-1">
       <label className="flex min-h-11 flex-1 items-center gap-2 text-sm sm:min-h-8">
@@ -685,7 +702,7 @@ function SignoffRow({
         />
         {label}
       </label>
-      {checked && canMain && !mainBlocked && (
+      {checked && canMain && (
         <Button
           type="button"
           variant="ghost"
@@ -693,31 +710,37 @@ function SignoffRow({
           className={cn("h-11 sm:h-8", isMain && "text-amber-700 dark:text-amber-300")}
           aria-pressed={isMain}
           aria-label={
-            isMain
-              ? `${person} is the main approver for ${dept.name} — stop`
-              : `Make ${person} the main approver for ${dept.name}`
+            onAccept
+              ? isMain
+                ? `${person} becomes the main approver for ${dept.name} when they accept — cancel`
+                : `Make ${person} the main approver for ${dept.name} when they accept`
+              : isMain
+                ? `${person} is the main approver for ${dept.name} — stop`
+                : `Make ${person} the main approver for ${dept.name}`
           }
           onClick={onMain}
         >
-          <Star className={cn("size-4", isMain && "fill-amber-400 text-amber-500")} aria-hidden />
-          {isMain ? "Main approver" : "Make main"}
+          <Star
+            className={cn(
+              "size-4",
+              isMain && (onAccept ? "text-amber-500" : "fill-amber-400 text-amber-500"),
+            )}
+            aria-hidden
+          />
+          {isMain ? (onAccept ? "Main when they accept" : "Main approver") : "Make main"}
         </Button>
       )}
       {checked && !canMain && isMain && (
         <span className="inline-flex items-center gap-1 text-xs text-amber-700 dark:text-amber-300">
-          <Star className="size-3.5 fill-amber-400 text-amber-500" aria-hidden />
-          Main approver
+          <Star
+            className={cn("size-3.5 text-amber-500", !dept.pendingIsThisPerson && "fill-amber-400")}
+            aria-hidden
+          />
+          {invited && dept.pendingIsThisPerson ? "Main approver when they accept" : "Main approver"}
         </span>
       )}
-      {checked && isMain && other && (
-        <p className="text-muted-foreground w-full pl-8 text-xs">
-          Replaces {other} as main approver.
-        </p>
-      )}
-      {checked && mainBlocked && (
-        <p className="text-muted-foreground w-full pl-8 text-xs">
-          {other} stays main approver until {person} has accepted.
-        </p>
+      {checked && isMain && (other || dept.pendingMain || (invited && offNow)) && (
+        <p className="text-muted-foreground w-full pl-8 text-xs">{note}</p>
       )}
     </li>
   );

@@ -2,7 +2,8 @@
  * Departments and approvers against a real database (TEST_DATABASE_URL):
  * each department gets its sign-off step in the right place, the main
  * approver becomes the step's default person once they have an account,
- * and an invited approver is linked when they accept.
+ * and an invited approver is linked when they accept (any "main approver
+ * when they accept" on the row is cleared by the link).
  */
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -147,6 +148,31 @@ d("departments and approvers", () => {
 
     expect(await departments.departmentIdsForUser(db, orgId, userId)).toEqual([mkt.id]);
     expect(await departments.departmentSignerIds(db, orgId, mkt.id)).toEqual([userId]);
+  });
+
+  it("joining links approver entries and clears any ask on them", async () => {
+    const [mkt] = await db
+      .select()
+      .from(schema.departments)
+      .where(
+        and(eq(schema.departments.organisationId, orgId), eq(schema.departments.name, "Marketing")),
+      );
+    const email = `asked-${suffix}@dept.test`;
+    await db.insert(schema.approvers).values({
+      organisationId: orgId,
+      departmentId: mkt.id,
+      fullName: "Asked Person",
+      email,
+      mainOnAccept: true,
+    });
+    const userId = randomUUID();
+    await db.insert(schema.users).values({ id: userId, email });
+    const linked = await db.transaction((tx) =>
+      departments.linkApproversToUser(tx, { id: userId, email }, orgId),
+    );
+    expect(linked).toEqual([orgId]);
+    const [row] = await db.select().from(schema.approvers).where(eq(schema.approvers.email, email));
+    expect(row).toMatchObject({ userId, mainOnAccept: false, mainOnAcceptBy: null, isMain: false });
   });
 
   it("joining one organisation doesn't link approver entries in another", async () => {

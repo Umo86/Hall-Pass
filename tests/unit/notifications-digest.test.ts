@@ -6,7 +6,7 @@ import {
   refList,
   reminderMessages,
 } from "@/lib/domain/notifications-digest";
-import { isApprovalRequestKind, notificationGroup } from "@/lib/notification-kinds";
+import { isApprovalRequestKind, MUTABLE_KINDS, notificationGroup } from "@/lib/notification-kinds";
 
 const TODAY = "2026-10-16";
 
@@ -145,5 +145,11 @@ describe("notification kinds", () => {
     expect(notificationGroup("date_reminder")).toBe("date");
     expect(notificationGroup("supplier_needed")).toBe("item");
     expect(notificationGroup("daily_digest")).toBe("other");
+  });
+
+  it("main_approver notices are grouped with sign-offs, always sent and never shown as Done", () => {
+    expect(notificationGroup("main_approver")).toBe("approval");
+    expect(isApprovalRequestKind("main_approver")).toBe(false);
+    expect((MUTABLE_KINDS as readonly string[]).includes("main_approver")).toBe(false);
   });
 });

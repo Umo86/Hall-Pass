@@ -60,7 +60,9 @@ export function notificationGroup(kind: string): NotificationGroup {
     kind.startsWith("approval_") ||
     kind === "delegation" ||
     kind === "decision_made" ||
-    kind === "escalation"
+    kind === "escalation" ||
+    // Who signs off changed (always sent: not in MUTABLE_KINDS).
+    kind === "main_approver"
   ) {
     return "approval";
   }

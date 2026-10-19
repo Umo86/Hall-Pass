@@ -7,6 +7,7 @@ import { AlertTriangle, ArrowDown, ArrowUp, Building2, Star, UserPlus } from "lu
 import { toast } from "sonner";
 import {
   addApprover,
+  cancelMainOnAccept,
   moveDepartment,
   removeApprover,
   saveDepartment,
@@ -42,6 +43,8 @@ export type DepartmentCardData = {
     jobTitle: string | null;
     email: string;
     isMain: boolean;
+    /** Invited: becomes the main approver when they accept. */
+    mainOnAccept: boolean;
     state: "active" | "paused" | "invited" | "none";
     /** Why they can't sign now, in a few words. */
     stateText: string | null;
@@ -486,33 +489,58 @@ function DepartmentCard({
                     variant="ghost"
                     size="touch"
                     disabled={pending}
-                    aria-pressed={a.isMain}
+                    aria-pressed={a.isMain || a.mainOnAccept}
                     aria-label={
                       a.isMain
                         ? `${a.name} is the main approver for ${dept.name} — stop`
-                        : `Make ${a.name} the main approver for ${dept.name}`
+                        : a.mainOnAccept
+                          ? `${a.name} becomes the main approver for ${dept.name} when they accept — cancel`
+                          : `Make ${a.name} the main approver for ${dept.name}`
                     }
-                    title={a.isMain ? "Main approver" : "Make main approver"}
-                    onClick={() => run(() => setMainApprover({ id: a.id, isMain: !a.isMain }))}
+                    title={
+                      a.isMain
+                        ? "Main approver"
+                        : a.mainOnAccept
+                          ? "Main approver when they accept"
+                          : "Make main approver"
+                    }
+                    onClick={() =>
+                      run(() =>
+                        a.mainOnAccept
+                          ? cancelMainOnAccept({ id: a.id })
+                          : setMainApprover({ id: a.id, isMain: !a.isMain }),
+                      )
+                    }
                   >
                     <Star
                       className={cn(
                         "size-4",
-                        a.isMain ? "fill-amber-400 text-amber-500" : "text-muted-foreground",
+                        a.isMain
+                          ? "fill-amber-400 text-amber-500"
+                          : a.mainOnAccept
+                            ? "text-amber-500"
+                            : "text-muted-foreground",
                       )}
                       aria-hidden
                     />
                   </Button>
+                ) : a.isMain ? (
+                  <Star
+                    className="size-4 fill-amber-400 text-amber-500"
+                    role="img"
+                    aria-label="Main approver"
+                  />
                 ) : (
-                  a.isMain && (
+                  a.mainOnAccept && (
                     <Star
-                      className="size-4 fill-amber-400 text-amber-500"
+                      className="size-4 text-amber-500"
                       role="img"
-                      aria-label="Main approver"
+                      aria-label="Main approver when they accept"
                     />
                   )
                 )}
-                <div className="min-w-0 flex-1 text-sm">
+                {/* At least 10rem for the name: the buttons wrap under it on phones. */}
+                <div className="min-w-0 grow basis-40 text-sm">
                   <p className="font-medium">
                     {a.href ? (
                       <Link href={a.href} className="hover:underline">
@@ -524,42 +552,66 @@ function DepartmentCard({
                     {a.isMain && (
                       <span className="text-muted-foreground font-normal"> · main approver</span>
                     )}
+                    {a.mainOnAccept && (
+                      <span className="text-muted-foreground font-normal">
+                        {" "}
+                        · main approver when they accept
+                      </span>
+                    )}
                   </p>
                   <p className="text-muted-foreground truncate text-xs">
                     {[a.jobTitle, a.email, a.stateText].filter(Boolean).join(" · ")}
                   </p>
                 </div>
                 {canEdit && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    className="h-11 sm:h-8"
-                    disabled={pending}
-                    aria-label={`Remove ${a.name} from ${dept.name} approvers`}
-                    onClick={async () => {
-                      const others = dept.signersNow - (a.state === "active" ? 1 : 0);
-                      const ok = await confirm({
-                        title: `Remove ${a.name} from ${dept.name} approvers?`,
-                        description: [
-                          "They stay on the team.",
-                          others > 0
-                            ? `${dept.name} sign-offs that name them go back to everyone who signs off for ${dept.name}.`
-                            : `Nobody else can sign off for ${dept.name}, so sign-offs that name them stay with them, and new ones will wait until you add someone.`,
-                          a.isMain && others > 0
-                            ? `${dept.name} will have no main approver, so everyone left in it is asked.`
-                            : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" "),
-                        confirmLabel: "Remove",
-                        destructive: true,
-                      });
-                      if (ok) run(() => removeApprover({ id: a.id }));
-                    }}
-                  >
-                    Remove
-                  </Button>
+                  <div className="ml-auto flex shrink-0 flex-wrap items-center gap-1">
+                    {a.mainOnAccept && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-11 sm:h-8"
+                        disabled={pending}
+                        aria-label={`${a.name} won't become the main approver for ${dept.name}`}
+                        onClick={() => run(() => cancelMainOnAccept({ id: a.id }))}
+                      >
+                        Don&apos;t make main
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-11 sm:h-8"
+                      disabled={pending}
+                      aria-label={`Remove ${a.name} from ${dept.name} approvers`}
+                      onClick={async () => {
+                        const others = dept.signersNow - (a.state === "active" ? 1 : 0);
+                        const ok = await confirm({
+                          title: `Remove ${a.name} from ${dept.name} approvers?`,
+                          description: [
+                            "They stay on the team.",
+                            others > 0
+                              ? `${dept.name} sign-offs that name them go back to everyone who signs off for ${dept.name}.`
+                              : `Nobody else can sign off for ${dept.name}, so sign-offs that name them stay with them, and new ones will wait until you add someone.`,
+                            a.isMain && others > 0
+                              ? `${dept.name} will have no main approver, so everyone left in it is asked.`
+                              : null,
+                            a.mainOnAccept
+                              ? "They won't become main approver when they accept."
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" "),
+                          confirmLabel: "Remove",
+                          destructive: true,
+                        });
+                        if (ok) run(() => removeApprover({ id: a.id }));
+                      }}
+                    >
+                      Remove
+                    </Button>
+                  </div>
                 )}
               </li>
             ))}

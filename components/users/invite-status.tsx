@@ -5,6 +5,13 @@ import { MailCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { InviteActions } from "./invite-actions";
 
+/** "Marketing", "Marketing and Sales", "Marketing, Sales and Finance". */
+function listWords(names: readonly string[]): string {
+  return names.length <= 1
+    ? (names[0] ?? "")
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 /** The box at the top of an invited person's page: when, until when, and what to do. */
 export function InviteStatus({
   inviteId,
@@ -15,6 +22,7 @@ export function InviteStatus({
   expired,
   emailOn,
   canRenew = true,
+  mainFor = [],
 }: {
   inviteId: string;
   name: string;
@@ -25,6 +33,8 @@ export function InviteStatus({
   emailOn: boolean;
   /** False when only a super admin may send it again (it gives more than the viewer can). */
   canRenew?: boolean;
+  /** Departments they become main approver for when they accept. */
+  mainFor?: string[];
 }) {
   const router = useRouter();
   return (
@@ -50,6 +60,11 @@ export function InviteStatus({
               : "The link no longer works. Only a super admin can send a new one: it gives access you can't give."
             : "Changes you save here apply when they accept."}
         </p>
+        {mainFor.length > 0 && (
+          <p className={expired ? "" : "text-muted-foreground"}>
+            Becomes main approver for {listWords(mainFor)} when they accept.
+          </p>
+        )}
       </div>
       <InviteActions
         inviteId={inviteId}

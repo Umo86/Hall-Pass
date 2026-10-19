@@ -73,6 +73,13 @@ function article(word: string) {
   return /^[aeiou]/i.test(word) ? "an" : "a";
 }
 
+/** "Marketing", "Marketing and Sales", "Marketing, Sales and Finance". */
+function andList(names: readonly string[]): string {
+  return names.length <= 1
+    ? (names[0] ?? "")
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 export default async function InvitePage({
   params,
   searchParams,
@@ -192,8 +199,9 @@ export default async function InvitePage({
       {what}
       {details.kind === "staff" && details.signsOff && (
         <p className="text-muted-foreground text-sm">
-          You&apos;ll also sign off signage artwork — you&apos;ll get an email whenever something
-          needs you.
+          {details.mainFor.length > 0
+            ? `You'll also sign off signage artwork, as the main approver for ${andList(details.mainFor)} — you'll get an email whenever something needs you.`
+            : "You'll also sign off signage artwork — you'll get an email whenever something needs you."}
         </p>
       )}
       <InviteForm

@@ -33,7 +33,7 @@ export type TeamListRow = {
   departmentArchived: boolean;
   sections: string;
   sectionsTitle: string;
-  signsOffFor: { name: string; isMain: boolean }[];
+  signsOffFor: { name: string; isMain: boolean; mainOnAccept?: boolean }[];
   status: PersonStatus;
   statusText: string;
   /** "Today", "3 days ago", "Never signed in"; null for invitations. */
@@ -61,7 +61,7 @@ function SignsOff({ list }: { list: TeamListRow["signsOffFor"] }) {
   return (
     <span className="flex flex-wrap gap-1">
       {list.map((s) => (
-        <DepartmentChip key={s.name} name={s.name} main={s.isMain} />
+        <DepartmentChip key={s.name} name={s.name} main={s.isMain} pending={s.mainOnAccept} />
       ))}
     </span>
   );

@@ -69,10 +69,13 @@ import { loadRun, persistRun } from "@/lib/workflow/persist";
 import { notify } from "@/lib/notify";
 import { activeMembership } from "./active";
 import {
+  mainOnAcceptOutcome,
+  mainTakeover,
   normaliseFeatures,
   overridesFor,
   signoffChanges,
   type AbilityChoices,
+  type MainTakeover,
   type Signoff,
 } from "./rules";
 import { externalAccountLabel, liveGrantSql, livePartnerGrantsFor } from "./external";
@@ -348,18 +351,28 @@ function personRows(organisationId: string, person: Pick<Person, "userId" | "ema
   );
 }
 
-/** Departments this person signs off for now. */
+/**
+ * Departments this person signs off for now. isMain is the form-level value
+ * the people rules read: main approver now, or (an invitation) when they
+ * accept.
+ */
 export async function currentSignoffs(
   db: Db | Tx,
   organisationId: string,
   person: Pick<Person, "userId" | "email">,
 ): Promise<Signoff[]> {
   const rows = await db
-    .select({ departmentId: approvers.departmentId, isMain: approvers.isMain })
+    .select({
+      departmentId: approvers.departmentId,
+      isMain: approvers.isMain,
+      mainOnAccept: approvers.mainOnAccept,
+    })
     .from(approvers)
     .where(personRows(organisationId, person));
   const seen = new Map<string, boolean>();
-  for (const r of rows) seen.set(r.departmentId, (seen.get(r.departmentId) ?? false) || r.isMain);
+  for (const r of rows) {
+    seen.set(r.departmentId, (seen.get(r.departmentId) ?? false) || r.isMain || r.mainOnAccept);
+  }
   return [...seen].map(([departmentId, isMain]) => ({ departmentId, isMain }));
 }
 
@@ -417,10 +430,14 @@ export async function clearOtherMainsTx(
   tx: Tx,
   opts: {
     organisationId: string;
-    actorUserId: string;
+    /** Null with actorType "system": someone accepting their invitation took over. */
+    actorUserId: string | null;
+    actorType?: "user" | "system";
     departmentId: string;
     keep: SQL;
     newMainName: string;
+    /** Why, in a few words ("they accepted their invitation"). */
+    because?: string;
   },
 ): Promise<number> {
   const demoted = await tx
@@ -443,12 +460,13 @@ export async function clearOtherMainsTx(
     await writeAudit(tx, {
       organisationId: opts.organisationId,
       actorUserId: opts.actorUserId,
+      actorType: opts.actorType ?? "user",
       entityType: "approver",
       entityId: row.id,
       action: "settings_change",
       before: { isMain: true, userId: row.userId, email: row.email },
       after: { isMain: false, userId: row.userId, email: row.email, newMain: opts.newMainName },
-      summary: `${row.fullName || row.email} is no longer the main approver for ${dept?.name ?? "the department"} — ${opts.newMainName} is`,
+      summary: `${row.fullName || row.email} is no longer the main approver for ${dept?.name ?? "the department"} — ${opts.newMainName} is${opts.because ? ` (${opts.because})` : ""}`,
       subjectUserId: row.userId,
       subjectEmail: row.email,
     });
@@ -456,13 +474,81 @@ export async function clearOtherMainsTx(
   return demoted.length;
 }
 
+/** Someone else's "main when they accept" that a newer choice replaced. */
+export type PendingDropped = { departmentId: string; departmentName: string; name: string };
+
+/** A department where the person takes over as main approver when they accept. */
+export type MainOnAcceptNote = {
+  departmentId: string;
+  departmentName: string;
+  currentMain: string;
+};
+
+/**
+ * One "main approver when they accept" per department, and the newest
+ * choice wins: before someone is chosen as main (now or when they accept),
+ * any other pending ask in the department is cancelled — audited on the
+ * invitee, so their access history says so. `keep` picks out the row being
+ * chosen (left alone).
+ */
+export async function dropPendingMainsTx(
+  tx: Tx,
+  opts: {
+    organisationId: string;
+    actorUserId: string;
+    departmentId: string;
+    keep: SQL;
+    newMainName: string;
+    newMainWhen: MainTakeover;
+  },
+): Promise<PendingDropped[]> {
+  const dropped = await tx
+    .update(approvers)
+    .set({ mainOnAccept: false, mainOnAcceptBy: null })
+    .where(
+      and(
+        eq(approvers.organisationId, opts.organisationId),
+        eq(approvers.departmentId, opts.departmentId),
+        eq(approvers.mainOnAccept, true),
+        opts.keep,
+      ),
+    )
+    .returning();
+  if (dropped.length === 0) return [];
+  const dept = await tx.query.departments.findFirst({
+    where: eq(departments.id, opts.departmentId),
+  });
+  const departmentName = dept?.name ?? "the department";
+  const out: PendingDropped[] = [];
+  for (const row of dropped) {
+    const name = row.fullName || row.email;
+    await writeAudit(tx, {
+      organisationId: opts.organisationId,
+      actorUserId: opts.actorUserId,
+      entityType: "approver",
+      entityId: row.id,
+      action: "settings_change",
+      before: { mainOnAccept: true, email: row.email },
+      after: { mainOnAccept: false, email: row.email, newMain: opts.newMainName },
+      summary: `${name} will no longer become the main approver for ${departmentName} when they accept — ${opts.newMainName} ${opts.newMainWhen === "now" ? "is main approver now" : "will instead"}`,
+      subjectUserId: row.userId,
+      subjectEmail: row.email,
+    });
+    out.push({ departmentId: opts.departmentId, departmentName, name });
+  }
+  return out;
+}
+
 /**
  * Make the person an approver for exactly these departments. New ones must
  * be live departments that sign off; ones they already have are kept even
  * if since archived. One main approver per department. Someone only
- * invited never takes "main approver" from a main who can sign now: they
- * join as an approver and the current main stays (`mainKept`), so nobody
- * is demoted for an invitation that may never be accepted. Returns whether
+ * invited who is chosen as main while the current main can sign takes over
+ * when they accept (`mainOnAccept`, the ask on their approver row), so
+ * nobody is demoted for an invitation that may never be accepted; anyone
+ * else chosen is main now. The newest choice wins: someone else's pending
+ * ask in that department is cancelled (`pendingDropped`). Rows whose
+ * form-level choice is unchanged are left exactly as stored. Returns whether
  * anything changed (the caller then syncs the sign-off steps).
  */
 export async function setSignoffs(
@@ -475,23 +561,17 @@ export async function setSignoffs(
   before: Signoff[];
   after: Signoff[];
   removed: string[];
-  mainKept: { departmentId: string; name: string }[];
+  /** Departments where they take over when they accept. */
+  mainOnAccept: MainOnAcceptNote[];
+  /** Other people's pending asks this change replaced (newest choice wins). */
+  pendingDropped: PendingDropped[];
 }> {
   // Approver rows keep emails in lower case.
   person = { ...person, email: person.email.toLowerCase() };
+  const who = person.fullName || person.email;
   const unique = [...new Map(desired.map((s) => [s.departmentId, s.isMain])).entries()].map(
     ([departmentId, isMain]) => ({ departmentId, isMain }),
   );
-  const mainKept: { departmentId: string; name: string }[] = [];
-  if (!person.userId) {
-    for (const s of unique.filter((x) => x.isMain)) {
-      const current = await otherMain(tx, ctx.organisationId, s.departmentId, person.email);
-      if (current?.canSign) {
-        s.isMain = false;
-        mainKept.push({ departmentId: s.departmentId, name: current.name });
-      }
-    }
-  }
   const before = await currentSignoffs(tx, ctx.organisationId, person);
   const changes = signoffChanges(before, unique);
   if (changes.add.length > 0) {
@@ -511,57 +591,174 @@ export async function setSignoffs(
       }
     }
   }
-  // One main approver per department (a unique index): clear the others
-  // before this person becomes main.
-  for (const s of unique.filter((x) => x.isMain)) {
-    await clearOtherMainsTx(tx, {
-      organisationId: ctx.organisationId,
-      actorUserId: ctx.actorUserId,
-      departmentId: s.departmentId,
-      keep: ne(approvers.email, person.email),
-      newMainName: person.fullName || person.email,
-    });
-  }
   const where = personRows(ctx.organisationId, person);
+  const stored = await tx
+    .select({
+      id: approvers.id,
+      departmentId: approvers.departmentId,
+      mainOnAccept: approvers.mainOnAccept,
+    })
+    .from(approvers)
+    .where(where);
+  const touched = [...new Set([...unique.map((s) => s.departmentId), ...changes.remove])];
+  const deptNames = new Map(
+    touched.length === 0
+      ? []
+      : (
+          await tx
+            .select({ id: departments.id, name: departments.name })
+            .from(departments)
+            .where(
+              and(
+                eq(departments.organisationId, ctx.organisationId),
+                inArray(departments.id, touched),
+              ),
+            )
+        ).map((d) => [d.id, d.name]),
+  );
+  const deptName = (id: string) => deptNames.get(id) ?? "the department";
+
+  // Who becomes main, and when. Done before any write: the one-main and
+  // one-ask indexes aren't the upsert's target, so others are cleared first.
+  const when = new Map<string, MainTakeover>();
+  const mainOnAccept: MainOnAcceptNote[] = [];
+  const pendingDropped: PendingDropped[] = [];
+  for (const s of unique.filter((x) => x.isMain)) {
+    const newly = !before.some((b) => b.departmentId === s.departmentId && b.isMain);
+    if (!newly) continue;
+    const current = person.userId
+      ? null
+      : await otherMain(tx, ctx.organisationId, s.departmentId, person.email);
+    const w = mainTakeover({
+      hasAccount: Boolean(person.userId),
+      currentMainCanSign: Boolean(current?.canSign),
+    });
+    when.set(s.departmentId, w);
+    pendingDropped.push(
+      ...(await dropPendingMainsTx(tx, {
+        organisationId: ctx.organisationId,
+        actorUserId: ctx.actorUserId,
+        departmentId: s.departmentId,
+        keep: ne(approvers.email, person.email),
+        newMainName: who,
+        newMainWhen: w,
+      })),
+    );
+    if (w === "now") {
+      await clearOtherMainsTx(tx, {
+        organisationId: ctx.organisationId,
+        actorUserId: ctx.actorUserId,
+        departmentId: s.departmentId,
+        keep: ne(approvers.email, person.email),
+        newMainName: who,
+      });
+    } else {
+      mainOnAccept.push({
+        departmentId: s.departmentId,
+        departmentName: deptName(s.departmentId),
+        currentMain: current!.name,
+      });
+    }
+  }
+  const storedMain = (departmentId: string, isMain: boolean) => {
+    const w = when.get(departmentId) ?? "now";
+    const ask = isMain && w === "on_accept";
+    return {
+      isMain: isMain && w === "now",
+      mainOnAccept: ask,
+      mainOnAcceptBy: ask ? ctx.actorUserId : null,
+    };
+  };
+
+  // Asks that this change cancels: rows taken away, or no longer main.
+  const askCancelled = stored.filter(
+    (r) =>
+      r.mainOnAccept &&
+      (changes.remove.includes(r.departmentId) ||
+        changes.update.some((u) => u.departmentId === r.departmentId && !u.isMain)),
+  );
+
   if (changes.remove.length > 0) {
     await tx.delete(approvers).where(and(where, inArray(approvers.departmentId, changes.remove)));
   }
+  const asked = new Map<string, string>();
   for (const a of changes.add) {
-    await tx
+    const [row] = await tx
       .insert(approvers)
       .values({
         organisationId: ctx.organisationId,
         departmentId: a.departmentId,
-        fullName: person.fullName || person.email,
+        fullName: who,
         jobTitle: person.jobTitle,
         email: person.email,
         userId: person.userId,
-        isMain: a.isMain,
+        ...storedMain(a.departmentId, a.isMain),
       })
       .onConflictDoUpdate({
         target: [approvers.departmentId, approvers.email],
-        set: { userId: person.userId, isMain: a.isMain, fullName: person.fullName || person.email },
-      });
+        set: { userId: person.userId, fullName: who, ...storedMain(a.departmentId, a.isMain) },
+      })
+      .returning({ id: approvers.id, mainOnAccept: approvers.mainOnAccept });
+    if (row?.mainOnAccept) asked.set(a.departmentId, row.id);
   }
   for (const u of changes.update) {
-    await tx
+    const rows = await tx
       .update(approvers)
-      .set({ isMain: u.isMain })
-      .where(and(where, eq(approvers.departmentId, u.departmentId)));
+      .set(
+        u.isMain
+          ? storedMain(u.departmentId, true)
+          : { isMain: false, mainOnAccept: false, mainOnAcceptBy: null },
+      )
+      .where(and(where, eq(approvers.departmentId, u.departmentId)))
+      .returning({ id: approvers.id, mainOnAccept: approvers.mainOnAccept });
+    const row = rows.find((r) => r.mainOnAccept);
+    if (row) asked.set(u.departmentId, row.id);
   }
   // Keep their name on the approver list in step with their profile.
   if (unique.length > 0) {
-    await tx
-      .update(approvers)
-      .set({ fullName: person.fullName || person.email, jobTitle: person.jobTitle })
-      .where(where);
+    await tx.update(approvers).set({ fullName: who, jobTitle: person.jobTitle }).where(where);
+  }
+  for (const m of mainOnAccept) {
+    await writeAudit(tx, {
+      organisationId: ctx.organisationId,
+      actorUserId: ctx.actorUserId,
+      entityType: "approver",
+      entityId: asked.get(m.departmentId) ?? null,
+      action: "settings_change",
+      before: { mainOnAccept: false },
+      after: { mainOnAccept: true, email: person.email, currentMain: m.currentMain },
+      summary: `${who} will become the main approver for ${m.departmentName} when they accept — ${m.currentMain} stays until then`,
+      subjectUserId: person.userId,
+      subjectEmail: person.email,
+    });
+  }
+  for (const r of askCancelled) {
+    await writeAudit(tx, {
+      organisationId: ctx.organisationId,
+      actorUserId: ctx.actorUserId,
+      entityType: "approver",
+      entityId: r.id,
+      action: "settings_change",
+      before: { mainOnAccept: true },
+      after: { mainOnAccept: false, email: person.email },
+      summary: `${who} will no longer become the main approver for ${deptName(r.departmentId)} when they accept`,
+      subjectUserId: person.userId,
+      subjectEmail: person.email,
+    });
   }
   const changed = changes.add.length + changes.remove.length + changes.update.length > 0;
-  return { changed, before, after: unique, removed: changes.remove, mainKept };
+  return {
+    changed,
+    before,
+    after: unique,
+    removed: changes.remove,
+    mainOnAccept,
+    pendingDropped,
+  };
 }
 
 /** An invitation nobody has accepted or cancelled for this email, expired or not. */
-async function openInviteFor(db: Db | Tx, organisationId: string, email: string) {
+export async function openInviteFor(db: Db | Tx, organisationId: string, email: string) {
   const [open] = await db
     .select({
       id: staffInvites.id,
@@ -690,8 +887,11 @@ export async function inviteUserTx(
   inviteUrl: string;
   expiresAt: Date;
   departmentName: string | null;
-  mainKept: { departmentId: string; name: string }[];
+  mainOnAccept: MainOnAcceptNote[];
+  pendingDropped: PendingDropped[];
 }> {
+  // People changes one after another (re-entrant: Add several takes it first).
+  await lockPeople(tx, ctx.organisationId);
   const actor = await loadActor(tx, ctx);
   const email = input.email.trim().toLowerCase();
   const fullName = input.fullName.trim();
@@ -742,13 +942,18 @@ export async function inviteUserTx(
       entityType: "approver",
       entityId: invite.inviteId,
       action: "create",
-      after: { email, signsOffFor: signoff.after, mainKept: signoff.mainKept },
+      after: { email, signsOffFor: signoff.after, mainOnAccept: signoff.mainOnAccept },
       summary: `${fullName || email} will sign off artwork once they accept`,
       subjectEmail: email,
     });
     await syncDepartmentSteps(tx, ctx.organisationId);
   }
-  return { ...invite, departmentName: dept?.name ?? null, mainKept: signoff.mainKept };
+  return {
+    ...invite,
+    departmentName: dept?.name ?? null,
+    mainOnAccept: signoff.mainOnAccept,
+    pendingDropped: signoff.pendingDropped,
+  };
 }
 
 /**
@@ -763,7 +968,14 @@ export async function updateMemberTx(
   tx: Tx,
   ctx: Ctx,
   input: PersonInput & { userId: string; signoffPaused: boolean },
-): Promise<{ name: string; changed: string[]; signoffsMoved: number; signoffsKept: number }> {
+): Promise<{
+  name: string;
+  changed: string[];
+  signoffsMoved: number;
+  signoffsKept: number;
+  /** Pending "main when they accept" asks cancelled by making them main now. */
+  pendingDropped: PendingDropped[];
+}> {
   await lockPeople(tx, ctx.organisationId);
   const actor = await loadActor(tx, ctx);
   const membership = await tx.query.memberships.findFirst({
@@ -940,6 +1152,7 @@ export async function updateMemberTx(
     changed,
     signoffsMoved: handed.moved,
     signoffsKept: handed.kept,
+    pendingDropped: signoff.pendingDropped,
   };
 }
 
@@ -975,7 +1188,9 @@ export async function updateInviteTx(
   tx: Tx,
   ctx: Ctx,
   input: PersonInput & { inviteId: string },
-): Promise<{ name: string; mainKept: { departmentId: string; name: string }[] }> {
+): Promise<{ name: string; mainOnAccept: MainOnAcceptNote[]; pendingDropped: PendingDropped[] }> {
+  // First, so an invitation accepted meanwhile is refused by openInvite.
+  await lockPeople(tx, ctx.organisationId);
   const actor = await loadActor(tx, ctx);
   const invite = await openInvite(tx, ctx, input.inviteId);
   const fullName = input.fullName.trim();
@@ -1075,7 +1290,11 @@ export async function updateInviteTx(
       subjectEmail: invite.invitedEmail,
     });
   }
-  return { name: fullName || invite.invitedEmail, mainKept: signoff.mainKept };
+  return {
+    name: fullName || invite.invitedEmail,
+    mainOnAccept: signoff.mainOnAccept,
+    pendingDropped: signoff.pendingDropped,
+  };
 }
 
 /**
@@ -1083,6 +1302,7 @@ export async function updateInviteTx(
  * going to give them go back to the department.
  */
 export async function cancelInviteTx(tx: Tx, ctx: Ctx, inviteId: string): Promise<string> {
+  await lockPeople(tx, ctx.organisationId);
   await managedInvite(tx, ctx, inviteId);
   const [invite] = await tx
     .update(staffInvites)
@@ -1108,7 +1328,11 @@ export async function cancelInviteTx(tx: Tx, ctx: Ctx, inviteId: string): Promis
         isNull(approvers.userId),
       ),
     )
-    .returning({ id: approvers.id });
+    .returning({
+      id: approvers.id,
+      departmentId: approvers.departmentId,
+      mainOnAccept: approvers.mainOnAccept,
+    });
   if (dropped.length > 0) await syncDepartmentSteps(tx, ctx.organisationId);
   await writeAudit(tx, {
     organisationId: ctx.organisationId,
@@ -1116,11 +1340,197 @@ export async function cancelInviteTx(tx: Tx, ctx: Ctx, inviteId: string): Promis
     entityType: "staff_invite",
     entityId: invite.id,
     action: "grant_revoke",
-    before: { email: invite.invitedEmail, approverRows: dropped.length },
+    before: {
+      email: invite.invitedEmail,
+      approverRows: dropped.length,
+      // Departments they were going to be main approver for when they accepted.
+      mainOnAccept: dropped.filter((d) => d.mainOnAccept).map((d) => d.departmentId),
+    },
     summary: `Cancelled the invitation for ${invite.invitedEmail}`,
     subjectEmail: invite.invitedEmail,
   });
   return invite.fullName || invite.invitedEmail;
+}
+
+/** A pending "main approver when they accept" on an invitee's approver row. */
+export type PendingMainAsk = { approverId: string; departmentId: string; askedBy: string | null };
+
+/**
+ * The asks waiting on this email's approver rows (not linked yet), locked
+ * until the acceptance commits. Read before the rows are linked, which
+ * clears them.
+ */
+export async function pendingMainAsksTx(
+  tx: Tx,
+  organisationId: string,
+  email: string,
+): Promise<PendingMainAsk[]> {
+  return tx
+    .select({
+      approverId: approvers.id,
+      departmentId: approvers.departmentId,
+      askedBy: approvers.mainOnAcceptBy,
+    })
+    .from(approvers)
+    .where(
+      and(
+        eq(approvers.organisationId, organisationId),
+        eq(approvers.email, email.toLowerCase()),
+        isNull(approvers.userId),
+        eq(approvers.mainOnAccept, true),
+      ),
+    )
+    .for("update");
+}
+
+/**
+ * Carry out the asks of someone who has just accepted their invitation
+ * (lib/auth/claim-staff-invite.ts, after their approver rows are linked):
+ * each department whose ask can be carried out — it still signs off and
+ * they can sign off now (mainOnAcceptOutcome) — gets them as main approver;
+ * the main until now stops being it (a row in their access history) and
+ * both are told. Otherwise nothing changes and whoever asked is told. The
+ * hand-over rows are by the system, naming who arranged it; the asker's
+ * abilities aren't checked again. The caller re-syncs the sign-off steps
+ * afterwards, which moves open default sign-offs to the new main. Returns
+ * the departments they became main approver for.
+ */
+export async function applyMainOnAcceptTx(
+  tx: Tx,
+  opts: {
+    organisationId: string;
+    user: { id: string; email: string; name: string };
+    asks: readonly PendingMainAsk[];
+  },
+): Promise<{ promoted: string[] }> {
+  const promoted: string[] = [];
+  if (opts.asks.length === 0) return { promoted };
+  const orgId = opts.organisationId;
+  const { user } = opts;
+  const email = user.email.toLowerCase();
+  const m = await tx.query.memberships.findFirst({
+    where: and(eq(memberships.userId, user.id), eq(memberships.organisationId, orgId)),
+  });
+  const canSign = m
+    ? canReceiveSignoff({
+        role: m.role,
+        overrides: m.permissionOverrides as PermissionOverrides,
+        suspendedAt: m.suspendedAt,
+        accessEndsAt: m.accessEndsAt,
+      })
+    : false;
+  const depts = await tx
+    .select()
+    .from(departments)
+    .where(
+      and(
+        eq(departments.organisationId, orgId),
+        inArray(
+          departments.id,
+          opts.asks.map((a) => a.departmentId),
+        ),
+      ),
+    );
+  for (const ask of opts.asks) {
+    const dept = depts.find((d) => d.id === ask.departmentId);
+    if (!dept) continue; // deleted: the row (and the ask) went with it
+    const outcome = mainOnAcceptOutcome({
+      departmentArchived: dept.isArchived,
+      signsOff: dept.signsOff,
+      canSign,
+    });
+    const askerName = ask.askedBy ? await nameOf(tx, ask.askedBy) : null;
+    const [old] = await tx
+      .select({ userId: approvers.userId, name: approvers.fullName, userName: users.fullName })
+      .from(approvers)
+      .leftJoin(users, eq(users.id, approvers.userId))
+      .where(
+        and(
+          eq(approvers.organisationId, orgId),
+          eq(approvers.departmentId, dept.id),
+          eq(approvers.isMain, true),
+          ne(approvers.id, ask.approverId),
+        ),
+      )
+      .limit(1);
+    const oldName = old ? old.userName || old.name : null;
+    if (outcome === "promote") {
+      await clearOtherMainsTx(tx, {
+        organisationId: orgId,
+        actorUserId: null,
+        actorType: "system",
+        departmentId: dept.id,
+        keep: ne(approvers.id, ask.approverId),
+        newMainName: user.name,
+        because: "they accepted their invitation",
+      });
+      await tx.update(approvers).set({ isMain: true }).where(eq(approvers.id, ask.approverId));
+      await writeAudit(tx, {
+        organisationId: orgId,
+        actorUserId: null,
+        actorType: "system",
+        entityType: "approver",
+        entityId: ask.approverId,
+        action: "settings_change",
+        before: { isMain: false, mainOnAccept: true, askedBy: ask.askedBy },
+        after: { isMain: true, userId: user.id },
+        summary: `${user.name} is now the main approver for ${dept.name} — they accepted their invitation${askerName ? `, as ${askerName} arranged` : ""}`,
+        subjectUserId: user.id,
+        subjectEmail: email,
+      });
+      if (old?.userId) {
+        await notify(tx, {
+          userIds: [old.userId],
+          kind: "main_approver",
+          title: `${user.name} is now the main approver for ${dept.name}`,
+          body: `They accepted their invitation and take over from you, as arranged when they were invited. ${dept.name} sign-offs that go to the main approver now go to them; any picked for you on an item stay with you.`,
+          link: "/users?tab=departments",
+          scope: { organisationId: orgId },
+        });
+      }
+      await notify(tx, {
+        userIds: [user.id],
+        kind: "main_approver",
+        title: `You're the main approver for ${dept.name}`,
+        body: `${dept.name} sign-offs come to you unless someone else is picked on the item.`,
+        link: "/approvals",
+        scope: { organisationId: orgId },
+      });
+      promoted.push(dept.id);
+      continue;
+    }
+    const stays = oldName ? `${oldName} stays main approver` : "nobody stays main approver";
+    await writeAudit(tx, {
+      organisationId: orgId,
+      actorUserId: null,
+      actorType: "system",
+      entityType: "approver",
+      entityId: ask.approverId,
+      action: "settings_change",
+      before: { isMain: false, mainOnAccept: true, askedBy: ask.askedBy },
+      after: { isMain: false, mainOnAccept: false, userId: user.id, outcome },
+      summary:
+        outcome === "department_off"
+          ? `${user.name} accepted their invitation but isn't the main approver for ${dept.name} — ${dept.name} doesn't sign off artwork at the moment`
+          : `${user.name} accepted their invitation but isn't the main approver for ${dept.name} — they can't sign off at the moment, so ${stays}`,
+      subjectUserId: user.id,
+      subjectEmail: email,
+    });
+    if (ask.askedBy) {
+      await notify(tx, {
+        userIds: [ask.askedBy],
+        kind: "main_approver",
+        title: `${user.name} joined, but isn't the main approver for ${dept.name}`,
+        body:
+          outcome === "department_off"
+            ? `${dept.name} doesn't sign off artwork at the moment, so nothing changed. Make them main under Users → Departments if it signs off again.`
+            : `They can't sign off at the moment, so ${oldName ? `${oldName} stays main approver` : `${dept.name} still has no main approver`}. Make them main under Users → Departments once they can.`,
+        link: `/users/${user.id}`,
+        scope: { organisationId: orgId },
+      });
+    }
+  }
+  return { promoted };
 }
 
 /** What an open invitation will give whoever accepts it, as the people rules see it. */
@@ -2591,6 +3001,8 @@ export async function inviteRowsTx(
   rows: readonly PastedRow[],
   shared: SharedPersonInput,
 ): Promise<{ results: InviteRowResult[]; departmentName: string | null }> {
+  // Once, before the loop (inviteUserTx takes it again: re-entrant).
+  await lockPeople(tx, ctx.organisationId);
   const preview = await previewInviteRows(tx, ctx.organisationId, rows);
   const ready = preview.filter((r) => r.reason === "ready").length;
   if (ready > MAX_PASTED_PEOPLE) {

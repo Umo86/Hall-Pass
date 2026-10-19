@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import type { AbilityKey, Feature, ManagerScope, StaffRole } from "@/lib/authz";
 import {
   firstName,
+  mainApproverNote,
   roleForDepartment,
   startingChoices,
   type AbilityChoices,
@@ -128,7 +129,6 @@ export function AddUserForm({
   const canSignHere =
     chosen?.signsOff && !chosen.isArchived && access.signoffDepartments.includes(chosen.id);
   const viewer = role === "viewer";
-  const mainKept = Boolean(chosen?.mainApprover && chosen.mainCanSign);
 
   function pickDepartment(value: string) {
     setDept(value);
@@ -212,7 +212,7 @@ export function AddUserForm({
         abilities: role === "admin" ? {} : abilities,
         signoffs:
           signsOff && canSignHere && !viewer && chosen
-            ? [{ departmentId: chosen.id, isMain: access.canChooseMain && isMain && !mainKept }]
+            ? [{ departmentId: chosen.id, isMain: access.canChooseMain && isMain }]
             : [],
         ...(access.canGrantManager && role !== "admin" ? { managerScope: manager } : {}),
         accessEndsOn: accessEnd || null,
@@ -260,6 +260,7 @@ export function AddUserForm({
                 ? "They'll get an email to set up their password. They show as Invited until then."
                 : "Email isn't set up here, so send them this link yourself."}
             </p>
+            {done.mainNote && <p className="text-sm">{done.mainNote}.</p>}
           </div>
         </div>
         {!done.emailed && done.inviteUrl && (
@@ -460,20 +461,26 @@ export function AddUserForm({
                     <input
                       type="checkbox"
                       className="accent-primary mt-0.5 size-4"
-                      checked={isMain && !mainKept}
-                      disabled={mainKept}
+                      checked={isMain}
                       onChange={(e) => setIsMain(e.target.checked)}
                     />
                     <span>
                       Main approver
                       <span className="text-muted-foreground block text-xs">
-                        {mainKept
-                          ? `${chosen.mainApprover} stays main approver until ${name} has accepted — you can make ${name} main under Departments then.`
-                          : `Gets every item unless someone else is picked. ${
-                              chosen.mainApprover
-                                ? `Replaces ${chosen.mainApprover}, who can't sign off at the moment.`
-                                : `${chosen.name} has no main approver yet.`
-                            }`}
+                        Gets every item unless someone else is picked.{" "}
+                        {mainApproverNote({
+                          person: name,
+                          department: chosen.name,
+                          invited: true,
+                          current: chosen.mainApprover
+                            ? {
+                                name: firstName(chosen.mainApprover),
+                                canSign: Boolean(chosen.mainCanSign),
+                              }
+                            : null,
+                          pending:
+                            isMain && chosen.pendingMain ? firstName(chosen.pendingMain) : null,
+                        })}
                       </span>
                     </span>
                   </label>

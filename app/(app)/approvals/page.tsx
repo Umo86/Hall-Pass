@@ -652,6 +652,7 @@ async function ApproversTab({
             name: a.name,
             jobTitle: a.jobTitle,
             isMain: a.isMain,
+            mainOnAccept: a.mainOnAccept,
             state: a.state,
           })),
         }))}

@@ -90,7 +90,14 @@ export type SignoffDepartmentFact = {
   name: string;
   /** Signs organiser signage by default, so it must have someone who can sign. */
   forOrganiser: boolean;
-  approvers: { name: string; email: string; isMain: boolean; active: boolean }[];
+  approvers: {
+    name: string;
+    email: string;
+    isMain: boolean;
+    /** Invited: takes over as main approver when they accept (doesn't route anything yet). */
+    mainOnAccept?: boolean;
+    active: boolean;
+  }[];
 };
 
 export type OrgSetupFacts = {
@@ -475,6 +482,7 @@ export async function loadOrgSetupFacts(organisationId: string): Promise<OrgSetu
           name: a.fullName,
           email: a.email,
           isMain: a.isMain,
+          mainOnAccept: a.mainOnAccept,
           active: a.active,
         })),
       })),

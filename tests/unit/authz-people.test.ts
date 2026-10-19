@@ -453,6 +453,38 @@ describe("personChangeRefusal", () => {
     expect(refuse(deptManager, target, keep, { ...keep })).toBeNull();
   });
 
+  it("8. a manager without departments.manage can't ask for main approver on an invitation, but may keep one a super admin asked for", () => {
+    // An invitation's "main when they accept" is that row's isMain.
+    const invitee = person({ userId: null });
+    expect(
+      refuse(deptManager, null, null, access({ signoffs: [{ departmentId: "d1", isMain: true }] })),
+    ).toMatch(/main approver/i);
+    expect(
+      refuse(
+        deptManager,
+        invitee,
+        access({ signoffs: [{ departmentId: "d1", isMain: false }] }),
+        access({ signoffs: [{ departmentId: "d1", isMain: true }] }),
+      ),
+    ).toMatch(/main approver/i);
+    const asked = access({ signoffs: [{ departmentId: "d1", isMain: true }] });
+    expect(refuse(deptManager, invitee, asked, { ...asked })).toBeNull();
+    // Cancelling it is a change to main approver too.
+    expect(
+      refuse(
+        deptManager,
+        invitee,
+        asked,
+        access({ signoffs: [{ departmentId: "d1", isMain: false }] }),
+      ),
+    ).toMatch(/main approver/i);
+    // With departments.manage (given by a super admin) they may ask.
+    const withDepts = { ...deptManager, overrides: { "departments.manage": true } };
+    expect(
+      refuse(withDepts, null, null, access({ signoffs: [{ departmentId: "d1", isMain: true }] })),
+    ).toBeNull();
+  });
+
   it("9. resuming a paused sign-off while your own is paused", () => {
     const paused = { ...deptManager, overrides: { "approval.decide": false } };
     expect(
@@ -497,6 +529,17 @@ describe("personChangeRefusal", () => {
     // Nobody without a manager scope, and never a partner.
     expect(canRenewInvite(plainOps, invite)).toBe(false);
     expect(canRenewInvite(external, invite)).toBe(false);
+  });
+
+  it("a manager can't renew an invitation that makes someone main approver when they accept", () => {
+    // The ask is the row's isMain (currentSignoffs), so a new link would make
+    // someone main approver, which the manager couldn't arrange themselves.
+    const asked = access({ signoffs: [{ departmentId: "d1", isMain: true }] });
+    expect(canRenewInvite(deptManager, asked)).toBe(false);
+    expect(canRenewInvite(superAdmin, asked)).toBe(true);
+    expect(
+      canRenewInvite({ ...deptManager, overrides: { "departments.manage": true } }, asked),
+    ).toBe(true);
   });
 
   it("every registry key is covered by the ability rule", () => {

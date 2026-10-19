@@ -24,6 +24,8 @@ import { EDITABLE_ABILITY_KEYS, firstName, STAFF_ROLES } from "@/lib/users/rules
 import {
   bulkPeople,
   cancelInviteTx,
+  type MainOnAcceptNote,
+  type PendingDropped,
   inviteRowsTx,
   inviteUserTx,
   previewInviteRows,
@@ -160,6 +162,26 @@ function inviterName(session: Session) {
   return session.user.fullName || session.user.email;
 }
 
+/**
+ * What a sign-off change did to main approvers, in words: "Sam becomes the
+ * main approver for Marketing when they accept — Jo stays until then", and
+ * "Alex won't take over Marketing when they accept" for each ask it replaced.
+ */
+function mainWords(
+  name: string,
+  out: { mainOnAccept?: readonly MainOnAcceptNote[]; pendingDropped: readonly PendingDropped[] },
+): string[] {
+  return [
+    ...(out.mainOnAccept ?? []).map(
+      (m) =>
+        `${firstName(name)} becomes the main approver for ${m.departmentName} when they accept — ${m.currentMain} stays until then`,
+    ),
+    ...out.pendingDropped.map(
+      (p) => `${p.name} won't take over ${p.departmentName} when they accept`,
+    ),
+  ];
+}
+
 export type InviteUserResult = {
   inviteId: string;
   email: string;
@@ -167,6 +189,8 @@ export type InviteUserResult = {
   emailed: boolean;
   /** Only when nothing could be emailed: the link to pass on by hand. */
   inviteUrl?: string;
+  /** "Sam becomes the main approver for Marketing when they accept — …", for the done panel. */
+  mainNote: string | null;
 };
 
 /**
@@ -192,6 +216,7 @@ export async function inviteUser(input: unknown): Promise<ActionResult<InviteUse
       inviteId: invite.inviteId,
     });
     refresh();
+    const notes = mainWords(data.fullName, invite);
     return success(
       {
         inviteId: invite.inviteId,
@@ -199,14 +224,13 @@ export async function inviteUser(input: unknown): Promise<ActionResult<InviteUse
         name: data.fullName,
         emailed: delivery.emailed,
         inviteUrl: delivery.emailed ? undefined : delivery.fallbackUrl,
+        mainNote: notes[0] ?? null,
       },
       [
         delivery.emailed
           ? `Invitation sent to ${data.email}`
           : `${firstName(data.fullName)} added — send them the link`,
-        ...invite.mainKept.map(
-          (m) => `${m.name} stays main approver until ${firstName(data.fullName)} has accepted`,
-        ),
+        ...notes,
       ].join(". "),
     );
   } catch (err) {
@@ -233,6 +257,7 @@ export async function updateUser(input: unknown): Promise<ActionResult> {
       out.signoffsKept > 0
         ? `${out.signoffsKept} sign-off${out.signoffsKept === 1 ? " still names" : "s still name"} ${firstName(out.name)} — nobody else signs off there, so hand ${out.signoffsKept === 1 ? "it" : "them"} on from the item`
         : null,
+      ...mainWords(out.name, out),
     ].filter(Boolean);
     return success(
       undefined,
@@ -263,9 +288,7 @@ export async function updateInvitation(input: unknown): Promise<ActionResult> {
       undefined,
       [
         `Saved — ${firstName(out.name)} gets this when they accept`,
-        ...out.mainKept.map(
-          (m) => `${m.name} stays main approver until ${firstName(out.name)} has accepted`,
-        ),
+        ...mainWords(out.name, out),
       ].join(". "),
     );
   } catch (err) {

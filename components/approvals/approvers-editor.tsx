@@ -13,6 +13,8 @@ export type WhoSignsOffDepartment = {
     name: string;
     jobTitle: string | null;
     isMain: boolean;
+    /** Invited: becomes the main approver when they accept. */
+    mainOnAccept?: boolean;
     state: "active" | "paused" | "invited" | "none";
   }[];
 };
@@ -92,6 +94,12 @@ export function WhoSignsOff({
                           role="img"
                           aria-label="Main approver"
                         />
+                      ) : a.mainOnAccept ? (
+                        <Star
+                          className="size-4 shrink-0 text-amber-500"
+                          role="img"
+                          aria-label="Main approver when they accept"
+                        />
                       ) : (
                         <span className="size-4 shrink-0" aria-hidden />
                       )}
@@ -99,6 +107,12 @@ export function WhoSignsOff({
                         <span className="font-medium">{a.name}</span>
                         {a.isMain && (
                           <span className="text-muted-foreground"> · main approver</span>
+                        )}
+                        {!a.isMain && a.mainOnAccept && (
+                          <span className="text-muted-foreground">
+                            {" "}
+                            · main approver when they accept
+                          </span>
                         )}
                         {(a.jobTitle || STATE_TEXT[a.state]) && (
                           <span className="text-muted-foreground block text-xs">

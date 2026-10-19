@@ -119,7 +119,11 @@ export async function TeamTab({
               .filter((f) => visible.includes(f))
               .map((f) => FEATURE_LABELS[f])
               .join(", ") || "No sections",
-      signsOffFor: r.signsOffFor.map((s) => ({ name: s.name, isMain: s.isMain })),
+      signsOffFor: r.signsOffFor.map((s) => ({
+        name: s.name,
+        isMain: s.isMain,
+        mainOnAccept: s.mainOnAccept,
+      })),
       status: personStatus(r),
       statusText: r.statusText,
       lastActive: r.kind === "member" ? lastActiveText(r.lastSeenAt, now) : null,
@@ -134,7 +138,11 @@ export async function TeamTab({
           features,
           overrides: r.overrides,
           managerScope: r.managerScope,
-          signoffs: r.signsOffFor.map((s) => ({ departmentId: s.departmentId, isMain: s.isMain })),
+          // An ask ("main when they accept") counts as main approver here.
+          signoffs: r.signsOffFor.map((s) => ({
+            departmentId: s.departmentId,
+            isMain: s.isMain || s.mainOnAccept,
+          })),
           accessEndsAt: r.accessEndsAt,
         }),
     };
