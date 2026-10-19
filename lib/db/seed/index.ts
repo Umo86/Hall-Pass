@@ -762,6 +762,18 @@ async function main() {
         isMain: d.role === "event_director",
       })
       .onConflictDoNothing();
+    // They belong to the department they sign off for, as migration 0011
+    // placed existing approvers; someone already given a department keeps it.
+    await db
+      .update(s.memberships)
+      .set({ departmentId: dept!.id })
+      .where(
+        and(
+          eq(s.memberships.userId, person.id),
+          eq(s.memberships.organisationId, org.id),
+          isNull(s.memberships.departmentId),
+        ),
+      );
     await db
       .update(s.workflowSteps)
       .set({ departmentId: dept!.id })

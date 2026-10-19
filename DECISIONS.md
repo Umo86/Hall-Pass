@@ -1185,3 +1185,8 @@ Where the build spec and the code differ:
 - **`database-setup.sql` drops every type it creates** (`item_format` and
   `manager_scope` were missing, so a second run failed); a unit test checks
   the preamble covers every table, type and function in the dump.
+- **The demo seed puts each demo approver in the department they sign off
+  for** (only when they have none), as migration 0011 did for existing
+  teams. A database created fresh (migrations, then seed) otherwise had no
+  departments on the demo staff, so the owner picker and "Owner: Marcus
+  Marketing · Marketing" lost the department and the people e2e failed.
