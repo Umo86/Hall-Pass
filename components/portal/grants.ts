@@ -32,7 +32,7 @@ export async function portalGrantsByScope(
   organisationId: string,
   scopeType: "supplier" | "venue",
   /** The viewer's events (Users → Events): access to others isn't listed. */
-  scope: EditionScope = null,
+  scope: EditionScope,
 ): Promise<Map<string, PortalGrant[]>> {
   const rows = await db
     .select({

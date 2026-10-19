@@ -240,8 +240,10 @@ export function mainApproverNote(p: {
   /** eventsSummary of a new main limited to some events; null/omitted = every event. */
   newMainEvents?: string | null;
 }): string {
+  // Starts a sentence: "This person only works on…" before a name is typed.
+  const who = p.person.charAt(0).toUpperCase() + p.person.slice(1);
   const events = p.newMainEvents
-    ? ` ${p.person} only works on ${p.newMainEvents.replace(/ only$/, "")}, so ${p.department} sign-offs in other events go to everyone in ${p.department}.`
+    ? ` ${who} only works on ${p.newMainEvents.replace(/ only$/, "")}, so ${p.department} sign-offs in other events go to everyone in ${p.department}.`
     : "";
   return mainApproverWords(p) + events;
 }
@@ -314,6 +316,15 @@ export function sortPeople<T extends { name: string; email: string; isSelf?: boo
 export function firstName(name: string | null | undefined, email?: string): string {
   const first = name?.trim().split(/\s+/)[0];
   return first || email?.split("@")[0] || "They";
+}
+
+/**
+ * firstName for the middle of a sentence on a form where nothing may be
+ * typed yet: "this person" then (it takes "accepts", "sees"), never "They".
+ */
+export function nameInSentence(name: string | null | undefined, email?: string | null): string {
+  const first = name?.trim().split(/\s+/)[0] || email?.trim().split("@")[0];
+  return first || "this person";
 }
 
 /**

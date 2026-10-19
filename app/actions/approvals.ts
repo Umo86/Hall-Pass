@@ -912,6 +912,7 @@ export async function remindApproval(input: unknown): Promise<ActionResult<Remin
           entityType: row.entityType,
           entityId: row.entityId,
           assigneeIds: holders,
+          editionId: bundle.edition.id,
         });
         await writeAudit(tx, {
           organisationId: session.organisation.id,
@@ -931,6 +932,7 @@ export async function remindApproval(input: unknown): Promise<ActionResult<Remin
           title: msg.title,
           body: msg.body,
           link: msg.link,
+          editionId: msg.editionId,
           ...(msg.entity ? { entityType: msg.entity.type, entityId: msg.entity.id } : {}),
         });
       }

@@ -41,6 +41,7 @@ import {
   dueReminderTitle,
   overdueDigestLines,
   overdueDigestText,
+  soleEditionId,
 } from "@/lib/domain/notifications-digest";
 import { settleStaleApprovalNotifications } from "@/lib/domain/notifications";
 
@@ -257,6 +258,7 @@ export async function approvalReminders(today: string): Promise<JobResult> {
       ref: r.ref,
       dueIso: londonDate(r.instance.dueAt!),
       assigneeIds: r.assigneeIds,
+      editionId: r.editionId,
     })),
     today,
   );
@@ -274,6 +276,8 @@ export async function approvalReminders(today: string): Promise<JobResult> {
         title,
         body,
         link: external.has(line.userId) ? "/portal/approvals" : "/approvals?overdue=1",
+        // All in one event: kept with it (hidden if they're later taken off it).
+        editionId: line.editionId,
       });
     });
     sent++;
@@ -611,6 +615,8 @@ export async function dailyDigest(today: string): Promise<JobResult> {
           title,
           body,
           link: "/approvals",
+          // Every open sign-off it counts is in one event: kept with it.
+          editionId: soleEditionId(orgPending.map((p) => p.editionId)),
         });
       });
       sent++;

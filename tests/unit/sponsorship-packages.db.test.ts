@@ -763,6 +763,35 @@ d("sponsorship packages", () => {
     });
   });
 
+  it("removing a sponsor while a sale to them is saving waits, then refuses (the sale and its lines are kept)", async () => {
+    as("sales");
+    const race = await addPackage({ name: `Race ${n}`, price: "5000", lines: "Logo on lanyards" });
+    const racer = await addSponsor(`Racing Co ${n}`);
+    // A sale in flight: it holds the sponsor's row lock (as sellPackageTx
+    // does) while removeSponsor starts from the row read before it.
+    const holder = postgres(url!, { max: 1, prepare: false, onnotice: () => {} });
+    let removal!: Promise<Awaited<ReturnType<typeof sponsorsActions.removeSponsor>>>;
+    try {
+      await holder.begin(async (sql) => {
+        await sql`SELECT id FROM sponsors WHERE id = ${racer} FOR UPDATE`;
+        removal = sponsorsActions.removeSponsor({ sponsorId: racer });
+        await new Promise((r) => setTimeout(r, 500));
+        await sql`UPDATE sponsors SET package_id = ${race}, package_name = ${`Race ${n}`},
+          package_price = 5000, package_sold_at = now() WHERE id = ${racer}`;
+        await sql`INSERT INTO sponsor_entitlements (sponsor_id, description, quantity, from_package_id)
+          VALUES (${racer}, 'Logo on lanyards', 1, ${race})`;
+      });
+    } finally {
+      await holder.end();
+    }
+    expect(await removal).toMatchObject({
+      ok: false,
+      error: `Racing Co ${n} has the Race ${n} package — remove it from their card first`,
+    });
+    expect((await sponsorRow(racer)).packageId).toBe(race);
+    expect(await entitlementsOf(racer)).toHaveLength(1);
+  });
+
   it("saveSponsor dedupes by lineKey, as package sales do", async () => {
     as("sales");
     const id = await addSponsor(`Dedupe ${n}`, "Logo on banners\n  logo   ON banners\n3 x Flags");

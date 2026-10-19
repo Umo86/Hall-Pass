@@ -71,6 +71,7 @@ import {
 import { applyDelegation } from "@/lib/workflow";
 import { loadRun, persistRun } from "@/lib/workflow/persist";
 import { notify } from "@/lib/notify";
+import { soleEditionId } from "@/lib/domain/notifications-digest";
 import { activeMembership } from "./active";
 import {
   mainOnAcceptOutcome,
@@ -2570,7 +2571,8 @@ async function moveSignoffs(
 ): Promise<number> {
   const orgId = ctx.organisationId;
   let moved = 0;
-  const told = new Map<string, string[]>();
+  // Per person told: the refs, and the event of each (one event → kept with it).
+  const told = new Map<string, { refs: string[]; editionIds: (string | null)[] }>();
   // Per department and event: only people who can open the event are told.
   const backToDept = new Map<
     string,
@@ -2608,8 +2610,12 @@ async function moveSignoffs(
             .where(eq(approvalInstances.id, s.id));
         }
         if (s.status === "pending") {
-          if (target) told.set(target, [...(told.get(target) ?? []), s.ref]);
-          else if (g.departmentId) {
+          if (target) {
+            const entry = told.get(target) ?? { refs: [], editionIds: [] };
+            entry.refs.push(s.ref);
+            entry.editionIds.push(opts.editionOf.get(s.id) ?? null);
+            told.set(target, entry);
+          } else if (g.departmentId) {
             const editionId = opts.editionOf.get(s.id) ?? null;
             const key = `${g.departmentId}|${editionId ?? ""}`;
             const entry = backToDept.get(key) ?? {
@@ -2646,7 +2652,7 @@ async function moveSignoffs(
     }
   }
   const by = ctx.actorName ? `${ctx.actorName} handed` : "they were handed";
-  for (const [userId, refs] of told) {
+  for (const [userId, { refs, editionIds }] of told) {
     await notify(tx, {
       userIds: [userId],
       kind: "delegation",
@@ -2656,6 +2662,7 @@ async function moveSignoffs(
           : `${refs.length} sign-offs are now yours`,
       body: `${opts.who} ${opts.why}; ${by} their sign-offs to you.`,
       link: "/approvals",
+      editionId: soleEditionId(editionIds),
     });
   }
   for (const { departmentId, editionId, name, refs } of backToDept.values()) {
@@ -3007,11 +3014,15 @@ export async function removeMemberTx(
     )
     .for("update");
   const tasksToWorker: string[] = [];
+  const tasksToWorkerEditions: (string | null)[] = [];
   let tasksToYou = 0;
   for (const t of movedTasks) {
     const to = !t.editionId || seesEdition(workAccess, t.editionId) ? workTo : ctx.actorUserId;
     if (to === ctx.actorUserId && workTo !== ctx.actorUserId) tasksToYou++;
-    if (to === workTo && workTo !== ctx.actorUserId) tasksToWorker.push(t.title);
+    if (to === workTo && workTo !== ctx.actorUserId) {
+      tasksToWorker.push(t.title);
+      tasksToWorkerEditions.push(t.editionId);
+    }
     await tx.update(tasks).set({ assignedToUserId: to }).where(eq(tasks.id, t.id));
     await writeAudit(tx, {
       organisationId: orgId,
@@ -3036,6 +3047,7 @@ export async function removeMemberTx(
           : `${tasksToWorker.length} tasks are now yours`,
       body: `${who} left the team; ${ctx.actorName} gave you their open tasks.`,
       link: "/my-work",
+      editionId: soleEditionId(tasksToWorkerEditions),
     });
   }
 
@@ -3043,6 +3055,7 @@ export async function removeMemberTx(
   const owned = await workableOwnedItems(tx, orgId, membership.userId);
   let itemsToYou = 0;
   const toWorker: string[] = [];
+  const toWorkerEditions: string[] = [];
   for (const it of owned) {
     // Only to someone who can work on that kind of item and open its event.
     const to =
@@ -3050,7 +3063,10 @@ export async function removeMemberTx(
         ? workTo
         : ctx.actorUserId;
     if (to === ctx.actorUserId && workTo !== ctx.actorUserId) itemsToYou++;
-    if (to === workTo && workTo !== ctx.actorUserId) toWorker.push(it.ref);
+    if (to === workTo && workTo !== ctx.actorUserId) {
+      toWorker.push(it.ref);
+      toWorkerEditions.push(it.editionId);
+    }
     await tx.update(signageItems).set({ ownerUserId: to }).where(eq(signageItems.id, it.id));
     await writeAudit(tx, {
       organisationId: orgId,
@@ -3075,6 +3091,7 @@ export async function removeMemberTx(
           : `You now own ${toWorker.length} items`,
       body: `${who} left the team; ${ctx.actorName} gave you the items they owned.`,
       link: "/my-work",
+      editionId: soleEditionId(toWorkerEditions),
     });
   }
 
@@ -3291,6 +3308,9 @@ export async function setAccessEndTx(
     endsAt
       ? `Access for ${email} ends ${formatDate(londonDateOfAccessEnd(endsAt))}`
       : `End date cleared for ${email}`;
+  // First, invitations too: an invitation accepted meanwhile is refused by
+  // openInvite rather than given an end date its membership never sees.
+  await lockPeople(tx, ctx.organisationId);
   if (input.inviteId) {
     const { invite } = await managedInvite(tx, ctx, input.inviteId);
     await tx
@@ -3311,7 +3331,6 @@ export async function setAccessEndTx(
     return { name: invite.fullName || invite.invitedEmail, endsAt };
   }
   if (!input.userId) throw new UserError("Choose a person");
-  await lockPeople(tx, ctx.organisationId);
   const actor = await loadActor(tx, ctx);
   const { membership, user, who } = await loadMember(tx, ctx, input.userId);
   refuse(await suspendRefusal(tx, ctx, actor, membership, { removesAccess: endsAt != null }));

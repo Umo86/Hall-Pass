@@ -31,13 +31,24 @@ export async function openStaffInviteFor(email: string): Promise<StaffInvite | n
  * waits). Departments that asked for them as main approver get them now,
  * and the sign-off steps are re-synced after that, so open default
  * sign-offs move to the new main.
+ *
+ * Only `invite.id` and `invite.organisationId` are taken from the caller's
+ * copy: everything the membership gets is read from the row as it is once
+ * the people lock is held, so an edit to the invitation saved after the
+ * caller read it (events, end date, role) is never lost.
  */
-export async function claimStaffInvite(invite: StaffInvite, userId: string, fullName?: string) {
+export async function claimStaffInvite(
+  invite: Pick<StaffInvite, "id" | "organisationId">,
+  userId: string,
+  fullName?: string,
+) {
   await db.transaction(async (tx) => {
     // People changes one after another: Departments' "Don't make main" or an
     // edit to the invitation can't interleave with the take-over.
     await lockPeople(tx, invite.organisationId);
-    const claimed = await tx
+    // The invitation as it stands now (not as the caller read it, before the
+    // lock): what was saved meanwhile is what the person gets.
+    const [row] = await tx
       .update(staffInvites)
       .set({ acceptedAt: new Date() })
       .where(
@@ -48,63 +59,63 @@ export async function claimStaffInvite(invite: StaffInvite, userId: string, full
           or(isNull(staffInvites.expiresAt), gt(staffInvites.expiresAt, new Date())),
         ),
       )
-      .returning({ id: staffInvites.id });
-    if (claimed.length === 0) return; // already used, cancelled or expired
+      .returning();
+    if (!row) return; // already used, cancelled or expired
     await tx
       .insert(memberships)
       .values({
         userId,
-        organisationId: invite.organisationId,
-        role: invite.role,
-        permissionOverrides: invite.permissionOverrides,
-        departmentId: invite.departmentId,
-        features: invite.features,
-        jobTitle: invite.jobTitle,
+        organisationId: row.organisationId,
+        role: row.role,
+        permissionOverrides: row.permissionOverrides,
+        departmentId: row.departmentId,
+        features: row.features,
+        jobTitle: row.jobTitle,
         // Users v2: a manager's scope and an access end date come across too.
-        managerScope: invite.role === "admin" ? null : invite.managerScope,
-        accessEndsAt: invite.accessEndsAt,
+        managerScope: row.role === "admin" ? null : row.managerScope,
+        accessEndsAt: row.accessEndsAt,
         // Users → Events: the events come across too (an event archived
         // meanwhile still counts). Super admins are never limited.
-        editionIds: invite.role === "admin" ? null : (invite.editionIds ?? null),
+        editionIds: row.role === "admin" ? null : (row.editionIds ?? null),
       })
       .onConflictDoNothing();
     // Asks for them as main approver, read before linking clears them.
-    const asks = await pendingMainAsksTx(tx, invite.organisationId, invite.invitedEmail);
+    const asks = await pendingMainAsksTx(tx, row.organisationId, row.invitedEmail);
     // Approver entries waiting for this person now point at their account.
     const linked = await linkApproversToUser(
       tx,
-      { id: userId, email: invite.invitedEmail },
-      invite.organisationId,
+      { id: userId, email: row.invitedEmail },
+      row.organisationId,
     );
     await tx
       .update(users)
       .set(
         fullName?.trim()
           ? { fullName: fullName.trim(), isExternal: false }
-          : invite.fullName.trim()
-            ? { fullName: invite.fullName.trim(), isExternal: false }
+          : row.fullName.trim()
+            ? { fullName: row.fullName.trim(), isExternal: false }
             : { isExternal: false },
       )
       .where(eq(users.id, userId));
-    const name = fullName?.trim() || invite.fullName.trim() || invite.invitedEmail;
+    const name = fullName?.trim() || row.fullName.trim() || row.invitedEmail;
     const { promoted } = asks.length
       ? await applyMainOnAcceptTx(tx, {
-          organisationId: invite.organisationId,
-          user: { id: userId, email: invite.invitedEmail, name },
+          organisationId: row.organisationId,
+          user: { id: userId, email: row.invitedEmail, name },
           asks,
         })
       : { promoted: [] as string[] };
     for (const orgId of linked) await syncDepartmentSteps(tx, orgId);
     await writeAudit(tx, {
-      organisationId: invite.organisationId,
+      organisationId: row.organisationId,
       actorUserId: userId,
       entityType: "staff_invite",
-      entityId: invite.id,
+      entityId: row.id,
       action: "invite",
       after: promoted.length ? { mainApproverFor: promoted } : undefined,
-      summary: `Staff invitation accepted (${invite.role})`,
+      summary: `Staff invitation accepted (${row.role})`,
       subjectUserId: userId,
-      subjectEmail: invite.invitedEmail,
+      subjectEmail: row.invitedEmail,
     });
   });
 }

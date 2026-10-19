@@ -164,7 +164,8 @@ export function SponsorshipCard({
   const pct = summary.forSale ? Math.round((summary.sold / summary.forSale) * 100) : 0;
   return (
     <DashCard title="Sponsorship" titleHref={page}>
-      {summary.forSale > 0 && (
+      {/* Without packages the line always shows, "0 of 0 sold" included, as it always did. */}
+      {(summary.forSale > 0 || !hasPackages) && (
         <div className="space-y-2">
           <p className="text-sm">
             <Link href={`${page}?filter=sold`} className="text-base font-semibold hover:underline">

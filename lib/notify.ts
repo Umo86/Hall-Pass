@@ -37,21 +37,31 @@ export type NotifyInput = {
    * one is given — instead of a live grant anywhere.
    */
   scope?: RecipientScope;
+  /**
+   * The one event a message with no record is about (a summary naming refs
+   * of a single event: soleEditionId). Stored like a record's event, so the
+   * bell and late emails hide it from someone later taken off that event,
+   * and team members who can't open it aren't told. Unlike `scope`, it
+   * doesn't narrow which partners are told.
+   */
+  editionId?: string | null;
 };
 
 export type RecipientScope = { organisationId: string; editionId?: string | null };
 
 /**
  * The event a notification is about (Users → Events): the scope's event,
- * else its record's event (item, stand, exhibitor, event), else the event
- * code at the start of its link — looked up in the scope's organisation
- * when one is given. Null: about no one event ("/approvals", "/my-work").
+ * else the event given for a message without a record, else its record's
+ * event (item, stand, exhibitor, event), else the event code at the start of
+ * its link — looked up in the scope's organisation when one is given. Null:
+ * about no one event ("/approvals", "/my-work" naming several events' work).
  */
 export async function notificationEditionId(
   exec: Db | Tx,
-  input: Pick<NotifyInput, "scope" | "entityType" | "entityId" | "link">,
+  input: Pick<NotifyInput, "scope" | "editionId" | "entityType" | "entityId" | "link">,
 ): Promise<string | null> {
   if (input.scope?.editionId) return input.scope.editionId;
+  if (input.editionId) return input.editionId;
   if (input.entityId) {
     switch (input.entityType) {
       case "edition":

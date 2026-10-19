@@ -48,6 +48,7 @@ import { LAST_EVENT_COOKIE, LAST_EVENT_COOKIE_MAX_AGE } from "@/lib/queries/edit
 import { CONFIRMABLE_STEPS } from "@/lib/queries/setup";
 import { seriesNameFor } from "@/components/setup/naming";
 import { loadTeam, ownerRoleOf, refusalFor } from "@/lib/people";
+import { lockPeople } from "@/lib/users/manage";
 import {
   copiedAccessEnd,
   grantAuditPayload,
@@ -311,6 +312,9 @@ export async function createEdition(
   let addedToTheirEvents = false;
   try {
     await db.transaction(async (tx) => {
+      // First: a limited creator's event list changes here (Users → Events),
+      // so a person-page save can't interleave and drop it.
+      await lockPeople(tx, orgId);
       let eventId = event?.id;
       let newSeries = false;
       if (!eventId) {
@@ -535,6 +539,10 @@ export async function cloneEdition(
 
   try {
     await db.transaction(async (tx) => {
+      // First: the copier's and limited people's event lists change here
+      // (Users → Events), so a person-page save or a narrowing can't
+      // interleave — the lists below are read under the lock.
+      await lockPeople(tx, orgId);
       const [target] = await tx
         .insert(editions)
         .values({

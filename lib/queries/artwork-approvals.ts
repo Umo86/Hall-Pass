@@ -395,7 +395,7 @@ export async function reviewArtworkForItems(
 export async function countItemsInSignoff(
   organisationId: string,
   /** The viewer's events (Users → Events). */
-  scope: EditionScope = null,
+  scope: EditionScope,
 ): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })

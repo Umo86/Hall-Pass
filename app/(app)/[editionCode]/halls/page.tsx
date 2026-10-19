@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can, missingAbilityMessage } from "@/lib/authz";
+import { can, editionScope, missingAbilityMessage } from "@/lib/authz";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { getEditionByCode } from "@/lib/queries/editions";
 import { hallCopySources, hallsEditorData } from "@/lib/queries/setup";
@@ -27,7 +27,9 @@ export default async function HallsPage({ params }: { params: Promise<{ editionC
     : `${missingAbilityMessage("halls.manage")}.`;
   const [data, sources] = await Promise.all([
     hallsEditorData(ed.edition.id),
-    canEdit ? hallCopySources(session.organisation.id, ed.edition) : Promise.resolve([]),
+    canEdit
+      ? hallCopySources(session.organisation.id, ed.edition, editionScope(session.actor))
+      : Promise.resolve([]),
   ]);
   const locationCount = data.halls.reduce((n, h) => n + h.locations.length, 0);
 

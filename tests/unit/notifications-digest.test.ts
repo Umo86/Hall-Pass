@@ -5,6 +5,7 @@ import {
   overdueDigestText,
   refList,
   reminderMessages,
+  soleEditionId,
 } from "@/lib/domain/notifications-digest";
 import { isApprovalRequestKind, MUTABLE_KINDS, notificationGroup } from "@/lib/notification-kinds";
 
@@ -28,8 +29,56 @@ describe("overdue digest", () => {
         oldestDays: 21,
         refs: ["SIG-1", "SIG-3"],
         instanceIds: ["i2", "i1"],
+        editionId: null,
       },
-      { userId: "ben", count: 1, oldestDays: 6, refs: ["SIG-3"], instanceIds: ["i1"] },
+      {
+        userId: "ben",
+        count: 1,
+        oldestDays: 6,
+        refs: ["SIG-3"],
+        instanceIds: ["i1"],
+        editionId: null,
+      },
+    ]);
+  });
+
+  it("keeps the event with a line when every sign-off in it is in that one event", () => {
+    const lines = overdueDigestLines(
+      [
+        {
+          instanceId: "i1",
+          ref: "A-1",
+          dueIso: "2026-10-01",
+          assigneeIds: ["ana", "ben"],
+          editionId: "A",
+        },
+        {
+          instanceId: "i2",
+          ref: "A-2",
+          dueIso: "2026-10-02",
+          assigneeIds: ["ana"],
+          editionId: "A",
+        },
+        {
+          instanceId: "i3",
+          ref: "B-1",
+          dueIso: "2026-10-03",
+          assigneeIds: ["ben"],
+          editionId: "B",
+        },
+        {
+          instanceId: "i4",
+          ref: "B-2",
+          dueIso: "2026-10-16",
+          assigneeIds: ["ana"],
+          editionId: "B",
+        }, // due today
+      ],
+      TODAY,
+    );
+    expect(lines.map((l) => [l.userId, l.editionId])).toEqual([
+      ["ana", "A"],
+      ["ben", null],
     ]);
   });
 
@@ -91,7 +140,29 @@ describe("manual reminders", () => {
       body: "It is 3 days overdue. Open it to review and decide.",
       link: base.link,
       entity: { type: "signage_item", id: "e1" },
+      editionId: null,
     });
+  });
+
+  it("keeps the event with a summary only when every item in it is in that one event", () => {
+    const r = (id: string, editionId: string, assigneeIds: string[]) => ({
+      ...base,
+      instanceId: id,
+      ref: id,
+      overdueDays: 0,
+      entityId: id,
+      assigneeIds,
+      editionId,
+    });
+    const msgs = reminderMessages(
+      "Olivia Ops",
+      [r("i1", "A", ["ana", "ben", "cy"]), r("i2", "A", ["ana", "ben"]), r("i3", "B", ["ben"])],
+      { listLink: "/approvals" },
+    );
+    const of = (u: string) => msgs.find((m) => m.userId === u);
+    expect(of("ana")).toMatchObject({ entity: null, editionId: "A" });
+    expect(of("ben")).toMatchObject({ entity: null, editionId: null });
+    expect(of("cy")).toMatchObject({ entity: { id: "i1" }, editionId: "A" });
   });
 
   it("sums several up into one message per person", () => {
@@ -127,6 +198,18 @@ describe("manual reminders", () => {
       type: "signage_item",
       id: "e1",
     });
+  });
+});
+
+describe("soleEditionId", () => {
+  it("is the event only when every entry names that same one", () => {
+    expect(soleEditionId([])).toBeNull();
+    expect(soleEditionId(["A"])).toBe("A");
+    expect(soleEditionId(["A", "A"])).toBe("A");
+    expect(soleEditionId(["A", "B"])).toBeNull();
+    expect(soleEditionId(["A", null])).toBeNull();
+    expect(soleEditionId([null, null])).toBeNull();
+    expect(soleEditionId([undefined])).toBeNull();
   });
 });
 

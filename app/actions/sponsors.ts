@@ -1,9 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { unstable_rethrow } from "next/navigation";
 import { z } from "zod";
 import { and, count, eq, isNull } from "drizzle-orm";
-import { db } from "@/lib/db/client";
+import { db, type Tx } from "@/lib/db/client";
 import {
   editions,
   events,
@@ -234,8 +235,46 @@ export async function removeEntitlement(input: unknown): Promise<ActionResult> {
 }
 
 /**
+ * Why this sponsor can't be removed (a package, items — deleted ones
+ * included — or live portal access), or null when nothing points at them.
+ */
+async function removalRefusal(tx: Tx, sponsor: typeof sponsors.$inferSelect) {
+  if (sponsor.packageId) {
+    const [pkg] = await tx
+      .select({ name: sponsorshipPackages.name })
+      .from(sponsorshipPackages)
+      .where(eq(sponsorshipPackages.id, sponsor.packageId));
+    const name = pkg?.name ?? sponsor.packageName;
+    return `${sponsor.companyName} has ${name ? `the ${name}` : "a"} package — remove it from their card first`;
+  }
+  const [items] = await tx
+    .select({ n: count() })
+    .from(signageItems)
+    .where(eq(signageItems.sponsorId, sponsor.id));
+  if (Number(items.n) > 0) {
+    return `${sponsor.companyName} has ${Number(items.n)} item${Number(items.n) === 1 ? "" : "s"} (including any deleted) — they can't be removed`;
+  }
+  const [grants] = await tx
+    .select({ n: count() })
+    .from(externalGrants)
+    .where(
+      and(
+        eq(externalGrants.scopeType, "sponsor"),
+        eq(externalGrants.scopeId, sponsor.id),
+        isNull(externalGrants.revokedAt),
+      ),
+    );
+  if (Number(grants.n) > 0) {
+    return `${sponsor.companyName} has portal access — remove it under Users → External first`;
+  }
+  return null;
+}
+
+/**
  * Remove a sponsor added by mistake: only while nothing points at them —
- * no items (deleted ones included) and no live portal access.
+ * no package, no items (deleted ones included) and no live portal access.
+ * Checked under the sponsor's row lock (the one a package sale takes), so a
+ * sale saved a moment earlier is seen and refused, never deleted with them.
  */
 export async function removeSponsor(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ sponsorId: z.string().uuid() }).safeParse(input);
@@ -246,69 +285,54 @@ export async function removeSponsor(input: unknown): Promise<ActionResult> {
   }
   const found = await ownSponsor(parsed.data.sponsorId, session.organisation.id, session.actor);
   if (found.error !== undefined) return fail(found.error);
-  const { sponsor, edition } = found;
-  if (sponsor.packageId) {
-    const [pkg] = await db
-      .select({ name: sponsorshipPackages.name })
-      .from(sponsorshipPackages)
-      .where(eq(sponsorshipPackages.id, sponsor.packageId));
-    const name = pkg?.name ?? sponsor.packageName;
-    return fail(
-      `${sponsor.companyName} has ${name ? `the ${name}` : "a"} package — remove it from their card first`,
-    );
-  }
-  const [[items], [grants]] = await Promise.all([
-    db.select({ n: count() }).from(signageItems).where(eq(signageItems.sponsorId, sponsor.id)),
-    db
-      .select({ n: count() })
-      .from(externalGrants)
-      .where(
-        and(
-          eq(externalGrants.scopeType, "sponsor"),
-          eq(externalGrants.scopeId, sponsor.id),
-          isNull(externalGrants.revokedAt),
-        ),
-      ),
-  ]);
-  if (Number(items.n) > 0) {
-    return fail(
-      `${sponsor.companyName} has ${Number(items.n)} item${Number(items.n) === 1 ? "" : "s"} (including any deleted) — they can't be removed`,
-    );
-  }
-  if (Number(grants.n) > 0) {
-    return fail(
-      `${sponsor.companyName} has portal access — remove it under Users → External first`,
-    );
-  }
-  const ents = await db
-    .select()
-    .from(sponsorEntitlements)
-    .where(eq(sponsorEntitlements.sponsorId, sponsor.id));
-  await db.transaction(async (tx) => {
-    await tx.delete(sponsorEntitlements).where(eq(sponsorEntitlements.sponsorId, sponsor.id));
-    await tx.delete(sponsors).where(eq(sponsors.id, sponsor.id));
-    await writeAudit(tx, {
-      organisationId: session.organisation.id,
-      editionId: edition.id,
-      actorUserId: session.user.id,
-      entityType: "sponsor",
-      entityId: sponsor.id,
-      action: "update",
-      after: { removed: true },
-      before: {
-        companyName: sponsor.companyName,
-        contactName: sponsor.contactName,
-        contactEmail: sponsor.contactEmail,
-        packageName: sponsor.packageName,
-        packageId: sponsor.packageId,
-        packagePrice: sponsor.packagePrice,
-        packagePriceNote: sponsor.packagePriceNote,
-        packageSoldAt: sponsor.packageSoldAt,
-        entitlements: ents.map((e) => ({ description: e.description, quantity: e.quantity })),
-      },
-      summary: `Removed sponsor ${sponsor.companyName}`,
+  const { edition } = found;
+  let removed = "";
+  try {
+    const refused = await db.transaction(async (tx): Promise<string | null> => {
+      const [sponsor] = await tx
+        .select()
+        .from(sponsors)
+        .where(and(eq(sponsors.id, found.sponsor.id), eq(sponsors.editionId, edition.id)))
+        .for("update");
+      if (!sponsor) return "That sponsor isn't on this event — reload the page";
+      const why = await removalRefusal(tx, sponsor);
+      if (why) return why;
+      const ents = await tx
+        .select()
+        .from(sponsorEntitlements)
+        .where(eq(sponsorEntitlements.sponsorId, sponsor.id));
+      await tx.delete(sponsorEntitlements).where(eq(sponsorEntitlements.sponsorId, sponsor.id));
+      await tx.delete(sponsors).where(eq(sponsors.id, sponsor.id));
+      await writeAudit(tx, {
+        organisationId: session.organisation.id,
+        editionId: edition.id,
+        actorUserId: session.user.id,
+        entityType: "sponsor",
+        entityId: sponsor.id,
+        action: "update",
+        after: { removed: true },
+        before: {
+          companyName: sponsor.companyName,
+          contactName: sponsor.contactName,
+          contactEmail: sponsor.contactEmail,
+          packageName: sponsor.packageName,
+          packageId: sponsor.packageId,
+          packagePrice: sponsor.packagePrice,
+          packagePriceNote: sponsor.packagePriceNote,
+          packageSoldAt: sponsor.packageSoldAt,
+          entitlements: ents.map((e) => ({ description: e.description, quantity: e.quantity })),
+        },
+        summary: `Removed sponsor ${sponsor.companyName}`,
+      });
+      removed = sponsor.companyName;
+      return null;
     });
-  });
+    if (refused) return fail(refused);
+  } catch (err) {
+    unstable_rethrow(err);
+    console.error("removeSponsor", err);
+    return fail("Could not save — please try again");
+  }
   revalidatePath(`/${edition.code}`, "layout");
-  return success(undefined, `Removed ${sponsor.companyName}`);
+  return success(undefined, `Removed ${removed}`);
 }

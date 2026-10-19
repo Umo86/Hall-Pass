@@ -714,7 +714,9 @@ export function EventsField({
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(value !== null);
-  const who = personName.trim() || "They";
+  // Before a name is typed: "This person sees…" (never "They sees…").
+  const named = personName.trim();
+  const who = named || "This person";
   if (superAdmin) {
     return <p className="text-muted-foreground text-sm">Super admins see every event.</p>;
   }
@@ -817,7 +819,7 @@ export function EventsField({
             <span className="block font-medium">Only these events</span>
             <span className="text-muted-foreground block text-xs">
               {events.length === 0
-                ? `There are no events yet — ${who} will see every event once they're created.`
+                ? `There are no events yet — ${named || "this person"} will see every event once they're created.`
                 : `${who} sees only the events ticked here. New events aren't added unless someone gives them.`}
             </span>
           </span>

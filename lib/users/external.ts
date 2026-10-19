@@ -327,8 +327,8 @@ export async function externalEvents(
   db: Db | Tx,
   organisationId: string,
   today: string,
-  /** The viewer's events (Users → Events); null/missing = every event. */
-  scope: EditionScope = null,
+  /** The viewer's events (Users → Events); null = every event. */
+  scope: EditionScope,
 ): Promise<ExternalEvent[]> {
   const rows = await db
     .select({
@@ -392,7 +392,7 @@ export async function listGrants(
   db: Db | Tx,
   organisationId: string,
   /** The viewer's events (Users → Events): partner access in others isn't listed. */
-  scope: EditionScope = null,
+  scope: EditionScope,
 ): Promise<GrantRow[]> {
   const rows = await db
     .select({ g: externalGrants, name: users.fullName, eventName: editions.name })
@@ -448,7 +448,7 @@ export async function externalScopes(
   db: Db | Tx,
   organisationId: string,
   /** The viewer's events: venues, sponsors and exhibitors of others aren't offered. */
-  scope: EditionScope = null,
+  scope: EditionScope,
 ) {
   const [venueRows, supplierRows, sponsorRows, exhibitorRows] = await Promise.all([
     db

@@ -95,7 +95,7 @@ d("event setup facts", () => {
   });
 
   it("a fresh organisation has nothing done but what needs no data", async () => {
-    expect(await setup.countActiveEvents(orgId)).toBe(2);
+    expect(await setup.countActiveEvents(orgId, null)).toBe(2);
     const { summary, steps } = await setup.getSetupStatus(edition, orgId, perms);
     const state = Object.fromEntries(steps.map((s) => [s.key, s.state]));
     expect(state).toMatchObject({
@@ -232,10 +232,17 @@ d("event setup facts", () => {
 
   it("offers earlier events at the same venue to copy halls from, with counts", async () => {
     // The 2027 event has the halls; the 2026 one can copy from it.
-    const sources = await setup.hallCopySources(orgId, { id: older.id, venueId });
+    const sources = await setup.hallCopySources(orgId, { id: older.id, venueId }, null);
     expect(sources).toEqual([
       { id: edition.id, name: edition.name, code: edition.code, halls: 2, locations: 3 },
     ]);
+    // Someone limited to the 2026 event isn't told the 2027 one exists.
+    expect(await setup.hallCopySources(orgId, { id: older.id, venueId }, [older.id])).toEqual([]);
+    expect(
+      (await setup.hallCopySources(orgId, { id: older.id, venueId }, [older.id, edition.id])).map(
+        (s) => s.id,
+      ),
+    ).toEqual([edition.id]);
     const counts = (await setup.copySourceCounts(orgId, superAdminActor(orgId)))(edition.id);
     expect(counts).toMatchObject({ halls: 2, locations: 3, sponsors: 1, items: 3, deadlines: 0 });
   });
@@ -245,7 +252,7 @@ d("event setup facts", () => {
       .update(schema.editions)
       .set({ status: "archived" })
       .where(eq(schema.editions.id, older.id));
-    expect(await setup.countActiveEvents(orgId)).toBe(1);
+    expect(await setup.countActiveEvents(orgId, null)).toBe(1);
     const venues = await setup.venuesForPicker(orgId);
     expect(venues.map((v) => v.id)).toEqual([venueId]);
   });

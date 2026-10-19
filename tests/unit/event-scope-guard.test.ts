@@ -147,6 +147,37 @@ describe("event scope guard", () => {
     expect(missing).toEqual([]);
   });
 
+  it("every list that can name other events is given the viewer's scope", () => {
+    // Function → how many arguments a call needs (the scope is the last).
+    const scoped: Record<string, number> = {
+      hallCopySources: 3,
+      externalEvents: 4,
+      listGrants: 3,
+      externalScopes: 3,
+      countItemsInSignoff: 2,
+      countEvents: 2,
+      countActiveEvents: 2,
+      portalGrantsByScope: 3,
+    };
+    const missing: string[] = [];
+    let seen = 0;
+    for (const file of allFiles) {
+      const src = readFileSync(path.join(ROOT, file), "utf8");
+      for (const [fn, n] of Object.entries(scoped)) {
+        for (const inner of calls(src, fn)) {
+          if (isDefinition(src, fn, inner)) continue;
+          seen += 1;
+          const a = args(inner);
+          if (a.length < n || !/scope|Scope/.test(a[n - 1] ?? "")) {
+            missing.push(`${file}: ${fn}(${inner})`);
+          }
+        }
+      }
+    }
+    expect(seen).toBeGreaterThan(8);
+    expect(missing).toEqual([]);
+  });
+
   it("every getEditionByCode takes the session", () => {
     const missing: string[] = [];
     for (const file of allFiles) {

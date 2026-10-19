@@ -1141,3 +1141,47 @@ Where the build spec and the code differ:
 - `cloneEdition` checks `sponsorship.sell` for the source event for sponsors
   too (it was event-blind); the Sponsorship page's sell, costs and export
   checks pass the event.
+
+## Release 0013 review fixes (Oct 2026)
+
+- **Lists that can name other events take the scope as a required
+  argument.** `hallCopySources` (the Halls & locations page called it without
+  one, offering events the viewer can't open), `countEvents`,
+  `countActiveEvents`, `countItemsInSignoff`, `listGrants`, `externalEvents`,
+  `externalScopes` and `portalGrantsByScope` no longer default to `null`;
+  every caller passes the viewer's scope (or `null` in tests), and the scope
+  guard test checks the calls.
+- **Accepting an invitation gives what it says at that moment.**
+  `claimStaffInvite` builds the membership, the name, the main-approver asks
+  and the audit role from the row its claiming UPDATE returns under the
+  people lock, not from the copy the accept page read before creating the
+  account; only the id and organisation come from the caller. Setting an
+  invitation's end date now takes the people lock first too (§4), like every
+  other invitation change.
+- **A notice naming one event's work keeps that event** (§6.7): hand-overs
+  ("A sign-off is now yours", "A task is now yours", "You now own"), the
+  overdue digest, the daily digest and combined Remind messages store the
+  event when everything they name is in one event (`soleEditionId`), so the
+  bell, the Notifications page, the count and late emails drop them once the
+  person is taken off it. Messages are never split per event (nobody gets
+  more or fewer); one spanning events stays "about no one event". This uses
+  a new `editionId` on `notify` rather than `scope`, because `scope` also
+  narrows which partners are told and partners must be told exactly as
+  before.
+- **Creating or copying an event takes the people lock first**, since both
+  add to people's event lists; a person-page save can't interleave and drop
+  the added event.
+- **Removing a sponsor re-checks under the sponsor's row lock** (the lock a
+  package sale takes): a sale, item or portal access saved a moment earlier
+  refuses the removal with the usual words, and any unexpected failure is
+  "Could not save — please try again", never a raw error.
+- **Without packages, the dashboard's Sponsorship card always shows "{sold}
+  of {for sale} sold"** and its bar, "0 of 0 sold" included (D16); only an
+  event with packages hides the line when nothing is for sale.
+- **"This person" before a name is typed**: the Events card reads "This person
+  sees…", and the Add form's main-approver note, manager legend and viewer
+  line read "this person" (`nameInSentence`), never "They sees" or "until
+  They accepts". The note capitalises the person where they start a sentence.
+- **`database-setup.sql` drops every type it creates** (`item_format` and
+  `manager_scope` were missing, so a second run failed); a unit test checks
+  the preamble covers every table, type and function in the dump.

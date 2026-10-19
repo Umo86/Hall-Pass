@@ -6,7 +6,7 @@
  * in B; people without a list (and super admins) behave exactly as before.
  */
 import { randomUUID } from "node:crypto";
-import { and, eq, gte, isNull } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -370,6 +370,52 @@ d("events per person", () => {
     expect(bossInv.editionIds).toBeNull();
   });
 
+  it("claimStaffInvite gives what the invitation says when it is claimed, not when the caller read it", async () => {
+    const w = await makeWorld();
+    const out = await run((tx) =>
+      manage.inviteUserTx(tx, ctxOf(w), {
+        ...base,
+        email: mail(`edie-${w.tag}`),
+        fullName: "Edie",
+        role: "ops",
+        editionIds: null,
+      }),
+    );
+    // The accept page reads the invitation by its link first (then creates
+    // the account) …
+    const { findValidStaffInvite } = await import("@/lib/users/invite-lookup");
+    const found = await findValidStaffInvite(out.inviteUrl.split("/invite/")[1]);
+    expect(found.invite?.editionIds).toBeNull();
+    // … while a manager narrows it to A, makes it a viewer and sets an end date.
+    await run((tx) =>
+      manage.updateInviteTx(tx, ctxOf(w), {
+        ...base,
+        inviteId: out.inviteId,
+        fullName: "Edie",
+        role: "viewer",
+        editionIds: [w.A],
+        accessEndsOn: "2099-12-31",
+      }),
+    );
+    const uid = randomUUID();
+    await db.insert(schema.users).values({ id: uid, email: found.invite!.invitedEmail });
+    await claim.claimStaffInvite(found.invite!, uid);
+    const m = await membershipOf(uid);
+    expect(m.role).toBe("viewer");
+    expect(m.editionIds).toEqual([w.A]);
+    expect(m.accessEndsAt).not.toBeNull();
+    const accepted = await db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.entityId, out.inviteId),
+          eq(schema.auditLog.summary, "Staff invitation accepted (viewer)"),
+        ),
+      );
+    expect(accepted).toHaveLength(1);
+  });
+
   it("inviteUserTx / updateInviteTx store events; a limited manager can't give B or All", async () => {
     const w = await makeWorld();
     const mona = await member(w, "Mona", "ops", { managerScope: "everyone", editionIds: [w.A] });
@@ -612,6 +658,62 @@ d("events per person", () => {
       .from(schema.editions)
       .where(eq(schema.editions.code, `O${w.tag}`));
     editionsMade.push(ed2.id);
+  });
+
+  it("createEdition and cloneEdition wait for the people lock before changing anyone's events", async () => {
+    const w = await makeWorld();
+    const { createEdition, cloneEdition } = await import("@/app/actions/editions");
+    const lou = await member(w, "Lou", "ops", {
+      editionIds: [w.A],
+      permissionOverrides: { "events.create": true },
+    });
+    state.session = await sessionOf(lou);
+    // Another transaction holds the people lock (as a person-page save does).
+    const holder = postgres(url!, { max: 1, prepare: false, onnotice: () => {} });
+    const whileLocked = async (start: () => Promise<{ ok: boolean }>) => {
+      let finished = false;
+      let pending!: Promise<{ ok: boolean }>;
+      await holder.begin(async (sql) => {
+        await sql`SELECT pg_advisory_xact_lock(hashtext(${`people:${w.orgId}`}))`;
+        pending = start().then((r) => {
+          finished = true;
+          return r;
+        });
+        await new Promise((r) => setTimeout(r, 600));
+        expect(finished).toBe(false);
+      });
+      return pending;
+    };
+    try {
+      const made = await whileLocked(() =>
+        createEdition({
+          name: `Locked ${w.tag} 2028`,
+          code: `L${w.tag}`,
+          openStart: "2028-03-01",
+          openEnd: "2028-03-02",
+          venueId: w.venueId,
+        }),
+      );
+      expect(made.ok).toBe(true);
+      const copied = await whileLocked(() =>
+        cloneEdition({
+          sourceEditionId: w.A,
+          name: `Locked copy ${w.tag}`,
+          code: `K${w.tag}`,
+          openStart: "2028-06-02",
+          openEnd: "2028-06-04",
+        }),
+      );
+      expect(copied.ok).toBe(true);
+    } finally {
+      await holder.end();
+      const made = await db
+        .select({ id: schema.editions.id })
+        .from(schema.editions)
+        .where(inArray(schema.editions.code, [`L${w.tag}`, `K${w.tag}`]));
+      editionsMade.push(...made.map((e) => e.id));
+    }
+    expect((await membershipOf(lou)).editionIds).toHaveLength(3);
   });
 
   it("cloneEdition gives the copy to people limited to the source within the copier's scope, invitations included, and counts the rest", async () => {
@@ -1084,6 +1186,69 @@ d("events per person", () => {
       (await db.select().from(schema.tasks).where(eq(schema.tasks.id, id)))[0].assignedToUserId;
     expect(await taskOwner(tA.id)).toBe(pick);
     expect(await taskOwner(tB.id)).toBe(w.adminId);
+  });
+
+  it("hand-over notices naming one event's work keep that event, so they're hidden once the person is taken off it", async () => {
+    const w = await makeWorld();
+    const { editionScopeSql } = await import("@/lib/queries/edition-scope");
+    const mkt = await dept(w, "Marketing");
+    const sue = await member(w, "Sue", "marketing", { departmentId: mkt.id });
+    const ola = await member(w, "Ola", "marketing", { departmentId: mkt.id });
+    await approve(w, sue, "Sue", mkt.id);
+    await approve(w, ola, "Ola", mkt.id);
+    const inA = await inSignoff(w, w.A, mkt.id, sue, { planned: true });
+    await run((tx) => manage.suspendMemberTx(tx, ctxOf(w), { userId: sue }));
+    expect((await instance(inA.inst.id)).assignedUserId).toBe(ola);
+
+    const gus = await member(w, "Gus", "ops");
+    const pia = await member(w, "Pia", "ops");
+    const owned = await item(w, w.A, { ownerUserId: gus });
+    await db.insert(schema.tasks).values({
+      organisationId: w.orgId,
+      editionId: w.A,
+      title: "A job",
+      assignedToUserId: gus,
+      createdByUserId: w.adminId,
+    });
+    // Gus's twin owns items in both events: that notice is about no one event.
+    const ian = await member(w, "Ian", "ops");
+    await item(w, w.A, { ownerUserId: ian });
+    await item(w, w.B, { ownerUserId: ian });
+    await run((tx) => manage.removeMemberTx(tx, ctxOf(w), { userId: gus, workToUserId: pia }));
+    await run((tx) => manage.removeMemberTx(tx, ctxOf(w), { userId: ian, workToUserId: pia }));
+
+    const titles = async (userId: string, scope: string[] | null) =>
+      (
+        await db
+          .select({ title: schema.notifications.title, editionId: schema.notifications.editionId })
+          .from(schema.notifications)
+          .where(
+            and(
+              eq(schema.notifications.userId, userId),
+              editionScopeSql(scope, schema.notifications.editionId, { allowNull: true }),
+            ),
+          )
+      )
+        .map((r) => `${r.title} @${r.editionId === w.A ? "A" : r.editionId ? "?" : "none"}`)
+        .sort();
+    expect(await titles(ola, null)).toContain(`A sign-off is now yours: ${inA.item.ref} @A`);
+    expect(await titles(pia, null)).toEqual(
+      [
+        `A task is now yours: A job @A`,
+        `You now own ${owned.ref} @A`,
+        "You now own 2 items @none",
+      ].sort(),
+    );
+
+    // Both are taken off A (only B left): A's notices leave their bell.
+    for (const id of [ola, pia]) {
+      await db
+        .update(schema.memberships)
+        .set({ editionIds: [w.B] })
+        .where(eq(schema.memberships.userId, id));
+    }
+    expect(await titles(ola, [w.B])).toEqual([]);
+    expect(await titles(pia, [w.B])).toEqual(["You now own 2 items @none"]);
   });
 
   it("suspend: hand-over defaults skip signers who can't open the group's events; a limited viewer sees B's refs hidden", async () => {

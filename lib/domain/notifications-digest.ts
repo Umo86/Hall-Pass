@@ -11,6 +11,8 @@ export type OverdueRow = {
   /** The due date (YYYY-MM-DD, London). */
   dueIso: string;
   assigneeIds: string[];
+  /** The event the sign-off is in. */
+  editionId?: string | null;
 };
 
 export type DigestLine = {
@@ -21,7 +23,22 @@ export type DigestLine = {
   /** Refs, oldest first. */
   refs: string[];
   instanceIds: string[];
+  /** The one event all of them are in, else null (see soleEditionId). */
+  editionId: string | null;
 };
+
+/**
+ * The event a message is about when everything it names is in that one
+ * event; null when they span events (or one has none). Stored on the
+ * notification, so the bell and late emails hide it from someone later
+ * taken off that event (Users → Events) — without splitting messages, so
+ * nobody gets more or fewer of them.
+ */
+export function soleEditionId(ids: readonly (string | null | undefined)[]): string | null {
+  if (ids.length === 0) return null;
+  const first = ids[0] ?? null;
+  return first && ids.every((id) => id === first) ? first : null;
+}
 
 /** One line per person: how many of their sign-offs are overdue, oldest first. */
 export function overdueDigestLines(rows: OverdueRow[], today: string): DigestLine[] {
@@ -45,6 +62,7 @@ export function overdueDigestLines(rows: OverdueRow[], today: string): DigestLin
         oldestDays: diffDaysIso(today, unique[0].dueIso),
         refs: unique.map((r) => r.ref),
         instanceIds: unique.map((r) => r.instanceId),
+        editionId: soleEditionId(unique.map((r) => r.editionId)),
       };
     })
     .sort((a, b) => a.userId.localeCompare(b.userId));
@@ -87,6 +105,8 @@ export type ManualReminder = {
   entityType: "signage_item" | "stand_submission";
   entityId: string;
   assigneeIds: string[];
+  /** The event the item is in. */
+  editionId?: string | null;
 };
 
 export type ReminderMessage = {
@@ -95,6 +115,8 @@ export type ReminderMessage = {
   body: string;
   link: string;
   entity: { type: "signage_item" | "stand_submission"; id: string } | null;
+  /** The one event the message is about, else null (see soleEditionId). */
+  editionId: string | null;
 };
 
 /**
@@ -122,6 +144,7 @@ export function reminderMessages(
             : "Open it to review and decide.",
         link: r.link,
         entity: { type: r.entityType, id: r.entityId },
+        editionId: r.editionId ?? null,
       };
     }
     const overdue = list.filter((r) => r.overdueDays > 0).length;
@@ -131,6 +154,7 @@ export function reminderMessages(
       body: `${refList(list.map((r) => r.ref))}.`,
       link: opts.listLink,
       entity: null,
+      editionId: soleEditionId(list.map((r) => r.editionId)),
     };
   });
 }

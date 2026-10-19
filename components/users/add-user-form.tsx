@@ -9,6 +9,7 @@ import type { AbilityKey, Feature, ManagerScope, StaffRole } from "@/lib/authz";
 import {
   eventsSummary,
   firstName,
+  nameInSentence,
   mainApproverNote,
   roleForDepartment,
   startingChoices,
@@ -332,7 +333,9 @@ export function AddUserForm({
     );
   }
 
-  const name = firstName(fullName, email);
+  // Mid-sentence ("until this person accepts") before a name or email is typed.
+  const name = nameInSentence(fullName, email);
+  const typed = Boolean(fullName.trim() || email.trim());
 
   return (
     <form onSubmit={submit} className="space-y-6" noValidate aria-label="Add person">
@@ -491,7 +494,7 @@ export function AddUserForm({
           </h2>
           <EventsField
             id="add-events"
-            personName={name}
+            personName={typed ? name : ""}
             value={editionIds}
             onChange={(v) => {
               setEditionIds(v);

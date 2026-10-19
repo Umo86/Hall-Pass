@@ -431,7 +431,7 @@ export function summariseSetup(steps: SetupStep[]): SetupSummary {
 /** How many events the organisation has (of the viewer's, Users → Events): not archived, and in all. */
 export async function countEvents(
   organisationId: string,
-  scope: EditionScope = null,
+  scope: EditionScope,
 ): Promise<{ active: number; total: number }> {
   const [row] = await db
     .select({
@@ -447,7 +447,7 @@ export async function countEvents(
 /** Events that aren't archived (of the viewer's) — none means the organisation hasn't started. */
 export async function countActiveEvents(
   organisationId: string,
-  scope: EditionScope = null,
+  scope: EditionScope,
 ): Promise<number> {
   const [row] = await db
     .select({ n: count() })
@@ -827,7 +827,7 @@ export async function hallCopySources(
   organisationId: string,
   target: { id: string; venueId: string },
   /** The viewer's events (Users → Events): only events they can open are offered. */
-  scope: EditionScope = null,
+  scope: EditionScope,
 ) {
   const rows = await db
     .select({
