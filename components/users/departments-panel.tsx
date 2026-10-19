@@ -22,6 +22,8 @@ import { SelectNative } from "@/components/ui/select-native";
 import { EmptyState } from "@/components/empty-state";
 import { useConfirm } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
+import { firstName } from "@/lib/users/rules";
+import { EventsChip } from "./person-fields";
 
 export type DepartmentCardData = {
   id: string;
@@ -49,6 +51,8 @@ export type DepartmentCardData = {
     /** Why they can't sign now, in a few words. */
     stateText: string | null;
     href: string | null;
+    /** Events they work on (Users → Events); null/missing = every event. */
+    editionIds?: string[] | null;
   }[];
 };
 
@@ -106,12 +110,15 @@ export function DepartmentsPanel({
   members,
   canEdit,
   addTo = [],
+  eventCodes = {},
 }: {
   departments: DepartmentCardData[];
   members: MemberOption[];
   canEdit: boolean;
   /** Departments the viewer adds people to ("all", or ids). */
   addTo?: "all" | string[];
+  /** Edition id → code for the events the viewer can open (chips name only those). */
+  eventCodes?: Readonly<Record<string, string>>;
 }) {
   const [pending, start] = useTransition();
   const [confirmDialog, confirm] = useConfirm();
@@ -163,6 +170,7 @@ export function DepartmentsPanel({
             run={run}
             confirm={confirm}
             canAdd={addTo === "all" || addTo.includes(d.id)}
+            eventCodes={eventCodes}
           />
         ))}
       </div>
@@ -273,6 +281,7 @@ function DepartmentCard({
   run,
   confirm,
   canAdd,
+  eventCodes,
 }: {
   dept: DepartmentCardData;
   members: MemberOption[];
@@ -284,6 +293,7 @@ function DepartmentCard({
   confirm: ReturnType<typeof useConfirm>[1];
   /** The viewer adds people to this department. */
   canAdd: boolean;
+  eventCodes: Readonly<Record<string, string>>;
 }) {
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState("");
@@ -562,6 +572,18 @@ function DepartmentCard({
                   <p className="text-muted-foreground truncate text-xs">
                     {[a.jobTitle, a.email, a.stateText].filter(Boolean).join(" · ")}
                   </p>
+                  {a.editionIds && (
+                    <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                      <EventsChip editionIds={a.editionIds} codes={eventCodes} />
+                      {(a.isMain || a.mainOnAccept) && (
+                        <span className="text-muted-foreground text-xs">
+                          {a.isMain
+                            ? `Sign-offs in events ${firstName(a.name)} can't open go to the rest of ${dept.name}.`
+                            : `When ${firstName(a.name)} takes over, sign-offs in events they can't open go to the rest of ${dept.name}.`}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 {canEdit && (
                   <div className="ml-auto flex shrink-0 flex-wrap items-center gap-1">

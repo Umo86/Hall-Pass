@@ -97,7 +97,7 @@ export default async function CalendarPage({
     return <SectionUnavailable feature="calendar" backHref={`/${editionCode}/dashboard`} />;
   }
   const sp = await searchParams;
-  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
   const edition = ed.edition;
   const code = edition.code;

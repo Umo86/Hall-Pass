@@ -27,6 +27,7 @@ import { editionIsReadOnly } from "@/lib/edition-lock";
 import { can, missingAbilityMessage, type ApprovalStepCtx } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { todayInLondon } from "@/lib/today";
 import { closeSignageItem, softDeleteSignageItem, submitForReview } from "./signage";
@@ -103,7 +104,7 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<Bu
 
   /** The ref for a failure, read only within the caller's organisation. */
   const refOf = async (id: string) => {
-    const bundle = await loadItemBundle(db, id, { organisationId: session.organisation.id });
+    const bundle = await loadItemBundle(db, id, actorScope(session));
     return bundle?.item.ref ?? "Unknown item";
   };
 
@@ -143,7 +144,7 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<Bu
     const confirmedDate = parsed.data.confirmedDate ?? todayInLondon();
     if (confirmedDate > todayInLondon()) return fail("The date cannot be in the future");
     for (const id of ids) {
-      const bundle = await loadItemBundle(db, id, { organisationId: session.organisation.id });
+      const bundle = await loadItemBundle(db, id, actorScope(session));
       if (!bundle || bundle.item.deletedAt) {
         failures.push({ id, ref: bundle?.item.ref ?? "Unknown item", reason: "not found" });
         continue;
@@ -245,7 +246,7 @@ export async function bulkSignageAction(input: unknown): Promise<ActionResult<Bu
   }
   for (const id of ids) {
     try {
-      const bundle = await loadItemBundle(db, id, { organisationId: session.organisation.id });
+      const bundle = await loadItemBundle(db, id, actorScope(session));
       const reason = !bundle
         ? "not found"
         : bundle.item.deletedAt
@@ -313,7 +314,7 @@ async function changeOwners(
   const changed: OwnerChange[] = [];
   let done = 0;
   for (const id of ids) {
-    const bundle = await loadItemBundle(db, id, { organisationId: orgId });
+    const bundle = await loadItemBundle(db, id, actorScope(session));
     const item = bundle?.item;
     const refusal = !bundle
       ? "not found"
@@ -327,7 +328,7 @@ async function changeOwners(
               ? "you can't change it"
               : bundle.item.ownerUserId === toUserId
                 ? `already ${to!.name}'s`
-                : ownerRefusalWords(team, toUserId, bundle.item, orgId);
+                : ownerRefusalWords(team, toUserId, bundle.item, orgId, bundle.edition.id);
     if (!bundle || !item || refusal) {
       failures.push({ id, ref: item?.ref ?? "Unknown item", reason: refusal ?? "not found" });
       continue;
@@ -408,16 +409,19 @@ function ownerRefusalWords(
   userId: string,
   item: { kind: OwnableItem["kind"]; sponsorId: string | null; category: string | null },
   organisationId: string,
+  /** The item's event: "Sam can't open this event" when they can't (Users → Events). */
+  editionId: string,
 ): string | null {
   const m = team.find((x) => x.userId === userId);
   const ownable: OwnableItem = {
     kind: item.kind,
     sponsored: Boolean(item.sponsorId) || item.category === "sponsor",
   };
-  const refusal = refusalFor({ type: "owner", item: ownable }, m, { organisationId });
+  const purpose = { type: "owner" as const, item: ownable, editionId };
+  const refusal = refusalFor(purpose, m, { organisationId });
   if (!refusal) return null;
-  return refusalMessage(m?.name ?? "That person", refusal, {
-    type: "owner",
-    item: ownable,
-  }).replace(/ — pick someone else$/, "");
+  return refusalMessage(m?.name ?? "That person", refusal, purpose).replace(
+    / — pick someone else$/,
+    "",
+  );
 }

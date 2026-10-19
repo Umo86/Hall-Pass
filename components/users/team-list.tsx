@@ -13,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { DepartmentChip } from "./person-fields";
+import { DepartmentChip, EventsTag } from "./person-fields";
 import { InviteActions } from "./invite-actions";
 import { ManagerBadge, PersonStatusChip } from "./person-status";
 import { BulkOutcomePanel, UsersBulkBar, type BulkUsersOutcome } from "./bulk-bar";
@@ -46,6 +46,8 @@ export type TeamListRow = {
    * couldn't give themselves). The server refuses it either way.
    */
   canRenew?: boolean;
+  /** Users → Events: "BIRM27 only" / "3 events" for someone limited; null = All events. */
+  events?: { text: string; title: string } | null;
 };
 
 function YouTag() {
@@ -211,11 +213,14 @@ export function TeamList({
                   )}
                 </TableCell>
                 <TableCell>
-                  {r.departmentName ? (
-                    <DepartmentChip name={r.departmentName} archived={r.departmentArchived} />
-                  ) : (
-                    <span className="text-muted-foreground">—</span>
-                  )}
+                  <span className="flex flex-wrap items-center gap-1">
+                    {r.departmentName ? (
+                      <DepartmentChip name={r.departmentName} archived={r.departmentArchived} />
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                    {r.events && <EventsTag text={r.events.text} title={r.events.title} />}
+                  </span>
                 </TableCell>
                 <TableCell>
                   <span className="block whitespace-nowrap">{r.roleText}</span>
@@ -295,6 +300,11 @@ export function TeamList({
                   ].join(" · ")}
                 </span>
                 {r.managerBadge && <ManagerBadge text={r.managerBadge} />}
+                {r.events && (
+                  <span className="flex flex-wrap items-center gap-1">
+                    <EventsTag text={r.events.text} title={r.events.title} />
+                  </span>
+                )}
                 {isAdmin ? (
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1">
                     <PersonStatusChip status={r.status} text={r.statusText} />

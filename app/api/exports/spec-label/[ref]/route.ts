@@ -1,11 +1,18 @@
 import { appUrl } from "@/lib/app-url";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { db } from "@/lib/db/client";
+
 import { can } from "@/lib/authz";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
 import { getItemByRef, getLabelRows } from "@/lib/queries/signage";
 import { renderSpecLabels } from "@/lib/exports/pdf";
 import { labelWhen, labelWhere, specLabelFields } from "@/lib/exports/label-fields";
-import { exportError, exportSession, recordAndServeExport, serveOrError } from "@/lib/exports/serve";
+import {
+  exportError,
+  exportSession,
+  recordAndServeExport,
+  serveOrError,
+} from "@/lib/exports/serve";
 
 export async function GET(req: Request, { params }: { params: Promise<{ ref: string }> }) {
   const auth = await exportSession(req);
@@ -14,7 +21,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ ref: str
   const { ref } = await params;
   const item = await getItemByRef(decodeURIComponent(ref));
   if (!item || item.deletedAt) return exportError(404, "That item could not be found.");
-  const bundle = await loadItemBundle(db, item.id);
+  const bundle = await loadItemBundle(db, item.id, actorScope(session));
   if (!bundle || !can(session.actor, { type: "signage.view", item: itemAuthzCtx(bundle) })) {
     return exportError(404, "That item could not be found.");
   }

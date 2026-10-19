@@ -1,7 +1,8 @@
 import { cookies } from "next/headers";
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { editions, events, venues } from "@/lib/db/schema";
+import { editionScopeSql, sessionScope } from "@/lib/queries/edition-scope";
 import { todayInLondon } from "@/lib/today";
 import { formatDate } from "@/lib/format";
 import { invitesCanBeEmailed } from "@/lib/users/email";
@@ -32,6 +33,7 @@ export default async function VenuesPage() {
   }
   const orgId = session.organisation.id;
   const today = todayInLondon();
+  const scope = sessionScope(session);
   const [venueRows, editionRows, seriesRows, grants] = await Promise.all([
     db.select().from(venues).where(eq(venues.organisationId, orgId)).orderBy(asc(venues.name)),
     db
@@ -47,10 +49,11 @@ export default async function VenuesPage() {
       })
       .from(editions)
       .innerJoin(events, eq(editions.eventId, events.id))
-      .where(eq(events.organisationId, orgId))
+      // Users → Events: a venue lists only events the viewer can open.
+      .where(and(eq(events.organisationId, orgId), editionScopeSql(scope, editions.id)))
       .orderBy(desc(editions.openStart)),
     db.select().from(events).where(eq(events.organisationId, orgId)).orderBy(asc(events.name)),
-    portalGrantsByScope(orgId, "venue"),
+    portalGrantsByScope(orgId, "venue", scope),
   ]);
   const lastCode = (await cookies()).get(LAST_EVENT_COOKIE)?.value?.toUpperCase() ?? null;
 

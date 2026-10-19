@@ -7,6 +7,7 @@ import { CalendarClock, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import type { AbilityKey, Feature, ManagerScope, StaffRole } from "@/lib/authz";
 import {
+  eventsSummary,
   firstName,
   mainApproverNote,
   roleForDepartment,
@@ -23,18 +24,53 @@ import { absoluteLink } from "./invite-actions";
 import {
   AbilitiesFields,
   DepartmentField,
+  EventsField,
   FieldError,
   ManagerField,
   NEW_DEPARTMENT,
   RoleCards,
   SectionsPicker,
   type DepartmentOption,
+  type EventOption,
 } from "./person-fields";
 import { TemplatePicker } from "./template-picker";
 
 type Errors = Partial<
-  Record<"fullName" | "email" | "role" | "newDepartmentName" | "accessEndsOn" | "form", string>
+  Record<
+    "fullName" | "email" | "role" | "newDepartmentName" | "accessEndsOn" | "editionIds" | "form",
+    string
+  >
 >;
+
+/** The Events card on the Add forms (Users → Events). */
+export type AddEvents = {
+  events: EventOption[];
+  /** The person adding sees every event, so they may give "All events". */
+  allowAll: boolean;
+  /** The event last opened, else the next coming up (templates start there). */
+  defaultEditionId: string | null;
+};
+
+/** Where the Events card starts: All events, or a limited adder's own live events. */
+export function startingEvents(ev: AddEvents | undefined): string[] | null {
+  if (!ev || ev.allowAll) return null;
+  const live = ev.events.filter((e) => !e.archived).map((e) => e.id);
+  return live.length > 0 ? live : ev.events.map((e) => e.id);
+}
+
+/** A template that starts at Only these events with the current event (Freelance installer). */
+export function templateEvents(
+  t: PersonTemplate,
+  ev: AddEvents | undefined,
+  current: string[] | null,
+): string[] | null {
+  if (t.events !== "current" || !ev || ev.events.length === 0) return current;
+  const pick =
+    ev.events.find((e) => e.id === ev.defaultEditionId && !e.archived) ??
+    ev.events.find((e) => !e.archived) ??
+    ev.events[0];
+  return [pick.id];
+}
 
 /** What the person adding may give (computed on the server; checked again there). */
 export type AddAccess = {
@@ -75,12 +111,14 @@ export function AddUserForm({
   initial,
   access,
   templates,
+  events,
 }: {
   departments: DepartmentOption[];
   visible: Feature[];
   initial: { departmentId: string; signsOff: boolean; fullName: string; email: string };
   access: AddAccess;
   templates: PersonTemplate[];
+  events?: AddEvents;
 }) {
   const locked = access.lockedDepartment;
   const startDept = departments.find(
@@ -107,6 +145,7 @@ export function AddUserForm({
     startDept ? startDept.mainApprover === null || !startDept.mainCanSign : false,
   );
   const [manager, setManager] = useState<ManagerScope | null>(null);
+  const [editionIds, setEditionIds] = useState<string[] | null>(() => startingEvents(events));
   const [accessEnd, setAccessEnd] = useState("");
   const [endPrompt, setEndPrompt] = useState(false);
   const [errors, setErrors] = useState<Errors>({});
@@ -169,6 +208,8 @@ export function AddUserForm({
       setJobTitle(t.jobTitle);
     }
     setEndPrompt(t.suggestEndDate);
+    // Freelancers are usually hired for one event: start at Only these events.
+    setEditionIds((cur) => templateEvents(t, events, cur));
     if (t.suggestEndDate) setTimeout(() => endRef.current?.focus(), 0);
   }
 
@@ -196,6 +237,9 @@ export function AddUserForm({
     if (accessEnd && accessEnd < localToday()) {
       next.accessEndsOn = "Choose today or a later date for access to end";
     }
+    if (role !== "admin" && editionIds !== null && editionIds.length === 0) {
+      next.editionIds = "Tick at least one event, or choose All events";
+    }
     setErrors(next);
     setExisting(null);
     if (Object.keys(next).length > 0 || !role) return;
@@ -216,6 +260,7 @@ export function AddUserForm({
             : [],
         ...(access.canGrantManager && role !== "admin" ? { managerScope: manager } : {}),
         accessEndsOn: accessEnd || null,
+        editionIds: role === "admin" ? null : editionIds,
       });
       if (res.ok) {
         toast.success(res.message ?? "Invitation sent");
@@ -235,6 +280,7 @@ export function AddUserForm({
         role: fe.role,
         newDepartmentName: fe.newDepartmentName,
         accessEndsOn: fe.accessEndsOn,
+        editionIds: fe.editionIds,
         form:
           fe.fullName || fe.email || fe.role || fe.newDepartmentName || fe.accessEndsOn
             ? undefined
@@ -435,6 +481,31 @@ export function AddUserForm({
         </p>
       ) : null}
 
+      {events && role && (
+        <section
+          className="min-w-0 space-y-3 rounded-lg border p-4 sm:p-6"
+          aria-labelledby="add-events-h"
+        >
+          <h2 id="add-events-h" className="text-sm font-semibold">
+            Events
+          </h2>
+          <EventsField
+            id="add-events"
+            personName={name}
+            value={editionIds}
+            onChange={(v) => {
+              setEditionIds(v);
+              setErrors((e) => ({ ...e, editionIds: undefined }));
+            }}
+            events={events.events}
+            allowAll={events.allowAll}
+            defaultEditionId={events.defaultEditionId}
+            superAdmin={role === "admin"}
+            error={errors.editionIds}
+          />
+        </section>
+      )}
+
       {canSignHere && chosen && (
         <section className="space-y-2 rounded-lg border p-4 sm:p-6" aria-labelledby="add-sign-h">
           <h2 id="add-sign-h" className="text-sm font-semibold">
@@ -480,6 +551,13 @@ export function AddUserForm({
                             : null,
                           pending:
                             isMain && chosen.pendingMain ? firstName(chosen.pendingMain) : null,
+                          newMainEvents:
+                            editionIds !== null
+                              ? eventsSummary(
+                                  editionIds,
+                                  (id) => events?.events.find((e) => e.id === id)?.code ?? null,
+                                )
+                              : null,
                         })}
                       </span>
                     </span>

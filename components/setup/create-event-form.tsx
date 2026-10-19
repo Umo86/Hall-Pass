@@ -44,6 +44,10 @@ export type CopySource = {
     /** Each of them, counted against the new dates and venue (copiedAccessCount). */
     accessGrants?: CopyableGrant[];
     accessLeftBehind: number;
+    /** People who only see this event that the copier may give the copy too. */
+    people?: number;
+    /** People who only see this event outside the copier's scope (counted, never named). */
+    peopleLeftOut?: number;
   };
 };
 
@@ -56,6 +60,7 @@ type Include = {
   sponsors: boolean;
   items: boolean;
   access: boolean;
+  people: boolean;
 };
 
 function plural(n: number, one: string, many = `${one}s`) {
@@ -230,6 +235,7 @@ export function CreateEventForm({
     sponsors: true,
     items: true,
     access: true,
+    people: true,
   });
 
   const source = sources.find((s) => s.id === sourceId) ?? first;
@@ -248,7 +254,14 @@ export function CreateEventForm({
     setCopyOpenStart(addDaysIso(s.dates.openStart, SAME_WEEKDAY_NEXT_YEAR));
     setCopyOpenEnd(addDaysIso(s.dates.openEnd, SAME_WEEKDAY_NEXT_YEAR));
     setCopyVenueId(s.venueId);
-    setInclude({ halls: true, deadlines: true, sponsors: true, items: true, access: true });
+    setInclude({
+      halls: true,
+      deadlines: true,
+      sponsors: true,
+      items: true,
+      access: true,
+      people: true,
+    });
   }
 
   /** Closes follows Opens until it's set to something later. */
@@ -307,6 +320,7 @@ export function CreateEventForm({
                 sponsors: include.sponsors && copyCounts.sponsors > 0,
                 items: include.items && copyCounts.items > 0,
                 access: canCopyAccess && include.access && copyCounts.access > 0,
+                people: include.people && copyCounts.people > 0,
               },
             });
       if (!res.ok) {
@@ -352,6 +366,7 @@ export function CreateEventForm({
           })
         : source.counts.access
       : 0,
+    people: source?.counts.people ?? 0,
   };
 
   return (
@@ -654,6 +669,16 @@ export function CreateEventForm({
                         ],
                       ] as const)
                     : []),
+                  // Hidden when nobody qualifies (it's about people, not records).
+                  ...(copyCounts.people > 0
+                    ? ([
+                        [
+                          "people",
+                          `People who only see ${source.code} — give them the new event too (${copyCounts.people})`,
+                          copyCounts.people,
+                        ],
+                      ] as const)
+                    : []),
                 ] as const
               ).map(([key, label, n]) => (
                 <label
@@ -682,6 +707,13 @@ export function CreateEventForm({
                   )}{" "}
                   stay with {source.name}: their records are new for each event, so invite them
                   again once they&apos;re added.
+                </p>
+              )}
+              {(source.counts.peopleLeftOut ?? 0) > 0 && (
+                <p className="text-muted-foreground text-xs">
+                  {source.counts.peopleLeftOut} more{" "}
+                  {source.counts.peopleLeftOut === 1 ? "person" : "people"} who only see{" "}
+                  {source.code} won&apos;t see the copy — a super admin can add it under Users.
                 </p>
               )}
               <p className="text-muted-foreground text-xs">

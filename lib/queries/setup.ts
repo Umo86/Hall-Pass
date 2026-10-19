@@ -34,12 +34,16 @@ import { formatDate, plural } from "@/lib/format";
 import {
   abilityOn,
   can,
+  canExtendToCopy,
   EVENT_SETUP_ABILITIES,
+  seesEdition,
   type Action,
   type Actor,
+  type EditionScope,
   type PermissionOverrides,
 } from "@/lib/authz";
 import { activeMembership } from "@/lib/users/active";
+import { editionScopeSql } from "./edition-scope";
 
 /*
  * Event setup: the checklist on /CODE/setup, the "Setup 3/6" pill in the nav
@@ -97,6 +101,12 @@ export type SignoffDepartmentFact = {
     /** Invited: takes over as main approver when they accept (doesn't route anything yet). */
     mainOnAccept?: boolean;
     active: boolean;
+    /**
+     * Events they work on (Users → Events; invited: what their invitation
+     * gives); null/missing = every event. Someone who won't see an event
+     * doesn't count for it.
+     */
+    editionIds?: readonly string[] | null;
   }[];
 };
 
@@ -172,7 +182,11 @@ function listNames(names: string[]): string {
  * when none is starred — that is how sign-offs are routed). Someone added by
  * email who hasn't accepted yet makes it "waiting".
  */
-export function signoffState(org: OrgSetupFacts): { state: SetupState; detail: string } {
+export function signoffState(
+  org: OrgSetupFacts,
+  /** The event the checklist is for: only approvers who can open it count. */
+  editionId?: string | null,
+): { state: SetupState; detail: string } {
   if (!org.signageWorkflow) return { state: "todo", detail: "Sign-off hasn't been set up yet" };
   if (org.signoffDepartments.length === 0) {
     return { state: "todo", detail: "No department signs off artwork yet" };
@@ -188,16 +202,26 @@ export function signoffState(org: OrgSetupFacts): { state: SetupState; detail: s
       detail: `${listNames(empty.map((d) => d.name))}: nobody to sign off yet`,
     };
   }
+  // Users → Events: someone who won't see this event can't sign for it.
+  const sees = (a: SignoffDepartmentFact["approvers"][number]) =>
+    !editionId || a.editionIds == null || a.editionIds.includes(editionId);
+  const blind = needed.filter((d) => !d.approvers.some(sees));
+  if (blind.length > 0) {
+    return {
+      state: "todo",
+      detail: `${listNames(blind.map((d) => d.name))}: nobody who signs off can open this event — give one of them this event under Users`,
+    };
+  }
   const notReady = needed.filter((d) => {
-    const main = d.approvers.find((a) => a.isMain);
-    return main
-      ? !main.active && !d.approvers.some((a) => a.active)
-      : !d.approvers.some((a) => a.active);
+    const here = d.approvers.filter(sees);
+    const main = here.find((a) => a.isMain);
+    return main ? !main.active && !here.some((a) => a.active) : !here.some((a) => a.active);
   });
   if (notReady.length > 0) {
-    const waitingFor = notReady.map(
-      (d) => (d.approvers.find((a) => a.isMain) ?? d.approvers[0]).email,
-    );
+    const waitingFor = notReady.map((d) => {
+      const here = d.approvers.filter(sees);
+      return (here.find((a) => a.isMain) ?? here[0]).email;
+    });
     return {
       state: "waiting",
       detail: `Waiting for ${listNames(waitingFor)} to accept ${waitingFor.length === 1 ? "their invitation" : "their invitations"}`,
@@ -230,7 +254,7 @@ function hallsState(facts: EditionSetupFacts): { done: boolean; detail: string }
 
 /** Turn the facts into the checklist, in order. Pure. */
 export function buildSetupSteps(
-  edition: { code: string },
+  edition: { code: string; id?: string },
   facts: EditionSetupFacts,
   org: OrgSetupFacts,
   perms: SetupPermissions,
@@ -239,7 +263,7 @@ export function buildSetupSteps(
   const state = (done: boolean, level: SetupLevel): SetupState =>
     done ? "done" : level === "optional" ? "optional" : "todo";
   const halls = hallsState(facts);
-  const signoff = signoffState(org);
+  const signoff = signoffState(org, edition.id);
   const artwork = facts.deadlines.find((d) => d.key === "artwork_due");
   const print = facts.deadlines.find((d) => d.key === "print_deadline");
   const deadlineDetail = [
@@ -400,9 +424,10 @@ export function summariseSetup(steps: SetupStep[]): SetupSummary {
 
 // ---------------------------------------------------------------- database
 
-/** How many events the organisation has: not archived, and in all. */
+/** How many events the organisation has (of the viewer's, Users → Events): not archived, and in all. */
 export async function countEvents(
   organisationId: string,
+  scope: EditionScope = null,
 ): Promise<{ active: number; total: number }> {
   const [row] = await db
     .select({
@@ -411,66 +436,97 @@ export async function countEvents(
     })
     .from(editions)
     .innerJoin(events, eq(editions.eventId, events.id))
-    .where(eq(events.organisationId, organisationId));
+    .where(and(eq(events.organisationId, organisationId), editionScopeSql(scope, editions.id)));
   return { active: Number(row?.active ?? 0), total: Number(row?.total ?? 0) };
 }
 
-/** Events that aren't archived — none means the organisation hasn't started. */
-export async function countActiveEvents(organisationId: string): Promise<number> {
+/** Events that aren't archived (of the viewer's) — none means the organisation hasn't started. */
+export async function countActiveEvents(
+  organisationId: string,
+  scope: EditionScope = null,
+): Promise<number> {
   const [row] = await db
     .select({ n: count() })
     .from(editions)
     .innerJoin(events, eq(editions.eventId, events.id))
-    .where(and(eq(events.organisationId, organisationId), ne(editions.status, "archived")));
+    .where(
+      and(
+        eq(events.organisationId, organisationId),
+        ne(editions.status, "archived"),
+        editionScopeSql(scope, editions.id),
+      ),
+    );
   return Number(row?.n ?? 0);
 }
 
 /** The organisation-wide facts (one query each, run together). */
 export async function loadOrgSetupFacts(organisationId: string): Promise<OrgSetupFacts> {
-  const [flow, depts, [members], [invites], [types], [supplierRows]] = await Promise.all([
-    db
-      .select({ id: workflows.id })
-      .from(workflows)
-      .where(
-        and(
-          eq(workflows.organisationId, organisationId),
-          eq(workflows.appliesTo, "signage"),
-          isNull(workflows.forKind),
-          eq(workflows.isArchived, false),
+  const [flow, depts, [members], [invites], [types], [supplierRows], inviteEvents] =
+    await Promise.all([
+      db
+        .select({ id: workflows.id })
+        .from(workflows)
+        .where(
+          and(
+            eq(workflows.organisationId, organisationId),
+            eq(workflows.appliesTo, "signage"),
+            isNull(workflows.forKind),
+            eq(workflows.isArchived, false),
+          ),
+        )
+        .limit(1),
+      listDepartments(db, organisationId),
+      db
+        .select({ n: count() })
+        .from(memberships)
+        .where(eq(memberships.organisationId, organisationId)),
+      db
+        .select({ n: count() })
+        .from(staffInvites)
+        .where(
+          and(
+            eq(staffInvites.organisationId, organisationId),
+            isNull(staffInvites.acceptedAt),
+            isNull(staffInvites.revokedAt),
+            or(isNull(staffInvites.expiresAt), gt(staffInvites.expiresAt, new Date())),
+          ),
         ),
-      )
-      .limit(1),
-    listDepartments(db, organisationId),
-    db
-      .select({ n: count() })
-      .from(memberships)
-      .where(eq(memberships.organisationId, organisationId)),
-    db
-      .select({ n: count() })
-      .from(staffInvites)
-      .where(
-        and(
-          eq(staffInvites.organisationId, organisationId),
-          isNull(staffInvites.acceptedAt),
-          isNull(staffInvites.revokedAt),
-          or(isNull(staffInvites.expiresAt), gt(staffInvites.expiresAt, new Date())),
+      db
+        .select({ n: count() })
+        .from(itemTypes)
+        .where(
+          and(
+            eq(itemTypes.organisationId, organisationId),
+            eq(itemTypes.kind, "signage"),
+            eq(itemTypes.isArchived, false),
+          ),
         ),
-      ),
-    db
-      .select({ n: count() })
-      .from(itemTypes)
-      .where(
-        and(
-          eq(itemTypes.organisationId, organisationId),
-          eq(itemTypes.kind, "signage"),
-          eq(itemTypes.isArchived, false),
+      db
+        .select({ n: count() })
+        .from(suppliers)
+        .where(and(eq(suppliers.organisationId, organisationId), eq(suppliers.isArchived, false))),
+      // C11: an approver added by email gets the events their open invitation gives.
+      db
+        .select({
+          email: staffInvites.invitedEmail,
+          role: staffInvites.role,
+          editionIds: staffInvites.editionIds,
+        })
+        .from(staffInvites)
+        .where(
+          and(
+            eq(staffInvites.organisationId, organisationId),
+            isNull(staffInvites.acceptedAt),
+            isNull(staffInvites.revokedAt),
+          ),
         ),
-      ),
-    db
-      .select({ n: count() })
-      .from(suppliers)
-      .where(and(eq(suppliers.organisationId, organisationId), eq(suppliers.isArchived, false))),
-  ]);
+    ]);
+  const invitedEvents = new Map(
+    inviteEvents.map((i) => [
+      i.email.toLowerCase(),
+      i.role === "admin" ? null : (i.editionIds ?? null),
+    ]),
+  );
   return {
     signageWorkflow: flow.length > 0,
     signoffDepartments: depts
@@ -484,6 +540,7 @@ export async function loadOrgSetupFacts(organisationId: string): Promise<OrgSetu
           isMain: a.isMain,
           mainOnAccept: a.mainOnAccept,
           active: a.active,
+          editionIds: a.userId ? a.editionIds : (invitedEvents.get(a.email.toLowerCase()) ?? null),
         })),
       })),
     memberCount: Number(members?.n ?? 0),
@@ -644,6 +701,8 @@ export async function getSetupSummaries(
 export async function setupContacts(
   organisationId: string,
   need: "events.create" | "event.setup" = "events.create",
+  /** For one event: only people who can open it (Users → Events). */
+  opts: { editionId?: string | null } = {},
 ): Promise<{ name: string; email: string; role: string }[]> {
   const rows = await db
     .select({
@@ -651,13 +710,19 @@ export async function setupContacts(
       email: users.email,
       role: memberships.role,
       overrides: memberships.permissionOverrides,
+      editionIds: memberships.editionIds,
     })
     .from(memberships)
     .innerJoin(users, eq(memberships.userId, users.id))
     .where(and(eq(memberships.organisationId, organisationId), activeMembership()))
     .orderBy(users.fullName);
   const holds = (r: (typeof rows)[number]) => {
-    const holder = { role: r.role, overrides: r.overrides as PermissionOverrides };
+    const holder = {
+      role: r.role,
+      overrides: r.overrides as PermissionOverrides,
+      editionIds: r.editionIds,
+    };
+    if (opts.editionId && !seesEdition(holder, opts.editionId)) return false;
     return need === "events.create"
       ? abilityOn(holder, "events.create")
       : EVENT_SETUP_ABILITIES.some((k) => abilityOn(holder, k));
@@ -749,6 +814,8 @@ export async function hallsEditorData(editionId: string) {
 export async function hallCopySources(
   organisationId: string,
   target: { id: string; venueId: string },
+  /** The viewer's events (Users → Events): only events they can open are offered. */
+  scope: EditionScope = null,
 ) {
   const rows = await db
     .select({
@@ -768,6 +835,7 @@ export async function hallCopySources(
         eq(events.organisationId, organisationId),
         eq(editions.venueId, target.venueId),
         ne(editions.id, target.id),
+        editionScopeSql(scope, editions.id),
       ),
     )
     .groupBy(editions.id)
@@ -800,9 +868,11 @@ export async function venuesForPicker(organisationId: string) {
 
 /**
  * What each earlier event would bring across when copied, for the "Copy a
- * previous event" form: one grouped query per kind of record.
+ * previous event" form: one grouped query per kind of record. `viewer` is
+ * who copies: people limited to a source (Users → Events) whom they may
+ * change get the copy too ("people"); the rest are counted ("peopleLeftOut").
  */
-export async function copySourceCounts(organisationId: string) {
+export async function copySourceCounts(organisationId: string, viewer: Actor) {
   const orgEditions = db
     .select({ id: editions.id })
     .from(editions)
@@ -854,17 +924,68 @@ export async function copySourceCounts(organisationId: string) {
         and(eq(externalGrants.organisationId, organisationId), isNull(externalGrants.revokedAt)),
       ),
   ]);
-  const [liveSupplierRows, teamRows] = await Promise.all([
+  const [liveSupplierRows, teamRows, limitedInvites] = await Promise.all([
     db
       .select({ id: suppliers.id })
       .from(suppliers)
       .where(and(eq(suppliers.organisationId, organisationId), eq(suppliers.isArchived, false))),
     db
-      .select({ userId: memberships.userId, email: users.email })
+      .select({
+        userId: memberships.userId,
+        email: users.email,
+        role: memberships.role,
+        departmentId: memberships.departmentId,
+        managerScope: memberships.managerScope,
+        editionIds: memberships.editionIds,
+      })
       .from(memberships)
       .innerJoin(users, eq(users.id, memberships.userId))
       .where(eq(memberships.organisationId, organisationId)),
+    db
+      .select({
+        role: staffInvites.role,
+        departmentId: staffInvites.departmentId,
+        managerScope: staffInvites.managerScope,
+        editionIds: staffInvites.editionIds,
+      })
+      .from(staffInvites)
+      .where(
+        and(
+          eq(staffInvites.organisationId, organisationId),
+          isNull(staffInvites.acceptedAt),
+          isNull(staffInvites.revokedAt),
+          sql`${staffInvites.editionIds} IS NOT NULL`,
+        ),
+      ),
   ]);
+  // Everyone (and every open invitation) limited to some events — not the
+  // viewer, who gets the copy anyway when limited (as cloneEdition counts).
+  const limited = [
+    ...teamRows
+      .filter((r) => r.role !== "admin" && r.editionIds && r.userId !== viewer.userId)
+      .map((r) => ({
+        editionIds: r.editionIds!,
+        ctx: {
+          organisationId,
+          userId: r.userId,
+          role: r.role,
+          departmentId: r.departmentId,
+          managerScope: r.managerScope,
+        },
+      })),
+    ...limitedInvites
+      .filter((r) => r.role !== "admin")
+      .map((r) => ({
+        editionIds: r.editionIds!,
+        ctx: {
+          organisationId,
+          userId: null,
+          role: r.role,
+          departmentId: r.departmentId,
+          managerScope: r.managerScope,
+        },
+      })),
+  ];
   const liveSuppliers = new Set(liveSupplierRows.map((r) => r.id));
   const teamIds = new Set(teamRows.map((r) => r.userId));
   const teamEmails = new Set(teamRows.map((r) => r.email.toLowerCase()));
@@ -902,6 +1023,14 @@ export async function copySourceCounts(organisationId: string) {
       accessGrants: copyable,
       accessLeftBehind: grants.filter(
         (g) => g.scopeType === "sponsor" || g.scopeType === "exhibitor",
+      ).length,
+      /** People who only see this event (limited, including it) the copier may give the copy. */
+      people: limited.filter(
+        (p) => p.editionIds.includes(editionId) && canExtendToCopy(viewer, p.ctx, editionId),
+      ).length,
+      /** The rest of them: they won't see the copy unless a super admin adds it. */
+      peopleLeftOut: limited.filter(
+        (p) => p.editionIds.includes(editionId) && !canExtendToCopy(viewer, p.ctx, editionId),
       ).length,
     };
   };

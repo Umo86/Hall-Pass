@@ -9,7 +9,7 @@ import {
   standSubmissions,
   venues,
 } from "@/lib/db/schema";
-import type { StandSubmissionCtx } from "@/lib/authz";
+import { opensEdition, type Actor, type StandSubmissionCtx } from "@/lib/authz";
 import { createRun, type EngineSettings, type EntityCtx, type Instance } from "@/lib/workflow";
 import { loadStepDefs, persistRun } from "@/lib/workflow/persist";
 
@@ -21,11 +21,15 @@ export type StandBundle = {
   organisation: typeof organisations.$inferSelect;
 };
 
-/** A stand submission with its show; scoped to an organisation when given. */
+/**
+ * A stand submission with its show; scoped to an organisation when given,
+ * and to the events the `actor` can open (Users → Events; partners pass,
+ * their grant rules decide).
+ */
 export async function loadStandBundle(
   db: Db | Tx,
   subId: string,
-  scope?: { organisationId: string },
+  scope?: { organisationId: string; actor?: Actor },
 ): Promise<StandBundle | null> {
   const [row] = await db
     .select()
@@ -38,6 +42,7 @@ export async function loadStandBundle(
     .limit(1);
   if (!row) return null;
   if (scope && row.events.organisationId !== scope.organisationId) return null;
+  if (scope?.actor && !opensEdition(scope.actor, row.editions.id)) return null;
   const [org] = await db
     .select()
     .from(organisations)

@@ -6,7 +6,8 @@ import { requireStaffSession } from "@/lib/auth/actor";
 import { roleLabel } from "@/lib/format";
 import { emailConfigured } from "@/lib/email/dispatch";
 import { calendarFeedUrl } from "@/lib/feed-url";
-import { can } from "@/lib/authz";
+import { can, editionScope } from "@/lib/authz";
+import { listEditions } from "@/lib/queries/editions";
 import { Page, PageHeader } from "@/components/page-header";
 import { CopyField } from "@/components/copy-field";
 import { NameForm } from "@/components/account/name-form";
@@ -18,11 +19,14 @@ export const dynamic = "force-dynamic";
 export default async function AccountPage() {
   const session = await requireStaffSession();
   const actor = session.actor;
-  const [me, department] = await Promise.all([
+  const scope = editionScope(actor);
+  const [me, department, myEvents] = await Promise.all([
     db.query.users.findFirst({ where: eq(users.id, session.user.id) }),
     actor.departmentId
       ? db.query.departments.findFirst({ where: eq(departments.id, actor.departmentId) })
       : Promise.resolve(undefined),
+    // Users → Events: the events they work on (null = every event).
+    scope === null ? Promise.resolve(null) : listEditions(session.organisation.id, scope),
   ]);
   const feed = calendarFeedUrl(session.user.id);
   const isAdmin = can(actor, { type: "system.manage" });
@@ -47,6 +51,24 @@ export default async function AccountPage() {
           <dd>{roleLabel(actor.role)}</dd>
           <dt className="text-muted-foreground">Department</dt>
           <dd>{department?.name ?? "None yet"}</dd>
+          <dt className="text-muted-foreground">Events</dt>
+          <dd className="min-w-0 break-words">
+            {myEvents === null ? (
+              "All events"
+            ) : myEvents.length === 0 ? (
+              "None yet"
+            ) : (
+              <ul className="space-y-0.5">
+                {myEvents.map(({ edition }) => (
+                  <li key={edition.id}>
+                    <Link href={`/${edition.code}/dashboard`} className="link break-words">
+                      {edition.name} · {edition.code}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </dd>
         </dl>
         <p className="text-muted-foreground text-xs">
           {isAdmin ? (
@@ -61,6 +83,11 @@ export default async function AccountPage() {
             "A super admin or your manager sets your role and department. Ask them if they look wrong."
           )}
         </p>
+        {!isAdmin && (
+          <p className="text-muted-foreground text-xs">
+            A super admin or your manager chooses which events you work on.
+          </p>
+        )}
       </section>
 
       {(feed || isAdmin) && (

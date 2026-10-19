@@ -24,6 +24,7 @@ import {
 } from "@/lib/db/schema";
 import {
   can,
+  type EditionScope,
   type ExternalActor,
   type ExternalRole,
   type ScopeType,
@@ -40,7 +41,8 @@ import { sendAccountEmail } from "@/lib/auth/account-link";
 import { sendInviteEmail, type InviteDelivery } from "@/lib/auth/staff-invite";
 import { renderNotificationEmail } from "@/lib/email/template";
 import { sendEmail } from "@/lib/email/send";
-import { activeMembership } from "@/lib/users/active";
+import { activeMembership, memberSeesEditionSql } from "@/lib/users/active";
+import { editionScopeSql } from "@/lib/queries/edition-scope";
 import { grantStatus, type GrantStatus } from "@/components/portal/summary";
 
 type Grant = typeof externalGrants.$inferSelect;
@@ -325,6 +327,8 @@ export async function externalEvents(
   db: Db | Tx,
   organisationId: string,
   today: string,
+  /** The viewer's events (Users → Events); null/missing = every event. */
+  scope: EditionScope = null,
 ): Promise<ExternalEvent[]> {
   const rows = await db
     .select({
@@ -337,7 +341,7 @@ export async function externalEvents(
     })
     .from(editions)
     .innerJoin(events, eq(editions.eventId, events.id))
-    .where(eq(events.organisationId, organisationId))
+    .where(and(eq(events.organisationId, organisationId), editionScopeSql(scope, editions.id)))
     .orderBy(asc(editions.openStart));
   const list = rows.map((r) => ({
     id: r.id,
@@ -384,13 +388,23 @@ export type GrantRow = {
 };
 
 /** Every external invitation and grant, newest first, with names resolved. */
-export async function listGrants(db: Db | Tx, organisationId: string): Promise<GrantRow[]> {
+export async function listGrants(
+  db: Db | Tx,
+  organisationId: string,
+  /** The viewer's events (Users → Events): partner access in others isn't listed. */
+  scope: EditionScope = null,
+): Promise<GrantRow[]> {
   const rows = await db
     .select({ g: externalGrants, name: users.fullName, eventName: editions.name })
     .from(externalGrants)
     .leftJoin(users, eq(externalGrants.userId, users.id))
     .leftJoin(editions, eq(editions.id, externalGrants.editionId))
-    .where(eq(externalGrants.organisationId, organisationId))
+    .where(
+      and(
+        eq(externalGrants.organisationId, organisationId),
+        editionScopeSql(scope, externalGrants.editionId),
+      ),
+    )
     .orderBy(desc(externalGrants.createdAt));
   const names = await scopeNames(
     db,
@@ -430,7 +444,12 @@ export type ScopeOption = {
  * still in use, and each event's sponsors and exhibitors — each with the
  * contact on their record, so the invite form can fill it in.
  */
-export async function externalScopes(db: Db | Tx, organisationId: string) {
+export async function externalScopes(
+  db: Db | Tx,
+  organisationId: string,
+  /** The viewer's events: venues, sponsors and exhibitors of others aren't offered. */
+  scope: EditionScope = null,
+) {
   const [venueRows, supplierRows, sponsorRows, exhibitorRows] = await Promise.all([
     db
       .select({
@@ -444,7 +463,11 @@ export async function externalScopes(db: Db | Tx, organisationId: string) {
       .innerJoin(events, eq(events.id, editions.eventId))
       .innerJoin(venues, eq(venues.id, editions.venueId))
       .where(
-        and(eq(events.organisationId, organisationId), eq(venues.organisationId, organisationId)),
+        and(
+          eq(events.organisationId, organisationId),
+          eq(venues.organisationId, organisationId),
+          editionScopeSql(scope, editions.id),
+        ),
       )
       .orderBy(asc(venues.name)),
     db
@@ -468,7 +491,7 @@ export async function externalScopes(db: Db | Tx, organisationId: string) {
       .from(sponsors)
       .innerJoin(editions, eq(editions.id, sponsors.editionId))
       .innerJoin(events, eq(events.id, editions.eventId))
-      .where(eq(events.organisationId, organisationId))
+      .where(and(eq(events.organisationId, organisationId), editionScopeSql(scope, editions.id)))
       .orderBy(asc(sponsors.companyName)),
     db
       .select({
@@ -482,7 +505,7 @@ export async function externalScopes(db: Db | Tx, organisationId: string) {
       .from(exhibitors)
       .innerJoin(editions, eq(editions.id, exhibitors.editionId))
       .innerJoin(events, eq(events.id, editions.eventId))
-      .where(eq(events.organisationId, organisationId))
+      .where(and(eq(events.organisationId, organisationId), editionScopeSql(scope, editions.id)))
       .orderBy(asc(exhibitors.companyName)),
   ]);
   return {
@@ -543,6 +566,8 @@ export async function staffMemberIds(
   db: Db | Tx,
   organisationId: string,
   userIds: readonly string[],
+  /** Only staff who can open this event (Users → Events). */
+  opts: { editionId?: string | null } = {},
 ): Promise<Set<string>> {
   const ids = [...new Set(userIds)].filter(Boolean);
   if (ids.length === 0) return new Set();
@@ -554,6 +579,7 @@ export async function staffMemberIds(
         eq(memberships.organisationId, organisationId),
         inArray(memberships.userId, ids),
         activeMembership(),
+        opts.editionId ? memberSeesEditionSql(opts.editionId) : undefined,
       ),
     );
   return new Set(rows.map((r) => r.userId));
@@ -572,12 +598,22 @@ export async function recipientsWhoCanSee(
   db: Db | Tx,
   organisationId: string,
   userIds: readonly string[],
-  opts: { staffOnly?: boolean; sees: (actor: ExternalActor) => boolean; now?: Date },
+  opts: {
+    staffOnly?: boolean;
+    sees: (actor: ExternalActor) => boolean;
+    now?: Date;
+    /** The record's event: team members are kept only when they can open it. */
+    editionId?: string | null;
+  },
 ): Promise<string[]> {
   const ids = [...new Set(userIds)].filter(Boolean);
   if (ids.length === 0) return [];
-  const staff = await staffMemberIds(db, organisationId, ids);
-  const partners = ids.filter((id) => !staff.has(id));
+  const allStaff = await staffMemberIds(db, organisationId, ids);
+  const staff = opts.editionId
+    ? await staffMemberIds(db, organisationId, ids, { editionId: opts.editionId })
+    : allStaff;
+  // Team members who can't open the event are neither staff here nor partners.
+  const partners = ids.filter((id) => !allStaff.has(id));
   const sees = new Set<string>();
   if (partners.length > 0 && !opts.staffOnly) {
     const now = opts.now ?? new Date();

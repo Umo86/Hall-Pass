@@ -53,7 +53,9 @@ export async function stepHolderIds(
   const kind = step.stepKindSnapshot ?? step.stepKind;
   if (kind === "confirmation" && step.assignedRole === "supplier" && !step.assignedUserId) {
     // Whoever confirms for suppliers (signage.confirm), active people only.
-    ids.push(...(await productionConfirmerIds(exec, ctx.organisationId)));
+    ids.push(
+      ...(await productionConfirmerIds(exec, ctx.organisationId, { editionId: ctx.editionId })),
+    );
   }
   return [...new Set(ids)];
 }

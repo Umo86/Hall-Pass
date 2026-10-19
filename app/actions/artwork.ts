@@ -8,6 +8,7 @@ import { artworkVersions, signageItems, sponsors } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession, type Session } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { INVALIDATABLE_STATUSES, signageTransition } from "@/lib/status/signage";
 import { invalidateOnNewVersion } from "@/lib/workflow";
@@ -81,7 +82,7 @@ export async function uploadArtwork(formData: FormData): Promise<ActionResult<Up
   if (typeof itemId !== "string" || !(file instanceof File)) return fail("Invalid upload");
 
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, itemId, { organisationId: session.organisation.id });
+  const bundle = await loadItemBundle(db, itemId, actorScope(session));
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "artwork.upload", item: itemAuthzCtx(bundle) })) {
@@ -145,9 +146,7 @@ export async function recordUploadedArtwork(
   if (!parsed.success) return fail("Invalid upload details");
   const input = parsed.data;
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, input.itemId, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, input.itemId, actorScope(session));
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "artwork.upload", item: itemAuthzCtx(bundle) })) {

@@ -62,7 +62,10 @@ export function notificationGroup(kind: string): NotificationGroup {
     kind === "decision_made" ||
     kind === "escalation" ||
     // Who signs off changed (always sent: not in MUTABLE_KINDS).
-    kind === "main_approver"
+    kind === "main_approver" ||
+    // Nobody who signs off for a department can open the item's event
+    // (Users → Events); always sent, never shown as Done.
+    kind === "signoff_stuck"
   ) {
     return "approval";
   }

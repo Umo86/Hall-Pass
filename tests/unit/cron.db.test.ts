@@ -441,3 +441,159 @@ d("daily cron jobs", () => {
     void exhibitorId;
   });
 });
+
+d("daily cron jobs — events per person", () => {
+  // Their own organisation: two events, a limited ops user (Lena, A only) and
+  // one without a list (Omar), both asked by role for sign-offs in A and B.
+  const DAY = "2027-12-01";
+  const sfx = (Date.now() % 100000) + 7;
+  let org: string;
+  let lena: string;
+  let omar: string;
+  let refA: string;
+  let refB: string;
+
+  beforeAll(async () => {
+    client = postgres(url!, { max: 5, prepare: false, onnotice: () => {} });
+    db = drizzle(client, { schema });
+    jobs = await import("@/lib/cron/jobs");
+    const [o] = await db
+      .insert(schema.organisations)
+      .values({ name: "Cron Scope Org", slug: `cron-scope-${sfx}` })
+      .returning();
+    org = o.id;
+    const [event] = await db
+      .insert(schema.events)
+      .values({ organisationId: org, name: "Cron Scope", code: `CSE${sfx}` })
+      .returning();
+    const [venue] = await db
+      .insert(schema.venues)
+      .values({ organisationId: org, name: "Cron Scope Venue", code: `CSV${sfx}` })
+      .returning();
+    const [a, b] = await db
+      .insert(schema.editions)
+      .values(
+        ["A", "B"].map((x) => ({
+          eventId: event.id,
+          venueId: venue.id,
+          name: `Cron Scope ${x}`,
+          code: `CS${x}${sfx}`,
+          buildStart: "2028-01-10",
+          buildEnd: "2028-01-11",
+          openStart: "2028-01-12",
+          openEnd: "2028-01-13",
+          breakdownEnd: "2028-01-14",
+        })),
+      )
+      .returning();
+    const person = async (key: string, editionIds: string[] | null) => {
+      const id = randomUUID();
+      await db.insert(schema.users).values({ id, email: `${key}-${sfx}@cron-scope.test` });
+      await db
+        .insert(schema.memberships)
+        .values({ userId: id, organisationId: org, role: "ops", editionIds });
+      return id;
+    };
+    lena = await person("lena", [a.id]);
+    omar = await person("omar", null);
+    const [wf] = await db
+      .insert(schema.workflows)
+      .values({ organisationId: org, name: "Cron Scope WF", appliesTo: "signage" })
+      .returning();
+    const [step] = await db
+      .insert(schema.workflowSteps)
+      .values({
+        workflowId: wf.id,
+        sortOrder: 1,
+        name: "Ops check",
+        kind: "approval",
+        approverType: "role",
+        approverRole: "ops",
+        conditions: ["always"],
+      })
+      .returning();
+    const refs: string[] = [];
+    for (const [i, ed] of [a, b].entries()) {
+      const [item] = await db
+        .insert(schema.signageItems)
+        .values({
+          editionId: ed.id,
+          ref: `SIG-CS${sfx}-${i + 1}`,
+          seq: i + 1,
+          name: `Scope sign ${i + 1}`,
+          status: "in_review",
+          currentRunNumber: 1,
+          workflowId: wf.id,
+          createdBy: omar,
+          ownerUserId: omar,
+        })
+        .returning();
+      refs.push(item.ref);
+      await db.insert(schema.approvalInstances).values({
+        entityType: "signage_item",
+        entityId: item.id,
+        runNumber: 1,
+        workflowStepId: step.id,
+        stepNameSnapshot: "Ops check",
+        stepKindSnapshot: "approval",
+        sortOrderSnapshot: 1,
+        status: "pending",
+        assignedRole: "ops",
+        pendingSince: new Date("2027-11-20T09:00:00Z"),
+        dueAt: new Date("2027-11-25T09:00:00Z"),
+      });
+      await db.insert(schema.tasks).values({
+        organisationId: org,
+        editionId: ed.id,
+        title: `Scope task ${i + 1}`,
+        dueDate: "2027-11-30",
+        assignedToUserId: lena,
+        createdByUserId: omar,
+      });
+    }
+    await db.insert(schema.tasks).values({
+      organisationId: org,
+      title: "Scope task, no event",
+      dueDate: "2027-11-30",
+      assignedToUserId: lena,
+      createdByUserId: omar,
+    });
+    [refA, refB] = refs;
+  });
+
+  afterAll(async () => {
+    await client?.end();
+  });
+
+  const notes = (userId: string, kind: string) =>
+    db
+      .select()
+      .from(schema.notifications)
+      .where(and(eq(schema.notifications.userId, userId), eq(schema.notifications.kind, kind)));
+
+  it("approval reminders and the overdue digest skip a limited approver for B", async () => {
+    await jobs.approvalReminders(DAY);
+    const mine = await notes(lena, "approval_reminder");
+    expect(mine.map((r) => r.title)).toEqual(["You have 1 sign-off overdue (6 days)"]);
+    expect(mine[0].body).toContain(refA);
+    expect(mine[0].body).not.toContain(refB);
+    const his = await notes(omar, "approval_reminder");
+    expect(his).toHaveLength(1);
+    expect(his[0].body).toContain(refB);
+  });
+
+  it("dailyDigest per scope: one digest per set of events, about those events only", async () => {
+    await jobs.dailyDigest(DAY);
+    const mine = await notes(lena, "daily_digest");
+    expect(mine.map((r) => r.title)).toEqual(["Daily digest — 1 open sign-offs, 1 overdue"]);
+    expect(mine[0].body).not.toContain(refB);
+    const his = await notes(omar, "daily_digest");
+    expect(his.map((r) => r.title)).toEqual(["Daily digest — 2 open sign-offs, 2 overdue"]);
+  });
+
+  it("taskReminders counts only visible tasks", async () => {
+    await jobs.taskReminders(DAY);
+    const mine = await notes(lena, "task_reminder");
+    expect(mine.map((r) => r.title)).toEqual(["You have 2 tasks due or overdue"]);
+  });
+});

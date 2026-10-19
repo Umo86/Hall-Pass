@@ -853,4 +853,51 @@ d("handing work to people", () => {
     // Mia is main again: the default sign-off follows her back.
     expect(await assigned(byDefault.inst.id)).toBe(team.mia.id);
   });
+
+  it("departmentRouting per event (Users → Events): a main limited to one event isn't the main elsewhere", async () => {
+    const [event] = await db
+      .insert(schema.events)
+      .values({ organisationId: orgId, name: "People Other", code: `PO${n}` })
+      .returning();
+    const [venue] = await db
+      .insert(schema.venues)
+      .values({ organisationId: orgId, name: `People Other Venue ${n}`, code: `POV${n}` })
+      .returning();
+    const [other] = await db
+      .insert(schema.editions)
+      .values({
+        eventId: event.id,
+        venueId: venue.id,
+        name: "People Other Edition",
+        code: `PPO${n}`,
+        buildStart: "2028-10-01",
+        buildEnd: "2028-10-04",
+        openStart: "2028-10-05",
+        openEnd: "2028-10-07",
+        breakdownEnd: "2028-10-08",
+      })
+      .returning();
+    const limit = (ids: string[] | null) =>
+      db
+        .update(schema.memberships)
+        .set({ editionIds: ids })
+        .where(eq(schema.memberships.userId, team.mia.id));
+    await limit([editionId]);
+    try {
+      const r = await people.departmentRouting(db, orgId);
+      expect(r.mainOf(mktDeptId)).toBe(team.mia.id); // event-blind: as before
+      expect(r.mainOf(mktDeptId, editionId)).toBe(team.mia.id);
+      expect(r.mainOf(mktDeptId, other.id)).toBeNull();
+      expect([...r.signersOf(mktDeptId, editionId)].sort()).toEqual(
+        [team.mia.id, team.max.id].sort(),
+      );
+      expect([...r.signersOf(mktDeptId, other.id)]).toEqual([team.max.id]);
+      expect(r.canSign(team.mia.id, other.id)).toBe(false);
+      expect(r.canSign(team.mia.id, editionId)).toBe(true);
+      expect(r.opens(team.mia.id, other.id)).toBe(false);
+      expect(r.opens(team.max.id, other.id)).toBe(true);
+    } finally {
+      await limit(null);
+    }
+  });
 });

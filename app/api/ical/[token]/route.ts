@@ -7,6 +7,7 @@ import { effectiveDeadline, type DeadlineKey } from "@/lib/deadlines";
 import { buildCalendar, verifyIcalToken, type CalendarEvent } from "@/lib/ical";
 import { pendingInstancesForUser } from "@/lib/queries/approvals";
 import { appUrl } from "@/lib/app-url";
+import { editionScopeSql, sessionScope } from "@/lib/queries/edition-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +37,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string 
           and(
             eq(eventsTable.organisationId, session.organisation.id),
             ne(editions.status, "archived"),
+            // Users → Events: only the events they work on.
+            editionScopeSql(sessionScope(session), editions.id),
           ),
         )
     ).map((r) => r.edition);

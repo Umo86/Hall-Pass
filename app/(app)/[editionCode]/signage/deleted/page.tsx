@@ -47,7 +47,7 @@ export default async function DeletedItemsPage({
   if (!hasFeature(session.actor, "signage")) {
     return <SectionUnavailable feature="signage" backHref={`/${editionCode}/dashboard`} />;
   }
-  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
   const canRestore =
     can(session.actor, { type: "signage.restore" }) && !editionIsReadOnly(ed.edition.status);

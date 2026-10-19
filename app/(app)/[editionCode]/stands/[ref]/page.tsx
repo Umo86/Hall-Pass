@@ -4,6 +4,7 @@ import { inArray } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { users } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { can, type ApprovalStepCtx } from "@/lib/authz";
 import { loadStandBundle, standAuthzCtx } from "@/lib/domain/stand";
 import { departmentNames } from "@/lib/domain/departments";
@@ -68,7 +69,7 @@ export default async function StandDetailPage({
   const tab: TabId = TABS.some((t) => t.id === rawTab) ? (rawTab as TabId) : "overview";
   const sub = await getStandByRef(decodeURIComponent(ref));
   if (!sub) notFound();
-  const bundle = await loadStandBundle(db, sub.id, { organisationId: session.organisation.id });
+  const bundle = await loadStandBundle(db, sub.id, actorScope(session));
   if (!bundle || bundle.edition.code !== editionCode.toUpperCase()) notFound();
 
   const [docs, instanceRows, comments, audit, rules, team] = await Promise.all([
@@ -83,14 +84,14 @@ export default async function StandDetailPage({
   // about it (lib/people.ts): active people only.
   const delegatableUsers = personOptions(
     team,
-    { type: "signoff" },
+    { type: "signoff", editionId: bundle.edition.id },
     {
       organisationId: session.organisation.id,
     },
   );
   const taskAssignees = personOptions(
     team,
-    { type: "task" },
+    { type: "task", editionId: bundle.edition.id },
     {
       organisationId: session.organisation.id,
     },

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SelectNative } from "@/components/ui/select-native";
 import { PersonPicker } from "@/components/people/person-picker";
-import type { PersonOption } from "@/components/people/groups";
+import { openingEvent, type PersonOption } from "@/components/people/groups";
 import { createTask } from "@/app/actions/tasks";
 import { cn } from "@/lib/utils";
 
@@ -59,6 +59,12 @@ export function TaskForm({
   const [pending, start] = useTransition();
   const router = useRouter();
   const showEvents = !entity && events.length > 0;
+  // Users → Events: only people who can open the chosen event are offered
+  // (the current pick stays, labelled). The server re-checks.
+  const [eventId, setEventId] = useState(defaultEventId ?? "");
+  const [assignee, setAssignee] = useState(currentUserId);
+  const chosenEvent = entity ? entity.editionId : showEvents ? eventId : null;
+  const offered = openingEvent(assignees, chosenEvent, assignee);
   // On a phone the fields sit two to a row under the title; Add takes a
   // whole row when it would otherwise be left on its own.
   const middle = 1 + (canAssign ? 1 : 0) + (showEvents ? 1 : 0);
@@ -96,6 +102,8 @@ export function TaskForm({
             description: forWhom ? `For ${forWhom} — they are told.` : entity?.label,
           });
           formRef.current?.reset();
+          setEventId(defaultEventId ?? "");
+          setAssignee(currentUserId);
           titleRef.current?.focus();
           onAdded?.();
           router.refresh();
@@ -121,10 +129,11 @@ export function TaskForm({
         <PersonPicker
           name="assignedToUserId"
           aria-label="Assign to"
-          people={assignees}
+          people={offered}
           meId={currentUserId}
           meDepartmentId={currentDepartmentId}
-          defaultValue={currentUserId}
+          value={assignee}
+          onChange={setAssignee}
           className="h-9 w-full min-w-0 sm:w-56"
         />
       )}
@@ -132,7 +141,8 @@ export function TaskForm({
         <SelectNative
           name="editionId"
           aria-label="Event"
-          defaultValue={defaultEventId ?? ""}
+          value={eventId}
+          onChange={(e) => setEventId(e.target.value)}
           className="h-9 w-full min-w-0 sm:w-52"
         >
           <option value="">No event</option>

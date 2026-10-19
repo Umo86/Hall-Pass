@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { CalendarPlus, Copy, Plus } from "lucide-react";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, editionScope } from "@/lib/authz";
 import { todayInLondon } from "@/lib/today";
 import {
   EVENT_PHASE_LABELS,
@@ -50,7 +50,7 @@ export default async function EventsPage({
   const canCreate = can(session.actor, { type: "events.create" });
   const canSetup = can(session.actor, { type: "event.setup" });
   const canArchive = can(session.actor, { type: "events.archive" });
-  const rows = await listEditions(orgId);
+  const rows = await listEditions(orgId, editionScope(session.actor));
 
   if (rows.length === 0) {
     return (

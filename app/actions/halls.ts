@@ -5,14 +5,14 @@ import { z } from "zod";
 import { and, count, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 import { db, type Tx } from "@/lib/db/client";
 import { editions, events, halls, locations, signageItems } from "@/lib/db/schema";
-import { can, missingAbilityMessage } from "@/lib/authz";
+import { can, missingAbilityMessage, opensEdition } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession, type Session } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { BULK_MAX_HALLS, BULK_MAX_LOCATIONS, parseBulkHalls } from "@/components/halls/bulk";
 
-/** The event, if it belongs to the caller's organisation. */
+/** The event, if it belongs to the caller's organisation and they can open it (Users → Events). */
 async function ownEdition(session: Session, editionId: string) {
   const [row] = await db
     .select({ edition: editions })
@@ -20,7 +20,8 @@ async function ownEdition(session: Session, editionId: string) {
     .innerJoin(events, eq(editions.eventId, events.id))
     .where(and(eq(editions.id, editionId), eq(events.organisationId, session.organisation.id)))
     .limit(1);
-  return row?.edition ?? null;
+  if (!row || !opensEdition(session.actor, row.edition.id)) return null;
+  return row.edition;
 }
 
 type Guarded =

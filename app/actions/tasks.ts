@@ -15,6 +15,7 @@ import { loadStandBundle } from "@/lib/domain/stand";
 import { writeAudit } from "@/lib/audit";
 import { checkPick } from "@/lib/people";
 import { requireSession } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { notify } from "@/lib/notify";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 
@@ -47,23 +48,19 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
     return fail("Invalid request");
   }
   if (parsed.data.editionId) {
-    if (!(await ownEdition(db, session.organisation.id, parsed.data.editionId))) {
+    if (!(await ownEdition(db, session.organisation.id, parsed.data.editionId, session.actor))) {
       return fail("Event not found");
     }
   }
   // A task about an item belongs to the item's event.
   let entityEditionId: string | null = null;
   if (parsed.data.entityType === "signage_item" && parsed.data.entityId) {
-    const item = await loadItemBundle(db, parsed.data.entityId, {
-      organisationId: session.organisation.id,
-    });
+    const item = await loadItemBundle(db, parsed.data.entityId, actorScope(session));
     if (!item || item.item.deletedAt) return fail("Item not found");
     entityEditionId = item.edition.id;
   }
   if (parsed.data.entityType === "stand_submission" && parsed.data.entityId) {
-    const sub = await loadStandBundle(db, parsed.data.entityId, {
-      organisationId: session.organisation.id,
-    });
+    const sub = await loadStandBundle(db, parsed.data.entityId, actorScope(session));
     if (!sub) return fail("Stand not found");
     entityEditionId = sub.edition.id;
   }
@@ -85,8 +82,13 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
   ) {
     return fail("You cannot assign tasks to other people");
   }
+  // The task's event: only someone who can open it can be given it (Users → Events).
+  const taskEditionId = entityEditionId ?? parsed.data.editionId ?? parent?.editionId ?? null;
   if (assignee !== session.user.id) {
-    const pick = await checkPick(db, session.organisation.id, assignee, { type: "task" });
+    const pick = await checkPick(db, session.organisation.id, assignee, {
+      type: "task",
+      editionId: taskEditionId,
+    });
     if (!pick.ok) return fail(pick.error);
   }
 
@@ -96,7 +98,7 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
         .insert(tasks)
         .values({
           organisationId: session.organisation.id,
-          editionId: entityEditionId ?? parsed.data.editionId ?? parent?.editionId ?? null,
+          editionId: taskEditionId,
           parentTaskId: parent?.id ?? null,
           title: parsed.data.title,
           notes: parsed.data.notes?.trim() ? parsed.data.notes.trim() : null,
@@ -126,6 +128,7 @@ export async function createTask(input: unknown): Promise<ActionResult<{ id: str
           title: `Task assigned: ${task.title}`,
           body: parsed.data.dueDate ? `Due ${parsed.data.dueDate}` : undefined,
           link: "/my-work",
+          scope: { organisationId: session.organisation.id, editionId: task.editionId },
         });
       }
       return task.id;
@@ -185,6 +188,7 @@ export async function setTaskStatus(input: unknown): Promise<ActionResult> {
           title: `Done: ${task.title}`,
           body: `${session.user.fullName || session.user.email} completed this task.`,
           link: "/my-work",
+          scope: { organisationId: session.organisation.id, editionId: task.editionId },
         });
       }
     });
@@ -228,7 +232,10 @@ export async function updateTask(input: unknown): Promise<ActionResult> {
     // Only people with access can be given it; keeping the current assignee is always fine.
     let toName: string | null = null;
     if (reassigned) {
-      const pick = await checkPick(db, session.organisation.id, toUserId!, { type: "task" });
+      const pick = await checkPick(db, session.organisation.id, toUserId!, {
+        type: "task",
+        editionId: task.editionId,
+      });
       if (!pick.ok) return fail(pick.error);
       toName = pick.member.name;
     }
@@ -299,6 +306,7 @@ export async function updateTask(input: unknown): Promise<ActionResult> {
           title: `Task assigned: ${title}`,
           body: `${session.user.fullName || session.user.email} gave it to you${moved.length ? `, with ${moved.length} subtask${moved.length === 1 ? "" : "s"}` : ""}.`,
           link: "/my-work",
+          scope: { organisationId: session.organisation.id, editionId: task.editionId },
         });
       }
       // The person it was taken from hears where it went (not when they moved it).
@@ -309,6 +317,7 @@ export async function updateTask(input: unknown): Promise<ActionResult> {
           title: `Task moved to ${toName}: ${title}`,
           body: `${session.user.fullName || session.user.email} gave it to ${toName}.`,
           link: "/my-work",
+          scope: { organisationId: session.organisation.id, editionId: task.editionId },
         });
       }
       return moved.length;
@@ -340,7 +349,11 @@ export async function deleteTask(input: unknown): Promise<ActionResult> {
       ? await canWorkOn(session, task)
       : can(session.actor, {
           type: "task.delete",
-          task: { assignedToUserId: task.assignedToUserId, createdByUserId: task.createdByUserId },
+          task: {
+            assignedToUserId: task.assignedToUserId,
+            createdByUserId: task.createdByUserId,
+            editionId: task.editionId,
+          },
         });
     if (!allowed) return fail("Only the task's creator (or a super admin) can delete it");
     await db.transaction(async (tx) => {

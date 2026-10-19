@@ -8,11 +8,16 @@ import { getItemByRef } from "@/lib/queries/signage";
 import { getStandByRef } from "@/lib/queries/stands";
 import { loadRun } from "@/lib/workflow/persist";
 import { itemPath } from "@/lib/edition-path";
+import { actorScope } from "@/lib/queries/edition-scope";
 
 export const metadata = { title: "Scan" };
 export const dynamic = "force-dynamic";
 
-/** QR resolution: a scanned ref lands on the record, scoping enforced. */
+/**
+ * QR resolution: a scanned ref lands on the record, scoping enforced — an
+ * item in another organisation or an event the person can't open reads as
+ * "not shared with you".
+ */
 export default async function QrResolvePage({ params }: { params: Promise<{ ref: string }> }) {
   const { ref: rawRef } = await params;
   const ref = decodeURIComponent(rawRef).toUpperCase();
@@ -22,7 +27,7 @@ export default async function QrResolvePage({ params }: { params: Promise<{ ref:
   if (ref.startsWith("SIG-") || ref.startsWith("STB-")) {
     const item = await getItemByRef(ref);
     if (item && !item.deletedAt) {
-      const bundle = await loadItemBundle(db, item.id);
+      const bundle = await loadItemBundle(db, item.id, actorScope(session));
       if (bundle && can(session.actor, { type: "signage.view", item: itemAuthzCtx(bundle) })) {
         redirect(
           session.actor.kind === "staff"
@@ -35,7 +40,7 @@ export default async function QrResolvePage({ params }: { params: Promise<{ ref:
   if (ref.startsWith("STD-")) {
     const sub = await getStandByRef(ref);
     if (sub) {
-      const bundle = await loadStandBundle(db, sub.id);
+      const bundle = await loadStandBundle(db, sub.id, actorScope(session));
       if (bundle) {
         const run =
           sub.currentRunNumber > 0

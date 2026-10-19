@@ -5,7 +5,7 @@
  * people whose access end date has passed are never offered, asked or told.
  * The Users list and people's own history pages stay unfiltered.
  */
-import { and, eq, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, or, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import type { Db, Tx } from "@/lib/db/client";
 import { memberships } from "@/lib/db/schema";
 import {
@@ -14,6 +14,14 @@ import {
   type PermissionOverrides,
   type StaffRole,
 } from "@/lib/authz";
+
+/**
+ * The SQL twin of seesEdition (lib/authz.ts): the member can open this event
+ * — a super admin, someone without a list, or the event is on their list.
+ */
+export function memberSeesEditionSql(editionId: string | SQL | AnyColumn): SQL {
+  return sql`(${memberships.role} = 'admin' OR ${memberships.editionIds} IS NULL OR ${editionId} = ANY(${memberships.editionIds}))`;
+}
 
 /** Not suspended, and the access end date (if any) still ahead. */
 export function activeMembership(): SQL {
@@ -28,13 +36,20 @@ export type ActiveMember = {
   role: StaffRole;
   overrides: PermissionOverrides;
   departmentId: string | null;
+  /** Events they work on; null = every event. */
+  editionIds: string[] | null;
 };
 
 /** The organisation's active team members, optionally only some roles or people. */
 export async function activeMembers(
   db: Db | Tx,
   organisationId: string,
-  opts: { roles?: readonly StaffRole[]; userIds?: readonly string[] } = {},
+  opts: {
+    roles?: readonly StaffRole[];
+    userIds?: readonly string[];
+    /** Only people who can open this event (Users → Events). */
+    editionId?: string | null;
+  } = {},
 ): Promise<ActiveMember[]> {
   if (opts.userIds && opts.userIds.length === 0) return [];
   const rows = await db
@@ -43,6 +58,7 @@ export async function activeMembers(
       role: memberships.role,
       overrides: memberships.permissionOverrides,
       departmentId: memberships.departmentId,
+      editionIds: memberships.editionIds,
     })
     .from(memberships)
     .where(
@@ -51,6 +67,7 @@ export async function activeMembers(
         activeMembership(),
         opts.roles ? inArray(memberships.role, [...opts.roles]) : undefined,
         opts.userIds ? inArray(memberships.userId, [...opts.userIds]) : undefined,
+        opts.editionId ? memberSeesEditionSql(opts.editionId) : undefined,
       ),
     );
   return rows.map((r) => ({ ...r, overrides: (r.overrides ?? {}) as PermissionOverrides }));
@@ -64,8 +81,9 @@ export async function activeMembers(
 export async function productionConfirmerIds(
   db: Db | Tx,
   organisationId: string,
+  opts: { editionId?: string | null } = {},
 ): Promise<string[]> {
-  const members = await activeMembers(db, organisationId);
+  const members = await activeMembers(db, organisationId, { editionId: opts.editionId });
   return members.filter((m) => m.role !== "admin" && confirmsForSuppliers(m)).map((m) => m.userId);
 }
 
@@ -74,7 +92,11 @@ export async function activeSignersWithRole(
   db: Db | Tx,
   organisationId: string,
   role: StaffRole,
+  opts: { editionId?: string | null } = {},
 ): Promise<string[]> {
-  const members = await activeMembers(db, organisationId, { roles: [role] });
+  const members = await activeMembers(db, organisationId, {
+    roles: [role],
+    editionId: opts.editionId,
+  });
   return members.filter((m) => !signoffPaused(m.overrides)).map((m) => m.userId);
 }

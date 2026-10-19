@@ -8,6 +8,8 @@ import { db } from "@/lib/db/client";
 import { editions, externalGrants, users } from "@/lib/db/schema";
 import { londonDateOfAccessEnd } from "@/lib/access";
 import { grantStatus, type GrantStatus } from "./summary";
+import type { EditionScope } from "@/lib/authz";
+import { editionScopeSql } from "@/lib/queries/edition-scope";
 
 export type PortalGrant = {
   id: string;
@@ -29,6 +31,8 @@ export type PortalGrant = {
 export async function portalGrantsByScope(
   organisationId: string,
   scopeType: "supplier" | "venue",
+  /** The viewer's events (Users → Events): access to others isn't listed. */
+  scope: EditionScope = null,
 ): Promise<Map<string, PortalGrant[]>> {
   const rows = await db
     .select({
@@ -45,6 +49,7 @@ export async function portalGrantsByScope(
         eq(externalGrants.organisationId, organisationId),
         eq(externalGrants.scopeType, scopeType),
         isNull(externalGrants.revokedAt),
+        editionScopeSql(scope, externalGrants.editionId),
       ),
     )
     .orderBy(desc(externalGrants.createdAt));

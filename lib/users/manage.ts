@@ -34,10 +34,14 @@ import {
   canRemovePerson,
   canRenewInvite,
   canSuspendPerson,
+  editionScope,
   isSuperAdmin,
   parseFeatures,
   personChangeRefusal,
+  seesAllEditions,
+  seesEdition,
   signoffPaused,
+  type Actor,
   type Feature,
   type ManagerScope,
   type PermissionOverrides,
@@ -71,8 +75,11 @@ import { activeMembership } from "./active";
 import {
   mainOnAcceptOutcome,
   mainTakeover,
+  normaliseEditionIds,
   normaliseFeatures,
   overridesFor,
+  removedEditions,
+  sameEditions,
   signoffChanges,
   type AbilityChoices,
   type MainTakeover,
@@ -81,6 +88,7 @@ import {
 import { externalAccountLabel, liveGrantSql, livePartnerGrantsFor } from "./external";
 import {
   canWorkOwnItem,
+  eventHandoverGroups,
   handoverGroups,
   resolveHandover,
   type HandoverChoice,
@@ -146,6 +154,11 @@ export type PersonInput = {
   managerScope?: ManagerScope | null;
   /** Access ends at the end of this London date (YYYY-MM-DD); null = no end; undefined = unchanged. */
   accessEndsOn?: string | null;
+  /**
+   * Events they work on (Users → Events): null = every event, including new
+   * ones; undefined = unchanged on updates (Add always sends it).
+   */
+  editionIds?: string[] | null;
 };
 
 type DepartmentRow = typeof departments.$inferSelect;
@@ -175,6 +188,7 @@ async function loadActor(tx: Tx, ctx: Ctx): Promise<StaffActor> {
     features: parseFeatures(m.features),
     managerScope: m.role === "admin" ? null : m.managerScope,
     signoffDepartmentIds: await departmentIdsForUser(tx, m.organisationId, m.userId),
+    editionIds: m.role === "admin" ? null : (m.editionIds ?? null),
   };
 }
 
@@ -871,6 +885,64 @@ function cleanText(value: string | null | undefined): string | null {
   return v ? v : null;
 }
 
+/** Every event (edition) of the organisation, archived ones included. */
+export async function orgEditionIds(db: Db | Tx, organisationId: string): Promise<string[]> {
+  const rows = await db
+    .select({ id: editions.id })
+    .from(editions)
+    .innerJoin(events, eq(events.id, editions.eventId))
+    .where(eq(events.organisationId, organisationId));
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Every id must be one of the organisation's events (an array can't carry a
+ * foreign key; events are never deleted in the app).
+ */
+async function validEditionIds(
+  tx: Tx,
+  organisationId: string,
+  ids: readonly string[] | null,
+): Promise<void> {
+  if (!ids || ids.length === 0) return;
+  const wanted = [...new Set(ids)];
+  const rows = await tx
+    .select({ id: editions.id })
+    .from(editions)
+    .innerJoin(events, eq(events.id, editions.eventId))
+    .where(and(eq(events.organisationId, organisationId), inArray(editions.id, wanted)));
+  if (rows.length !== wanted.length) {
+    throw new UserError("That event wasn't found — reload the page");
+  }
+}
+
+/**
+ * A limited actor's form lists only the events they can open: the person's
+ * other events are kept as they are (rule 6b then refuses taking any away).
+ */
+function keepHiddenEditions(
+  actor: Actor,
+  before: readonly string[] | null,
+  submitted: string[] | null,
+): string[] | null {
+  if (editionScope(actor) === null || submitted === null) return submitted;
+  return normaliseEditionIds([
+    ...submitted,
+    ...(before ?? []).filter((id) => !seesEdition(actor, id)),
+  ]);
+}
+
+/** "BIRM28", "BIRM28 and LOND28", or null for more (codes for audit words and refusals). */
+async function editionCodesOf(db: Db | Tx, ids: readonly string[]): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const rows = await db
+    .select({ code: editions.code })
+    .from(editions)
+    .where(inArray(editions.id, [...ids]))
+    .orderBy(asc(editions.code));
+  return rows.map((r) => r.code);
+}
+
 /**
  * Invite someone to the team with everything the form asked for: the
  * invitation carries their name, job title, department, role, sections,
@@ -900,6 +972,8 @@ export async function inviteUserTx(
   const overrides = overridesFor(input.role, input.abilities);
   const managerScope = input.role === "admin" ? null : (input.managerScope ?? null);
   const accessEndsAt = accessEndFromInput(input.accessEndsOn) ?? null;
+  // Users → Events: super admins are never limited.
+  const editionIds = input.role === "admin" ? null : normaliseEditionIds(input.editionIds ?? null);
   refuse(
     personChangeRefusal(actor, null, null, {
       role: input.role,
@@ -910,8 +984,10 @@ export async function inviteUserTx(
       managerScope,
       signoffs: input.signoffs,
       accessEndsAt,
+      editionIds,
     }),
   );
+  await validEditionIds(tx, ctx.organisationId, editionIds);
   if (input.role === "viewer" && input.signoffs.length > 0) throw new UserError(VIEWER_SIGNOFF);
   await assertEmailFree(tx, ctx, email);
   const dept = await resolveDepartment(tx, ctx, input);
@@ -926,6 +1002,7 @@ export async function inviteUserTx(
     features,
     managerScope,
     accessEndsAt,
+    editionIds,
     invitedBy: ctx.actorUserId,
     summary: `Invited ${email} as ${roleLabel(input.role)}${dept ? ` (${dept.name})` : ""}`,
   });
@@ -967,7 +1044,12 @@ export async function inviteUserTx(
 export async function updateMemberTx(
   tx: Tx,
   ctx: Ctx,
-  input: PersonInput & { userId: string; signoffPaused: boolean },
+  input: PersonInput & {
+    userId: string;
+    signoffPaused: boolean;
+    /** Who takes their sign-offs in events taken away from them (Users → Events). */
+    eventHandover?: HandoverChoice | null;
+  },
 ): Promise<{
   name: string;
   changed: string[];
@@ -975,6 +1057,8 @@ export async function updateMemberTx(
   signoffsKept: number;
   /** Pending "main when they accept" asks cancelled by making them main now. */
   pendingDropped: PendingDropped[];
+  /** Sign-offs handed over because events were taken away from them. */
+  eventSignoffsMoved: number;
 }> {
   await lockPeople(tx, ctx.organisationId);
   const actor = await loadActor(tx, ctx);
@@ -1015,6 +1099,18 @@ export async function updateMemberTx(
   const overrides = overridesFor(input.role, input.abilities, {
     signoffPaused: input.signoffPaused,
   });
+  // Users → Events: super admins are never limited; undefined = unchanged.
+  const editionsBefore =
+    membership.role === "admin" ? null : normaliseEditionIds(membership.editionIds);
+  const editionIds =
+    input.role === "admin"
+      ? null
+      : input.editionIds === undefined
+        ? editionsBefore
+        : keepHiddenEditions(actor, editionsBefore, normaliseEditionIds(input.editionIds));
+  if (isSelf && !sameEditions(editionsBefore, editionIds)) {
+    throw new UserError("You can't change your own events — ask another super admin");
+  }
   const beforeSignoffs = await currentSignoffs(tx, ctx.organisationId, {
     userId: user.id,
     email: user.email,
@@ -1027,6 +1123,7 @@ export async function updateMemberTx(
     managerScope: membership.managerScope,
     signoffs: beforeSignoffs,
     accessEndsAt: membership.accessEndsAt,
+    editionIds: editionsBefore,
   };
   refuse(
     personChangeRefusal(actor, memberCtx(membership), before, {
@@ -1038,8 +1135,12 @@ export async function updateMemberTx(
       managerScope,
       signoffs: input.signoffs,
       accessEndsAt,
+      editionIds,
     }),
   );
+  if (!sameEditions(editionsBefore, editionIds)) {
+    await validEditionIds(tx, ctx.organisationId, editionIds);
+  }
   if (input.role === "viewer" && input.signoffs.length > 0) throw new UserError(VIEWER_SIGNOFF);
   const losesAdmin = membership.role === "admin" && input.role !== "admin";
   // A new or moved end date on a super admin (an unchanged one isn't re-checked).
@@ -1077,6 +1178,7 @@ export async function updateMemberTx(
       jobTitle,
       managerScope,
       accessEndsAt,
+      editionIds,
     })
     .where(eq(memberships.id, membership.id));
   const wasPaused = signoffPaused(membership.permissionOverrides as PermissionOverrides);
@@ -1103,8 +1205,30 @@ export async function updateMemberTx(
             : "no longer signs off for the department",
         })
       : { moved: 0, kept: 0 };
-  // Main approver routing skips people who can't sign: re-sync when that changes.
-  if (signoff.changed || pausedChanged || roleSignChange) {
+  // Events taken away: their sign-offs there go back to the department (or
+  // to whoever was picked); tasks and items there stay, listed on the page.
+  const eventsChanged = !sameEditions(editionsBefore, editionIds);
+  const lost = eventsChanged
+    ? removedEditions(editionsBefore, editionIds, await orgEditionIds(tx, ctx.organisationId))
+    : [];
+  const leftEvents =
+    lost.length > 0
+      ? await leaveEventsTx(tx, ctx, {
+          actor,
+          userId: user.id,
+          who,
+          editionIds: lost,
+          choice: input.eventHandover,
+        })
+      : { moved: 0 };
+  // Main approver routing skips people who can't sign (or can't open an
+  // event): re-sync when that changes.
+  if (
+    signoff.changed ||
+    pausedChanged ||
+    roleSignChange ||
+    (eventsChanged && signoff.after.length > 0)
+  ) {
     await syncDepartmentSteps(tx, ctx.organisationId);
   }
 
@@ -1118,6 +1242,7 @@ export async function updateMemberTx(
     managerScope: membership.managerScope,
     accessEndsAt: membership.accessEndsAt?.toISOString() ?? null,
     signsOffFor: signoff.before,
+    editionIds: editionsBefore,
   };
   const afterRow = {
     fullName: fullName || user.fullName,
@@ -1129,9 +1254,14 @@ export async function updateMemberTx(
     managerScope,
     accessEndsAt: accessEndsAt?.toISOString() ?? null,
     signsOffFor: signoff.after,
+    editionIds,
   };
   const changed = (Object.keys(beforeRow) as (keyof typeof beforeRow)[]).filter((k) =>
-    k === "signsOffFor" ? signoff.changed : stable(beforeRow[k]) !== stable(afterRow[k]),
+    k === "signsOffFor"
+      ? signoff.changed
+      : k === "editionIds"
+        ? eventsChanged
+        : stable(beforeRow[k]) !== stable(afterRow[k]),
   );
   if (changed.length > 0) {
     await writeAudit(tx, {
@@ -1141,8 +1271,15 @@ export async function updateMemberTx(
       entityId: membership.id,
       action: "settings_change",
       before: beforeRow,
-      after: { ...afterRow, signoffsHandedBack: handed.moved },
-      summary: `${user.email}: ${changed.join(", ")} changed`,
+      after: {
+        ...afterRow,
+        signoffsHandedBack: handed.moved,
+        ...(eventsChanged
+          ? { eventsRemoved: lost.length, eventSignoffsHandedOver: leftEvents.moved }
+          : {}),
+      },
+      // Never event codes in summaries ("events changed"); the ids are in before/after.
+      summary: `${user.email}: ${changed.map((k) => (k === "editionIds" ? "events" : k)).join(", ")} changed`,
       subjectUserId: user.id,
       subjectEmail: user.email,
     });
@@ -1153,6 +1290,7 @@ export async function updateMemberTx(
     signoffsMoved: handed.moved,
     signoffsKept: handed.kept,
     pendingDropped: signoff.pendingDropped,
+    eventSignoffsMoved: leftEvents.moved,
   };
 }
 
@@ -1205,6 +1343,13 @@ export async function updateInviteTx(
         : input.managerScope;
   const endInput = accessEndFromInput(input.accessEndsOn);
   const accessEndsAt = endInput === undefined ? invite.accessEndsAt : endInput;
+  const editionsBefore = invite.role === "admin" ? null : normaliseEditionIds(invite.editionIds);
+  const editionIds =
+    input.role === "admin"
+      ? null
+      : input.editionIds === undefined
+        ? editionsBefore
+        : keepHiddenEditions(actor, editionsBefore, normaliseEditionIds(input.editionIds));
   const beforeSignoffs = await currentSignoffs(tx, ctx.organisationId, {
     userId: null,
     email: invite.invitedEmail,
@@ -1221,6 +1366,7 @@ export async function updateInviteTx(
         managerScope: invite.managerScope,
         signoffs: beforeSignoffs,
         accessEndsAt: invite.accessEndsAt,
+        editionIds: editionsBefore,
       },
       {
         role: input.role,
@@ -1231,9 +1377,13 @@ export async function updateInviteTx(
         managerScope,
         signoffs: input.signoffs,
         accessEndsAt,
+        editionIds,
       },
     ),
   );
+  if (!sameEditions(editionsBefore, editionIds)) {
+    await validEditionIds(tx, ctx.organisationId, editionIds);
+  }
   if (input.role === "viewer" && input.signoffs.length > 0) throw new UserError(VIEWER_SIGNOFF);
   const dept = await resolveDepartment(tx, ctx, input, invite.departmentId);
   const signoff = await setSignoffs(
@@ -1253,6 +1403,7 @@ export async function updateInviteTx(
       features,
       managerScope,
       accessEndsAt,
+      editionIds,
     })
     .where(eq(staffInvites.id, invite.id));
   if (signoff.changed) await syncDepartmentSteps(tx, ctx.organisationId);
@@ -1265,6 +1416,7 @@ export async function updateInviteTx(
     overrides: invite.permissionOverrides,
     managerScope: invite.managerScope,
     accessEndsAt: invite.accessEndsAt?.toISOString() ?? null,
+    editionIds: editionsBefore,
   };
   const afterRow = {
     fullName,
@@ -1275,6 +1427,7 @@ export async function updateInviteTx(
     overrides,
     managerScope,
     accessEndsAt: accessEndsAt?.toISOString() ?? null,
+    editionIds,
   };
   // Only real changes are recorded.
   if (signoff.changed || stable(beforeRow) !== stable(afterRow)) {
@@ -1419,6 +1572,12 @@ export async function applyMainOnAcceptTx(
         accessEndsAt: m.accessEndsAt,
       })
     : false;
+  // Users → Events: a new main limited to some events only gets those
+  // events' default sign-offs; the rest go to everyone in the department.
+  const limitedTo = m && m.role !== "admin" && m.editionIds ? m.editionIds : null;
+  const codes = limitedTo ? await editionCodesOf(tx, limitedTo) : [];
+  const theirEvents =
+    codes.length > 0 && codes.length <= 2 ? codes.join(" and ") : "the events you work on";
   const depts = await tx
     .select()
     .from(departments)
@@ -1483,7 +1642,11 @@ export async function applyMainOnAcceptTx(
           userIds: [old.userId],
           kind: "main_approver",
           title: `${user.name} is now the main approver for ${dept.name}`,
-          body: `They accepted their invitation and take over from you, as arranged when they were invited. ${dept.name} sign-offs that go to the main approver now go to them; any picked for you on an item stay with you.`,
+          body: `They accepted their invitation and take over from you, as arranged when they were invited. ${dept.name} sign-offs that go to the main approver now go to them; any picked for you on an item stay with you.${
+            limitedTo
+              ? ` Sign-offs in events ${user.name} doesn't work on go to everyone in ${dept.name}, you included.`
+              : ""
+          }`,
           link: "/users?tab=departments",
           scope: { organisationId: orgId },
         });
@@ -1492,7 +1655,9 @@ export async function applyMainOnAcceptTx(
         userIds: [user.id],
         kind: "main_approver",
         title: `You're the main approver for ${dept.name}`,
-        body: `${dept.name} sign-offs come to you unless someone else is picked on the item.`,
+        body: limitedTo
+          ? `${dept.name} sign-offs come to you unless someone else is picked on the item — in ${theirEvents}; sign-offs in other events go to everyone in ${dept.name}.`
+          : `${dept.name} sign-offs come to you unless someone else is picked on the item.`,
         link: "/approvals",
         scope: { organisationId: orgId },
       });
@@ -1546,6 +1711,8 @@ async function inviteAccess(tx: Tx, invite: OpenInvite): Promise<PersonAccess> {
       email: invite.invitedEmail,
     }),
     accessEndsAt: invite.accessEndsAt,
+    // A limited manager may renew only an invitation whose events they could give.
+    editionIds: invite.role === "admin" ? null : normaliseEditionIds(invite.editionIds),
   };
 }
 
@@ -1630,6 +1797,7 @@ export async function signoffsWaitingOn(db: Db | Tx, organisationId: string, use
         runNumber: approvalInstances.runNumber,
         stepName: approvalInstances.stepNameSnapshot,
         ref: signageItems.ref,
+        editionId: editions.id,
       })
       .from(approvalInstances)
       .innerJoin(signageItems, eq(signageItems.id, approvalInstances.entityId))
@@ -1651,6 +1819,7 @@ export async function signoffsWaitingOn(db: Db | Tx, organisationId: string, use
         runNumber: approvalInstances.runNumber,
         stepName: approvalInstances.stepNameSnapshot,
         ref: standSubmissions.ref,
+        editionId: editions.id,
       })
       .from(approvalInstances)
       .innerJoin(standSubmissions, eq(standSubmissions.id, approvalInstances.entityId))
@@ -1765,9 +1934,14 @@ export async function signoffsNaming(
   db: Db | Tx,
   organisationId: string,
   userId: string,
-  opts: { departmentIds?: readonly string[] | null } = {},
+  opts: {
+    departmentIds?: readonly string[] | null;
+    /** Only steps on items and stands in these events (Users → Events). */
+    editionIds?: readonly string[] | null;
+  } = {},
 ): Promise<(HandoverStep & { editionId: string })[]> {
   if (opts.departmentIds && opts.departmentIds.length === 0) return [];
+  if (opts.editionIds && opts.editionIds.length === 0) return [];
   const live = or(
     inArray(approvalInstances.status, ["pending", "waiting", "changes_requested"]),
     and(
@@ -1778,11 +1952,62 @@ export async function signoffsNaming(
   const dept: SQL | undefined = opts.departmentIds
     ? inArray(approvalInstances.assignedDepartmentId, [...opts.departmentIds])
     : undefined;
+  const inEvents: SQL | undefined = opts.editionIds
+    ? inArray(editions.id, [...opts.editionIds])
+    : undefined;
   return currentRoundSteps(
     db,
     organisationId,
-    and(eq(approvalInstances.assignedUserId, userId), live, dept)!,
+    and(eq(approvalInstances.assignedUserId, userId), live, dept, inEvents)!,
   );
+}
+
+/**
+ * Open sign-offs waiting on a whole department (naming nobody) in these
+ * events, in departments this person signs for, where nobody else who can
+ * sign for the department can open the event — they become nobody's once
+ * the person stops working on those events (leaveEventsTx).
+ */
+export async function strandedEventSignoffs(
+  db: Db | Tx,
+  organisationId: string,
+  userId: string,
+  editionIds: readonly string[],
+  signers?: ReadonlyMap<string, readonly HandoverSigner[]>,
+): Promise<(HandoverStep & { editionId: string })[]> {
+  if (editionIds.length === 0) return [];
+  const mine = await db
+    .select({ departmentId: approvers.departmentId })
+    .from(approvers)
+    .where(and(eq(approvers.organisationId, organisationId), eq(approvers.userId, userId)));
+  if (mine.length === 0) return [];
+  const others = signers ?? (await departmentSigners(db, organisationId, userId)).signers;
+  const steps = await currentRoundSteps(
+    db,
+    organisationId,
+    and(
+      isNull(approvalInstances.assignedUserId),
+      inArray(approvalInstances.assignedDepartmentId, [
+        ...new Set(mine.map((m) => m.departmentId)),
+      ]),
+      inArray(approvalInstances.status, ["pending", "waiting", "changes_requested"]),
+      inArray(editions.id, [...editionIds]),
+    )!,
+  );
+  return steps
+    .filter(
+      (st) =>
+        st.departmentId &&
+        !(others.get(st.departmentId) ?? []).some((sg) =>
+          seesEdition(signerHolder(sg), st.editionId),
+        ),
+    )
+    .map((st) => ({ ...st, departmentWide: true }));
+}
+
+/** A hand-over signer as the events rule sees them. */
+function signerHolder(sg: Pick<HandoverSigner, "role" | "editionIds">) {
+  return { role: sg.role ?? ("ops" as StaffRole), editionIds: sg.editionIds ?? null };
 }
 
 /**
@@ -1843,7 +2068,7 @@ async function stepsNaming(db: Db | Tx, organisationId: string, userId: string) 
  * Every department's name, and who else can sign for it now (an approver
  * with access, not a viewer, sign-off not paused — canReceiveSignoff).
  */
-async function departmentSigners(
+export async function departmentSigners(
   db: Db | Tx,
   organisationId: string,
   exceptUserId: string,
@@ -1864,6 +2089,7 @@ async function departmentSigners(
         overrides: memberships.permissionOverrides,
         suspendedAt: memberships.suspendedAt,
         accessEndsAt: memberships.accessEndsAt,
+        editionIds: memberships.editionIds,
       })
       .from(approvers)
       .innerJoin(
@@ -1881,7 +2107,13 @@ async function departmentSigners(
     if (!canReceiveSignoff({ ...r, overrides: r.overrides as PermissionOverrides })) continue;
     signers.set(r.departmentId, [
       ...(signers.get(r.departmentId) ?? []),
-      { userId: r.userId!, name: r.name || r.email, isMain: r.isMain },
+      {
+        userId: r.userId!,
+        name: r.name || r.email,
+        isMain: r.isMain,
+        role: r.role,
+        editionIds: r.role === "admin" ? null : (r.editionIds ?? null),
+      },
     ]);
   }
   return { names: new Map(depts.map((d) => [d.id, d.name])), signers };
@@ -1892,6 +2124,8 @@ export type HandoverCandidate = {
   name: string;
   role: StaffRole;
   departmentId: string | null;
+  /** Events they work on; null = every event (a group goes only to someone who can open its events). */
+  editionIds: string[] | null;
 };
 
 /**
@@ -1913,6 +2147,7 @@ export async function handoverCandidates(
       overrides: memberships.permissionOverrides,
       suspendedAt: memberships.suspendedAt,
       accessEndsAt: memberships.accessEndsAt,
+      editionIds: memberships.editionIds,
     })
     .from(memberships)
     .innerJoin(users, eq(users.id, memberships.userId))
@@ -1925,6 +2160,7 @@ export async function handoverCandidates(
       name: r.name || r.email,
       role: r.role,
       departmentId: r.departmentId,
+      editionIds: r.role === "admin" ? null : (r.editionIds ?? null),
     }));
 }
 
@@ -1958,11 +2194,23 @@ export async function handoverPlan(
   ]);
   const stranded = await strandedDepartmentSignoffs(db, organisationId, userId, signers);
   const limitedFor = opts.viewer && !isSuperAdmin(opts.viewer) ? opts.viewer.userId : null;
+  const groups = handoverGroups([...steps, ...stranded], { departmentNames: names, signers });
+  const viewer = opts.viewer;
   return {
-    groups: handoverGroups([...steps, ...stranded], { departmentNames: names, signers }),
+    // A viewer limited to some events never sees refs or links in the others
+    // (still counted, so each group still needs its choice).
+    groups: viewer
+      ? groups.map((g) => ({ ...g, steps: g.steps.map((st) => hideStep(viewer, st)) }))
+      : groups,
     candidates: limitedFor ? candidates.filter((c) => c.userId !== limitedFor) : candidates,
     signersOnly: Boolean(limitedFor),
   };
+}
+
+/** A step in an event the viewer can't open, without anything that names it. */
+function hideStep(viewer: Actor, st: HandoverStep): HandoverStep {
+  if (!st.editionId || seesEdition(viewer, st.editionId)) return st;
+  return { ...st, entityId: "", ref: "", stepName: "", href: null, editionId: "", hidden: true };
 }
 
 /** Items someone still works on: not deleted or complete, in an event being planned or live. */
@@ -1974,8 +2222,54 @@ function workableItem(): SQL {
   )!;
 }
 
-/** The items they own that are still being worked on (the same count everywhere). */
-export async function workableOwnedItems(db: Db | Tx, organisationId: string, userId: string) {
+export type OwnedItem = {
+  id: string;
+  ref: string;
+  name: string;
+  kind: ItemKind;
+  editionId: string;
+  code: string;
+  href: string;
+  hidden?: false;
+};
+/** An owned item in an event the viewer can't open: counted, never named. */
+export type HiddenOwnedItem = { hidden: true; kind: ItemKind };
+
+/**
+ * The items they own that are still being worked on (the same count
+ * everywhere). With a `viewer` limited to some events, items in the others
+ * come back as { hidden: true } (no ref, name or link).
+ */
+export async function workableOwnedItems(
+  db: Db | Tx,
+  organisationId: string,
+  userId: string,
+): Promise<OwnedItem[]>;
+export async function workableOwnedItems(
+  db: Db | Tx,
+  organisationId: string,
+  userId: string,
+  opts: { viewer: Actor },
+): Promise<(OwnedItem | HiddenOwnedItem)[]>;
+export async function workableOwnedItems(
+  db: Db | Tx,
+  organisationId: string,
+  userId: string,
+  opts: { viewer?: Actor } = {},
+): Promise<(OwnedItem | HiddenOwnedItem)[]> {
+  const items = await ownedItemsOf(db, organisationId, userId);
+  const viewer = opts.viewer;
+  if (!viewer) return items;
+  return items.map((it) =>
+    seesEdition(viewer, it.editionId) ? it : { hidden: true as const, kind: it.kind },
+  );
+}
+
+async function ownedItemsOf(
+  db: Db | Tx,
+  organisationId: string,
+  userId: string,
+): Promise<OwnedItem[]> {
   const rows = await db
     .select({
       id: signageItems.id,
@@ -2003,6 +2297,21 @@ export async function workableOwnedItems(db: Db | Tx, organisationId: string, us
   }));
 }
 
+/** Their open tasks (for the person page's note about tasks in events they can't open). */
+export async function openTasksOf(db: Db | Tx, organisationId: string, userId: string) {
+  return db
+    .select({ id: tasks.id, title: tasks.title, editionId: tasks.editionId })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.organisationId, organisationId),
+        eq(tasks.assignedToUserId, userId),
+        ne(tasks.status, "done"),
+      ),
+    )
+    .orderBy(asc(tasks.title));
+}
+
 /** Who can be handed someone's items and tasks: people with access who aren't viewers. */
 export type WorkCandidate = {
   userId: string;
@@ -2014,6 +2323,8 @@ export type WorkCandidate = {
   jobTitle: string | null;
   departmentId: string | null;
   departmentName: string | null;
+  /** Events they work on; null = every event. */
+  editionIds: string[] | null;
 };
 
 export async function workCandidates(
@@ -2032,6 +2343,7 @@ export async function workCandidates(
       jobTitle: memberships.jobTitle,
       departmentId: memberships.departmentId,
       departmentName: departments.name,
+      editionIds: memberships.editionIds,
     })
     .from(memberships)
     .innerJoin(users, eq(users.id, memberships.userId))
@@ -2054,6 +2366,7 @@ export async function workCandidates(
     jobTitle: r.jobTitle?.trim() || null,
     departmentId: r.departmentId,
     departmentName: r.departmentName,
+    editionIds: r.role === "admin" ? null : (r.editionIds ?? null),
   }));
 }
 
@@ -2131,7 +2444,8 @@ export async function getRemovalImpact(
     waiting: {
       count: steps.length,
       now: steps.filter((s) => s.status === "pending").length,
-      refs: [...new Set(steps.map((w) => w.ref))].slice(0, 5),
+      // Refs in events the viewer can't open are never named (handoverPlan hid them).
+      refs: [...new Set(steps.filter((w) => !w.hidden).map((w) => w.ref))].slice(0, 5),
     },
     handover: plan,
     departments: live.map((m) => ({
@@ -2156,10 +2470,18 @@ export async function getRemovalImpact(
 async function clearPlanEntries(
   tx: Tx,
   ctx: Ctx | SystemCtx,
-  opts: { userId: string; who: string; why: string; stepIds: readonly string[] | null },
+  opts: {
+    userId: string;
+    who: string;
+    why: string;
+    stepIds: readonly string[] | null;
+    /** Only items in these events (Users → Events); null/missing = every event. */
+    editionIds?: readonly string[] | null;
+  },
 ): Promise<number> {
   const { userId, stepIds } = opts;
   if (stepIds && stepIds.length === 0) return 0;
+  if (opts.editionIds && opts.editionIds.length === 0) return 0;
   const orgEditions = tx
     .select({ id: editions.id })
     .from(editions)
@@ -2177,6 +2499,7 @@ async function clearPlanEntries(
       and(
         sql`${signageItems.signoffs} @> ${JSON.stringify([{ userId }])}::jsonb`,
         inArray(signageItems.editionId, orgEditions),
+        opts.editionIds ? inArray(signageItems.editionId, [...opts.editionIds]) : undefined,
       ),
     )
     .for("update");
@@ -2248,7 +2571,11 @@ async function moveSignoffs(
   const orgId = ctx.organisationId;
   let moved = 0;
   const told = new Map<string, string[]>();
-  const backToDept = new Map<string, { name: string; refs: string[] }>();
+  // Per department and event: only people who can open the event are told.
+  const backToDept = new Map<
+    string,
+    { departmentId: string; editionId: string | null; name: string; refs: string[] }
+  >();
   const names = new Map<string, string>();
   for (const g of opts.groups) {
     if (!opts.targets.has(g.key)) continue;
@@ -2283,12 +2610,16 @@ async function moveSignoffs(
         if (s.status === "pending") {
           if (target) told.set(target, [...(told.get(target) ?? []), s.ref]);
           else if (g.departmentId) {
-            const entry = backToDept.get(g.departmentId) ?? {
+            const editionId = opts.editionOf.get(s.id) ?? null;
+            const key = `${g.departmentId}|${editionId ?? ""}`;
+            const entry = backToDept.get(key) ?? {
+              departmentId: g.departmentId,
+              editionId,
               name: g.departmentName ?? "the department",
               refs: [],
             };
             entry.refs.push(s.ref);
-            backToDept.set(g.departmentId, entry);
+            backToDept.set(key, entry);
           }
         }
         moved++;
@@ -2327,9 +2658,9 @@ async function moveSignoffs(
       link: "/approvals",
     });
   }
-  for (const [departmentId, { name, refs }] of backToDept) {
+  for (const { departmentId, editionId, name, refs } of backToDept.values()) {
     await notify(tx, {
-      userIds: (await departmentSignerIds(tx, orgId, departmentId)).filter(
+      userIds: (await departmentSignerIds(tx, orgId, departmentId, { editionId })).filter(
         (id) => id !== opts.userId,
       ),
       kind: "delegation",
@@ -2339,6 +2670,7 @@ async function moveSignoffs(
           : `${refs.length} ${name} sign-offs are back with your department`,
       body: `${opts.who} ${opts.why}, so anyone who signs off for ${name} can decide.`,
       link: "/approvals",
+      ...(editionId ? { scope: { organisationId: orgId, editionId } } : {}),
     });
   }
   return moved;
@@ -2375,11 +2707,15 @@ async function handOverSignoffsTx(
   const steps = [...named, ...(await strandedDepartmentSignoffs(tx, orgId, opts.userId, signers))];
   if (steps.length === 0) return 0;
   const groups = handoverGroups(steps, { departmentNames: names, signers });
-  const ok = new Set(candidates.map((c) => c.userId));
+  const ok = new Map(candidates.map((c) => [c.userId, c]));
   const res = resolveHandover(groups, opts.choice, {
     personId: opts.userId,
     who: opts.who,
-    canReceive: (id) => ok.has(id),
+    // Someone who can sign, and open every event the group's sign-offs are in.
+    canReceive: (id, g) => {
+      const c = ok.get(id);
+      return Boolean(c) && seesAllEditions(c!, g.editionIds);
+    },
     fallback: opts.fallback,
     limitedFor: isSuperAdmin(opts.actor) ? null : opts.actor.userId,
   });
@@ -2428,6 +2764,79 @@ export async function stopSigningTx(
     editionOf: new Map(steps.map((s) => [s.id, s.editionId])),
   });
   return { moved, kept: steps.length - moved };
+}
+
+/**
+ * Someone stops working on some events (Users → Events, narrowing): their
+ * item plans there name nobody; sign-offs waiting on them there — and those
+ * waiting on a department only they could open the event for — go back to
+ * the department when someone else there can open the event, else to the
+ * person picked (refused without one). One audit row per item. Tasks and
+ * items they own there stay with them (the person page lists them).
+ */
+export async function leaveEventsTx(
+  tx: Tx,
+  ctx: Ctx,
+  opts: {
+    actor: StaffActor;
+    userId: string;
+    who: string;
+    editionIds: readonly string[];
+    choice?: HandoverChoice | null;
+  },
+): Promise<{ moved: number }> {
+  const orgId = ctx.organisationId;
+  if (opts.editionIds.length === 0) return { moved: 0 };
+  await lockPeople(tx, orgId);
+  const codes = await editionCodesOf(tx, opts.editionIds);
+  const where = codes.length > 0 && codes.length <= 2 ? codes.join(" and ") : null;
+  const why = where ? `no longer works on ${where}` : "no longer works on some events";
+  await clearPlanEntries(tx, ctx, {
+    userId: opts.userId,
+    who: opts.who,
+    why,
+    stepIds: null,
+    editionIds: opts.editionIds,
+  });
+  const named = await signoffsNaming(tx, orgId, opts.userId, { editionIds: opts.editionIds });
+  const [{ names, signers }, candidates] = await Promise.all([
+    departmentSigners(tx, orgId, opts.userId),
+    handoverCandidates(tx, orgId, opts.userId),
+  ]);
+  const stranded = await strandedEventSignoffs(tx, orgId, opts.userId, opts.editionIds, signers);
+  const steps = [...named, ...stranded];
+  if (steps.length === 0) return { moved: 0 };
+  const groups = eventHandoverGroups(steps, { departmentNames: names, signers });
+  const limitedFor = isSuperAdmin(opts.actor) ? null : opts.actor.userId;
+  // Say which event nobody else can open, rather than the generic words.
+  for (const g of groups) {
+    if (opts.choice?.[g.key] || g.defaultTo || (limitedFor && g.departmentId)) continue;
+    if (!g.departmentName) continue;
+    const there = await editionCodesOf(tx, g.editionIds);
+    throw new UserError(
+      `Nobody else in ${g.departmentName} can open ${there.length > 0 && there.length <= 2 ? there.join(" and ") : "those events"} — choose who takes ${opts.who}'s ${g.departmentName} sign-offs there`,
+    );
+  }
+  const ok = new Map(candidates.map((c) => [c.userId, c]));
+  const res = resolveHandover(groups, opts.choice, {
+    personId: opts.userId,
+    who: opts.who,
+    canReceive: (id, g) => {
+      const c = ok.get(id);
+      return Boolean(c) && seesAllEditions(c!, g.editionIds);
+    },
+    limitedFor,
+  });
+  if (!res.ok) throw new UserError(res.error);
+  const moved = await moveSignoffs(tx, ctx, {
+    userId: opts.userId,
+    who: opts.who,
+    why,
+    groups,
+    targets: res.targets,
+    editionOf: new Map(steps.map((st) => [st.id, st.editionId])),
+  });
+  return { moved };
 }
 
 /** The membership and user for someone on the team, or a refusal. */
@@ -2521,6 +2930,8 @@ export async function removeMemberTx(
   workToName: string;
   itemsToYou: number;
   partnerAccessRevoked: number;
+  /** Tasks in events the person picked can't open, given to the remover instead. */
+  tasksToYou: number;
 }> {
   const orgId = ctx.organisationId;
   await lockPeople(tx, orgId);
@@ -2548,10 +2959,20 @@ export async function removeMemberTx(
 
   // Who takes their tasks and items: someone with access who isn't a viewer.
   const workTo = input.workToUserId || ctx.actorUserId;
-  let workAccess: { role: StaffRole; features: Feature[] | null; overrides: PermissionOverrides };
+  let workAccess: {
+    role: StaffRole;
+    features: Feature[] | null;
+    overrides: PermissionOverrides;
+    editionIds: string[] | null;
+  };
   let workToName = ctx.actorName;
   if (workTo === ctx.actorUserId) {
-    workAccess = { role: actor.role, features: actor.features ?? null, overrides: {} };
+    workAccess = {
+      role: actor.role,
+      features: actor.features ?? null,
+      overrides: {},
+      editionIds: actor.editionIds ?? null,
+    };
   } else {
     const candidate = (await workCandidates(tx, orgId, membership.userId)).find(
       (c) => c.userId === workTo,
@@ -2572,10 +2993,11 @@ export async function removeMemberTx(
     fallback: input.handToUserId,
   });
 
-  // Open tasks (subtasks included), one audit row each.
+  // Open tasks (subtasks included), one audit row each. A task in an event
+  // the person picked can't open goes to the remover (a super admin) instead.
   const movedTasks = await tx
-    .update(tasks)
-    .set({ assignedToUserId: workTo })
+    .select({ id: tasks.id, title: tasks.title, editionId: tasks.editionId })
+    .from(tasks)
     .where(
       and(
         eq(tasks.organisationId, orgId),
@@ -2583,8 +3005,14 @@ export async function removeMemberTx(
         ne(tasks.status, "done"),
       ),
     )
-    .returning({ id: tasks.id, title: tasks.title, editionId: tasks.editionId });
+    .for("update");
+  const tasksToWorker: string[] = [];
+  let tasksToYou = 0;
   for (const t of movedTasks) {
+    const to = !t.editionId || seesEdition(workAccess, t.editionId) ? workTo : ctx.actorUserId;
+    if (to === ctx.actorUserId && workTo !== ctx.actorUserId) tasksToYou++;
+    if (to === workTo && workTo !== ctx.actorUserId) tasksToWorker.push(t.title);
+    await tx.update(tasks).set({ assignedToUserId: to }).where(eq(tasks.id, t.id));
     await writeAudit(tx, {
       organisationId: orgId,
       editionId: t.editionId,
@@ -2593,19 +3021,19 @@ export async function removeMemberTx(
       entityId: t.id,
       action: "update",
       before: { assignedToUserId: membership.userId },
-      after: { assignedToUserId: workTo },
-      summary: `Task “${t.title}” moved to ${workToName} after ${who} left the team`,
+      after: { assignedToUserId: to },
+      summary: `Task “${t.title}” moved to ${to === workTo ? workToName : ctx.actorName} after ${who} left the team`,
       subjectUserId: membership.userId,
     });
   }
-  if (movedTasks.length > 0 && workTo !== ctx.actorUserId) {
+  if (tasksToWorker.length > 0) {
     await notify(tx, {
       userIds: [workTo],
       kind: "task_assigned",
       title:
-        movedTasks.length === 1
-          ? `A task is now yours: ${movedTasks[0].title}`
-          : `${movedTasks.length} tasks are now yours`,
+        tasksToWorker.length === 1
+          ? `A task is now yours: ${tasksToWorker[0]}`
+          : `${tasksToWorker.length} tasks are now yours`,
       body: `${who} left the team; ${ctx.actorName} gave you their open tasks.`,
       link: "/my-work",
     });
@@ -2616,7 +3044,11 @@ export async function removeMemberTx(
   let itemsToYou = 0;
   const toWorker: string[] = [];
   for (const it of owned) {
-    const to = canWorkOwnItem(workAccess, it.kind) ? workTo : ctx.actorUserId;
+    // Only to someone who can work on that kind of item and open its event.
+    const to =
+      canWorkOwnItem(workAccess, it.kind) && seesEdition(workAccess, it.editionId)
+        ? workTo
+        : ctx.actorUserId;
     if (to === ctx.actorUserId && workTo !== ctx.actorUserId) itemsToYou++;
     if (to === workTo && workTo !== ctx.actorUserId) toWorker.push(it.ref);
     await tx.update(signageItems).set({ ownerUserId: to }).where(eq(signageItems.id, it.id));
@@ -2712,6 +3144,7 @@ export async function removeMemberTx(
       tasksMovedTo: workTo,
       itemsMovedTo: workTo,
       itemsMovedToRemover: itemsToYou,
+      tasksMovedToRemover: tasksToYou,
       signoffsHandedOver: handedOver,
       partnerAccessRevoked: grantsRevoked,
     },
@@ -2727,6 +3160,7 @@ export async function removeMemberTx(
     workToName,
     itemsToYou,
     partnerAccessRevoked: grantsRevoked,
+    tasksToYou,
   };
 }
 

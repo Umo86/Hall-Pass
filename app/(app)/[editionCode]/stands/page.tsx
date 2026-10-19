@@ -56,7 +56,7 @@ export default async function StandsPage({
     return <SectionUnavailable feature="stands" backHref={`/${editionCode}/dashboard`} />;
   }
   const { status } = await searchParams;
-  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
   const rows = await listStandRows(ed.edition.id);
   const deadlines = await editionForDeadlines(ed.edition.id);

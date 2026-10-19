@@ -1,3 +1,4 @@
+import type { EditionScope } from "@/lib/authz";
 import { Handshake } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { standsEnabled } from "@/lib/config";
@@ -131,17 +132,20 @@ function GrantTable({ rows, emailOn }: { rows: GrantRow[]; emailOn: boolean }) {
 /** Users → External: venues, suppliers and sponsors with access to an event. */
 export async function ExternalTab({
   organisationId,
+  scope,
   params,
   lastEvent,
 }: {
   organisationId: string;
+  /** The viewer's events (Users → Events): partner access elsewhere isn't shown. */
+  scope: EditionScope;
   params: { event?: string; invite?: string; role?: string; scopeId?: string; edition?: string };
   lastEvent: string | null;
 }) {
   const [eventList, grants, scopes] = await Promise.all([
-    externalEvents(db, organisationId, todayInLondon()),
-    listGrants(db, organisationId),
-    externalScopes(db, organisationId),
+    externalEvents(db, organisationId, todayInLondon(), scope),
+    listGrants(db, organisationId, scope),
+    externalScopes(db, organisationId, scope),
   ]);
   const emailOn = invitesCanBeEmailed();
   const current = defaultEventId(eventList, lastEvent);

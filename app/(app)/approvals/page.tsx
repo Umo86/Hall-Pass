@@ -4,7 +4,8 @@ import { CheckCircle2, ImageOff, SearchX } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { editions, events } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, type EditionScope } from "@/lib/authz";
+import { editionScopeSql, sessionScope } from "@/lib/queries/edition-scope";
 import {
   countPendingForUser,
   listOverdueArtwork,
@@ -20,6 +21,8 @@ import {
   type ArtworkFilter,
 } from "@/lib/queries/artwork-approvals";
 import { listDepartmentCards } from "@/lib/users/queries";
+import { listEditions } from "@/lib/queries/editions";
+import { eventsSummary, eventsTitle } from "@/lib/users/rules";
 import { formatDate } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import { WhoSignsOff } from "@/components/approvals/approvers-editor";
@@ -86,7 +89,14 @@ export default async function ApprovalsPage({ searchParams }: { searchParams: Pr
     .select({ id: editions.id, code: editions.code, name: editions.name })
     .from(editions)
     .innerJoin(events, eq(editions.eventId, events.id))
-    .where(and(eq(events.organisationId, session.organisation.id), ne(editions.status, "archived")))
+    .where(
+      and(
+        eq(events.organisationId, session.organisation.id),
+        ne(editions.status, "archived"),
+        // Users → Events: only their events (a ?event= they can't open is ignored).
+        editionScopeSql(sessionScope(session), editions.id),
+      ),
+    )
     .orderBy(editions.openStart);
   const eventCode = (params.event ?? params.show)?.toUpperCase();
   const show = shows.find((s) => s.code === eventCode) ?? null;
@@ -134,13 +144,18 @@ export default async function ApprovalsPage({ searchParams }: { searchParams: Pr
       {tab === "artwork" && (
         <AllArtwork
           organisationId={session.organisation.id}
+          scope={sessionScope(session)}
           params={params}
           shows={shows}
           show={show}
         />
       )}
       {tab === "approvers" && (
-        <ApproversTab organisationId={session.organisation.id} canManage={canManage} />
+        <ApproversTab
+          organisationId={session.organisation.id}
+          scope={sessionScope(session)}
+          canManage={canManage}
+        />
       )}
     </Page>
   );
@@ -340,7 +355,10 @@ async function WaitingOnMe({
               }
             />
           ) : (
-            <NothingWaiting organisationId={session.organisation.id} />
+            <NothingWaiting
+              organisationId={session.organisation.id}
+              scope={sessionScope(session)}
+            />
           )
         }
       />
@@ -348,8 +366,14 @@ async function WaitingOnMe({
   );
 }
 
-async function NothingWaiting({ organisationId }: { organisationId: string }) {
-  const others = await countItemsInSignoff(organisationId);
+async function NothingWaiting({
+  organisationId,
+  scope,
+}: {
+  organisationId: string;
+  scope: EditionScope;
+}) {
+  const others = await countItemsInSignoff(organisationId, scope);
   return (
     <EmptyState
       icon={CheckCircle2}
@@ -468,11 +492,14 @@ async function Everyone({
 
 async function AllArtwork({
   organisationId,
+  scope,
   params,
   shows,
   show,
 }: {
   organisationId: string;
+  /** The viewer's events (Users → Events). */
+  scope: EditionScope;
   params: Params;
   shows: Show[];
   show: Show | null;
@@ -487,6 +514,7 @@ async function AllArtwork({
     ? {
         ...(await listOverdueArtwork({
           organisationId,
+          scope,
           editionId: show?.id ?? null,
           filter,
           search: params.q,
@@ -495,6 +523,7 @@ async function AllArtwork({
       }
     : await listArtworkApprovals({
         organisationId,
+        scope,
         editionId: show?.id ?? null,
         filter,
         search: params.q,
@@ -630,13 +659,20 @@ async function AllArtwork({
 
 async function ApproversTab({
   organisationId,
+  scope,
   canManage,
 }: {
   organisationId: string;
+  /** The viewer's events: chips name only those (Users → Events). */
+  scope: EditionScope;
   canManage: boolean;
 }) {
   // Read-only here: departments and approvers are managed in Users → Departments.
   const depts = await listDepartmentCards(db, organisationId);
+  const codes = new Map(
+    (await listEditions(organisationId, scope)).map((e) => [e.edition.id, e.edition.code]),
+  );
+  const codeOf = (id: string) => codes.get(id) ?? null;
   return (
     <WhoSignsOff
       canManage={canManage}
@@ -654,6 +690,12 @@ async function ApproversTab({
             isMain: a.isMain,
             mainOnAccept: a.mainOnAccept,
             state: a.state,
+            events: a.editionIds
+              ? {
+                  text: eventsSummary(a.editionIds, codeOf),
+                  title: eventsTitle(a.editionIds, codeOf),
+                }
+              : null,
           })),
         }))}
     />

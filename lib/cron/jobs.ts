@@ -29,6 +29,8 @@ import { brandName, standsEnabled } from "@/lib/config";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { writeAudit } from "@/lib/audit";
 import { activeMembership } from "@/lib/users/active";
+import { editionScope, type EditionScope } from "@/lib/authz";
+import { editionScopeSql } from "@/lib/queries/edition-scope";
 import { accessEndPlan, londonDateOfAccessEnd } from "@/lib/access";
 import { signoffsWaitingOn, stopSigningTx, strandedDepartmentSignoffs } from "@/lib/users/manage";
 import { departmentNames, syncDepartmentSteps } from "@/lib/domain/departments";
@@ -77,6 +79,45 @@ async function recordSend(
     .returning();
   return rows.length > 0;
 }
+
+/** Active staff of these roles with the events they work on (Users → Events). */
+async function staffByRoles(
+  organisationId: string,
+  roles: (typeof memberships.$inferSelect)["role"][],
+): Promise<{ userId: string; scope: EditionScope }[]> {
+  const rows = await db
+    .select({
+      userId: memberships.userId,
+      role: memberships.role,
+      editionIds: memberships.editionIds,
+    })
+    .from(memberships)
+    .where(
+      and(
+        eq(memberships.organisationId, organisationId),
+        inArray(memberships.role, roles),
+        activeMembership(),
+      ),
+    );
+  return rows.map((r) => ({ userId: r.userId, scope: editionScope(r) }));
+}
+
+/** People grouped by the same events (null = every event), for messages built per scope. */
+function byScope<T extends { scope: EditionScope }>(
+  people: readonly T[],
+): { scope: EditionScope; people: T[] }[] {
+  const groups = new Map<string, { scope: EditionScope; people: T[] }>();
+  for (const p of people) {
+    const key = p.scope === null ? "*" : [...p.scope].sort().join(",");
+    const g = groups.get(key) ?? { scope: p.scope, people: [] };
+    g.people.push(p);
+    groups.set(key, g);
+  }
+  return [...groups.values()];
+}
+
+const inScope = (scope: EditionScope, editionId: string | null | undefined) =>
+  scope === null || (editionId != null && scope.includes(editionId));
 
 async function staffUserIdsByRoles(
   organisationId: string,
@@ -306,6 +347,8 @@ export async function escalation(today: string): Promise<JobResult> {
               : (instance.assignedRole ?? "a named person")
         }; no decision since ${dueIso}.`,
         link: row.link,
+        // Users → Events: nobody who can't open the event is told.
+        scope: { organisationId: row.organisationId, editionId: row.editionId },
       });
       await writeAudit(tx, {
         organisationId: row.organisationId,
@@ -465,6 +508,7 @@ export async function standChasers(today: string): Promise<JobResult> {
           title: `Chased: ${row.exhibitor.companyName} (stand ${row.exhibitor.standNumber})`,
           body: subject,
           link: `/${row.edition.code}/stands`,
+          scope: { organisationId: orgId, editionId: row.edition.id },
         });
       });
     }
@@ -509,6 +553,7 @@ export async function documentExpiry(today: string): Promise<JobResult> {
         title: `Insurance expires before the event: ${doc.fileName}`,
         body: `Expires ${doc.expiresAt} — build ends ${edition.buildEnd}.`,
         link: `/${edition.code}/stands`,
+        scope: { organisationId: orgId, editionId: edition.id },
       });
     });
     sent++;
@@ -523,40 +568,53 @@ export async function dailyDigest(today: string): Promise<JobResult> {
   // Loaded once for every organisation (it resolves each step's assignees).
   const pending = await pendingWithContext();
   for (const org of orgs) {
-    const orgPending = pending.filter((p) => p.organisationId === org.id);
-    const overdue = orgPending.filter(
-      (p) => p.instance.dueAt && p.instance.dueAt.toISOString().slice(0, 10) < today,
-    );
-    const yesterday = new Date(new Date(`${today}T00:00:00Z`).getTime() - 86_400_000);
-    const [{ n: activity }] = await db
-      .select({ n: count() })
-      .from(auditLog)
-      .where(and(eq(auditLog.organisationId, org.id), gte(auditLog.createdAt, yesterday)));
-    if (Number(activity) === 0 && overdue.length === 0) continue; // nothing to say
+    // Users → Events: one digest per set of events, about those events only
+    // (everyone without a list shares the whole organisation's, as before).
+    const groups = byScope(await staffByRoles(org.id, ["ops", "admin"]));
+    for (const group of groups.length > 0 ? groups : [{ scope: null, people: [] }]) {
+      const orgPending = pending.filter(
+        (p) => p.organisationId === org.id && inScope(group.scope, p.editionId),
+      );
+      const overdue = orgPending.filter(
+        (p) => p.instance.dueAt && p.instance.dueAt.toISOString().slice(0, 10) < today,
+      );
+      const yesterday = new Date(new Date(`${today}T00:00:00Z`).getTime() - 86_400_000);
+      const [{ n: activity }] = await db
+        .select({ n: count() })
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.organisationId, org.id),
+            gte(auditLog.createdAt, yesterday),
+            editionScopeSql(group.scope, auditLog.editionId, { allowNull: true }),
+          ),
+        );
+      if (Number(activity) === 0 && overdue.length === 0) continue; // nothing to say
 
-    const recipients = await staffUserIdsByRoles(org.id, ["ops", "admin"]);
-    const title = `Daily digest — ${orgPending.length} open sign-offs, ${overdue.length} overdue`;
-    const body = [
-      `Open sign-offs: ${orgPending.length}`,
-      `Overdue: ${overdue.length}`,
-      overdue
-        .slice(0, 5)
-        .map((o) => ` · ${o.ref} — ${o.instance.stepNameSnapshot}`)
-        .join("\n"),
-      `Activity in the last day: ${activity} change(s)`,
-    ]
-      .filter(Boolean)
-      .join("\n");
-    await db.transaction(async (tx) => {
-      await notify(tx, {
-        userIds: recipients,
-        kind: "daily_digest",
-        title,
-        body,
-        link: "/approvals",
+      const recipients = group.people.map((p) => p.userId);
+      const title = `Daily digest — ${orgPending.length} open sign-offs, ${overdue.length} overdue`;
+      const body = [
+        `Open sign-offs: ${orgPending.length}`,
+        `Overdue: ${overdue.length}`,
+        overdue
+          .slice(0, 5)
+          .map((o) => ` · ${o.ref} — ${o.instance.stepNameSnapshot}`)
+          .join("\n"),
+        `Activity in the last day: ${activity} change(s)`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      await db.transaction(async (tx) => {
+        await notify(tx, {
+          userIds: recipients,
+          kind: "daily_digest",
+          title,
+          body,
+          link: "/approvals",
+        });
       });
-    });
-    sent++;
+      sent++;
+    }
   }
   return { job: "daily_digest", sent, skipped: 0 };
 }
@@ -832,16 +890,17 @@ export async function orphanArtworkSweep(today: string): Promise<JobResult> {
  * Who looks after this person's access: the organisation's super admins and
  * the managers whose scope covers them (active people only).
  */
-async function accessOverseerIds(
+async function accessOverseers(
   exec: Db | Tx,
   person: { userId: string; organisationId: string; departmentId: string | null },
-): Promise<string[]> {
+): Promise<{ userId: string; scope: EditionScope }[]> {
   const rows = await exec
     .select({
       userId: memberships.userId,
       role: memberships.role,
       managerScope: memberships.managerScope,
       departmentId: memberships.departmentId,
+      editionIds: memberships.editionIds,
     })
     .from(memberships)
     .where(and(eq(memberships.organisationId, person.organisationId), activeMembership()));
@@ -855,7 +914,14 @@ async function accessOverseerIds(
             person.departmentId != null &&
             r.departmentId === person.departmentId)),
     )
-    .map((r) => r.userId);
+    .map((r) => ({ userId: r.userId, scope: editionScope(r) }));
+}
+
+async function accessOverseerIds(
+  exec: Db | Tx,
+  person: { userId: string; organisationId: string; departmentId: string | null },
+): Promise<string[]> {
+  return (await accessOverseers(exec, person)).map((o) => o.userId);
 }
 
 /**
@@ -937,33 +1003,43 @@ export async function endExpiredAccess(today: string, now = new Date()): Promise
       if (total > 0) {
         const refs = (list: { ref: string }[]) =>
           [...new Set(list.map((w) => w.ref))].slice(0, 5).join(", ");
-        const strandedDepts = [
-          ...new Set(
-            (
-              await departmentNames(
-                tx,
-                stranded.map((st) => st.departmentId),
-              )
-            ).values(),
-          ),
-        ];
-        const body = [
-          waiting.length > 0
-            ? `Hand ${waiting.length === 1 ? "it" : "them"} to someone else: ${refs(waiting)}.`
-            : null,
-          stranded.length > 0
-            ? `Nobody else signs off for ${strandedDepts.join(" or ") || "their department"}, so ${stranded.length === 1 ? "this sign-off waits" : "these sign-offs wait"} on nobody: ${refs(stranded)} — add an approver or hand ${stranded.length === 1 ? "it" : "them"} to someone from the item.`
-            : null,
-        ]
-          .filter(Boolean)
-          .join(" ");
-        await notify(tx, {
-          userIds: await accessOverseerIds(tx, m),
-          kind: "access_ended",
-          title: `${who}'s access has ended — ${total === 1 ? "a sign-off still waits" : `${total} sign-offs still wait`} on them`,
-          body,
-          link: `/users/${m.userId}`,
-        });
+        // Users → Events: each overseer is told the refs in the events they
+        // can open, and only how many more there are elsewhere.
+        for (const group of byScope(await accessOverseers(tx, m))) {
+          const seenWaiting = waiting.filter((w) => inScope(group.scope, w.editionId));
+          const seenStranded = stranded.filter((st) => inScope(group.scope, st.editionId));
+          const hidden = total - seenWaiting.length - seenStranded.length;
+          const strandedDepts = [
+            ...new Set(
+              (
+                await departmentNames(
+                  tx,
+                  seenStranded.map((st) => st.departmentId),
+                )
+              ).values(),
+            ),
+          ];
+          const body = [
+            seenWaiting.length > 0
+              ? `Hand ${seenWaiting.length === 1 ? "it" : "them"} to someone else: ${refs(seenWaiting)}.`
+              : null,
+            seenStranded.length > 0
+              ? `Nobody else signs off for ${strandedDepts.join(" or ") || "their department"}, so ${seenStranded.length === 1 ? "this sign-off waits" : "these sign-offs wait"} on nobody: ${refs(seenStranded)} — add an approver or hand ${seenStranded.length === 1 ? "it" : "them"} to someone from the item.`
+              : null,
+            hidden > 0
+              ? `${seenWaiting.length + seenStranded.length > 0 ? "And" : "There are"} ${hidden} more in events you can't open.`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" ");
+          await notify(tx, {
+            userIds: group.people.map((p) => p.userId),
+            kind: "access_ended",
+            title: `${who}'s access has ended — ${total === 1 ? "a sign-off still waits" : `${total} sign-offs still wait`} on them`,
+            body,
+            link: `/users/${m.userId}`,
+          });
+        }
       }
     });
     orgs.add(m.organisationId);

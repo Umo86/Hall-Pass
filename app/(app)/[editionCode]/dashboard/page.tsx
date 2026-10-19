@@ -62,7 +62,7 @@ export default async function DashboardPage({
   const session = await requireStaffSession();
   const actor = session.actor;
   const { editionCode } = await params;
-  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
   const { notice } = await searchParams;
   const edition = ed.edition;

@@ -31,25 +31,35 @@ import { countPendingForUser, pendingEntityIdsForUser } from "@/lib/queries/appr
 import { myTaskSummary } from "@/lib/queries/tasks";
 import { isApprovalRequestKind } from "@/lib/notification-kinds";
 import { REPORT_GROUPS } from "@/components/reports/report-rules";
+import { editionScopeSql, sessionScope } from "@/lib/queries/edition-scope";
 
 export const dynamic = "force-dynamic";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const session = await requireStaffSession();
   const actor = session.actor;
+  // Users → Events: only the events they work on, and notifications about them.
+  const scope = sessionScope(session);
+  const aboutTheirEvents = editionScopeSql(scope, notifications.editionId, { allowNull: true });
   const [editions, recentNotifications, [unread], department, signoffs, myTasks] =
     await Promise.all([
-      listEditions(session.organisation.id),
+      listEditions(session.organisation.id, scope),
       db
         .select()
         .from(notifications)
-        .where(eq(notifications.userId, session.user.id))
+        .where(and(eq(notifications.userId, session.user.id), aboutTheirEvents))
         .orderBy(desc(notifications.createdAt))
         .limit(12),
       db
         .select({ n: count() })
         .from(notifications)
-        .where(and(eq(notifications.userId, session.user.id), isNull(notifications.readAt))),
+        .where(
+          and(
+            eq(notifications.userId, session.user.id),
+            isNull(notifications.readAt),
+            aboutTheirEvents,
+          ),
+        ),
       actor.departmentId
         ? db.query.departments.findFirst({ where: eq(departments.id, actor.departmentId) })
         : Promise.resolve(undefined),

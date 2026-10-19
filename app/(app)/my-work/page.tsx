@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { X } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can, isSuperAdmin } from "@/lib/authz";
+import { can, editionScope, isSuperAdmin } from "@/lib/authz";
 import { loadTeam, peopleFor, personOptions } from "@/lib/people";
 import {
   countPendingForUser,
@@ -42,7 +42,9 @@ export default async function MyWorkPage({
   const session = await requireStaffSession();
   // A brand-new organisation starts by creating its first event; between
   // seasons (every event archived) My Work stays open with a card instead.
-  const eventCounts = await countEvents(session.organisation.id);
+  // Users → Events: only the events they work on.
+  const eventScope = editionScope(session.actor);
+  const eventCounts = await countEvents(session.organisation.id, eventScope);
   const activeEvents = eventCounts.active;
   const start = noEventsStart({
     totalEvents: eventCounts.total,
@@ -64,7 +66,7 @@ export default async function MyWorkPage({
 
   // Events for the task form and the filter; the form starts on the event
   // last opened (or the next one coming up).
-  const editions = await listEditions(orgId);
+  const editions = await listEditions(orgId, eventScope);
   const live = editions.filter((e) => e.edition.status !== "archived");
   const filterEvent = live.find((e) => e.edition.code === event?.toUpperCase()) ?? null;
   const cookieStore = await cookies();
@@ -83,7 +85,7 @@ export default async function MyWorkPage({
   const [signoffs, oldest, teamSignoffs, taskSummary, board, team] = await Promise.all([
     countPendingForUser(session),
     oldestPendingForUser(session, 3),
-    canChase ? teamPendingSummary(orgId) : Promise.resolve(null),
+    canChase ? teamPendingSummary(orgId, eventScope) : Promise.resolve(null),
     myTaskSummary({ organisationId: orgId, userId: session.user.id, today }),
     boardTasks({
       organisationId: orgId,
@@ -91,6 +93,7 @@ export default async function MyWorkPage({
       isAdmin,
       scope,
       editionId: filterEvent?.edition.id ?? null,
+      editionScope: eventScope,
     }),
     loadTeam(db, orgId),
   ]);

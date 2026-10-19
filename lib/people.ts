@@ -32,6 +32,7 @@ import {
   featureForAction,
   hasFeature,
   parseFeatures,
+  seesEdition,
   signoffPaused,
   type Feature,
   type ManagerScope,
@@ -67,6 +68,8 @@ export type TeamMember = {
   accessEndsAt: Date | null;
   /** Departments they sign off for (Users → Departments). */
   signoffDepartmentIds: string[];
+  /** Events they work on (Users → Events); null = every event. Never set for super admins. */
+  editionIds: string[] | null;
 };
 
 export type OwnableKind = "signage" | "sponsorship_item" | "stand_design" | "stand_panel";
@@ -74,19 +77,23 @@ export type OwnableKind = "signage" | "sponsorship_item" | "stand_design" | "sta
 /** What owning an item depends on: its kind, and whether it is a sponsor's. */
 export type OwnableItem = { kind: OwnableKind; sponsored?: boolean };
 
+/**
+ * What someone is picked for. `editionId`: the event the work is in — only
+ * people who can open it are offered (Users → Events).
+ */
 export type PeoplePurpose =
   /** Owns this kind of item: can edit it, upload its artwork and send it for sign-off. */
-  | { type: "owner"; item: OwnableItem }
+  | { type: "owner"; item: OwnableItem; editionId?: string | null }
   /** Can be handed a sign-off (delegation, named approver); in a department when given. */
-  | { type: "signoff"; departmentId?: string | null }
+  | { type: "signoff"; departmentId?: string | null; editionId?: string | null }
   /** Can be given a task: any active member. */
-  | { type: "task" }
+  | { type: "task"; editionId?: string | null }
   /** Confirms print, delivery and install for suppliers (signage.confirm). */
-  | { type: "confirm" };
+  | { type: "confirm"; editionId?: string | null };
 
 /** Why someone can't be picked: a code for messages and a short label for pickers. */
 export type Refusal = {
-  code: "left" | "suspended" | "ended" | "section" | "cannot";
+  code: "left" | "suspended" | "ended" | "event" | "section" | "cannot";
   label: string;
 };
 
@@ -102,6 +109,7 @@ export function memberActor(m: TeamMember, organisationId: string): StaffActor {
     departmentId: m.departmentId,
     features: m.features,
     managerScope: m.role === "admin" ? null : m.managerScope,
+    editionIds: m.role === "admin" ? null : (m.editionIds ?? null),
   };
 }
 
@@ -216,6 +224,12 @@ export function refusalFor(
   m: TeamMember | null | undefined,
   opts: { organisationId: string; now?: Date },
 ): Refusal | null {
+  // Events (Users → Events): checked first after access.
+  if (purpose.editionId && m && !accessRefusal(m, opts.now ?? new Date())) {
+    if (!seesEdition(m, purpose.editionId)) {
+      return { code: "event", label: "Can't open this event" };
+    }
+  }
   switch (purpose.type) {
     case "owner":
       return ownerRefusal(m, purpose.item, opts);
@@ -237,6 +251,8 @@ export function refusalMessage(name: string, refusal: Refusal, purpose: PeoplePu
       return `${name}'s access is suspended — pick someone else`;
     case "ended":
       return `${name}'s access has ended — pick someone else`;
+    case "event":
+      return `${name} can't open this event — pick someone else`;
     case "section":
       return `${name} ${refusal.label.replace(/^No longer has /, "doesn't have ")} — pick someone else`;
     case "cannot":
@@ -256,6 +272,8 @@ function optionFor(m: TeamMember, unavailable: string | null): PersonOption {
     departmentId: m.departmentId,
     departmentName: m.departmentName,
     unavailable,
+    // Only for people limited to some events (the task form filters by event).
+    ...(m.role !== "admin" && m.editionIds ? { editionIds: m.editionIds } : {}),
   };
 }
 
@@ -341,6 +359,7 @@ export async function loadTeam(exec: Db | Tx, organisationId: string): Promise<T
         managerScope: memberships.managerScope,
         suspendedAt: memberships.suspendedAt,
         accessEndsAt: memberships.accessEndsAt,
+        editionIds: memberships.editionIds,
         fullName: users.fullName,
         email: users.email,
       })
@@ -373,6 +392,7 @@ export async function loadTeam(exec: Db | Tx, organisationId: string): Promise<T
     suspendedAt: r.suspendedAt,
     accessEndsAt: r.accessEndsAt,
     signoffDepartmentIds: signs.get(r.userId) ?? [],
+    editionIds: r.role === "admin" ? null : (r.editionIds ?? null),
   }));
 }
 
@@ -443,14 +463,67 @@ export function ownerRoleOf(m: { role: StaffRole }): "ops" | "marketing" | null 
   return m.role === "ops" || m.role === "marketing" ? m.role : null;
 }
 
-/** Active people who may invite partners (partners.invite; super admins included). */
+/**
+ * Active people who may invite partners (partners.invite; super admins
+ * included) — for an event, only those who can open it.
+ */
 export async function partnerInviters(
   exec: Db | Tx,
   organisationId: string,
-  opts: { team?: TeamMember[] } = {},
+  opts: { team?: TeamMember[]; editionId?: string | null } = {},
 ): Promise<TeamMember[]> {
   const team = opts.team ?? (await loadTeam(exec, organisationId));
-  return team.filter((m) => !accessRefusal(m, new Date()) && abilityOn(m, "partners.invite"));
+  return team.filter(
+    (m) =>
+      !accessRefusal(m, new Date()) &&
+      abilityOn(m, "partners.invite") &&
+      (!opts.editionId || seesEdition(m, opts.editionId)),
+  );
+}
+
+/**
+ * A sign-off nobody can reach (Users → Events): its department has people
+ * who can sign, but none of them can open the item's event — or the person
+ * it names can't open it. Tells active super admins and people who manage
+ * departments (notify then drops anyone who can't open the event), once, on
+ * the transition that caused it. Kind signoff_stuck: always sent, never
+ * shown as Done. Never sent when nobody can sign for the department at all
+ * (as before).
+ */
+export async function noticeNoSignerForEvent(
+  tx: Tx,
+  opts: {
+    organisationId: string;
+    item: { id: string; ref: string; name: string; kind: string };
+    edition: { id: string; code: string };
+    /** The department the step waits on, or the person it names. */
+    departmentName?: string | null;
+    personName?: string | null;
+    team?: TeamMember[];
+  },
+): Promise<void> {
+  const team = opts.team ?? (await loadTeam(tx, opts.organisationId));
+  const now = new Date();
+  const recipients = team
+    .filter((m) => !accessRefusal(m, now) && abilityOn(m, "departments.manage"))
+    .map((m) => m.userId);
+  if (recipients.length === 0) return;
+  const { item, edition } = opts;
+  const dept = opts.departmentName;
+  await notify(tx, {
+    userIds: recipients,
+    kind: "signoff_stuck",
+    title: dept
+      ? `Nobody who signs off for ${dept} can open ${edition.code} — ${item.name} (${item.ref})`
+      : `${opts.personName ?? "The approver"} can't open ${edition.code} — ${item.name} (${item.ref})`,
+    body: dept
+      ? `Give one of ${dept}'s approvers ${edition.code} on their page under Users → Events, or hand this sign-off to someone from the item.`
+      : `Give ${opts.personName ?? "them"} ${edition.code} on their page under Users → Events, or hand this sign-off to someone from the item.`,
+    link: `${itemPath(edition.code, item)}?tab=artwork`,
+    entityType: "signage_item",
+    entityId: item.id,
+    scope: { organisationId: opts.organisationId, editionId: edition.id },
+  });
 }
 
 /** "Alex Admin", "Alex Admin or Jo Bloggs", "Alex, Jo or Sam" — or "a super admin". */
@@ -474,6 +547,8 @@ export type OpenDeptStep = {
   assignedUserId: string | null;
   assignedDepartmentId: string | null;
   delegatedFromUserId: string | null;
+  /** The item's event: only people who can open it are routed to (Users → Events). */
+  editionId?: string | null;
 };
 
 export type StepMove = { id: string; from: string | null; to: string | null };
@@ -489,57 +564,84 @@ export type StepMove = { id: string; from: string | null; to: string | null };
  * A step never moves to a department nobody can sign for. Plans don't
  * record whether a named person was picked or just pre-filled, so they are
  * never rewritten here.
+ *
+ * Per event (Users → Events): each answer is for the step's event — signers
+ * and the main approver only count when they can open it. With no editionId
+ * and nobody limited every answer is exactly as before.
  */
 export function rerouteDepartmentSteps(
   steps: readonly OpenDeptStep[],
   opts: {
     followsDefaults: boolean;
-    /** People who can sign for the department now. */
-    signersOf: (departmentId: string) => ReadonlySet<string>;
-    /** The department's main approver if they can sign now, else null. */
-    mainOf: (departmentId: string) => string | null;
+    /** People who can sign for the department now (and open the event, when given). */
+    signersOf: (departmentId: string, editionId?: string | null) => ReadonlySet<string>;
+    /** The department's main approver if they can sign now (and open the event), else null. */
+    mainOf: (departmentId: string, editionId?: string | null) => string | null;
     /**
-     * Can this person be handed a sign-off at all now (canReceiveSignoff)?
-     * A step delegated or handed over to them stays theirs while they can,
-     * whatever their department.
+     * Can this person be handed a sign-off at all now (canReceiveSignoff),
+     * and open the event when given? A step delegated or handed over to them
+     * stays theirs while they can, whatever their department.
      */
-    canSign: (userId: string) => boolean;
+    canSign: (userId: string, editionId?: string | null) => boolean;
+    /** Can this person open the event at all? (Default: yes.) */
+    opens?: (userId: string, editionId: string) => boolean;
+    /** A step that now waits on a department nobody who can open its event signs for. */
+    onStranded?: (stepId: string) => void;
   },
 ): StepMove[] {
   const moves: StepMove[] = [];
   for (const s of steps) {
     if (s.stepKind !== "approval" || !s.assignedDepartmentId) continue;
     if (s.status !== "waiting" && s.status !== "pending") continue;
-    const signers = opts.signersOf(s.assignedDepartmentId);
-    const main = opts.mainOf(s.assignedDepartmentId);
+    const e = s.editionId ?? null;
+    const signers = e
+      ? opts.signersOf(s.assignedDepartmentId, e)
+      : opts.signersOf(s.assignedDepartmentId);
+    const main = e ? opts.mainOf(s.assignedDepartmentId, e) : opts.mainOf(s.assignedDepartmentId);
+    const canSign = (u: string) => (e ? opts.canSign(u, e) : opts.canSign(u));
     const current = s.assignedUserId;
     let to: string | null = current;
     if (s.delegatedFromUserId) {
       // Handed on purpose — to someone (theirs while they can sign at all) or
       // back to the whole department (stopSigningTx, a hand-over): left as is.
-      if (current && !opts.canSign(current)) to = main;
+      if (current && !canSign(current)) to = main;
     } else if (current && !signers.has(current)) to = main;
     else if (opts.followsDefaults) to = main;
-    // Nobody can sign for the department: the step stays named (as when
+    // Nobody can sign for the department now: the step stays named (as when
     // someone stops signing, stopSigningTx), so it can be handed on from
-    // their page or the item instead of waiting on nobody.
-    if (to === null && signers.size === 0) to = current;
+    // their page or the item instead of waiting on nobody — unless the named
+    // person can't open the item's event at all; then it waits on the
+    // department and super admins are told (onStranded).
+    if (to === null && signers.size === 0) {
+      const blind = current != null && e != null && opts.opens?.(current, e) === false;
+      to = blind ? null : current;
+      if (blind) opts.onStranded?.(s.id);
+    }
     if (to !== current) moves.push({ id: s.id, from: current, to });
   }
   return moves;
 }
 
-/** Who can sign for each department now, and its main approver (if they can). */
+/**
+ * Who can sign for each department now, and its main approver (if they
+ * can) — for an event, only people who can open it (Users → Events).
+ */
 export async function departmentRouting(
   exec: Db | Tx,
   organisationId: string,
 ): Promise<{
-  signersOf: (departmentId: string) => ReadonlySet<string>;
-  mainOf: (departmentId: string) => string | null;
-  canSign: (userId: string) => boolean;
+  signersOf: (departmentId: string, editionId?: string | null) => ReadonlySet<string>;
+  mainOf: (departmentId: string, editionId?: string | null) => string | null;
+  canSign: (userId: string, editionId?: string | null) => boolean;
+  opens: (userId: string, editionId: string) => boolean;
 }> {
   const team = await loadTeam(exec, organisationId);
   const now = new Date();
+  const byId = new Map(team.map((m) => [m.userId, m]));
+  const opens = (userId: string, editionId: string) => {
+    const m = byId.get(userId);
+    return m ? seesEdition(m, editionId) : false;
+  };
   const receivers = new Set(team.filter((m) => canReceiveSignoff(m, now)).map((m) => m.userId));
   const rows = await exec
     .select({
@@ -566,9 +668,17 @@ export async function departmentRouting(
   }
   const empty = new Set<string>();
   return {
-    signersOf: (id) => signers.get(id) ?? empty,
-    mainOf: (id) => mains.get(id) ?? null,
-    canSign: (id) => receivers.has(id),
+    signersOf: (id, editionId) => {
+      const all = signers.get(id) ?? empty;
+      if (!editionId) return all;
+      return new Set([...all].filter((u) => opens(u, editionId)));
+    },
+    mainOf: (id, editionId) => {
+      const main = mains.get(id) ?? null;
+      return main && (!editionId || opens(main, editionId)) ? main : null;
+    },
+    canSign: (id, editionId) => receivers.has(id) && (!editionId || opens(id, editionId)),
+    opens,
   };
 }
 
@@ -639,6 +749,10 @@ export async function rerouteDepartmentSignoffs(
   let moved = 0;
   for (const [, list] of byItem) {
     const item = list[0].item;
+    const editionId = item.editionId;
+    const code = list[0].editionCode;
+    // Steps that now wait on a department nobody who can open the event signs for.
+    const stranded = new Set<string>();
     const moves = rerouteDepartmentSteps(
       list.map((r) => ({
         id: r.instance.id,
@@ -647,8 +761,9 @@ export async function rerouteDepartmentSignoffs(
         assignedUserId: r.instance.assignedUserId,
         assignedDepartmentId: r.instance.assignedDepartmentId,
         delegatedFromUserId: r.instance.delegatedFromUserId,
+        editionId,
       })),
-      { followsDefaults: !item.signoffs, ...routing },
+      { followsDefaults: !item.signoffs, ...routing, onStranded: (id) => stranded.add(id) },
     );
     for (const mv of moves) {
       const inst = list.find((r) => r.instance.id === mv.id)!.instance;
@@ -658,12 +773,22 @@ export async function rerouteDepartmentSignoffs(
         .set({ assignedUserId: mv.to })
         .where(eq(approvalInstances.id, mv.id));
       const toWords = mv.to ? nameOf(mv.to) : `anyone in ${deptName(dept)}`;
+      const main = routing.mainOf(dept);
+      // C10: a main approver who can't open this event isn't "a change of main".
       const why =
         mv.from && inst.delegatedFromUserId
-          ? `${nameOf(mv.from)} can't sign off any more`
+          ? routing.canSign(mv.from)
+            ? `${nameOf(mv.from)} can't open ${code}`
+            : `${nameOf(mv.from)} can't sign off any more`
           : mv.from && !routing.signersOf(dept).has(mv.from)
             ? `${nameOf(mv.from)} no longer signs off for ${deptName(dept)}`
-            : `${deptName(dept)}'s main approver changed`;
+            : mv.from && !routing.signersOf(dept, editionId).has(mv.from)
+              ? main === mv.from
+                ? `${nameOf(mv.from)}, ${deptName(dept)}'s main approver, doesn't work on ${code}`
+                : `${nameOf(mv.from)} doesn't work on ${code}`
+              : main && !routing.mainOf(dept, editionId)
+                ? `${nameOf(main)}, ${deptName(dept)}'s main approver, doesn't work on ${code}`
+                : `${deptName(dept)}'s main approver changed`;
       await writeAudit(tx, {
         organisationId,
         editionId: item.editionId,
@@ -703,7 +828,7 @@ export async function rerouteDepartmentSignoffs(
               );
           }
         }
-        const told = mv.to ? [mv.to] : [...routing.signersOf(dept)];
+        const told = mv.to ? [mv.to] : [...routing.signersOf(dept, editionId)];
         await notify(tx, {
           userIds: told.filter((id) => id !== mv.from),
           kind: "approval_requested",
@@ -715,6 +840,18 @@ export async function rerouteDepartmentSignoffs(
         });
       }
       moved++;
+    }
+    // Nobody who signs for the department can open the event: tell those who
+    // can fix it, once per item, for steps waiting now.
+    const stuck = list.find((r) => stranded.has(r.instance.id) && r.instance.status === "pending");
+    if (stuck) {
+      await noticeNoSignerForEvent(tx, {
+        organisationId,
+        item,
+        edition: { id: editionId, code },
+        departmentName: deptName(stuck.instance.assignedDepartmentId!),
+        team,
+      });
     }
   }
   return moved;

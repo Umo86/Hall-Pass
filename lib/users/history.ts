@@ -7,6 +7,8 @@ import "server-only";
  * rows naming their account or email, and their own user record.
  */
 import { and, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
+import type { EditionScope } from "@/lib/authz";
+import { editionScopeSql } from "@/lib/queries/edition-scope";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db, Tx } from "@/lib/db/client";
 import { auditLog, memberships, staffInvites, users } from "@/lib/db/schema";
@@ -24,7 +26,14 @@ export async function accessHistory(
   db: Db | Tx,
   organisationId: string,
   person: { userId?: string | null; email?: string | null },
-  opts: { limit?: number } = {},
+  opts: {
+    limit?: number;
+    /**
+     * The viewer's events (Users → Events): rows about another event (an
+     * item's hand-over, say) are left out; rows about no event always show.
+     */
+    viewerScope?: EditionScope;
+  } = {},
 ): Promise<AccessHistoryEntry[]> {
   const userId = person.userId ?? null;
   const email = person.email?.trim().toLowerCase() ?? null;
@@ -102,7 +111,13 @@ export async function accessHistory(
     })
     .from(auditLog)
     .leftJoin(actor, eq(actor.id, auditLog.actorUserId))
-    .where(and(eq(auditLog.organisationId, organisationId), or(...matches)))
+    .where(
+      and(
+        eq(auditLog.organisationId, organisationId),
+        or(...matches),
+        editionScopeSql(opts.viewerScope ?? null, auditLog.editionId, { allowNull: true }),
+      ),
+    )
     .orderBy(desc(auditLog.createdAt))
     .limit(opts.limit ?? 50);
   return rows.map((r) => ({

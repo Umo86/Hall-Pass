@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth/actor";
+import { editionScope, seesEdition } from "@/lib/authz";
 import { getObject, type Bucket } from "@/lib/storage";
 
 const BUCKETS: Bucket[] = ["artwork", "documents", "photos", "floorplans", "exports"];
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Types that are safe to render inline. Anything else (SVG included — it can
 // carry scripts) downloads as an attachment; previews of SVGs are rasterised.
@@ -32,6 +35,18 @@ export async function GET(req: Request, { params }: { params: Promise<{ path: st
   const [bucket, ...rest] = path;
   if (!BUCKETS.includes(bucket as Bucket) || rest.length === 0) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  // Users → Events: a team member limited to some events gets nothing from
+  // another organisation's folder or another event's (paths are
+  // org/edition|org/entity/id/file — lib/storage.ts buildStoragePath).
+  if (session.actor.kind === "staff" && editionScope(session.actor) !== null) {
+    const [orgSegment, editionSegment] = rest;
+    if (
+      orgSegment !== session.organisation.id ||
+      (editionSegment && UUID.test(editionSegment) && !seesEdition(session.actor, editionSegment))
+    ) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
   }
   const fileName = rest[rest.length - 1];
   const ext = fileName.split(".").pop()?.toLowerCase() ?? "";

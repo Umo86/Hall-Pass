@@ -21,7 +21,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ editionC
   return serveOrError(async () => {
     const { workbook } = await buildScheduleWorkbook(
       edition.id,
-      can(session.actor, { type: "costs.view" }),
+      can(session.actor, { type: "costs.view", editionId: edition.id }),
     );
     const data = Buffer.from(await workbook.xlsx.writeBuffer());
     return recordAndServeExport({

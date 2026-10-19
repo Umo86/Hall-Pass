@@ -43,6 +43,7 @@ function member(id: string, role: StaffRole, extra: Partial<TeamMember> = {}): T
     suspendedAt: null,
     accessEndsAt: null,
     signoffDepartmentIds: [],
+    editionIds: null,
     ...extra,
   };
 }

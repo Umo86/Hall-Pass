@@ -15,13 +15,16 @@ import {
   externalGrants,
   halls,
   locations,
+  memberships,
   signageItems,
   sponsorEntitlements,
   sponsors,
+  staffInvites,
   suppliers,
+  users,
   venues,
 } from "@/lib/db/schema";
-import { can, missingAbilityMessage } from "@/lib/authz";
+import { can, canExtendToCopy, missingAbilityMessage, type PersonCtx } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession, type Session } from "@/lib/auth/actor";
 import { generateInviteToken, hashInviteToken } from "@/lib/auth/invite-token";
@@ -42,7 +45,7 @@ import { ensureSignageWorkflow } from "@/lib/domain/departments";
 import { LAST_EVENT_COOKIE, LAST_EVENT_COOKIE_MAX_AGE } from "@/lib/queries/editions";
 import { CONFIRMABLE_STEPS } from "@/lib/queries/setup";
 import { seriesNameFor } from "@/components/setup/naming";
-import { loadTeam, ownerRefusal, ownerRoleOf } from "@/lib/people";
+import { loadTeam, ownerRoleOf, refusalFor } from "@/lib/people";
 import {
   copiedAccessEnd,
   grantAuditPayload,
@@ -122,6 +125,46 @@ async function rememberEvent(code: string) {
 async function codeInUse(code: string) {
   const clash = await db.query.editions.findFirst({ where: eq(editions.code, code) });
   return Boolean(clash);
+}
+
+/**
+ * Users → Events: someone limited to some events who creates (or copies)
+ * an event gets it added to their list, in the same transaction and
+ * audited. A no-op for everyone on All events. True when it was added.
+ */
+async function giveCreatorTheEventTx(
+  tx: Tx,
+  opts: { organisationId: string; userId: string; email: string; editionId: string },
+): Promise<boolean> {
+  const rows = await tx
+    .update(memberships)
+    .set({ editionIds: sql`array_append(${memberships.editionIds}, ${opts.editionId}::uuid)` })
+    .where(
+      and(
+        eq(memberships.userId, opts.userId),
+        eq(memberships.organisationId, opts.organisationId),
+        sql`${memberships.editionIds} IS NOT NULL`,
+        sql`${memberships.role} <> 'admin'`,
+        sql`NOT (${opts.editionId}::uuid = ANY(${memberships.editionIds}))`,
+      ),
+    )
+    .returning({ id: memberships.id, editionIds: memberships.editionIds });
+  for (const r of rows) {
+    await writeAudit(tx, {
+      organisationId: opts.organisationId,
+      editionId: opts.editionId,
+      actorUserId: opts.userId,
+      entityType: "membership",
+      entityId: r.id,
+      action: "settings_change",
+      before: { editionIds: (r.editionIds ?? []).filter((id) => id !== opts.editionId) },
+      after: { editionIds: r.editionIds },
+      summary: `${opts.email}: events changed — added the event they created`,
+      subjectUserId: opts.userId,
+      subjectEmail: opts.email,
+    });
+  }
+  return rows.length > 0;
 }
 
 function codeTaken(code: string): ActionResult<never> {
@@ -263,6 +306,7 @@ export async function createEdition(
   }
   if (await codeInUse(code)) return codeTaken(code);
   let editionId = "";
+  let addedToTheirEvents = false;
   try {
     await db.transaction(async (tx) => {
       let eventId = event?.id;
@@ -316,6 +360,12 @@ export async function createEdition(
         after: { code, name: data.name, ...dates, newSeries, newVenue: !venue },
         summary: `Created event ${code} — ${data.name}`,
       });
+      addedToTheirEvents = await giveCreatorTheEventTx(tx, {
+        organisationId: orgId,
+        userId: session.user.id,
+        email: session.user.email,
+        editionId: edition.id,
+      });
     });
   } catch (err) {
     console.error("createEdition", err);
@@ -323,7 +373,10 @@ export async function createEdition(
   }
   await rememberEvent(code);
   revalidatePath("/", "layout");
-  return success({ code, id: editionId }, `${data.name} created`);
+  return success(
+    { code, id: editionId },
+    `${data.name} created${addedToTheirEvents ? " — it's been added to your events" : ""}`,
+  );
 }
 
 const cloneSchema = z
@@ -346,8 +399,17 @@ const cloneSchema = z
         sponsors: z.boolean().default(true),
         items: z.boolean().default(true),
         access: z.boolean().default(true),
+        /** Users → Events: people who only see the source get the copy too. */
+        people: z.boolean().default(true),
       })
-      .default({ halls: true, deadlines: true, sponsors: true, items: true, access: true }),
+      .default({
+        halls: true,
+        deadlines: true,
+        sponsors: true,
+        items: true,
+        access: true,
+        people: true,
+      }),
   })
   .superRefine((d, ctx) => {
     if (d.openEnd < d.openStart) {
@@ -376,6 +438,10 @@ export type CloneCounts = {
   suppliersDropped: number;
   /** Partner access left behind because the person is on the team now. */
   accessTeam: number;
+  /** People (and invitations) limited to the source who were given the copy too. */
+  people: number;
+  /** People limited to the source the copier may not change: they don't see the copy. */
+  peopleLeftOut: number;
 };
 
 /**
@@ -396,8 +462,8 @@ export async function cloneEdition(
   const data = parsed.data;
   const orgId = session.organisation.id;
   const code = data.code.toUpperCase();
-  // Only this organisation's events can be copied.
-  const source = await ownEdition(db, orgId, data.sourceEditionId);
+  // Only this organisation's events, and ones they can open (Users → Events).
+  const source = await ownEdition(db, orgId, data.sourceEditionId, session.actor);
   if (!source) return fail("Event not found");
   const inherited = datesLike(source, data.openStart, data.openEnd);
   const dates: EventDates = {
@@ -449,7 +515,10 @@ export async function cloneEdition(
     ownersReplaced: 0,
     suppliersDropped: 0,
     accessTeam: 0,
+    people: 0,
+    peopleLeftOut: 0,
   };
+  let addedToTheirEvents = false;
 
   try {
     await db.transaction(async (tx) => {
@@ -468,6 +537,130 @@ export async function cloneEdition(
           logoPath: source.logoPath,
         })
         .returning();
+
+      // Users → Events (before the items, so owners who now see the copy
+      // keep their items): the copier gets the copy if they are limited, and
+      // people limited to the source get it too when ticked — those the
+      // copier may change; the rest are counted, never changed.
+      addedToTheirEvents = await giveCreatorTheEventTx(tx, {
+        organisationId: orgId,
+        userId: session.user.id,
+        email: session.user.email,
+        editionId: target.id,
+      });
+      const limitedMembers = await tx
+        .select({
+          id: memberships.id,
+          userId: memberships.userId,
+          role: memberships.role,
+          departmentId: memberships.departmentId,
+          managerScope: memberships.managerScope,
+          email: users.email,
+        })
+        .from(memberships)
+        .innerJoin(users, eq(users.id, memberships.userId))
+        .where(
+          and(
+            eq(memberships.organisationId, orgId),
+            sql`${memberships.editionIds} @> ARRAY[${source.id}::uuid]`,
+          ),
+        );
+      const limitedInvites = await tx
+        .select({
+          id: staffInvites.id,
+          role: staffInvites.role,
+          departmentId: staffInvites.departmentId,
+          managerScope: staffInvites.managerScope,
+          email: staffInvites.invitedEmail,
+        })
+        .from(staffInvites)
+        .where(
+          and(
+            eq(staffInvites.organisationId, orgId),
+            isNull(staffInvites.acceptedAt),
+            isNull(staffInvites.revokedAt),
+            sql`${staffInvites.editionIds} @> ARRAY[${source.id}::uuid]`,
+          ),
+        );
+      const also = `events changed — also gets ${code}, copied from ${source.code}`;
+      for (const m of limitedMembers) {
+        if (m.userId === session.user.id) continue; // the copier, above
+        const person: PersonCtx = {
+          organisationId: orgId,
+          userId: m.userId,
+          role: m.role,
+          departmentId: m.departmentId,
+          managerScope: m.managerScope,
+        };
+        if (!data.include.people) continue;
+        if (!canExtendToCopy(session.actor, person, source.id)) {
+          counts.peopleLeftOut += 1;
+          continue;
+        }
+        const [row] = await tx
+          .update(memberships)
+          .set({ editionIds: sql`array_append(${memberships.editionIds}, ${target.id}::uuid)` })
+          .where(
+            and(
+              eq(memberships.id, m.id),
+              sql`NOT (${target.id}::uuid = ANY(${memberships.editionIds}))`,
+            ),
+          )
+          .returning({ editionIds: memberships.editionIds });
+        if (!row) continue;
+        await writeAudit(tx, {
+          organisationId: orgId,
+          editionId: target.id,
+          actorUserId: session.user.id,
+          entityType: "membership",
+          entityId: m.id,
+          action: "settings_change",
+          before: { editionIds: (row.editionIds ?? []).filter((id) => id !== target.id) },
+          after: { editionIds: row.editionIds },
+          summary: `${m.email}: ${also}`,
+          subjectUserId: m.userId,
+          subjectEmail: m.email,
+        });
+        counts.people += 1;
+      }
+      for (const i of limitedInvites) {
+        const person: PersonCtx = {
+          organisationId: orgId,
+          userId: null,
+          role: i.role,
+          departmentId: i.departmentId,
+          managerScope: i.managerScope,
+        };
+        if (!data.include.people) continue;
+        if (!canExtendToCopy(session.actor, person, source.id)) {
+          counts.peopleLeftOut += 1;
+          continue;
+        }
+        const [row] = await tx
+          .update(staffInvites)
+          .set({ editionIds: sql`array_append(${staffInvites.editionIds}, ${target.id}::uuid)` })
+          .where(
+            and(
+              eq(staffInvites.id, i.id),
+              sql`NOT (${target.id}::uuid = ANY(${staffInvites.editionIds}))`,
+            ),
+          )
+          .returning({ editionIds: staffInvites.editionIds });
+        if (!row) continue;
+        await writeAudit(tx, {
+          organisationId: orgId,
+          editionId: target.id,
+          actorUserId: session.user.id,
+          entityType: "staff_invite",
+          entityId: i.id,
+          action: "settings_change",
+          before: { editionIds: (row.editionIds ?? []).filter((id) => id !== target.id) },
+          after: { editionIds: row.editionIds },
+          summary: `Invitation for ${i.email}: ${also}`,
+          subjectEmail: i.email,
+        });
+        counts.people += 1;
+      }
 
       // Deadline offsets (not fixed dates — those belonged to the old event);
       // the standard ones when they aren't brought across.
@@ -566,9 +759,14 @@ export async function cloneEdition(
       const copier = byUser.get(session.user.id);
       const ownerFor = (item: (typeof items)[number], sponsorId: string | null) => {
         if (!item.ownerUserId) return { ownerUserId: null, ownerRole: item.ownerRole };
-        const refusal = ownerRefusal(
+        // …and can open the copy (Users → Events; read after the additions above).
+        const refusal = refusalFor(
+          {
+            type: "owner",
+            item: { kind: item.kind, sponsored: Boolean(sponsorId) },
+            editionId: target.id,
+          },
           byUser.get(item.ownerUserId),
-          { kind: item.kind, sponsored: Boolean(sponsorId) },
           { organisationId: orgId },
         );
         if (!refusal) return { ownerUserId: item.ownerUserId, ownerRole: item.ownerRole };
@@ -770,6 +968,13 @@ export async function cloneEdition(
     counts.suppliersDropped > 0
       ? `${counts.suppliersDropped} ${counts.suppliersDropped === 1 ? "item's supplier is" : "items' suppliers are"} archived, so ${counts.suppliersDropped === 1 ? "it has" : "they have"} no supplier yet`
       : null,
+    addedToTheirEvents ? "it's been added to your events" : null,
+    counts.people > 0
+      ? `${counts.people} ${counts.people === 1 ? "person" : "people"} who only saw ${source.code} can open ${code} too`
+      : null,
+    counts.peopleLeftOut > 0
+      ? `${counts.peopleLeftOut} more who only see ${source.code} don't see ${code} yet — a super admin can add it under Users`
+      : null,
   ].filter(Boolean);
   return success(
     { code, counts },
@@ -811,9 +1016,9 @@ async function copyHallsAndLocations(tx: Tx, sourceId: string, targetId: string)
   return { halls: hallMap, locations: locMap };
 }
 
-/** The event, if it belongs to the caller's organisation. */
+/** The event, if it belongs to the caller's organisation and they can open it (Users → Events). */
 async function editionForSession(session: Session, editionId: string) {
-  return ownEdition(db, session.organisation.id, editionId);
+  return ownEdition(db, session.organisation.id, editionId, session.actor);
 }
 
 /** Add a confirmed setup step to the list (no duplicates). */

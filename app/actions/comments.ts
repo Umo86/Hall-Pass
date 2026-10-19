@@ -8,6 +8,7 @@ import { comments } from "@/lib/db/schema";
 import { can, type ExternalActor } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { notify } from "@/lib/notify";
 import { commentRecipients, itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
@@ -48,9 +49,7 @@ export async function addComment(input: unknown): Promise<ActionResult> {
   // Can a partner (from their live grants here) still see this record?
   let partnerSees: (actor: ExternalActor) => boolean = () => false;
   if (data.entityType === "signage_item") {
-    const bundle = await loadItemBundle(db, data.entityId, {
-      organisationId: session.organisation.id,
-    });
+    const bundle = await loadItemBundle(db, data.entityId, actorScope(session));
     if (!bundle) return fail("Record not found");
     if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
     editionId = bundle.edition.id;
@@ -68,9 +67,7 @@ export async function addComment(input: unknown): Promise<ActionResult> {
       return fail("You cannot write internal comments");
     }
   } else {
-    const bundle = await loadStandBundle(db, data.entityId, {
-      organisationId: session.organisation.id,
-    });
+    const bundle = await loadStandBundle(db, data.entityId, actorScope(session));
     if (!bundle) return fail("Record not found");
     if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
     editionId = bundle.edition.id;
@@ -91,6 +88,11 @@ export async function addComment(input: unknown): Promise<ActionResult> {
     }
   }
 
+  // Users → Events: internal comments in this event, by someone who can open it.
+  if (data.isInternal && !can(session.actor, { type: "comment.internal.write", editionId })) {
+    return fail("Record not found");
+  }
+
   // A reply must answer a comment on the same record.
   if (data.parentId) {
     const [parent] = await db
@@ -108,6 +110,15 @@ export async function addComment(input: unknown): Promise<ActionResult> {
 
   try {
     await db.transaction(async (tx) => {
+      // Mentions of people who can't open the event are dropped (there's no
+      // picker to offer them); partners' mentions are left as they were.
+      const mentionStaff = await staffMemberIds(tx, session.organisation.id, data.mentionUserIds);
+      const mentionOk = await staffMemberIds(tx, session.organisation.id, data.mentionUserIds, {
+        editionId,
+      });
+      const mentionUserIds = data.mentionUserIds.filter(
+        (id) => !mentionStaff.has(id) || mentionOk.has(id),
+      );
       const [comment] = await tx
         .insert(comments)
         .values({
@@ -116,7 +127,7 @@ export async function addComment(input: unknown): Promise<ActionResult> {
           parentId: data.parentId ?? null,
           authorId: session.user.id,
           body: data.body,
-          mentionUserIds: data.mentionUserIds,
+          mentionUserIds,
           isInternal: data.isInternal,
         })
         .returning();
@@ -145,6 +156,7 @@ export async function addComment(input: unknown): Promise<ActionResult> {
       const recipients = await recipientsWhoCanSee(tx, session.organisation.id, wanted, {
         staffOnly: data.isInternal,
         sees: partnerSees,
+        editionId,
       });
       if (recipients.length > 0) {
         await notify(tx, {

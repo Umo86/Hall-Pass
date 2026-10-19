@@ -16,9 +16,10 @@ import {
   users,
   venues,
 } from "@/lib/db/schema";
-import { can, missingAbilityMessage, type ScopeType } from "@/lib/authz";
+import { can, missingAbilityMessage, opensEdition, type Actor, type ScopeType } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession, type Session } from "@/lib/auth/actor";
+import { editionScopeSql, sessionScope } from "@/lib/queries/edition-scope";
 import { generateInviteToken, hashInviteToken } from "@/lib/auth/invite-token";
 import { appUrl } from "@/lib/app-url";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -76,7 +77,12 @@ export type InviteExternalResult = { inviteUrl: string; same?: SameAccess };
 
 type EditionRow = { id: string; name: string; venueId: string; status: string };
 
-async function ownEdition(orgId: string, editionId: string): Promise<EditionRow | null> {
+/** The event, if it's this organisation's and the actor can open it (Users → Events). */
+async function ownEdition(
+  orgId: string,
+  editionId: string,
+  actor: Actor,
+): Promise<EditionRow | null> {
   const [row] = await db
     .select({
       id: editions.id,
@@ -88,7 +94,8 @@ async function ownEdition(orgId: string, editionId: string): Promise<EditionRow 
     .innerJoin(events, eq(editions.eventId, events.id))
     .where(and(eq(editions.id, editionId), eq(events.organisationId, orgId)))
     .limit(1);
-  return row ?? null;
+  if (!row || !opensEdition(actor, row.id)) return null;
+  return row;
 }
 
 /**
@@ -171,7 +178,7 @@ export async function inviteExternal(input: unknown): Promise<ActionResult<Invit
   const end = partnerAccessEnd(data.expiresAt, todayInLondon());
   if (end.error !== undefined) return fail(end.error, { expiresAt: end.error });
 
-  const edition = await ownEdition(orgId, data.editionId);
+  const edition = await ownEdition(orgId, data.editionId, session.actor);
   if (!edition) return fail("That event no longer exists — reload the page");
   if (editionIsReadOnly(edition.status)) return fail(EDITION_LOCKED_MESSAGE);
 
@@ -291,10 +298,12 @@ async function partnerSession(): Promise<Session | null> {
   return can(session.actor, { type: "partners.invite" }) ? session : null;
 }
 
-async function grantInOrg(orgId: string, grantId: string) {
-  return db.query.externalGrants.findFirst({
+/** A partner's access in this organisation, on an event the actor can open (Users → Events). */
+async function grantInOrg(orgId: string, grantId: string, actor: Actor) {
+  const grant = await db.query.externalGrants.findFirst({
     where: and(eq(externalGrants.id, grantId), eq(externalGrants.organisationId, orgId)),
   });
+  return grant && opensEdition(actor, grant.editionId) ? grant : undefined;
 }
 
 export async function revokeGrant(input: unknown): Promise<ActionResult> {
@@ -313,6 +322,8 @@ export async function revokeGrant(input: unknown): Promise<ActionResult> {
             eq(externalGrants.id, parsed.data.grantId),
             eq(externalGrants.organisationId, session.organisation.id),
             isNull(externalGrants.revokedAt),
+            // Users → Events: only on events they can open.
+            editionScopeSql(sessionScope(session), externalGrants.editionId),
           ),
         )
         .returning();
@@ -358,9 +369,9 @@ export async function resendPartnerInvite(
   const session = await partnerSession();
   if (!session) return fail(missingAbilityMessage("partners.invite"));
   const orgId = session.organisation.id;
-  const existing = await grantInOrg(orgId, parsed.data.grantId);
+  const existing = await grantInOrg(orgId, parsed.data.grantId, session.actor);
   if (!existing) return fail("That invitation no longer exists — reload the page");
-  const edition = await ownEdition(orgId, existing.editionId);
+  const edition = await ownEdition(orgId, existing.editionId, session.actor);
   if (!edition) return fail("That event no longer exists — reload the page");
   if (editionIsReadOnly(edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   try {
@@ -423,9 +434,9 @@ export async function setPartnerAccessEnd(input: unknown): Promise<ActionResult>
   const orgId = session.organisation.id;
   const end = partnerAccessEnd(parsed.data.date, todayInLondon());
   if (end.error !== undefined) return fail(end.error, { date: end.error });
-  const existing = await grantInOrg(orgId, parsed.data.grantId);
+  const existing = await grantInOrg(orgId, parsed.data.grantId, session.actor);
   if (!existing) return fail("That access no longer exists — reload the page");
-  const edition = await ownEdition(orgId, existing.editionId);
+  const edition = await ownEdition(orgId, existing.editionId, session.actor);
   if (!edition) return fail("That event no longer exists — reload the page");
   if (editionIsReadOnly(edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   try {

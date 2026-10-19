@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { and, asc, count, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { editionScopeSql, sessionScope } from "@/lib/queries/edition-scope";
 import { SectionUnavailable } from "@/components/section-unavailable";
 import { db } from "@/lib/db/client";
 import {
@@ -92,6 +93,7 @@ export default async function SuppliersPage({
   }
 
   // The event the "Items on …" column and "Used on …" filter are about.
+  const scope = sessionScope(session);
   const editionRows = await db
     .select({
       id: editions.id,
@@ -103,7 +105,8 @@ export default async function SuppliersPage({
     })
     .from(editions)
     .innerJoin(events, eq(editions.eventId, events.id))
-    .where(eq(events.organisationId, orgId));
+    // Users → Events: the current event is chosen among theirs.
+    .where(and(eq(events.organisationId, orgId), editionScopeSql(scope, editions.id)));
   const lastCode = (await cookies()).get(LAST_EVENT_COOKIE)?.value ?? null;
   const currentCode = pickDefaultEdition(editionRows, { lastCode, today });
   const current = editionRows.find((e) => e.code === currentCode) ?? null;
@@ -181,10 +184,10 @@ export default async function SuppliersPage({
             { supplierId: string | null; n: number }[],
             { supplierId: string | null; n: number }[],
           ]),
-      canEdit ? portalGrantsByScope(orgId, "supplier") : Promise.resolve(new Map()),
+      canEdit ? portalGrantsByScope(orgId, "supplier", scope) : Promise.resolve(new Map()),
       // Archived events take no new invitations (the server refuses them too).
       canInvite
-        ? externalEvents(db, orgId, today).then((list) => list.filter((e) => !e.archived))
+        ? externalEvents(db, orgId, today, scope).then((list) => list.filter((e) => !e.archived))
         : Promise.resolve([]),
     ]);
 

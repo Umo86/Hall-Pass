@@ -18,7 +18,12 @@ export async function canWorkOnTask(
   const allowed = (t: Task) =>
     can(actor, {
       type: "task.update",
-      task: { assignedToUserId: t.assignedToUserId, createdByUserId: t.createdByUserId },
+      task: {
+        assignedToUserId: t.assignedToUserId,
+        createdByUserId: t.createdByUserId,
+        // A task in an event they can't open is out of bounds (Users → Events).
+        editionId: t.editionId,
+      },
     });
   if (allowed(task)) return true;
   if (!task.parentTaskId) return false;

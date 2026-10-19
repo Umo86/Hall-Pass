@@ -73,6 +73,12 @@ export type TeamRow = {
   accessEndsAt: Date | null;
   /** Last signed-in page load (users.last_seen_at), members only. */
   lastSeenAt: Date | null;
+  /**
+   * Events they work on (Users → Events; invitations: what they'll get);
+   * null = every event. People are organisation-wide: the list isn't
+   * filtered by it.
+   */
+  editionIds: string[] | null;
 };
 
 /** "Active", "Suspended 3 Oct", "Access ended 3 Oct" or "Access ends 3 Oct". */
@@ -206,6 +212,7 @@ export async function listTeam(
         suspendedByName: m.suspendedBy ? suspenderName || suspenderEmail || null : null,
         accessEndsAt: m.accessEndsAt,
         lastSeenAt: u.lastSeenAt,
+        editionIds: m.role === "admin" ? null : (m.editionIds ?? null),
       };
     }),
     ...invites
@@ -241,6 +248,7 @@ export async function listTeam(
           suspendedByName: null,
           accessEndsAt: i.accessEndsAt,
           lastSeenAt: null,
+          editionIds: i.role === "admin" ? null : (i.editionIds ?? null),
         };
       }),
   ];
@@ -393,6 +401,8 @@ export type DepartmentCard = DepartmentInfo & {
     stateText: string | null;
     /** Their person page, when there is one. */
     href: string | null;
+    /** Events they work on (invited: what they'll get); null = every event. */
+    editionIds: string[] | null;
   }[];
 };
 
@@ -426,6 +436,7 @@ export async function listDepartmentCards(
         overrides: memberships.permissionOverrides,
         suspendedAt: memberships.suspendedAt,
         accessEndsAt: memberships.accessEndsAt,
+        editionIds: memberships.editionIds,
         userName: users.fullName,
       })
       .from(approvers)
@@ -444,6 +455,8 @@ export async function listDepartmentCards(
         id: staffInvites.id,
         email: staffInvites.invitedEmail,
         expiresAt: staffInvites.expiresAt,
+        role: staffInvites.role,
+        editionIds: staffInvites.editionIds,
       })
       .from(staffInvites)
       .where(
@@ -459,47 +472,56 @@ export async function listDepartmentCards(
     const inDept = members.filter((m) => m.departmentId === d.id);
     const cards = approverRows
       .filter((r) => r.a.departmentId === d.id)
-      .map(({ a, memberUserId, role, overrides, userName, suspendedAt, accessEndsAt }) => {
-        const invite = !memberUserId ? inviteByEmail.get(a.email) : undefined;
-        const expired = invite ? staffInviteExpired(invite, now) : false;
-        let state: DepartmentCard["approvers"][number]["state"];
-        let stateText: string | null = null;
-        if (memberUserId && role) {
-          const access = accessState({ suspendedAt, accessEndsAt }, now);
-          const canSign = canReceiveSignoff(
-            { role, overrides: overrides as PermissionOverrides, suspendedAt, accessEndsAt },
-            now,
-          );
-          state = canSign ? "active" : "paused";
-          stateText = canSign
-            ? null
-            : access === "suspended"
-              ? "Suspended"
-              : access === "ended"
-                ? "Access ended"
-                : role === "viewer"
-                  ? "Viewer — can't sign off"
-                  : "Sign-off paused";
-        } else if (invite && !expired) {
-          state = "invited";
-          stateText = "Invited — not set up yet";
-        } else {
-          state = "none";
-          stateText = invite ? "Invitation expired — resend" : "No account yet";
-        }
-        return {
-          id: a.id,
-          userId: memberUserId ?? null,
-          name: userName || a.fullName,
-          jobTitle: a.jobTitle,
-          email: a.email,
-          isMain: a.isMain,
-          mainOnAccept: a.mainOnAccept,
-          state,
-          stateText,
-          href: memberUserId ? `/users/${memberUserId}` : invite ? `/users/${invite.id}` : null,
-        };
-      });
+      .map(
+        ({ a, memberUserId, role, overrides, userName, suspendedAt, accessEndsAt, editionIds }) => {
+          const invite = !memberUserId ? inviteByEmail.get(a.email) : undefined;
+          const expired = invite ? staffInviteExpired(invite, now) : false;
+          let state: DepartmentCard["approvers"][number]["state"];
+          let stateText: string | null = null;
+          if (memberUserId && role) {
+            const access = accessState({ suspendedAt, accessEndsAt }, now);
+            const canSign = canReceiveSignoff(
+              { role, overrides: overrides as PermissionOverrides, suspendedAt, accessEndsAt },
+              now,
+            );
+            state = canSign ? "active" : "paused";
+            stateText = canSign
+              ? null
+              : access === "suspended"
+                ? "Suspended"
+                : access === "ended"
+                  ? "Access ended"
+                  : role === "viewer"
+                    ? "Viewer — can't sign off"
+                    : "Sign-off paused";
+          } else if (invite && !expired) {
+            state = "invited";
+            stateText = "Invited — not set up yet";
+          } else {
+            state = "none";
+            stateText = invite ? "Invitation expired — resend" : "No account yet";
+          }
+          return {
+            id: a.id,
+            userId: memberUserId ?? null,
+            name: userName || a.fullName,
+            jobTitle: a.jobTitle,
+            email: a.email,
+            isMain: a.isMain,
+            mainOnAccept: a.mainOnAccept,
+            state,
+            stateText,
+            href: memberUserId ? `/users/${memberUserId}` : invite ? `/users/${invite.id}` : null,
+            editionIds: memberUserId
+              ? role === "admin"
+                ? null
+                : (editionIds ?? null)
+              : invite && invite.role !== "admin"
+                ? (invite.editionIds ?? null)
+                : null,
+          };
+        },
+      );
     return {
       ...d,
       memberCount: inDept.length,
@@ -529,6 +551,7 @@ export async function memberOptions(db: Db | Tx, organisationId: string) {
       overrides: memberships.permissionOverrides,
       suspendedAt: memberships.suspendedAt,
       accessEndsAt: memberships.accessEndsAt,
+      editionIds: memberships.editionIds,
     })
     .from(memberships)
     .innerJoin(users, eq(users.id, memberships.userId))
@@ -541,6 +564,8 @@ export async function memberOptions(db: Db | Tx, organisationId: string) {
       name: r.name || r.email,
       email: r.email,
       departmentId: r.departmentId,
+      /** Events they work on (the chip only); null = every event. */
+      editionIds: r.role === "admin" ? null : (r.editionIds ?? null),
     }));
 }
 
@@ -571,6 +596,7 @@ export async function departmentOptions(
         overrides: memberships.permissionOverrides,
         suspendedAt: memberships.suspendedAt,
         accessEndsAt: memberships.accessEndsAt,
+        editionIds: memberships.editionIds,
       })
       .from(approvers)
       .leftJoin(users, eq(users.id, approvers.userId))
@@ -606,6 +632,8 @@ export async function departmentOptions(
       signsOff: d.signsOff,
       isArchived: d.isArchived,
       mainApprover: main ? main.userName || main.name : null,
+      /** The main approver's events (Users → Events); null = every event. */
+      mainEditionIds: main && main.role && main.role !== "admin" ? (main.editionIds ?? null) : null,
       mainIsThisPerson: Boolean(mine),
       mainCanSign: Boolean(
         main?.userId &&

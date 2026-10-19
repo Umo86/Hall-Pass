@@ -8,6 +8,7 @@ import { locations, signageItems } from "@/lib/db/schema";
 import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession, type Session } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { notify } from "@/lib/notify";
 import {
@@ -123,7 +124,7 @@ export async function createStandDesign(input: unknown): Promise<ActionResult<{ 
     return fail("Only Operations and super admins set up stands");
   }
   const data = parsed.data;
-  if (!(await ownEdition(db, session.organisation.id, data.editionId))) {
+  if (!(await ownEdition(db, session.organisation.id, data.editionId, session.actor))) {
     return fail("Event not found");
   }
   try {
@@ -148,6 +149,7 @@ export async function createStandDesign(input: unknown): Promise<ActionResult<{ 
     const res = await checkPick(db, session.organisation.id, data.ownerUserId, {
       type: "owner",
       item: { kind: "stand_design", sponsored: data.category === "sponsor" },
+      editionId: data.editionId,
     });
     if (!res.ok) return fail(res.error, { ownerUserId: res.error });
     owner = { id: res.member.userId, name: res.member.name, role: ownerRoleOf(res.member) };
@@ -166,6 +168,7 @@ export async function createStandDesign(input: unknown): Promise<ActionResult<{ 
       // no category defaults of their own worth relying on.
       const checked = await normaliseSignoffs(tx, {
         organisationId: session.organisation.id,
+        editionId: data.editionId,
         workflowId,
         category: data.category,
         plan: data.signoffs,
@@ -211,6 +214,7 @@ export async function createStandDesign(input: unknown): Promise<ActionResult<{ 
         session.organisation.id,
         { kind: "stand_design", category: data.category, ownerUserId, ownerRole: "ops" },
         session.user.id,
+        data.editionId,
       );
       if (owner) {
         await notifyOwnerChange(tx, {
@@ -260,9 +264,7 @@ export async function addStandPanel(input: unknown): Promise<ActionResult<{ ref:
     return fail("Only Operations and super admins add panels");
   }
   const data = parsed.data;
-  const bundle = await loadItemBundle(db, data.standId, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, data.standId, actorScope(session));
   if (!bundle || bundle.item.deletedAt || bundle.item.kind !== "stand_design") {
     return fail("Stand not found");
   }
@@ -311,6 +313,7 @@ export async function addStandPanel(input: unknown): Promise<ActionResult<{ ref:
       const signoffs = mapped
         ? await normaliseSignoffs(tx, {
             organisationId: session.organisation.id,
+            editionId: stand.editionId,
             workflowId,
             category: stand.category,
             plan: mapped,
@@ -412,6 +415,7 @@ async function syncPanelsToStand(tx: Tx, session: Session, standId: string): Pro
       mapped = plan
         ? await normaliseSignoffs(tx, {
             organisationId: session.organisation.id,
+            editionId: stand.editionId,
             workflowId,
             category: stand.category,
             plan,
@@ -452,9 +456,7 @@ export async function updateStandDesign(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid() }).passthrough().safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, parsed.data.id, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, parsed.data.id, actorScope(session));
   if (!bundle || bundle.item.deletedAt || bundle.item.kind !== "stand_design") {
     return fail("Stand not found");
   }

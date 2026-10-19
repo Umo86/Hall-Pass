@@ -152,4 +152,10 @@ describe("notification kinds", () => {
     expect(isApprovalRequestKind("main_approver")).toBe(false);
     expect((MUTABLE_KINDS as readonly string[]).includes("main_approver")).toBe(false);
   });
+
+  it("signoff_stuck is grouped with sign-offs, always sent and not a request kind", () => {
+    expect(notificationGroup("signoff_stuck")).toBe("approval");
+    expect(isApprovalRequestKind("signoff_stuck")).toBe(false);
+    expect((MUTABLE_KINDS as readonly string[]).includes("signoff_stuck")).toBe(false);
+  });
 });

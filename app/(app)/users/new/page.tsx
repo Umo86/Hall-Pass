@@ -15,6 +15,7 @@ import { standsEnabled } from "@/lib/config";
 import { departmentOptions } from "@/lib/users/queries";
 import { visibleFeatures } from "@/lib/users/rules";
 import { templatesFor } from "@/lib/users/templates";
+import { eventCardData } from "@/lib/users/event-options";
 import { Page, PageHeader } from "@/components/page-header";
 import { SegmentedLinks } from "@/components/ui/segmented";
 import { AddUserForm, type AddAccess } from "@/components/users/add-user-form";
@@ -61,6 +62,13 @@ export default async function AddUserPage({
     lockedDepartment: own ? { id: own.id, name: own.name } : null,
   };
   const templates = templatesFor(actor, { departmentId: actor.departmentId ?? null });
+  // Users → Events: what they may give, and the event templates start from.
+  const card = await eventCardData(session.organisation.id, actor);
+  const events = {
+    events: card.events,
+    allowAll: card.allowAll,
+    defaultEditionId: card.defaultEditionId,
+  };
   const startDepartment = own?.id ?? one(params.department);
   const keep = startDepartment ? `&department=${startDepartment}` : "";
 
@@ -99,6 +107,7 @@ export default async function AddUserPage({
           access={access}
           templates={templates}
           initialDepartmentId={startDepartment}
+          events={events}
         />
       ) : (
         <AddUserForm
@@ -106,6 +115,7 @@ export default async function AddUserPage({
           visible={visible}
           access={access}
           templates={templates}
+          events={events}
           initial={{
             departmentId: startDepartment,
             signsOff: one(params.signsOff) === "1",

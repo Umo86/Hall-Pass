@@ -8,20 +8,35 @@ import { toast } from "sonner";
 import type { AbilityKey, Feature, ManagerScope, StaffRole } from "@/lib/authz";
 import { roleLabel } from "@/lib/format";
 import {
+  eventsSummary,
   firstName,
   mainApproverNote,
   overridesFor,
+  removedEditions,
+  sameEditions,
   startingChoices,
   type AbilityChoices,
   type Signoff,
 } from "@/lib/users/rules";
 import {
   canStillSign,
+  eventHandoverGroups,
+  handoverTargetLabel,
   ITEM_KIND_LABEL,
   itemsLostByChange,
+  type HandoverChoice,
+  type HandoverSigner,
+  type HandoverStep,
   type ItemKind,
   type WorkAccess,
 } from "@/lib/users/handover";
+import { useConfirm } from "@/components/confirm-dialog";
+import {
+  defaultHandover,
+  HandoverFields,
+  missingHandover,
+  type HandoverCandidateView,
+} from "./handover-fields";
 import { updateInvitation, updateUser } from "@/app/actions/users";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,9 +48,11 @@ import {
   FieldError,
   ManagerField,
   NEW_DEPARTMENT,
+  EventsField,
   RoleCards,
   SectionsPicker,
   type DepartmentOption,
+  type EventOption,
 } from "./person-fields";
 
 export type PersonFormState = {
@@ -50,6 +67,36 @@ export type PersonFormState = {
   signoffs: Signoff[];
   paused: boolean;
   managerScope: ManagerScope | null;
+  /**
+   * Users → Events: null = every event; a list = only those (of the events
+   * the viewer can open — the server keeps the rest).
+   */
+  editionIds: string[] | null;
+};
+
+/** What the viewer may do with the Events card (computed on the server; checked again there). */
+export type EventAccess = {
+  /** The viewer sees every event, so they may give "All events". */
+  allowAll: boolean;
+  /** The person's events the viewer can't open (kept, counted, never named). */
+  hiddenCount: number;
+  /** Why the card is read-only, or null. */
+  readOnly: string | null;
+  /** The event to tick first when switching to Only these events. */
+  defaultEditionId?: string | null;
+};
+
+/**
+ * What narrowing someone's events would leave behind: sign-offs naming
+ * them (or only they could open) per event, who could take them, and their
+ * open tasks and owned items with their events.
+ */
+export type EventWork = {
+  steps: HandoverStep[];
+  signers: Record<string, HandoverSigner[]>;
+  departmentNames: Record<string, string>;
+  candidates: HandoverCandidateView[];
+  tasks: { id: string; title: string; editionId: string | null }[];
 };
 
 /** What the viewer may change (computed on the server; checked again there). */
@@ -69,10 +116,24 @@ export type EditorAccess = {
   keepDepartment: boolean;
 };
 
-/** Work they have now: items they own and sign-offs naming them. */
+/**
+ * Work they have now: items they own and sign-offs naming them. Entries in
+ * events the viewer can't open are `hidden` (counted, never named).
+ */
 export type PersonWork = {
-  items: { ref: string; kind: ItemKind; href: string }[];
-  signoffs: { ref: string; href: string | null; departmentId: string | null }[];
+  items: {
+    ref: string | null;
+    kind: ItemKind;
+    href: string | null;
+    editionId: string | null;
+    hidden?: boolean;
+  }[];
+  signoffs: {
+    ref: string;
+    href: string | null;
+    departmentId: string | null;
+    hidden?: boolean;
+  }[];
 };
 
 type Errors = Partial<Record<"fullName" | "newDepartmentName" | "form", string>>;
@@ -88,6 +149,7 @@ function same(a: PersonFormState, b: PersonFormState) {
         Object.entries(s.abilities).sort(([x], [y]) => x.localeCompare(y)),
       ),
       signoffs: [...s.signoffs].sort((x, y) => x.departmentId.localeCompare(y.departmentId)),
+      editionIds: s.editionIds ? [...s.editionIds].sort() : null,
     });
   return norm(a) === norm(b);
 }
@@ -100,7 +162,14 @@ function access(s: PersonFormState): WorkAccess {
   };
 }
 
-function RefList({ refs }: { refs: { ref: string; href: string | null }[] }) {
+function RefList({
+  refs: all,
+}: {
+  refs: { ref: string | null; href: string | null; hidden?: boolean }[];
+}) {
+  // Refs in events the viewer can't open are only counted.
+  const refs = all.filter((r) => !r.hidden && r.ref);
+  const hidden = all.length - refs.length;
   return (
     <>
       {refs.slice(0, 5).map((r, i) => (
@@ -116,8 +185,18 @@ function RefList({ refs }: { refs: { ref: string; href: string | null }[] }) {
         </span>
       ))}
       {refs.length > 5 ? ` and ${refs.length - 5} more` : ""}
+      {hidden > 0
+        ? `${refs.length > 0 ? " and " : ""}${hidden} ${refs.length > 0 ? "more " : ""}in events you can't open`
+        : ""}
     </>
   );
+}
+
+/** "BIRM28", "BIRM28 and LOND28", or "3 events". */
+function codesText(ids: readonly string[], codes: Readonly<Record<string, string>>): string {
+  const known = ids.map((id) => codes[id]).filter(Boolean);
+  if (known.length === ids.length && ids.length <= 2) return known.join(" and ");
+  return `${ids.length} events`;
 }
 
 function kindsText(items: { kind: ItemKind }[]): string {
@@ -148,6 +227,10 @@ export function PersonEditor({
   access: can,
   readOnlyReason,
   work,
+  events = [],
+  eventAccess = { allowAll: true, hiddenCount: 0, readOnly: null },
+  eventWork,
+  currentUserId = "",
 }: {
   kind: "member" | "invite";
   /** The user id (member) or invitation id. */
@@ -163,9 +246,17 @@ export function PersonEditor({
   /** Set when the viewer can see but not change this person's access (why). */
   readOnlyReason?: string | null;
   work: PersonWork;
+  /** The events the viewer may give (and the person's that the viewer can open). */
+  events?: EventOption[];
+  eventAccess?: EventAccess;
+  /** What taking events away would leave behind (members only). */
+  eventWork?: EventWork;
+  currentUserId?: string;
 }) {
   const [baseline, setBaseline] = useState(initial);
   const [form, setForm] = useState(initial);
+  const [eventHandover, setEventHandover] = useState<HandoverChoice>({});
+  const [confirmDialog, confirm] = useConfirm();
   const [moved, setMoved] = useState<{ from: string; to: string; before: Signoff[] } | null>(null);
   const [errors, setErrors] = useState<Errors>({});
   const [pending, start] = useTransition();
@@ -180,6 +271,21 @@ export function PersonEditor({
   const accessLocked = readOnlyReason ?? locked;
   const viewer = form.role === "viewer";
   const canSign = (deptId: string) => can.signoffDepartments.includes(deptId);
+  const codeById = useMemo(
+    () => Object.fromEntries(events.map((e) => [e.id, e.code])) as Record<string, string>,
+    [events],
+  );
+  // "BIRM27 only" for a limited person (the main approver note says so).
+  const newMainEvents =
+    form.role !== "admin" && form.editionIds !== null
+      ? eventsSummary(
+          [
+            ...form.editionIds,
+            ...Array.from({ length: eventAccess.hiddenCount }, (_, i) => `hidden-${i}`),
+          ],
+          (eid) => codeById[eid] ?? null,
+        )
+      : null;
 
   function pickDepartment(value: string) {
     // Work from the sign-offs as they were before any earlier move.
@@ -280,14 +386,29 @@ export function PersonEditor({
     setErrors({});
   }
 
-  function save() {
+  async function save() {
     const next: Errors = {};
     if (!form.fullName.trim()) next.fullName = "Enter their name";
     if (form.department === NEW_DEPARTMENT && !form.newDepartment.trim()) {
       next.newDepartmentName = "Name the new department";
     }
+    if (
+      form.role !== "admin" &&
+      form.editionIds !== null &&
+      form.editionIds.length === 0 &&
+      eventAccess.hiddenCount === 0
+    ) {
+      next.form = "Tick at least one event, or choose All events";
+    }
+    const missingEvent = eventGroups.length
+      ? missingHandover(eventGroups, { ...defaultHandover(eventGroups), ...eventHandover }, name)
+      : null;
+    if (missingEvent) next.form = missingEvent;
     setErrors(next);
-    if (Object.keys(next).length > 0) return;
+    if (Object.keys(next).length > 0) {
+      if (next.form) toast.error(next.form);
+      return;
+    }
     const allVisible = form.features !== null && visible.every((f) => form.features!.includes(f));
     const payload = {
       fullName: form.fullName,
@@ -301,11 +422,68 @@ export function PersonEditor({
       // Viewers never sign off: saving takes them off every department's approvers.
       signoffs: viewer ? [] : form.signoffs,
       ...(can.canGrantManager && !isSelf ? { managerScope: form.managerScope } : {}),
+      // Users → Events: omitted for super admins (never limited) and when unchanged.
+      ...(form.role !== "admin" && !sameEditions(form.editionIds, baseline.editionIds)
+        ? { editionIds: form.editionIds }
+        : {}),
     };
+    const eventChoice = { ...defaultHandover(eventGroups), ...eventHandover };
+    // Taking events away with work there: say what happens first (before the
+    // transition starts — a dialog opened inside one doesn't show until it ends).
+    if (
+      lostEvents.length > 0 &&
+      (eventGroups.length > 0 || lostTasks.length > 0 || lostOwned.length > 0)
+    ) {
+      const codes = codesText(lostEvents, codeById);
+      const targets = [
+        ...new Set(
+          eventGroups.map((g) =>
+            handoverTargetLabel(
+              g,
+              eventChoice[g.key] === "department" ? null : (eventChoice[g.key] ?? null),
+              new Map(
+                (eventWork?.candidates ?? []).map((c) => [c.userId, c.name] as [string, string]),
+              ),
+            ).replace(/^everyone who signs off for /, ""),
+          ),
+        ),
+      ];
+      const signoffCount = eventGroups.reduce((n, g) => n + g.steps.length, 0);
+      const lostWhat = [
+        lostTasks.length > 0
+          ? `${lostTasks.length} task${lostTasks.length === 1 ? "" : "s"}`
+          : null,
+        lostOwned.length > 0
+          ? `${lostOwned.length} item${lostOwned.length === 1 ? "" : "s"}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" and ");
+      const ok = await confirm({
+        title: `Take ${codes} away from ${name}?`,
+        description: [
+          signoffCount > 0
+            ? `${name}'s ${signoffCount} sign-off${signoffCount === 1 ? "" : "s"} there go${signoffCount === 1 ? "es" : ""} to ${targets.join(" and ")}.`
+            : null,
+          lostWhat
+            ? `Their ${lostWhat} there ${lostTasks.length + lostOwned.length === 1 ? "stays with them until you give it" : "stay with them until you give them"} to someone else.`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" "),
+        confirmLabel: "Take it away",
+      });
+      if (!ok) return;
+    }
     start(async () => {
       const res =
         kind === "member"
-          ? await updateUser({ ...payload, userId: id, signoffPaused: form.paused })
+          ? await updateUser({
+              ...payload,
+              userId: id,
+              signoffPaused: form.paused,
+              ...(eventGroups.length > 0 ? { eventHandover: eventChoice } : {}),
+            })
           : await updateInvitation({ ...payload, inviteId: id });
       if (!res.ok) {
         setErrors({
@@ -321,6 +499,7 @@ export function PersonEditor({
       setBaseline(saved);
       setForm(saved);
       setMoved(null);
+      setEventHandover({});
       router.refresh();
     });
   }
@@ -351,6 +530,39 @@ export function PersonEditor({
       ? work.signoffs.filter(
           (w) => stopsSigning || (w.departmentId != null && dropped.has(w.departmentId)),
         )
+      : [];
+
+  // Users → Events: what taking events away leaves behind (members only).
+  const lostEvents =
+    kind === "member" && form.role !== "admin"
+      ? removedEditions(
+          baseline.editionIds,
+          form.editionIds,
+          events.map((e) => e.id),
+        )
+      : [];
+  const lostSet = new Set(lostEvents);
+  const eventGroups =
+    lostEvents.length > 0 && eventWork
+      ? eventHandoverGroups(
+          eventWork.steps.filter((st) => st.editionId && lostSet.has(st.editionId)),
+          {
+            departmentNames: new Map(Object.entries(eventWork.departmentNames)),
+            signers: new Map(Object.entries(eventWork.signers)),
+          },
+        )
+      : [];
+  const lostTasks = (eventWork?.tasks ?? []).filter((t) => t.editionId && lostSet.has(t.editionId));
+  const lostOwned = work.items.filter((i) => i.editionId && lostSet.has(i.editionId));
+  // Work they already hold in events they can't open (a persistent note).
+  const theirs = baseline.editionIds ? new Set(baseline.editionIds) : null;
+  const outsideItems =
+    kind === "member" && theirs && eventAccess.hiddenCount === 0
+      ? work.items.filter((i) => i.editionId && !theirs.has(i.editionId))
+      : [];
+  const outsideTasks =
+    kind === "member" && theirs && eventAccess.hiddenCount === 0
+      ? (eventWork?.tasks ?? []).filter((t) => t.editionId && !theirs.has(t.editionId))
       : [];
 
   return (
@@ -493,6 +705,50 @@ export function PersonEditor({
         </p>
       )}
 
+      <section
+        className="min-w-0 space-y-3 rounded-lg border p-4 sm:p-6"
+        aria-labelledby="p-events-h"
+      >
+        <h2 id="p-events-h" className="text-sm font-semibold">
+          Events
+        </h2>
+        <EventsField
+          id="p-events"
+          personName={name}
+          value={form.editionIds}
+          onChange={(v) => set("editionIds", v)}
+          events={events}
+          allowAll={eventAccess.allowAll}
+          hiddenCount={eventAccess.hiddenCount}
+          defaultEditionId={eventAccess.defaultEditionId ?? null}
+          readOnlyReason={eventAccess.readOnly}
+          superAdmin={form.role === "admin"}
+          disabled={Boolean(accessLocked)}
+        />
+        {(outsideItems.length > 0 || outsideTasks.length > 0) && !dirty && (
+          <p role="note" className="text-muted-foreground text-sm">
+            {name}{" "}
+            {[
+              outsideItems.length > 0
+                ? `owns ${outsideItems.length} item${outsideItems.length === 1 ? "" : "s"}`
+                : null,
+              outsideTasks.length > 0
+                ? `has ${outsideTasks.length} task${outsideTasks.length === 1 ? "" : "s"}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" and ")}{" "}
+            in events they can&apos;t open
+            {outsideItems.length > 0 && (
+              <>
+                : <RefList refs={outsideItems} />
+              </>
+            )}{" "}
+            — give them to someone who can.
+          </p>
+        )}
+      </section>
+
       <section className="space-y-3 rounded-lg border p-4 sm:p-6" aria-labelledby="signoff-h">
         <div className="flex flex-wrap items-center gap-2">
           <h2 id="signoff-h" className="text-sm font-semibold">
@@ -557,6 +813,7 @@ export function PersonEditor({
                       editable={canSign(ownSigning.id) && !readOnlyReason}
                       canMain={can.canChooseMain && !readOnlyReason}
                       invited={kind === "invite"}
+                      newMainEvents={newMainEvents}
                     />
                   )}
                 </ul>
@@ -582,6 +839,7 @@ export function PersonEditor({
                           editable={canSign(d.id) && !readOnlyReason}
                           canMain={can.canChooseMain && !readOnlyReason}
                           invited={kind === "invite"}
+                          newMainEvents={newMainEvents}
                         />
                       ))}
                     </ul>
@@ -599,7 +857,7 @@ export function PersonEditor({
         )}
       </section>
 
-      {dirty && (lostItems.length > 0 || lostSignoffs.length > 0) && (
+      {dirty && (lostItems.length > 0 || lostSignoffs.length > 0 || lostEvents.length > 0) && (
         <section
           role="note"
           aria-label="What this change leaves behind"
@@ -626,8 +884,74 @@ export function PersonEditor({
               any others stay with {name} to hand on from the item.
             </p>
           )}
+          {lostEvents.length > 0 && (
+            <>
+              <p>
+                {name} won&apos;t see {codesText(lostEvents, codeById)} any more.
+              </p>
+              <ul className="list-disc space-y-1 pl-5">
+                {eventGroups
+                  .filter((g) => g.defaultTo)
+                  .map((g) => (
+                    <li key={g.key}>
+                      {g.steps.length} sign-off{g.steps.length === 1 ? "" : "s"} waiting on {name}{" "}
+                      there go{g.steps.length === 1 ? "es" : ""} back to {g.departmentName}:{" "}
+                      <RefList refs={g.steps} />
+                    </li>
+                  ))}
+                {eventGroups
+                  .filter((g) => !g.defaultTo)
+                  .map((g) => (
+                    <li key={g.key}>
+                      {g.steps.length} {g.departmentName ? `${g.departmentName} ` : ""}sign-off
+                      {g.steps.length === 1 ? "" : "s"} can&apos;t go back
+                      {g.departmentName
+                        ? ` — nobody else in ${g.departmentName} can open ${codesText(g.editionIds, codeById)}`
+                        : ""}
+                      : <RefList refs={g.steps} />.
+                    </li>
+                  ))}
+                {(lostTasks.length > 0 || lostOwned.length > 0) && (
+                  <li>
+                    {[
+                      lostTasks.length > 0
+                        ? `${lostTasks.length} task${lostTasks.length === 1 ? "" : "s"}`
+                        : null,
+                      lostOwned.length > 0
+                        ? `${lostOwned.length} item${lostOwned.length === 1 ? "" : "s"}`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" and ")}{" "}
+                    {name} owns there {lostTasks.length + lostOwned.length === 1 ? "stays" : "stay"}{" "}
+                    with {name}, but {name} won&apos;t see{" "}
+                    {lostTasks.length + lostOwned.length === 1 ? "it" : "them"}
+                    {lostOwned.length > 0 && (
+                      <>
+                        : <RefList refs={lostOwned} />
+                      </>
+                    )}
+                    . Give {lostTasks.length + lostOwned.length === 1 ? "it" : "them"} to someone
+                    else from each item, or from Everyone&apos;s tasks.
+                  </li>
+                )}
+              </ul>
+              {eventGroups.some((g) => !g.defaultTo) && eventWork && (
+                <HandoverFields
+                  idPrefix="p-event-handover"
+                  groups={eventGroups.filter((g) => !g.defaultTo)}
+                  candidates={eventWork.candidates}
+                  value={{ ...defaultHandover(eventGroups), ...eventHandover }}
+                  onChange={setEventHandover}
+                  who={name}
+                  currentUserId={currentUserId}
+                />
+              )}
+            </>
+          )}
         </section>
       )}
+      {confirmDialog}
 
       {dirty && (
         <div
@@ -640,7 +964,12 @@ export function PersonEditor({
           <Button type="button" variant="outline" className="h-11 sm:h-9" onClick={discard}>
             Discard
           </Button>
-          <Button type="button" className="h-11 sm:h-9" disabled={pending} onClick={save}>
+          <Button
+            type="button"
+            className="h-11 sm:h-9"
+            disabled={pending}
+            onClick={() => void save()}
+          >
             {pending ? "Saving…" : "Save changes"}
           </Button>
         </div>
@@ -660,6 +989,7 @@ function SignoffRow({
   editable,
   canMain,
   invited,
+  newMainEvents = null,
 }: {
   dept: DepartmentOption;
   label: string;
@@ -674,6 +1004,8 @@ function SignoffRow({
   canMain: boolean;
   /** An invitation: they take over from a main approver who can sign when they accept. */
   invited: boolean;
+  /** eventsSummary when they're limited to some events (Users → Events). */
+  newMainEvents?: string | null;
 }) {
   const other = dept.mainApprover && !dept.mainIsThisPerson ? dept.mainApprover : null;
   // Main "when they accept": already asked, or an invitee chosen while the main can sign.
@@ -689,6 +1021,7 @@ function SignoffRow({
           invited,
           current: other ? { name: firstName(other), canSign: Boolean(dept.mainCanSign) } : null,
           pending: dept.pendingMain ? firstName(dept.pendingMain) : null,
+          newMainEvents,
         });
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md px-2 py-1">
@@ -739,7 +1072,7 @@ function SignoffRow({
           {invited && dept.pendingIsThisPerson ? "Main approver when they accept" : "Main approver"}
         </span>
       )}
-      {checked && isMain && (other || dept.pendingMain || (invited && offNow)) && (
+      {checked && isMain && (other || dept.pendingMain || newMainEvents || (invited && offNow)) && (
         <p className="text-muted-foreground w-full pl-8 text-xs">{note}</p>
       )}
     </li>

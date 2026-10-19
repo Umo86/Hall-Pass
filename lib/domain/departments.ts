@@ -5,7 +5,7 @@ import { defaultSignageSteps } from "@/lib/workflow/defaults";
 import { approvers, departments, memberships, workflowSteps, workflows } from "@/lib/db/schema";
 import { signoffPaused, type PermissionOverrides } from "@/lib/authz";
 import { accessLive } from "@/lib/access";
-import { activeMembership } from "@/lib/users/active";
+import { activeMembership, memberSeesEditionSql } from "@/lib/users/active";
 // lib/people imports nothing from lib/domain, so there is no cycle.
 import { rerouteDepartmentSignoffs } from "@/lib/people";
 
@@ -206,12 +206,14 @@ export async function departmentIdsForUser(
 
 /**
  * People who can sign off for a department right now: account set up,
- * access active and sign-off not paused.
+ * access active and sign-off not paused — and, for an event, able to open
+ * it (Users → Events).
  */
 export async function departmentSignerIds(
   db: Db | Tx,
   organisationId: string,
   departmentId: string,
+  opts: { editionId?: string | null } = {},
 ): Promise<string[]> {
   const rows = await db
     .select({ userId: approvers.userId, overrides: memberships.permissionOverrides })
@@ -228,6 +230,7 @@ export async function departmentSignerIds(
         eq(approvers.organisationId, organisationId),
         eq(approvers.departmentId, departmentId),
         activeMembership(),
+        opts.editionId ? memberSeesEditionSql(opts.editionId) : undefined,
       ),
     );
   return rows
@@ -264,6 +267,8 @@ export async function listDepartments(db: Db | Tx, organisationId: string) {
         overrides: memberships.permissionOverrides,
         suspendedAt: memberships.suspendedAt,
         accessEndsAt: memberships.accessEndsAt,
+        role: memberships.role,
+        editionIds: memberships.editionIds,
       })
       .from(approvers)
       .leftJoin(
@@ -287,6 +292,8 @@ export async function listDepartments(db: Db | Tx, organisationId: string) {
           Boolean(p.approver.userId && p.hasMembership) &&
           accessLive(p) &&
           !signoffPaused(p.overrides as PermissionOverrides),
+        /** Events they work on (Users → Events); null = every event. */
+        editionIds: p.role === "admin" ? null : (p.editionIds ?? null),
       })),
   }));
 }

@@ -197,6 +197,11 @@ export default async function InvitePage({
   return (
     <InviteShell heading={heading}>
       {what}
+      {details.kind === "staff" && details.events && details.events.length > 0 && (
+        <p className="text-muted-foreground text-sm">
+          You&rsquo;ll work on {andList(details.events.map((e) => e.name))}.
+        </p>
+      )}
       {details.kind === "staff" && details.signsOff && (
         <p className="text-muted-foreground text-sm">
           {details.mainFor.length > 0

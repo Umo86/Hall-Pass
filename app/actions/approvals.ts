@@ -12,11 +12,18 @@ import {
   standSubmissions,
   users,
 } from "@/lib/db/schema";
-import { abilityOn, can, type ApprovalStepCtx, type PermissionOverrides } from "@/lib/authz";
+import {
+  abilityOn,
+  can,
+  seesEdition,
+  type ApprovalStepCtx,
+  type PermissionOverrides,
+} from "@/lib/authz";
 import { loadTeam, taskRefusal } from "@/lib/people";
 import { canReceiveSignoff } from "@/lib/access";
 import { writeAudit } from "@/lib/audit";
 import { requireSession, type Session } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { signageTransition } from "@/lib/status/signage";
 import { standTransition } from "@/lib/status/stand";
@@ -141,8 +148,8 @@ async function decideOne(
 
       const isSignage = row.entityType === "signage_item";
       const bundle = isSignage
-        ? await loadItemBundle(tx, row.entityId, { organisationId: session.organisation.id })
-        : await loadStandBundle(tx, row.entityId, { organisationId: session.organisation.id });
+        ? await loadItemBundle(tx, row.entityId, actorScope(session))
+        : await loadStandBundle(tx, row.entityId, actorScope(session));
       if (!bundle) throw new WorkflowError("Record not found");
       if (editionIsReadOnly(bundle.edition.status)) throw new WorkflowError(EDITION_LOCKED_MESSAGE);
       assertItemOpen(bundle);
@@ -332,7 +339,8 @@ async function decideOne(
               m.role !== "admin" &&
               !taskRefusal(m) &&
               abilityOn(m, "costs.edit") &&
-              (m.features === null || m.features.includes("signage")),
+              (m.features === null || m.features.includes("signage")) &&
+              seesEdition(m, edition.id),
           );
           await notify(tx, {
             userIds: setters.map((o) => o.userId),
@@ -531,8 +539,8 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
       if (!row) throw new WorkflowError("Approval step not found");
       const isSignage = row.entityType === "signage_item";
       const bundle = isSignage
-        ? await loadItemBundle(tx, row.entityId, { organisationId: session.organisation.id })
-        : await loadStandBundle(tx, row.entityId, { organisationId: session.organisation.id });
+        ? await loadItemBundle(tx, row.entityId, actorScope(session))
+        : await loadStandBundle(tx, row.entityId, actorScope(session));
       if (!bundle) throw new WorkflowError("Record not found");
       if (editionIsReadOnly(bundle.edition.status)) throw new WorkflowError(EDITION_LOCKED_MESSAGE);
       assertItemOpen(bundle);
@@ -554,8 +562,12 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
           overrides: memberships.permissionOverrides,
           suspendedAt: memberships.suspendedAt,
           accessEndsAt: memberships.accessEndsAt,
+          editionIds: memberships.editionIds,
+          fullName: users.fullName,
+          email: users.email,
         })
         .from(memberships)
+        .innerJoin(users, eq(users.id, memberships.userId))
         .where(
           and(
             eq(memberships.userId, parsed.data.toUserId),
@@ -569,6 +581,12 @@ export async function delegateApproval(input: unknown): Promise<ActionResult> {
         !canReceiveSignoff({ ...target, overrides: target.overrides as PermissionOverrides })
       ) {
         throw new WorkflowError("Pick a team member who can sign off");
+      }
+      // Users → Events: never to someone who can't open the event.
+      if (!seesEdition(target, bundle.edition.id)) {
+        throw new WorkflowError(
+          `${target.fullName || target.email} can't open this event — pick someone who can`,
+        );
       }
       // A department-wide step can be taken by anyone; only refuse a no-op.
       if (row.assignedUserId && parsed.data.toUserId === row.assignedUserId) {
@@ -665,9 +683,7 @@ export async function resubmitSignageItem(input: unknown): Promise<ActionResult>
   const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, parsed.data.id, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, parsed.data.id, actorScope(session));
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.submit", item: itemAuthzCtx(bundle) })) {
@@ -752,8 +768,8 @@ export async function uploadInstallPhoto(
     }
     const isSignage = row.entityType === "signage_item";
     const bundle = isSignage
-      ? await loadItemBundle(db, row.entityId, { organisationId: session.organisation.id })
-      : await loadStandBundle(db, row.entityId, { organisationId: session.organisation.id });
+      ? await loadItemBundle(db, row.entityId, actorScope(session))
+      : await loadStandBundle(db, row.entityId, actorScope(session));
     if (!bundle) return fail("Record not found");
     if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
     const stepCtx: ApprovalStepCtx = {
@@ -833,8 +849,8 @@ export async function remindApproval(input: unknown): Promise<ActionResult<Remin
         }
         const isSignage = row.entityType === "signage_item";
         const bundle = isSignage
-          ? await loadItemBundle(tx, row.entityId, { organisationId: session.organisation.id })
-          : await loadStandBundle(tx, row.entityId, { organisationId: session.organisation.id });
+          ? await loadItemBundle(tx, row.entityId, actorScope(session))
+          : await loadStandBundle(tx, row.entityId, actorScope(session));
         if (!bundle) throw new WorkflowError("Record not found");
         if (editionIsReadOnly(bundle.edition.status))
           throw new WorkflowError(EDITION_LOCKED_MESSAGE);

@@ -5,6 +5,7 @@ import { db } from "@/lib/db/client";
 import { editions, events, exports as exportsTable } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
 import { getSession, type Session } from "@/lib/auth/actor";
+import { opensEdition } from "@/lib/authz";
 
 const CONTENT_TYPES: Record<string, string> = {
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -40,7 +41,10 @@ export async function exportSession(
   };
 }
 
-/** An edition of the signed-in organisation, looked up by its code. */
+/**
+ * An edition of the signed-in organisation, looked up by its code — null
+ * (the export's 404) for an event they can't open (Users → Events).
+ */
 export async function exportEdition(session: Session, editionCode: string) {
   const [row] = await db
     .select({ edition: editions })
@@ -53,7 +57,8 @@ export async function exportEdition(session: Session, editionCode: string) {
       ),
     )
     .limit(1);
-  return row?.edition ?? null;
+  if (!row || !opensEdition(session.actor, row.edition.id)) return null;
+  return row.edition;
 }
 
 /**

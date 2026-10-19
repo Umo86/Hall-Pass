@@ -91,18 +91,18 @@ const personSchema = z
       .nullable()
       .optional(),
     accessEndsOn,
+    /**
+     * Users → Events: null = every event, including new ones; a list = only
+     * those (the server refuses an empty one in its own words); undefined =
+     * unchanged.
+     */
+    editionIds: z.array(z.string().uuid()).max(500).nullable().optional(),
   })
   .strict();
 
 const inviteSchema = personSchema
   .extend({ email: z.string().trim().toLowerCase().email("Enter a valid email address") })
   .strict();
-
-const updateMemberSchema = personSchema
-  .extend({ userId: z.string().uuid(), signoffPaused: z.boolean() })
-  .strict();
-
-const updateInviteSchema = personSchema.extend({ inviteId: z.string().uuid() }).strict();
 
 /** Who takes over each department's sign-offs: a person, or back to the department. */
 const handToSchema = z
@@ -111,6 +111,17 @@ const handToSchema = z
     z.union([z.string().uuid(), z.literal(BACK_TO_DEPARTMENT)]),
   )
   .nullish();
+
+const updateMemberSchema = personSchema
+  .extend({
+    userId: z.string().uuid(),
+    signoffPaused: z.boolean(),
+    /** Who takes their sign-offs in events taken away from them. */
+    eventHandover: handToSchema,
+  })
+  .strict();
+
+const updateInviteSchema = personSchema.extend({ inviteId: z.string().uuid() }).strict();
 
 type Role = (typeof STAFF_ROLES)[number];
 type Scope = (typeof MANAGER_SCOPES)[number];
@@ -170,11 +181,16 @@ function inviterName(session: Session) {
 function mainWords(
   name: string,
   out: { mainOnAccept?: readonly MainOnAcceptNote[]; pendingDropped: readonly PendingDropped[] },
+  opts: { limited?: boolean } = {},
 ): string[] {
   return [
     ...(out.mainOnAccept ?? []).map(
       (m) =>
-        `${firstName(name)} becomes the main approver for ${m.departmentName} when they accept — ${m.currentMain} stays until then`,
+        `${firstName(name)} becomes the main approver for ${m.departmentName} when they accept — ${m.currentMain} stays until then${
+          opts.limited
+            ? `; ${m.departmentName} sign-offs in events ${firstName(name)} doesn't work on go to everyone in ${m.departmentName}`
+            : ""
+        }`,
     ),
     ...out.pendingDropped.map(
       (p) => `${p.name} won't take over ${p.departmentName} when they accept`,
@@ -216,7 +232,9 @@ export async function inviteUser(input: unknown): Promise<ActionResult<InviteUse
       inviteId: invite.inviteId,
     });
     refresh();
-    const notes = mainWords(data.fullName, invite);
+    const notes = mainWords(data.fullName, invite, {
+      limited: data.role !== "admin" && Array.isArray(data.editionIds),
+    });
     return success(
       {
         inviteId: invite.inviteId,
@@ -250,6 +268,14 @@ export async function updateUser(input: unknown): Promise<ActionResult> {
     );
     refresh();
     if (out.changed.length === 0) return success(undefined, "Nothing to save");
+    const handedOver =
+      out.eventSignoffsMoved > 0
+        ? ` — ${out.eventSignoffsMoved} sign-off${out.eventSignoffsMoved === 1 ? "" : "s"} handed over`
+        : "";
+    // Only their events changed: say so in those words (Users → Events).
+    if (out.changed.length === 1 && out.changed[0] === "editionIds") {
+      return success(undefined, `${firstName(out.name)}'s events saved${handedOver}`);
+    }
     const notes = [
       out.signoffsMoved > 0
         ? `${out.signoffsMoved} sign-off${out.signoffsMoved === 1 ? "" : "s"} went back to the department`
@@ -264,7 +290,7 @@ export async function updateUser(input: unknown): Promise<ActionResult> {
       [
         parsed.data.userId === session.user.id
           ? "Saved"
-          : `Saved — ${firstName(out.name)} sees the change on their next page load`,
+          : `Saved — ${firstName(out.name)} sees the change on their next page load${handedOver}`,
         ...notes,
       ].join(". "),
     );
@@ -288,7 +314,9 @@ export async function updateInvitation(input: unknown): Promise<ActionResult> {
       undefined,
       [
         `Saved — ${firstName(out.name)} gets this when they accept`,
-        ...mainWords(out.name, out),
+        ...mainWords(out.name, out, {
+          limited: parsed.data.role !== "admin" && Array.isArray(parsed.data.editionIds),
+        }),
       ].join(". "),
     );
   } catch (err) {
@@ -334,6 +362,10 @@ export async function removeUser(input: unknown): Promise<ActionResult> {
       }${
         out.itemsToYou
           ? `; ${out.itemsToYou} item${out.itemsToYou === 1 ? "" : "s"} ${out.workToName} can't work on moved to you`
+          : ""
+      }${
+        out.tasksToYou
+          ? `; ${out.tasksToYou} task${out.tasksToYou === 1 ? "" : "s"} in events ${out.workToName} can't open moved to you`
           : ""
       }${
         out.handedOver
@@ -554,7 +586,7 @@ const pastedRowSchema = z
   })
   .strict();
 
-/** What everyone pasted gets: department, role, sections, abilities and an end date. */
+/** What everyone pasted gets: department, role, sections, abilities, events and an end date. */
 const sharedSchema = personSchema
   .pick({
     departmentId: true,
@@ -563,6 +595,7 @@ const sharedSchema = personSchema
     features: true,
     abilities: true,
     accessEndsOn: true,
+    editionIds: true,
   })
   .strict();
 

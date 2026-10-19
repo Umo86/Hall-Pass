@@ -32,6 +32,8 @@ import {
   abilityGroups,
   EDITABLE_ABILITY_KEYS,
   effectiveAbility,
+  eventsSummary,
+  eventsTitle,
   STAFF_ROLES,
   type AbilityChoices,
 } from "@/lib/users/rules";
@@ -39,6 +41,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SelectNative } from "@/components/ui/select-native";
 import { cn } from "@/lib/utils";
+import { useState } from "react";
 
 export const NEW_DEPARTMENT = "__new";
 
@@ -652,6 +655,255 @@ export function DepartmentChip({
         {name}
         {archived ? " (archived)" : ""}
       </span>
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Events per person (Users → Events).
+// ---------------------------------------------------------------------------
+
+/** An event as the Events card offers it. */
+export type EventOption = {
+  id: string;
+  code: string;
+  name: string;
+  /** "BIRM27 · 9–11 Mar 2027 · NEC Birmingham". */
+  line: string;
+  archived: boolean;
+};
+
+/**
+ * Which events someone works on: "All events — including new ones" (the
+ * default, one line with Change while it's chosen) or "Only these events"
+ * with a checklist. `events` are the ones the viewer may give, in the
+ * switcher's order; archived ones sit in a closed group. A limited viewer
+ * can't choose All events; the person's events the viewer can't open are
+ * only counted (`hiddenCount`) and kept by the server.
+ */
+export function EventsField({
+  id,
+  personName,
+  value,
+  onChange,
+  events,
+  allowAll,
+  hiddenCount = 0,
+  defaultEditionId = null,
+  readOnlyReason = null,
+  superAdmin = false,
+  error,
+  disabled,
+}: {
+  id: string;
+  personName: string;
+  /** Null = every event; a list = only those (of the ones offered here). */
+  value: string[] | null;
+  onChange: (value: string[] | null) => void;
+  events: readonly EventOption[];
+  /** The viewer sees every event, so they may give "All events". */
+  allowAll: boolean;
+  hiddenCount?: number;
+  /** Ticked first when switching to Only these events. */
+  defaultEditionId?: string | null;
+  /** Shown instead of the choice when the viewer can't change it. */
+  readOnlyReason?: string | null;
+  /** Super admins always see every event. */
+  superAdmin?: boolean;
+  error?: string | null;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(value !== null);
+  const who = personName.trim() || "They";
+  if (superAdmin) {
+    return <p className="text-muted-foreground text-sm">Super admins see every event.</p>;
+  }
+  if (readOnlyReason) {
+    return (
+      <div className="min-w-0 space-y-1 text-sm">
+        <p className="font-medium">All events — including new ones</p>
+        <p className="text-muted-foreground text-xs">{readOnlyReason}</p>
+      </div>
+    );
+  }
+  const all = value === null;
+  if (all && !open) {
+    return (
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-1">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">All events — including new ones</p>
+          <p className="text-muted-foreground text-xs">
+            {who} sees every event, and any event created later.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="link inline-flex min-h-11 items-center text-sm sm:min-h-0"
+          onClick={() => setOpen(true)}
+          disabled={disabled}
+          aria-controls={`${id}-choice`}
+          aria-expanded={false}
+        >
+          Change
+        </button>
+      </div>
+    );
+  }
+  const live = events.filter((e) => !e.archived);
+  const archived = events.filter((e) => e.archived);
+  const ticked = new Set(value ?? []);
+  const toggle = (eventId: string, on: boolean) => {
+    const next = new Set(ticked);
+    if (on) next.add(eventId);
+    else next.delete(eventId);
+    onChange(events.filter((e) => next.has(e.id)).map((e) => e.id));
+  };
+  const chooseOnly = () => {
+    if (value !== null) return;
+    const first =
+      (defaultEditionId && events.find((e) => e.id === defaultEditionId && !e.archived)) ||
+      live[0] ||
+      events[0];
+    onChange(first ? [first.id] : []);
+  };
+  const row = (e: EventOption) => (
+    <li key={e.id}>
+      <label className="flex min-h-11 min-w-0 items-start gap-2 py-1 text-sm sm:min-h-8">
+        <input
+          type="checkbox"
+          className="accent-primary mt-0.5 size-4 shrink-0"
+          checked={ticked.has(e.id)}
+          onChange={(ev) => toggle(e.id, ev.target.checked)}
+          disabled={disabled}
+        />
+        <span className="min-w-0 break-words">
+          <span className="block">{e.name}</span>
+          <span className="text-muted-foreground block text-xs">{e.line}</span>
+        </span>
+      </label>
+    </li>
+  );
+  return (
+    <div id={`${id}-choice`} className="min-w-0 space-y-2">
+      <div role="radiogroup" aria-labelledby={`${id}-h`} className="space-y-2">
+        <label className="flex min-h-11 min-w-0 items-start gap-2 text-sm sm:min-h-0">
+          <input
+            type="radio"
+            name={`${id}-mode`}
+            className="accent-primary mt-0.5 size-4 shrink-0"
+            checked={all}
+            onChange={() => onChange(null)}
+            disabled={disabled || !allowAll}
+          />
+          <span className="min-w-0">
+            <span className="block font-medium">All events — including new ones</span>
+            <span className="text-muted-foreground block text-xs">
+              {allowAll
+                ? `${who} sees every event, and any event created later.`
+                : "You can only give the events you can open yourself."}
+            </span>
+          </span>
+        </label>
+        <label className="flex min-h-11 min-w-0 items-start gap-2 text-sm sm:min-h-0">
+          <input
+            type="radio"
+            name={`${id}-mode`}
+            className="accent-primary mt-0.5 size-4 shrink-0"
+            checked={!all}
+            onChange={chooseOnly}
+            disabled={disabled || events.length === 0}
+          />
+          <span className="min-w-0">
+            <span className="block font-medium">Only these events</span>
+            <span className="text-muted-foreground block text-xs">
+              {events.length === 0
+                ? `There are no events yet — ${who} will see every event once they're created.`
+                : `${who} sees only the events ticked here. New events aren't added unless someone gives them.`}
+            </span>
+          </span>
+        </label>
+      </div>
+      {!all && (
+        <div className="min-w-0 rounded-md border p-3">
+          {live.length > 0 && (
+            <ul aria-label="Events" className="space-y-0.5">
+              {live.map(row)}
+            </ul>
+          )}
+          {archived.length > 0 && (
+            <details className="mt-1" open={archived.some((e) => ticked.has(e.id)) || undefined}>
+              <summary className="text-muted-foreground flex min-h-11 cursor-pointer items-center text-sm sm:min-h-8">
+                Archived events ({archived.length})
+              </summary>
+              <ul aria-label="Archived events" className="space-y-0.5">
+                {archived.map(row)}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
+      {hiddenCount > 0 && (
+        <p className="text-muted-foreground text-xs">
+          {who} also has {hiddenCount} other event{hiddenCount === 1 ? "" : "s"} you can&apos;t open
+          — {hiddenCount === 1 ? "it stays" : "they stay"} as{" "}
+          {hiddenCount === 1 ? "it is" : "they are"}.
+        </p>
+      )}
+      {!all && value.length === 0 && hiddenCount === 0 && (
+        <p role="alert" className="text-destructive text-sm">
+          Tick at least one event, or choose All events.
+        </p>
+      )}
+      <FieldError id={`${id}-error`} message={error} />
+    </div>
+  );
+}
+
+/**
+ * "BIRM27 only" / "3 events" for someone limited to some events; nothing
+ * for All events. Codes only for events the viewer can open (`codes`).
+ */
+export function EventsChip({
+  editionIds,
+  codes,
+  className,
+}: {
+  editionIds: readonly string[] | null | undefined;
+  /** Edition id → code, for the events the viewer can open. */
+  codes: Readonly<Record<string, string>>;
+  className?: string;
+}) {
+  if (!editionIds) return null;
+  const codeOf = (eventId: string) => codes[eventId] ?? null;
+  return (
+    <EventsTag
+      text={eventsSummary(editionIds, codeOf)}
+      title={eventsTitle(editionIds, codeOf)}
+      className={className}
+    />
+  );
+}
+
+/** The chip itself, with words already worked out on the server. */
+export function EventsTag({
+  text,
+  title,
+  className,
+}: {
+  text: string;
+  title: string;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "bg-muted text-muted-foreground inline-flex max-w-full items-center rounded-md px-1.5 py-0.5 text-xs",
+        className,
+      )}
+      title={title}
+      aria-label={title}
+    >
+      <span className="truncate">{text}</span>
     </span>
   );
 }

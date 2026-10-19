@@ -7,6 +7,7 @@ import type { Db, Tx } from "@/lib/db/client";
 import {
   approvalInstances,
   contractors,
+  departments,
   editions,
   events,
   externalGrants,
@@ -30,14 +31,18 @@ import {
   departmentRouting,
   eligibleIds,
   loadTeam,
+  noticeNoSignerForEvent,
   orNames,
   partnerInviters,
   rerouteDepartmentSteps,
 } from "@/lib/people";
 import {
   confirmsForSuppliers,
+  opensEdition,
+  seesEdition,
   signoffPaused,
   STAFF_ROLES,
+  type Actor,
   type PermissionOverrides,
   type SignageItemCtx,
   type StaffActor,
@@ -120,12 +125,15 @@ export type ItemBundle = {
 
 /**
  * An item with its show, venue and organisation. Pass the caller's
- * organisation to get null for anyone else's item.
+ * organisation to get null for anyone else's item, and their `actor` to get
+ * null for an item in an event they haven't been given (Users → Events;
+ * partners pass, their grant rules in can() decide) — exactly as if it
+ * didn't exist.
  */
 export async function loadItemBundle(
   db: Db | Tx,
   itemId: string,
-  scope?: { organisationId: string },
+  scope?: { organisationId: string; actor?: Actor },
 ): Promise<ItemBundle | null> {
   const [row] = await db
     .select()
@@ -137,6 +145,7 @@ export async function loadItemBundle(
     .limit(1);
   if (!row) return null;
   if (scope && row.events.organisationId !== scope.organisationId) return null;
+  if (scope?.actor && !opensEdition(scope.actor, row.editions.id)) return null;
   const [org] = await db
     .select()
     .from(organisations)
@@ -200,6 +209,9 @@ export function engineSettingsFor(bundle: ItemBundle): EngineSettings {
 async function routeToSigners(tx: Tx, bundle: ItemBundle, instances: Instance[]): Promise<void> {
   if (!instances.some((i) => i.assignedDepartmentId && i.stepKind === "approval")) return;
   const routing = await departmentRouting(tx, bundle.organisation.id);
+  // Per the item's event (Users → Events): a step whose department nobody
+  // who can open the event signs for waits on the department, and
+  // notifyPendingAssignees tells those who can fix it when it starts.
   const moves = rerouteDepartmentSteps(
     instances.map((i) => ({
       id: i.id,
@@ -208,6 +220,7 @@ async function routeToSigners(tx: Tx, bundle: ItemBundle, instances: Instance[])
       assignedUserId: i.assignedUserId,
       assignedDepartmentId: i.assignedDepartmentId ?? null,
       delegatedFromUserId: i.delegatedFromUserId,
+      editionId: bundle.edition.id,
     })),
     { followsDefaults: !bundle.item.signoffs, ...routing },
   );
@@ -248,6 +261,8 @@ export type CreationMember = {
   features: readonly string[] | null;
   /** Access active (not suspended, end date not reached). */
   active: boolean;
+  /** Events they work on (Users → Events); null/missing = every event. */
+  editionIds?: readonly string[] | null;
 };
 
 /** The section an item of this kind lives in. */
@@ -270,17 +285,21 @@ type CreationItem = {
  * with access in the owner's department who use the item's section. When
  * the owner has no department, the owning team instead (plus Sales for
  * anything sponsorship), with the same section check. Never the creator,
- * nor the owner (who is told the item is theirs — item_assigned). Pure so
- * the rules are unit-testable.
+ * nor the owner (who is told the item is theirs — item_assigned), nor
+ * anyone who can't open the item's event (Users → Events). Pure so the
+ * rules are unit-testable.
  */
 export function itemCreationRecipients(
   members: readonly CreationMember[],
   item: CreationItem,
   creatorUserId: string,
+  editionId?: string | null,
 ): string[] {
   const section = sectionOfKind(item.kind);
   const usesSection = (m: CreationMember) =>
-    m.role === "admin" || m.features === null || m.features.includes(section);
+    (m.role === "admin" || m.features === null || m.features.includes(section)) &&
+    (!editionId ||
+      seesEdition({ role: m.role as StaffRole, editionIds: m.editionIds ?? null }, editionId));
   const owner = item.ownerUserId ? members.find((m) => m.userId === item.ownerUserId) : undefined;
   let chosen: CreationMember[];
   if (owner?.departmentId) {
@@ -300,6 +319,7 @@ export async function resolveItemCreationRecipients(
   organisationId: string,
   item: CreationItem,
   creatorUserId: string,
+  editionId?: string | null,
 ): Promise<string[]> {
   const rows = await db
     .select({
@@ -308,6 +328,7 @@ export async function resolveItemCreationRecipients(
       departmentId: memberships.departmentId,
       features: memberships.features,
       active: sql<boolean>`${activeMembership()}`,
+      editionIds: memberships.editionIds,
     })
     .from(memberships)
     .where(eq(memberships.organisationId, organisationId));
@@ -315,6 +336,7 @@ export async function resolveItemCreationRecipients(
     rows.map((r) => ({ ...r, active: Boolean(r.active) })),
     item,
     creatorUserId,
+    editionId,
   );
 }
 
@@ -395,7 +417,11 @@ export async function notifyOwnerChange(
   }
 }
 
-/** User ids that can decide an instance — used for notifications. */
+/**
+ * User ids that can decide an instance — used for notifications. Team
+ * members only when they can open the event (Users → Events): a named one
+ * who can't gives [] (the caller reports it); a named partner is kept.
+ */
 export async function resolveAssigneeUserIds(
   db: Db | Tx,
   organisationId: string,
@@ -410,18 +436,33 @@ export async function resolveAssigneeUserIds(
     stepKindSnapshot?: string | null;
   },
 ): Promise<string[]> {
-  if (instance.assignedUserId) return [instance.assignedUserId];
+  if (instance.assignedUserId) {
+    const [m] = await db
+      .select({ role: memberships.role, editionIds: memberships.editionIds })
+      .from(memberships)
+      .where(
+        and(
+          eq(memberships.userId, instance.assignedUserId),
+          eq(memberships.organisationId, organisationId),
+        ),
+      )
+      .limit(1);
+    if (m && !seesEdition(m, editionId)) return [];
+    return [instance.assignedUserId];
+  }
   if (instance.assignedDepartmentId) {
-    return departmentSignerIds(db, organisationId, instance.assignedDepartmentId);
+    return departmentSignerIds(db, organisationId, instance.assignedDepartmentId, { editionId });
   }
   const role = instance.assignedRole;
   if (!role) return [];
   const kind = instance.stepKindSnapshot ?? instance.stepKind;
   // Installed and the build check: whoever confirms production (signage.confirm).
-  if (role === "ops" && kind === "confirmation") return productionConfirmerIds(db, organisationId);
+  if (role === "ops" && kind === "confirmation") {
+    return productionConfirmerIds(db, organisationId, { editionId });
+  }
   if ((STAFF_ROLES as readonly string[]).includes(role)) {
     // Active people with the role whose sign-off isn't paused.
-    return activeSignersWithRole(db, organisationId, role as StaffRole);
+    return activeSignersWithRole(db, organisationId, role as StaffRole, { editionId });
   }
   const grants = await db
     .select()
@@ -590,15 +631,17 @@ async function noticeNobodyCanSignIn(
   const who = companyName ?? `the ${scope.role}`;
   const recipients =
     scope.role === "supplier"
-      ? await productionConfirmerIds(tx, organisation.id)
+      ? await productionConfirmerIds(tx, organisation.id, { editionId: edition.id })
       : [
-          ...eligibleIds(team, { type: "task" }, { organisationId: organisation.id }).filter(
-            (id) => team.find((m) => m.userId === id)?.role === "ops",
-          ),
+          ...eligibleIds(
+            team,
+            { type: "task", editionId: edition.id },
+            { organisationId: organisation.id },
+          ).filter((id) => team.find((m) => m.userId === id)?.role === "ops"),
           ...(item.ownerUserId ? [item.ownerUserId] : []),
         ];
   if (recipients.length === 0) return;
-  const inviters = await partnerInviters(tx, organisation.id, { team });
+  const inviters = await partnerInviters(tx, organisation.id, { team, editionId: edition.id });
   const inviterIds = new Set(inviters.map((m) => m.userId));
   const askNames = orNames(inviters.map((m) => m.name));
   const invites = await pendingInvites(tx, bundle, scope);
@@ -700,6 +743,21 @@ export async function notifyPendingAssignees(
       }
       continue;
     }
+    // Users → Events: the department has people who can sign but none who
+    // can open this event, or the person it names can't open it. Tell those
+    // who can fix it (never when nobody can sign at all — as before).
+    if (assignees.length === 0) {
+      const stuck = await stuckFor(tx, bundle, inst);
+      if (stuck) {
+        await noticeNoSignerForEvent(tx, {
+          organisationId: bundle.organisation.id,
+          item,
+          edition: { id: bundle.edition.id, code: bundle.edition.code },
+          ...stuck,
+        });
+        continue;
+      }
+    }
     await notify(tx, {
       userIds: assignees,
       kind: "approval_requested",
@@ -721,6 +779,47 @@ export async function notifyPendingAssignees(
       entityId: item.id,
     });
   }
+}
+
+/**
+ * Why a pending step with nobody to tell is stuck on events (Users → Events):
+ * a department step whose signers can't open the item's event, or a step
+ * naming a team member who can't. Null when that isn't why.
+ */
+async function stuckFor(
+  tx: Tx,
+  bundle: ItemBundle,
+  inst: { assignedUserId: string | null; assignedDepartmentId?: string | null },
+): Promise<{ departmentName?: string; personName?: string } | null> {
+  const orgId = bundle.organisation.id;
+  if (inst.assignedUserId) {
+    const [m] = await tx
+      .select({
+        role: memberships.role,
+        editionIds: memberships.editionIds,
+        fullName: users.fullName,
+        email: users.email,
+      })
+      .from(memberships)
+      .innerJoin(users, eq(users.id, memberships.userId))
+      .where(
+        and(eq(memberships.userId, inst.assignedUserId), eq(memberships.organisationId, orgId)),
+      )
+      .limit(1);
+    if (!m || seesEdition(m, bundle.edition.id)) return null;
+    return { personName: m.fullName || m.email };
+  }
+  if (inst.assignedDepartmentId) {
+    const anyone = await departmentSignerIds(tx, orgId, inst.assignedDepartmentId);
+    if (anyone.length === 0) return null;
+    const [d] = await tx
+      .select({ name: departments.name })
+      .from(departments)
+      .where(eq(departments.id, inst.assignedDepartmentId))
+      .limit(1);
+    return { departmentName: d?.name ?? "the department" };
+  }
+  return null;
 }
 
 /**
@@ -917,6 +1016,8 @@ export async function normaliseSignoffs(
   db: Db | Tx,
   opts: {
     organisationId: string;
+    /** The item's event: a named person must be able to open it (Users → Events). */
+    editionId?: string | null;
     workflowId: string | null;
     category: SignageCategory | null;
     plan: SignoffPlan | null | undefined;
@@ -944,6 +1045,7 @@ export async function normaliseSignoffs(
         role: memberships.role,
         overrides: memberships.permissionOverrides,
         active: sql<boolean>`${activeMembership()}`,
+        editionIds: memberships.editionIds,
         fullName: users.fullName,
         email: users.email,
       })
@@ -970,6 +1072,11 @@ export async function normaliseSignoffs(
       }
       if (signoffPaused(m.overrides as PermissionOverrides)) {
         throw new Error(`${step.name}: ${who}'s sign-off is paused — pick someone else`);
+      }
+      if (opts.editionId && !seesEdition(m, opts.editionId)) {
+        throw new Error(
+          `${step.name}: ${who} can't open this event — pick one of its approvers who can`,
+        );
       }
       if (step.departmentId) {
         const signers = await departmentSignerIds(db, opts.organisationId, step.departmentId);
@@ -1117,15 +1224,25 @@ export async function assertItemLinks(
   }
 }
 
-/** The show, if it belongs to the organisation. */
-export async function ownEdition(db: Db | Tx, organisationId: string, editionId: string) {
+/**
+ * The show, if it belongs to the organisation — and, with an `actor`, only
+ * when they can open it (Users → Events; partners pass, their grants decide).
+ */
+export async function ownEdition(
+  db: Db | Tx,
+  organisationId: string,
+  editionId: string,
+  actor?: Actor,
+) {
   const [row] = await db
     .select({ edition: editions })
     .from(editions)
     .innerJoin(events, eq(editions.eventId, events.id))
     .where(and(eq(editions.id, editionId), eq(events.organisationId, organisationId)))
     .limit(1);
-  return row?.edition ?? null;
+  if (!row) return null;
+  if (actor && !opensEdition(actor, row.edition.id)) return null;
+  return row.edition;
 }
 
 // ---------------------------------------------------------------------------

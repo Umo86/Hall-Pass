@@ -39,4 +39,36 @@ describe("phone layout", () => {
     expect(tab).toContain("min-w-0");
     expect(tab).toContain("grid-cols-1");
   });
+
+  it("Users → Events: the Events card can shrink and long event names wrap", () => {
+    for (const [file, id] of [
+      ["components/users/person-editor.tsx", "p-events-h"],
+      ["components/users/add-user-form.tsx", "add-events-h"],
+    ] as const) {
+      const m = read(file).match(new RegExp(`className="([^"]+)"\\s*aria-labelledby="${id}"`));
+      expect(m?.[1].split(/\s+/), file).toContain("min-w-0");
+    }
+    const fields = read("components/users/person-fields.tsx");
+    expect(classesWith(fields, ["flex", "min-h-11", "items-start"])).toContain("min-w-0");
+    expect(classesWith(fields, ["min-w-0", "break-words"]).length).toBeGreaterThan(0);
+  });
+
+  it("the events chip sits in a wrapping row wherever it's shown", () => {
+    for (const file of [
+      "components/users/team-list.tsx",
+      "components/users/departments-panel.tsx",
+      "components/approvals/approvers-editor.tsx",
+    ]) {
+      const src = read(file);
+      const chips = [...src.matchAll(/<Events(Tag|Chip)\b/g)];
+      expect(chips.length, file).toBeGreaterThan(0);
+      for (const chip of chips) {
+        const before = src.slice(0, chip.index);
+        const wrappers = [...before.matchAll(/<(?:span|div)\s+className="([^"]+)"/g)]
+          .map((m) => m[1].split(/\s+/))
+          .filter((c) => c.includes("flex"));
+        expect(wrappers.at(-1), file).toContain("flex-wrap");
+      }
+    }
+  });
 });

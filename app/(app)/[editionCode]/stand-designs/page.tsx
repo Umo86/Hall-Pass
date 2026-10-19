@@ -32,7 +32,7 @@ export default async function StandDesignsPage({
   if (!hasFeature(session.actor, "stand_designs")) {
     return <SectionUnavailable feature="stand_designs" backHref={`/${editionCode}/dashboard`} />;
   }
-  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
   const stands = await listStandDesigns(ed.edition.id);
   const canCreate =

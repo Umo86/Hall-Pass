@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { roleLabel } from "@/lib/format";
+import { seesAllEditions, type StaffRole } from "@/lib/authz";
 import { BACK_TO_DEPARTMENT, type HandoverChoice, type HandoverGroup } from "@/lib/users/handover";
 import { Label } from "@/components/ui/label";
 import { SelectNative } from "@/components/ui/select-native";
@@ -11,6 +12,8 @@ export type HandoverCandidateView = {
   name: string;
   role: string;
   departmentId: string | null;
+  /** Events they work on (Users → Events); null/missing = every event. */
+  editionIds?: readonly string[] | null;
 };
 
 /** Each group's starting choice: its default, or nothing (someone must be picked). */
@@ -63,8 +66,20 @@ export function HandoverFields({
     <div className="space-y-3">
       {groups.map((g) => {
         const signerIds = new Set(g.signers.map((s) => s.userId));
+        // Only people who can open every event these sign-offs are in (as the server checks).
         const others =
-          signersOnly && g.departmentId ? [] : candidates.filter((c) => !signerIds.has(c.userId));
+          signersOnly && g.departmentId
+            ? []
+            : candidates.filter(
+                (c) =>
+                  !signerIds.has(c.userId) &&
+                  seesAllEditions(
+                    { role: c.role as StaffRole, editionIds: c.editionIds ?? null },
+                    g.editionIds ?? [],
+                  ),
+              );
+        const shown = g.steps.filter((s) => !s.hidden);
+        const hidden = g.steps.length - shown.length;
         const later = g.steps.length - g.waitingNow;
         const id = `${idPrefix}-${g.key}`;
         const label = [
@@ -81,7 +96,7 @@ export function HandoverFields({
               {g.departmentName ? `${g.departmentName} sign-offs` : "Other sign-offs"}
               <span className="text-muted-foreground block text-xs font-normal">
                 {g.steps.length === 1 ? "1 sign-off" : `${g.steps.length} sign-offs`} ({label}):{" "}
-                {g.steps.slice(0, 5).map((s, i) => (
+                {shown.slice(0, 5).map((s, i) => (
                   <span key={s.id}>
                     {i > 0 && ", "}
                     {s.href ? (
@@ -93,7 +108,10 @@ export function HandoverFields({
                     )}
                   </span>
                 ))}
-                {g.steps.length > 5 ? ` and ${g.steps.length - 5} more` : ""}
+                {shown.length > 5 ? ` and ${shown.length - 5} more` : ""}
+                {hidden > 0
+                  ? `${shown.length > 0 ? " and " : ""}${hidden} ${shown.length > 0 ? "more " : ""}in events you can't open`
+                  : ""}
               </span>
             </Label>
             <SelectNative

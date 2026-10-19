@@ -29,6 +29,16 @@ export function editionCodeFromPath(pathname: string): string | null {
   return null;
 }
 
+/**
+ * The event code at the start of a notification's link ("/BIRM27/signage/…",
+ * "/BIRM27?x"), or null for a page about no one event ("/approvals").
+ */
+export function linkEditionCode(link: string | null | undefined): string | null {
+  if (!link || !link.startsWith("/") || link.startsWith("//")) return null;
+  const path = link.split(/[?#]/)[0];
+  return editionCodeFromPath(path);
+}
+
 export type ItemKind = "signage" | "sponsorship_item" | "stand_design" | "stand_panel";
 
 /** Which section of a show each kind of item lives in. */

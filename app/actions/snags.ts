@@ -9,6 +9,7 @@ import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { activeMembership } from "@/lib/users/active";
 import { requireSession } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import { notify } from "@/lib/notify";
 import { itemPath, type ItemKind } from "@/lib/edition-path";
@@ -107,9 +108,7 @@ export async function raiseSnag(formData: FormData): Promise<ActionResult> {
   if (!parsed.success) return fail(parsed.error.issues[0]?.message ?? "Check the form");
   const session = await requireSession();
   if (!can(session.actor, { type: "snag.manage" })) return fail("You cannot raise snags");
-  const bundle = await loadItemBundle(db, parsed.data.itemId, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, parsed.data.itemId, actorScope(session));
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!SNAGGABLE_KINDS.includes(bundle.item.kind)) return fail("Snags are for signs and panels");
@@ -217,9 +216,7 @@ export async function updateSnag(formData: FormData): Promise<ActionResult> {
   if (!can(session.actor, { type: "snag.manage" })) return fail("You cannot update snags");
   const [snag] = await db.select().from(snags).where(eq(snags.id, parsed.data.snagId)).limit(1);
   if (!snag?.signageItemId) return fail("Snag not found");
-  const bundle = await loadItemBundle(db, snag.signageItemId, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, snag.signageItemId, actorScope(session));
   if (!bundle || bundle.item.deletedAt) return fail("Snag not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   const closing = parsed.data.status === "resolved" || parsed.data.status === "wont_fix";
@@ -333,9 +330,7 @@ export async function undoMarkComplete(input: unknown): Promise<ActionResult> {
   ) {
     return fail("You cannot reopen items");
   }
-  const bundle = await loadItemBundle(db, parsed.data.id, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, parsed.data.id, actorScope(session));
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (bundle.item.status !== "closed") return fail(`${bundle.item.ref} isn't complete any more`);

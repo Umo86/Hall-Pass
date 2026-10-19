@@ -23,7 +23,7 @@ export default async function NewItemPage({
   if (!hasFeature(session.actor, "signage")) {
     return <SectionUnavailable feature="signage" backHref={`/${editionCode}/dashboard`} />;
   }
-  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
 
   const [options, deadlines] = await Promise.all([

@@ -236,7 +236,7 @@ d("event setup facts", () => {
     expect(sources).toEqual([
       { id: edition.id, name: edition.name, code: edition.code, halls: 2, locations: 3 },
     ]);
-    const counts = (await setup.copySourceCounts(orgId))(edition.id);
+    const counts = (await setup.copySourceCounts(orgId, superAdminActor(orgId)))(edition.id);
     expect(counts).toMatchObject({ halls: 2, locations: 3, sponsors: 1, items: 3, deadlines: 0 });
   });
 
@@ -250,3 +250,8 @@ d("event setup facts", () => {
     expect(venues.map((v) => v.id)).toEqual([venueId]);
   });
 });
+
+/** A super admin, as the copy form sees the person copying (Users → Events). */
+function superAdminActor(organisationId: string) {
+  return { kind: "staff" as const, userId: "copier", organisationId, role: "admin" as const };
+}

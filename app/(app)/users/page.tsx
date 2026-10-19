@@ -4,13 +4,14 @@ import { redirect } from "next/navigation";
 import { Lock } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can, managerScope } from "@/lib/authz";
+import { can, editionScope, managerScope } from "@/lib/authz";
 import { abilityHolders, listDepartmentCards, memberOptions } from "@/lib/users/queries";
 import { AskContacts } from "@/components/setup/no-events-state";
 import { Page, PageHeader } from "@/components/page-header";
 import { TeamTab } from "@/components/users/team-tab";
 import { ExternalTab } from "@/components/users/external-tab";
 import { DepartmentsPanel } from "@/components/users/departments-panel";
+import { listEditions } from "@/lib/queries/editions";
 import { AddPeopleMenu } from "@/components/users/add-menu";
 import { cn } from "@/lib/utils";
 
@@ -121,6 +122,7 @@ export default async function UsersPage({
       {tab === "external" && (
         <ExternalTab
           organisationId={orgId}
+          scope={editionScope(actor)}
           lastEvent={(await cookies()).get(LAST_EVENT_COOKIE)?.value ?? null}
           params={{
             event: one(params.event),
@@ -137,6 +139,12 @@ export default async function UsersPage({
           members={canDepartments ? await memberOptions(db, orgId) : []}
           canEdit={canDepartments}
           addTo={canPeople ? addTo : []}
+          eventCodes={Object.fromEntries(
+            (await listEditions(orgId, editionScope(actor))).map((e) => [
+              e.edition.id,
+              e.edition.code,
+            ]),
+          )}
         />
       )}
 

@@ -34,11 +34,15 @@ import {
 import {
   can,
   confirmsForSuppliers,
+  seesEdition,
   signoffPaused,
   type ApprovalStepCtx,
+  type EditionScope,
   type PermissionOverrides,
+  type StaffRole,
 } from "@/lib/authz";
 import { activeMembership } from "@/lib/users/active";
+import { editionScopeSql, sessionScope } from "@/lib/queries/edition-scope";
 import { requireSession, type Session } from "@/lib/auth/actor";
 import { itemAuthzCtx, stepIsMine, type ItemBundle } from "@/lib/domain/signage";
 import { standAuthzCtx, type StandBundle } from "@/lib/domain/stand";
@@ -244,12 +248,13 @@ const subJoin = and(
 );
 const editionJoin = sql`${editions.id} = coalesce(${signageItems.editionId}, ${standSubmissions.editionId})`;
 
-/** Open steps on live records of this organisation. */
-function liveOpen(organisationId: string): SQL | undefined {
+/** Open steps on live records of this organisation, in the viewer's events (Users → Events). */
+function liveOpen(organisationId: string, scope: EditionScope): SQL | undefined {
   return and(
     eq(approvalInstances.status, "pending"),
     eq(events.organisationId, organisationId),
     ne(editions.status, "archived"),
+    editionScopeSql(scope, editions.id),
     or(
       and(
         isNotNull(signageItems.id),
@@ -282,7 +287,12 @@ export async function countPendingForUser(
     .leftJoin(standSubmissions, subJoin)
     .innerJoin(editions, editionJoin)
     .innerJoin(events, eq(editions.eventId, events.id))
-    .where(and(liveOpen(session.organisation.id), candidateFilter(session, false)));
+    .where(
+      and(
+        liveOpen(session.organisation.id, sessionScope(session)),
+        candidateFilter(session, false),
+      ),
+    );
   return { total: Number(row?.total ?? 0), overdue: Number(row?.overdue ?? 0) };
 }
 
@@ -319,7 +329,12 @@ export async function oldestPendingForUser(
     .leftJoin(standSubmissions, subJoin)
     .innerJoin(editions, editionJoin)
     .innerJoin(events, eq(editions.eventId, events.id))
-    .where(and(liveOpen(session.organisation.id), candidateFilter(session, false)))
+    .where(
+      and(
+        liveOpen(session.organisation.id, sessionScope(session)),
+        candidateFilter(session, false),
+      ),
+    )
     .orderBy(sql`${approvalInstances.dueAt} ASC NULLS LAST`, asc(approvalInstances.createdAt))
     .limit(limit);
   return rows.map((r) => {
@@ -344,6 +359,8 @@ export async function oldestPendingForUser(
 /** Every open sign-off in the organisation: how many, how many overdue, on how many items. */
 export async function teamPendingSummary(
   organisationId: string,
+  /** The viewer's events (Users → Events); null = every event. */
+  scope: EditionScope,
 ): Promise<{ total: number; overdue: number; records: number }> {
   const [row] = await db
     .select({
@@ -356,7 +373,7 @@ export async function teamPendingSummary(
     .leftJoin(standSubmissions, subJoin)
     .innerJoin(editions, editionJoin)
     .innerJoin(events, eq(editions.eventId, events.id))
-    .where(liveOpen(organisationId));
+    .where(liveOpen(organisationId, scope));
   return {
     total: Number(row?.total ?? 0),
     overdue: Number(row?.overdue ?? 0),
@@ -384,7 +401,7 @@ export async function pendingEntityIdsForUser(
     .where(
       and(
         inArray(approvalInstances.entityId, wanted),
-        liveOpen(session.organisation.id),
+        liveOpen(session.organisation.id, sessionScope(session)),
         candidateFilter(session, false),
       ),
     );
@@ -542,7 +559,7 @@ export async function openSignoffsForTeam(
     .leftJoin(assignee, eq(assignee.id, approvalInstances.assignedUserId))
     .where(
       and(
-        liveOpen(session.organisation.id),
+        liveOpen(session.organisation.id, sessionScope(session)),
         opts.editionId ? eq(editions.id, opts.editionId) : undefined,
         opts.overdueOnly ? lt(approvalInstances.dueAt, new Date()) : undefined,
         whoFilter(opts.who ?? []),
@@ -571,6 +588,8 @@ export async function openSignoffsForTeam(
             name: users.fullName,
             email: users.email,
             overrides: memberships.permissionOverrides,
+            role: memberships.role,
+            editionIds: memberships.editionIds,
           })
           .from(approvers)
           .innerJoin(users, eq(users.id, approvers.userId))
@@ -607,6 +626,7 @@ export async function openSignoffsForTeam(
             name: users.fullName,
             email: users.email,
             overrides: memberships.permissionOverrides,
+            editionIds: memberships.editionIds,
           })
           .from(memberships)
           .innerJoin(users, eq(users.id, memberships.userId))
@@ -656,14 +676,19 @@ export async function openSignoffsForTeam(
     const inst = r.instance;
     const isItem = inst.entityType === "signage_item" && r.item?.id;
     const ref = (isItem ? r.item!.ref : r.sub?.ref) ?? "";
+    // Only people who can open this row's event (Users → Events).
+    const here = (p: { role: StaffRole; editionIds: string[] | null }) =>
+      seesEdition(p, r.edition.id);
     const people = inst.assignedUserId
       ? [r.assigneeName || r.assigneeEmail || "a named person"]
       : inst.assignedDepartmentId
         ? deptPeople
-            .filter((p) => p.departmentId === inst.assignedDepartmentId)
+            .filter((p) => p.departmentId === inst.assignedDepartmentId && here(p))
             .map((p) => p.name || p.email)
         : inst.assignedRole
-          ? rolePeople.filter((p) => p.role === inst.assignedRole).map((p) => p.name || p.email)
+          ? rolePeople
+              .filter((p) => p.role === inst.assignedRole && here(p))
+              .map((p) => p.name || p.email)
           : [];
     const waitingOn = inst.assignedUserId
       ? people[0]
@@ -747,6 +772,8 @@ const OVERDUE_ARTWORK_LIMIT = 150;
  */
 export async function listOverdueArtwork(opts: {
   organisationId: string;
+  /** The viewer's events (Users → Events); null/missing = every event. */
+  scope?: EditionScope;
   editionId?: string | null;
   search?: string;
   filter?: ArtworkFilter;
@@ -773,6 +800,7 @@ export async function listOverdueArtwork(opts: {
         isNull(signageItems.deletedAt),
         ne(signageItems.status, "on_hold"),
         isNotNull(signageItems.currentArtworkVersionId),
+        editionScopeSql(opts.scope ?? null, signageItems.editionId),
         opts.editionId ? eq(signageItems.editionId, opts.editionId) : undefined,
         statuses
           ? inArray(signageItems.status, statuses as (typeof signageItems.$inferSelect)["status"][])

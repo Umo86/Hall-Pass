@@ -13,6 +13,7 @@
  */
 import {
   can,
+  seesAllEditions,
   signoffPaused,
   type Feature,
   type PermissionOverrides,
@@ -37,9 +38,23 @@ export type HandoverStep = {
    * because they are the last person who can sign for it.
    */
   departmentWide?: boolean;
+  /** The event the step's item or stand is in. */
+  editionId?: string;
+  /**
+   * In an event the person looking can't open (Users → Events): counted,
+   * but its ref, name and link are left out.
+   */
+  hidden?: true;
 };
 
-export type HandoverSigner = { userId: string; name: string; isMain: boolean };
+export type HandoverSigner = {
+  userId: string;
+  name: string;
+  isMain: boolean;
+  role?: StaffRole;
+  /** Events they work on (Users → Events); null/missing = every event. */
+  editionIds?: readonly string[] | null;
+};
 
 /** The choice for a group that sends it back to the whole department. */
 export const BACK_TO_DEPARTMENT = "department";
@@ -50,6 +65,8 @@ export type HandoverGroup = {
   departmentId: string | null;
   departmentName: string | null;
   steps: HandoverStep[];
+  /** The events its steps are in (whoever takes them must open every one). */
+  editionIds: string[];
   /** How many are waiting on them right now (the rest start later). */
   waitingNow: number;
   /** Others who can sign for this department now (main approver first). */
@@ -80,16 +97,23 @@ export function handoverGroups(
   }
   const groups = [...byKey.entries()].map(([key, list]): HandoverGroup => {
     const departmentId = key === OTHER_GROUP ? null : key;
+    const editionIds = [
+      ...new Set(list.map((s) => s.editionId).filter((e): e is string => Boolean(e))),
+    ].sort();
+    // Only signers who can open every one of the group's events.
     const signers = departmentId
-      ? [...(opts.signers.get(departmentId) ?? [])].sort(
-          (a, b) => Number(b.isMain) - Number(a.isMain) || a.name.localeCompare(b.name, "en-GB"),
-        )
+      ? [...(opts.signers.get(departmentId) ?? [])]
+          .filter((sg) => seesAllEditions(signerHolder(sg), editionIds))
+          .sort(
+            (a, b) => Number(b.isMain) - Number(a.isMain) || a.name.localeCompare(b.name, "en-GB"),
+          )
       : [];
     return {
       key,
       departmentId,
       departmentName: departmentId ? (opts.departmentNames.get(departmentId) ?? null) : null,
       steps: [...list].sort((a, b) => a.ref.localeCompare(b.ref)),
+      editionIds,
       waitingNow: list.filter((s) => s.status === "pending").length,
       signers,
       defaultTo: signers[0]?.userId ?? null,
@@ -102,6 +126,30 @@ export function handoverGroups(
         ? -1
         : (a.departmentName ?? "").localeCompare(b.departmentName ?? "", "en-GB"),
   );
+}
+
+/** A signer as the events rule sees them (a role is only needed to spot a super admin). */
+function signerHolder(sg: HandoverSigner) {
+  return { role: sg.role ?? ("ops" as StaffRole), editionIds: sg.editionIds ?? null };
+}
+
+/**
+ * Sign-offs someone loses with their events (Users → Events): grouped as
+ * handoverGroups, but by default back to the department when someone else
+ * there can open those events (as when someone stops signing), otherwise a
+ * person must be picked.
+ */
+export function eventHandoverGroups(
+  steps: readonly HandoverStep[],
+  opts: {
+    departmentNames: ReadonlyMap<string, string>;
+    signers: ReadonlyMap<string, readonly HandoverSigner[]>;
+  },
+): HandoverGroup[] {
+  return handoverGroups(steps, opts).map((g) => ({
+    ...g,
+    defaultTo: g.signers.length > 0 && g.departmentId ? BACK_TO_DEPARTMENT : null,
+  }));
 }
 
 function sentence(n: number, who: string, dept: string | null): string {
@@ -132,7 +180,8 @@ export function resolveHandover(
   opts: {
     personId: string;
     who: string;
-    canReceive: (userId: string) => boolean;
+    /** Can this person take the group (sign at all, and open its events)? */
+    canReceive: (userId: string, group: HandoverGroup) => boolean;
     fallback?: string | null;
     limitedFor?: string | null;
   },
@@ -159,7 +208,7 @@ export function resolveHandover(
       targets.set(g.key, null);
       continue;
     }
-    if (picked === opts.personId || !opts.canReceive(picked)) {
+    if (picked === opts.personId || !opts.canReceive(picked, g)) {
       return { ok: false, error: "Pick a team member who can sign off" };
     }
     if (limited) {
@@ -219,6 +268,8 @@ export type WorkAccess = {
   role: StaffRole;
   features: readonly Feature[] | null;
   overrides?: PermissionOverrides | null;
+  /** Events they work on; null/missing = every event. */
+  editionIds?: readonly string[] | null;
 };
 
 function probe(a: WorkAccess): StaffActor {

@@ -4,6 +4,7 @@ import { db } from "@/lib/db/client";
 import { alias } from "drizzle-orm/pg-core";
 import {
   editions,
+  memberships,
   signageItems,
   standSubmissions,
   taskAttachments,
@@ -13,6 +14,9 @@ import {
 import { todayInLondon } from "@/lib/today";
 import { addDaysIso } from "@/lib/deadlines";
 import { itemPath } from "@/lib/edition-path";
+import type { EditionScope } from "@/lib/authz";
+import { memberSeesEditionSql } from "@/lib/users/active";
+import { editionScopeSql } from "./edition-scope";
 
 export type BoardAttachment = { id: string; fileName: string; fileSize: number };
 
@@ -56,6 +60,8 @@ export async function boardTasks(opts: {
   isAdmin: boolean;
   scope: BoardScope;
   editionId?: string | null;
+  /** The viewer's events (Users → Events): tasks with no event always show. */
+  editionScope?: EditionScope;
 }): Promise<BoardTask[]> {
   const todayIso = todayInLondon();
   const creator = alias(users, "task_creator");
@@ -105,6 +111,7 @@ export async function boardTasks(opts: {
         isNull(tasks.parentTaskId),
         scopeFilter,
         opts.editionId ? eq(tasks.editionId, opts.editionId) : undefined,
+        editionScopeSql(opts.editionScope ?? null, tasks.editionId, { allowNull: true }),
         or(ne(tasks.status, "done"), gte(tasks.completedAt, cutoff)),
       ),
     )
@@ -221,6 +228,15 @@ export async function dueTaskCounts(opts: {
       dueThisWeek: sql<number>`(count(*) filter (where ${tasks.dueDate} >= ${today} and ${tasks.dueDate} <= ${weekEnd}))::int`,
     })
     .from(tasks)
+    // Users → Events: a task in an event the assignee can't open isn't
+    // counted (nor reminded about); tasks with no event always are.
+    .leftJoin(
+      memberships,
+      and(
+        eq(memberships.userId, tasks.assignedToUserId),
+        eq(memberships.organisationId, tasks.organisationId),
+      ),
+    )
     .where(
       and(
         opts.organisationId ? eq(tasks.organisationId, opts.organisationId) : undefined,
@@ -228,6 +244,7 @@ export async function dueTaskCounts(opts: {
         isNull(tasks.parentTaskId),
         ne(tasks.status, "done"),
         or(lte(tasks.dueDate, weekEnd), lateSubtask),
+        or(isNull(tasks.editionId), isNull(memberships.id), memberSeesEditionSql(tasks.editionId)),
       ),
     )
     .groupBy(tasks.organisationId, tasks.assignedToUserId);

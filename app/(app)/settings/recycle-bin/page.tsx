@@ -3,6 +3,7 @@ import { and, count, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { Trash2 } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { auditLog, editions, events, signageItems, users } from "@/lib/db/schema";
+import { editionScopeSql, sessionScope } from "@/lib/queries/edition-scope";
 import { ABILITIES, can } from "@/lib/authz";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { formatDateTime, plural } from "@/lib/format";
@@ -63,13 +64,14 @@ export default async function RecycleBinPage({
   const canRestore = can(session.actor, { type: "signage.restore" });
   const limit = Math.min(1000, Math.max(PAGE, Number(one(params.limit)) || PAGE));
 
-  // Events with something deleted, for the filter.
+  // Events with something deleted, for the filter — only their events (Users → Events).
+  const inScope = editionScopeSql(sessionScope(session), editions.id);
   const perEvent = await db
     .select({ id: editions.id, code: editions.code, name: editions.name, n: count() })
     .from(signageItems)
     .innerJoin(editions, eq(signageItems.editionId, editions.id))
     .innerJoin(events, eq(editions.eventId, events.id))
-    .where(and(eq(events.organisationId, orgId), isNotNull(signageItems.deletedAt)))
+    .where(and(eq(events.organisationId, orgId), isNotNull(signageItems.deletedAt), inScope))
     .groupBy(editions.id, editions.code, editions.name)
     .orderBy(desc(editions.code));
   const wanted = one(params.event)?.toUpperCase();
@@ -94,6 +96,7 @@ export default async function RecycleBinPage({
       and(
         eq(events.organisationId, orgId),
         isNotNull(signageItems.deletedAt),
+        inScope,
         chosen ? eq(editions.id, chosen.id) : undefined,
       ),
     )

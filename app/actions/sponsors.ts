@@ -12,7 +12,7 @@ import {
   sponsorEntitlements,
   sponsors,
 } from "@/lib/db/schema";
-import { can, missingAbilityMessage } from "@/lib/authz";
+import { can, missingAbilityMessage, opensEdition, type Actor } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession } from "@/lib/auth/actor";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
@@ -76,7 +76,8 @@ export async function saveSponsor(input: unknown): Promise<ActionResult<{ id: st
     .innerJoin(events, eq(editions.eventId, events.id))
     .where(and(eq(editions.id, data.editionId), eq(events.organisationId, session.organisation.id)))
     .limit(1);
-  if (!row) return fail("Event not found");
+  // Users → Events: an event they can't open is "not found".
+  if (!row || !opensEdition(session.actor, row.edition.id)) return fail("Event not found");
   if (editionIsReadOnly(row.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
 
   const values = {
@@ -146,8 +147,11 @@ type Found =
       edition: typeof editions.$inferSelect;
     };
 
-/** A sponsor of one of this organisation's events, if it may be changed now. */
-async function ownSponsor(sponsorId: string, organisationId: string): Promise<Found> {
+/**
+ * A sponsor of one of this organisation's events that the actor can open
+ * (Users → Events), if it may be changed now.
+ */
+async function ownSponsor(sponsorId: string, organisationId: string, actor: Actor): Promise<Found> {
   const [row] = await db
     .select({ sponsor: sponsors, edition: editions })
     .from(sponsors)
@@ -155,7 +159,7 @@ async function ownSponsor(sponsorId: string, organisationId: string): Promise<Fo
     .innerJoin(events, eq(editions.eventId, events.id))
     .where(and(eq(sponsors.id, sponsorId), eq(events.organisationId, organisationId)))
     .limit(1);
-  if (!row) return { error: "Sponsor not found" };
+  if (!row || !opensEdition(actor, row.edition.id)) return { error: "Sponsor not found" };
   if (editionIsReadOnly(row.edition.status)) return { error: EDITION_LOCKED_MESSAGE };
   return row;
 }
@@ -175,14 +179,14 @@ const entitlementSchema = z.object({
   quantity: z.coerce.number().int().min(1, "At least 1").max(100_000),
 });
 
-async function loadEntitlement(entitlementId: string, organisationId: string) {
+async function loadEntitlement(entitlementId: string, organisationId: string, actor: Actor) {
   const [ent] = await db
     .select()
     .from(sponsorEntitlements)
     .where(eq(sponsorEntitlements.id, entitlementId))
     .limit(1);
   if (!ent) return { error: "Entitlement not found" } as const;
-  const found = await ownSponsor(ent.sponsorId, organisationId);
+  const found = await ownSponsor(ent.sponsorId, organisationId, actor);
   if (found.error !== undefined) return { error: found.error } as const;
   return { ent, ...found } as const;
 }
@@ -195,7 +199,11 @@ export async function updateEntitlement(input: unknown): Promise<ActionResult> {
   if (!can(session.actor, { type: "sponsorship.sell" })) {
     return fail(missingAbilityMessage("sponsorship.sell"));
   }
-  const found = await loadEntitlement(parsed.data.entitlementId, session.organisation.id);
+  const found = await loadEntitlement(
+    parsed.data.entitlementId,
+    session.organisation.id,
+    session.actor,
+  );
   if (found.error !== undefined) return fail(found.error);
   const { ent, sponsor, edition } = found;
   const after = { description: parsed.data.description, quantity: parsed.data.quantity };
@@ -225,7 +233,11 @@ export async function removeEntitlement(input: unknown): Promise<ActionResult> {
   if (!can(session.actor, { type: "sponsorship.sell" })) {
     return fail(missingAbilityMessage("sponsorship.sell"));
   }
-  const found = await loadEntitlement(parsed.data.entitlementId, session.organisation.id);
+  const found = await loadEntitlement(
+    parsed.data.entitlementId,
+    session.organisation.id,
+    session.actor,
+  );
   if (found.error !== undefined) return fail(found.error);
   const { ent, sponsor, edition } = found;
   const linked = await itemsOnEntitlement(ent.id);
@@ -263,7 +275,7 @@ export async function removeSponsor(input: unknown): Promise<ActionResult> {
   if (!can(session.actor, { type: "sponsorship.sell" })) {
     return fail(missingAbilityMessage("sponsorship.sell"));
   }
-  const found = await ownSponsor(parsed.data.sponsorId, session.organisation.id);
+  const found = await ownSponsor(parsed.data.sponsorId, session.organisation.id, session.actor);
   if (found.error !== undefined) return fail(found.error);
   const { sponsor, edition } = found;
   const [[items], [grants]] = await Promise.all([

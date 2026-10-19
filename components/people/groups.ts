@@ -21,6 +21,12 @@ export type PersonOption = {
    * "Can't sign off", "No longer has Signage"…). Null: they can.
    */
   unavailable: string | null;
+  /**
+   * Events they work on, only for people limited to some (Users → Events):
+   * a form that picks the event itself (a task) offers only those who can
+   * open it. The server re-checks.
+   */
+  editionIds?: readonly string[];
 };
 
 export type PersonGroup = { key: string; label: string; people: PersonOption[] };
@@ -82,6 +88,27 @@ export function personLabel(p: PersonOption, opts: { meId?: string | null } = {}
 /** Only the people who can be picked now, plus `keepId` (the current choice) whatever its state. */
 export function pickable(people: readonly PersonOption[], keepId?: string | null): PersonOption[] {
   return people.filter((p) => !p.unavailable || p.id === keepId);
+}
+
+/**
+ * The people who can open `editionId` (Users → Events), for a form that
+ * picks the event itself. `keepId` (the current choice) stays, labelled
+ * "Can't open this event", so changing the event never changes it silently.
+ * No event: everyone, as before.
+ */
+export function openingEvent(
+  people: readonly PersonOption[],
+  editionId: string | null | undefined,
+  keepId?: string | null,
+): PersonOption[] {
+  if (!editionId) return [...people];
+  return people.flatMap((p) =>
+    !p.editionIds || p.editionIds.includes(editionId)
+      ? [p]
+      : p.id === keepId
+        ? [{ ...p, unavailable: p.unavailable ?? "Can't open this event" }]
+        : [],
+  );
 }
 
 /** The person's name for a toast or summary ("them" when unknown). */

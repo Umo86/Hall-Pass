@@ -31,6 +31,7 @@ import { absoluteLink } from "./invite-actions";
 import {
   AbilitiesFields,
   DepartmentField,
+  EventsField,
   FieldError,
   NEW_DEPARTMENT,
   RoleCards,
@@ -38,7 +39,14 @@ import {
   type DepartmentOption,
 } from "./person-fields";
 import { TemplatePicker } from "./template-picker";
-import { localToday, templateFeatures, type AddAccess } from "./add-user-form";
+import {
+  localToday,
+  startingEvents,
+  templateEvents,
+  templateFeatures,
+  type AddAccess,
+  type AddEvents,
+} from "./add-user-form";
 
 type Reason = PreviewInviteResult["rows"][number]["reason"];
 
@@ -74,12 +82,15 @@ export function AddSeveral({
   access,
   templates,
   initialDepartmentId,
+  events,
 }: {
   departments: DepartmentOption[];
   visible: Feature[];
   access: AddAccess;
   templates: PersonTemplate[];
   initialDepartmentId: string;
+  /** Users → Events: one choice for everyone pasted. */
+  events?: AddEvents;
 }) {
   const locked = access.lockedDepartment;
   const startDept = departments.find(
@@ -96,6 +107,7 @@ export function AddSeveral({
   const [abilities, setAbilities] = useState<AbilityChoices>({});
   const [jobTitle, setJobTitle] = useState<string | null>(null);
   const [accessEnd, setAccessEnd] = useState("");
+  const [editionIds, setEditionIds] = useState<string[] | null>(() => startingEvents(events));
   const [preview, setPreview] = useState<PreviewInviteResult | null>(null);
   const [done, setDone] = useState<InviteUsersResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -120,6 +132,7 @@ export function AddSeveral({
     setFeatures(tf === null && !access.allSections ? [...visible] : tf);
     setAbilities({ ...t.abilities });
     setJobTitle(t.jobTitle);
+    setEditionIds((cur) => templateEvents(t, events, cur));
   }
 
   function rows() {
@@ -157,6 +170,10 @@ export function AddSeveral({
       setError("Name the new department");
       return;
     }
+    if (role !== "admin" && editionIds !== null && editionIds.length === 0) {
+      setError("Tick at least one event, or choose All events");
+      return;
+    }
     const all = preview?.rows ?? [];
     const ready = all.filter((r) => r.reason === "ready");
     if (ready.length === 0) return;
@@ -181,6 +198,7 @@ export function AddSeveral({
           features: role === "admin" || (allVisible && access.allSections) ? null : features,
           abilities: role === "admin" ? {} : abilities,
           accessEndsOn: accessEnd || null,
+          editionIds: role === "admin" ? null : editionIds,
         },
       });
       if (!res.ok) {
@@ -376,6 +394,26 @@ export function AddSeveral({
               assignable={access.abilities}
             />
           </>
+        )}
+        {events && role && (
+          <div className="min-w-0 space-y-2" role="group" aria-labelledby="several-events-h">
+            <h3 id="several-events-h" className="text-sm font-medium">
+              Events
+            </h3>
+            <EventsField
+              id="several-events"
+              personName="Everyone pasted"
+              value={editionIds}
+              onChange={(v) => {
+                setEditionIds(v);
+                changed();
+              }}
+              events={events.events}
+              allowAll={events.allowAll}
+              defaultEditionId={events.defaultEditionId}
+              superAdmin={role === "admin"}
+            />
+          </div>
         )}
         <p className="text-muted-foreground text-xs">
           Sign-off, main approver, manager and anything else can be set on each person&apos;s page

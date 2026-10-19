@@ -11,6 +11,7 @@ import {
   users,
 } from "@/lib/db/schema";
 import { brandName } from "@/lib/config";
+import { seesEdition } from "@/lib/authz";
 import { renderNotificationEmail } from "./template";
 import { sendEmail } from "./send";
 
@@ -57,19 +58,24 @@ export async function dispatchNotificationEmails(
   );
   // Partners (no team membership) get portal links. Decided by membership,
   // never by the users.is_external flag.
-  const members = new Set(
-    (
-      await db
-        .selectDistinct({ userId: memberships.userId })
-        .from(memberships)
-        .where(
-          inArray(
-            memberships.userId,
-            rows.map((r) => r.u.id),
-          ),
-        )
-    ).map((r) => r.userId),
-  );
+  const memberRows = await db
+    .select({
+      userId: memberships.userId,
+      role: memberships.role,
+      editionIds: memberships.editionIds,
+    })
+    .from(memberships)
+    .where(
+      inArray(
+        memberships.userId,
+        rows.map((r) => r.u.id),
+      ),
+    );
+  const members = new Set(memberRows.map((r) => r.userId));
+  // A team member is never emailed about an event since taken away from them
+  // (Users → Events); the row is stamped done instead.
+  const opensEvent = (userId: string, editionId: string | null) =>
+    !editionId || memberRows.some((m) => m.userId === userId && seesEdition(m, editionId));
   // A partner is emailed about an item or stand only while they still hold
   // live access to its event (it may have been revoked since the
   // notification was made); ref and body never reach anyone else.
@@ -85,7 +91,8 @@ export async function dispatchNotificationEmails(
       n.readAt ||
       IN_APP_ONLY.has(n.kind) ||
       !allowed.has(u.id) ||
-      (!members.has(u.id) && !partnerOk.has(n.id))
+      (!members.has(u.id) && !partnerOk.has(n.id)) ||
+      (members.has(u.id) && !opensEvent(u.id, n.editionId))
     ) {
       doneIds.push(n.id);
       continue;

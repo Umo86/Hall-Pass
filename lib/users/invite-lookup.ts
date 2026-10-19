@@ -4,11 +4,13 @@ import "server-only";
  * external grant or a staff invitation — and say why it can't be used
  * when it can't (revoked, used, expired, unknown).
  */
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   approvers,
   departments,
+  editions,
+  events,
   externalGrants,
   organisations,
   staffInvites,
@@ -102,6 +104,8 @@ export type InviteDetails =
       signsOff: boolean;
       /** Departments (live, signing off) they become main approver for when they accept. */
       mainFor: string[];
+      /** The events they'll work on (Users → Events); null = every event. */
+      events: { name: string; code: string }[] | null;
     }
   | ({ ok: false } & InviteProblem);
 
@@ -123,6 +127,7 @@ export async function inviteDetails(token: string): Promise<InviteDetails> {
       departmentName: null,
       signsOff: false,
       mainFor: [],
+      events: null,
     };
   }
   const s = await findValidStaffInvite(token);
@@ -133,7 +138,8 @@ export async function inviteDetails(token: string): Promise<InviteDetails> {
       : { ok: false, error: "This invitation link is not valid.", reason: "invalid" };
   }
   const invite = s.invite;
-  const [org, dept, approver, asks] = await Promise.all([
+  const limited = invite.role !== "admin" && invite.editionIds ? invite.editionIds : null;
+  const [org, dept, approver, asks, theirEvents] = await Promise.all([
     db.query.organisations.findFirst({ where: eq(organisations.id, invite.organisationId) }),
     invite.departmentId
       ? db.query.departments.findFirst({
@@ -166,6 +172,17 @@ export async function inviteDetails(token: string): Promise<InviteDetails> {
         ),
       )
       .orderBy(asc(departments.sortOrder), asc(departments.name)),
+    // The events they'll work on, when they're limited to some.
+    limited && limited.length > 0
+      ? db
+          .select({ name: editions.name, code: editions.code })
+          .from(editions)
+          .innerJoin(events, eq(events.id, editions.eventId))
+          .where(
+            and(eq(events.organisationId, invite.organisationId), inArray(editions.id, limited)),
+          )
+          .orderBy(asc(editions.openStart), asc(editions.code))
+      : Promise.resolve(null),
   ]);
   return {
     ok: true,
@@ -178,5 +195,6 @@ export async function inviteDetails(token: string): Promise<InviteDetails> {
     departmentName: dept && !dept.isArchived ? dept.name : null,
     signsOff: Boolean(approver),
     mainFor: asks.map((a) => a.name),
+    events: theirEvents,
   };
 }

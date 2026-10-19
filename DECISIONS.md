@@ -956,3 +956,93 @@ Where the build spec and the code differed:
   others.
 - `database-setup.sql` was regenerated with the migration (Part 1) and is
   regenerated again after the package seed (Part 3).
+
+## Events per person (Oct 2026)
+
+Users → Events: someone can be limited to some events (`memberships.edition_ids`,
+`staff_invites.edition_ids`; NULL = every event). People without a list behave
+exactly as before.
+
+1. **NULL means every event, including new ones**; no live row is rewritten.
+2. **_Only these events_ needs at least one event**; ticking every event stays a
+   list (new events aren't added to it).
+3. **Super admins are never limited** (DB checks on memberships and
+   invitations; the actor and claim code write NULL for them).
+4. **Not allowed is not found**: another event's pages, items, stands, exports,
+   files, QR codes and the calendar feed answer exactly as for one that doesn't
+   exist (404, "not shared with you"); nothing says it exists.
+5. **The guard is in the data layer** (`getEditionByCode(code, session)`,
+   `loadItemBundle`/`loadStandBundle` with the actor, `ownEdition(…, actor)`,
+   `exportEdition`), not a layout — layouts don't re-run on navigation.
+   `tests/unit/event-scope-guard.test.ts` checks every caller statically.
+6. **Loader checks are staff-only**: partners keep their grant rules
+   (`opensEdition` is true for them).
+7. **Narrowing reuses the hand-over**: sign-offs naming them in the events taken
+   away go back to the department where someone else there can open the event,
+   else to the person picked (refused without one, naming the event); plan
+   entries are cleared only there; tasks and items stay with them and are
+   listed on their page.
+8. **A limited manager gives and takes only events they can open**
+   (`personChangeRefusal` rule 6b): the person's other events are kept, counted,
+   never named; they can't give All events or take anyone off it; they renew
+   only invitations within their events.
+9. **A limited creator gets the event they create** (audited, said in the
+   toast); copying an event offers "give them the copy", ticked, for people who
+   only see the original and whom the copier may change (open invitations
+   too); the rest are counted.
+10. **Archiving never changes anyone's events.**
+11. **Who can be asked or made main approver is event-blind; routing is per
+    event** (C9): a main approver who can't open an item's event isn't its main
+    there — its sign-offs go to the rest of the department, with "{Sam},
+    {Marketing}'s main approver, doesn't work on {CODE}" (C10).
+12. **`signoff_stuck`** tells super admins and department managers once, on the
+    transition, only when the department has signers but none can open the
+    event (or the named person can't); a department nobody can sign for at all
+    stays as today. Always sent, grouped with sign-offs, never shown as Done.
+13. **Freelance installer starts at _Only these events_** with the current
+    event.
+14. **Add several applies one Events choice to everyone pasted**; there is no
+    bulk "Change events".
+15. **Notifications store their event** (`notifications.edition_id`, derived
+    from the scope, the record or the link), so the bell and late emails stay
+    filtered after someone is narrowed; dispatch settles, without sending, an
+    email about an event since taken away.
+16. **Tasks without an event are always visible to their assignee.**
+17. **Audit summaries say "events changed"**, never codes; before/after keep
+    the ids.
+18. **People are organisation-wide**: the Team list lists everyone; counts that
+    decide delete vs archive stay organisation-wide; work lists on a person's
+    page name only what the viewer can open ("and N more in events you can't
+    open").
+19. **The Events card is one line while on All events** (C19), with Change.
+20. **Mentions of people who can't open the event are dropped** on the server.
+
+Where the build spec and the code differ:
+
+- `actorScope(session)` lives in `lib/queries/edition-scope.ts`, not
+  `lib/auth/actor.ts`: suites that mock the session module keep it.
+- Ability checks that run before a loader stay event-blind; the loader then
+  answers not found, so the words are the same as for a record that doesn't
+  exist.
+- `/api/files` checks the organisation and event only for limited staff
+  (unchanged for everyone else); certificate and spec-label exports now load
+  through `actorScope`, so another organisation's ref is a 404 there too.
+- Also scoped, though not in the spec's list: the stand document review
+  (`reviewStandDocument`), revoking a portal grant (`revokeGrant`) and the QR
+  page (`/q/[ref]`).
+- The daily digest's activity count keeps audit rows about no event for
+  everyone (`allowNull`), as the bell does.
+- Partner mentions are kept as they were: partners are already filtered by
+  their grants.
+- Add several's Events group says "Everyone pasted" where the person's page
+  says their name.
+- Narrowing writes one audit row for each change to an item — its plan, and
+  who its sign-off is with — as suspension does, rather than merging them.
+- The copy form's people count leaves out the copier (they get the copy as its
+  creator), so it matches what copying reports.
+- The task form filters people by the chosen event with a shared helper
+  (`openingEvent` in `components/people/groups.ts`); the server re-checks.
+- My account's "A super admin or your manager chooses which events you work
+  on." isn't shown to super admins.
+- The cron additions sit in their own `describe` (own organisation) at the end
+  of `cron.db.test.ts`, as the daily jobs run across every organisation.

@@ -3,6 +3,7 @@ import { and, count, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { notifications } from "@/lib/db/schema";
 import { getSession } from "@/lib/auth/actor";
+import { editionScopeSql, sessionScope } from "@/lib/queries/edition-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +14,14 @@ export async function GET() {
   const [row] = await db
     .select({ n: count() })
     .from(notifications)
-    .where(and(eq(notifications.userId, session.user.id), isNull(notifications.readAt)));
+    .where(
+      and(
+        eq(notifications.userId, session.user.id),
+        isNull(notifications.readAt),
+        // Users → Events: notifications about events taken away don't count.
+        editionScopeSql(sessionScope(session), notifications.editionId, { allowNull: true }),
+      ),
+    );
   return NextResponse.json(
     { unread: Number(row?.n ?? 0) },
     { headers: { "cache-control": "no-store" } },

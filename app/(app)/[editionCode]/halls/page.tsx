@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 export default async function HallsPage({ params }: { params: Promise<{ editionCode: string }> }) {
   const session = await requireStaffSession();
   const { editionCode } = await params;
-  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
 
   const canSetup = can(session.actor, { type: "halls.manage" });

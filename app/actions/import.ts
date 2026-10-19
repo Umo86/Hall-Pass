@@ -137,8 +137,8 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
   const ws = wb.worksheets[0];
   if (!ws) return fail("The workbook has no sheets");
 
-  // Only into this organisation's own shows.
-  const edition = await ownEdition(db, session.organisation.id, editionId);
+  // Only into this organisation's own shows, and ones they can open (Users → Events).
+  const edition = await ownEdition(db, session.organisation.id, editionId, session.actor);
   if (!edition) return fail("Event not found");
   if (editionIsReadOnly(edition.status)) return fail(EDITION_LOCKED_MESSAGE);
 
@@ -261,16 +261,14 @@ export async function importSchedule(formData: FormData): Promise<ActionResult<I
     if (!trimmed) return item.isUpdate ? null : me;
     const m = team.find((x) => x.email.toLowerCase() === trimmed);
     const ownable = { kind: "signage" as const, sponsored: item.sponsored };
-    const refusal = refusalFor({ type: "owner", item: ownable }, m, {
+    const purpose = { type: "owner" as const, item: ownable, editionId: edition.id };
+    const refusal = refusalFor(purpose, m, {
       organisationId: session.organisation.id,
     });
     if (!m || refusal) {
       const why = !m
         ? `${email.trim()} isn't on the team`
-        : refusalMessage(m.name, refusal!, { type: "owner", item: ownable }).replace(
-            / — pick someone else$/,
-            "",
-          );
+        : refusalMessage(m.name, refusal!, purpose).replace(/ — pick someone else$/, "");
       ownerNotes.push({
         row: rowNumber,
         message: item.isUpdate ? `${why} — owner left as it was` : `${why} — given to you`,

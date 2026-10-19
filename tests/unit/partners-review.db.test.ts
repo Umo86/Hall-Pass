@@ -423,7 +423,7 @@ d("partner review fixes", () => {
       { editionId: past, scopeId: s.id, expiresAt: ended },
       { editionId: past, role: "venue", scopeType: "venue", scopeId: venueId, expiresAt: ended },
     ]);
-    const counts = (await copySourceCounts(orgId))(past);
+    const counts = (await copySourceCounts(orgId, superAdminActor(orgId)))(past);
     expect(counts.access).toBe(2);
     // Copied to next year's dates: both come across (live again), so the box says 2…
     const nextYear = "2027-06-04";
@@ -476,3 +476,8 @@ d("partner review fixes", () => {
     expect(copied).toHaveLength(2);
   });
 });
+
+/** A super admin, as the copy form sees the person copying (Users → Events). */
+function superAdminActor(organisationId: string) {
+  return { kind: "staff" as const, userId: "copier", organisationId, role: "admin" as const };
+}

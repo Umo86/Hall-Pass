@@ -113,7 +113,7 @@ export default async function ReportsPage({
   if (!hasFeature(session.actor, "reports")) {
     return <SectionUnavailable feature="reports" backHref={`/${editionCode}/dashboard`} />;
   }
-  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
   const editionId = ed.edition.id;
   const code = ed.edition.code;

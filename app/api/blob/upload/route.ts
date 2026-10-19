@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { db } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { can } from "@/lib/authz";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
 import { editionIsReadOnly } from "@/lib/edition-lock";
@@ -26,7 +27,7 @@ export async function POST(request: Request) {
       onBeforeGenerateToken: async (pathname, clientPayload) => {
         const payload = JSON.parse(clientPayload ?? "{}") as { itemId?: string };
         if (!payload.itemId) throw new Error("Missing itemId");
-        const bundle = await loadItemBundle(db, payload.itemId);
+        const bundle = await loadItemBundle(db, payload.itemId, actorScope(session));
         if (!bundle || bundle.item.deletedAt) throw new Error("Item not found");
         if (editionIsReadOnly(bundle.edition.status)) throw new Error("This event is read-only");
         const blocked = artworkBlockedReason(bundle.item.status);

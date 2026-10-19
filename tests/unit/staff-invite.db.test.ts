@@ -243,4 +243,78 @@ d("staff invitations", () => {
       .where(eq(schema.memberships.userId, userId));
     expect(rows).toHaveLength(0);
   });
+
+  it("limited invitation renew rules (Users → Events): a manager limited to some events renews only invitations within them", async () => {
+    const manage = await import("@/lib/users/manage");
+    const { startingChoices } = await import("@/lib/users/rules");
+    const [event] = await db
+      .insert(schema.events)
+      .values({ organisationId: orgId, name: "Invite Show", code: `IS${suffix}` })
+      .returning();
+    const [venue] = await db
+      .insert(schema.venues)
+      .values({ organisationId: orgId, name: "Invite Hall", code: `IH${suffix}` })
+      .returning();
+    const [a, b] = await db
+      .insert(schema.editions)
+      .values(
+        ["A", "B"].map((x, i) => ({
+          eventId: event.id,
+          venueId: venue.id,
+          name: `Invite ${x}`,
+          code: `INV${x}${suffix}`,
+          buildStart: `2027-0${i + 3}-01`,
+          buildEnd: `2027-0${i + 3}-02`,
+          openStart: `2027-0${i + 3}-03`,
+          openEnd: `2027-0${i + 3}-04`,
+          breakdownEnd: `2027-0${i + 3}-05`,
+        })),
+      )
+      .returning();
+    const person = async (key: string, role: "admin" | "ops", extra = {}) => {
+      const id = randomUUID();
+      await db.insert(schema.users).values({ id, email: `${key}-${suffix}@invite.test` });
+      await db
+        .insert(schema.memberships)
+        .values({ userId: id, organisationId: orgId, role, ...extra });
+      return id;
+    };
+    const boss = await person("renew-boss", "admin");
+    const mona = await person("renew-mona", "ops", {
+      managerScope: "everyone",
+      editionIds: [a.id],
+    });
+    const asBoss = { organisationId: orgId, actorUserId: boss, actorName: "Boss" };
+    const asMona = { organisationId: orgId, actorUserId: mona, actorName: "Mona" };
+    const input = (key: string, editionIds: string[] | null) => ({
+      email: `${key}-${suffix}@invite.test`,
+      fullName: key,
+      jobTitle: null,
+      departmentId: null,
+      role: "ops" as const,
+      features: null,
+      abilities: startingChoices("ops", {}, { superAdmin: false }),
+      signoffs: [],
+      editionIds,
+    });
+    const tx = <T>(fn: (t: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<T>) =>
+      db.transaction(fn);
+    const mine = await tx((t) => manage.inviteUserTx(t, asMona, input("renew-a", [a.id])));
+    await tx((t) => manage.renewInviteLinkTx(t, asMona, mine.inviteId));
+    // A super admin adds B: no longer one Mona could have made.
+    await tx((t) =>
+      manage.updateInviteTx(t, asBoss, {
+        ...input("renew-a", [a.id, b.id]),
+        inviteId: mine.inviteId,
+      }),
+    );
+    await expect(tx((t) => manage.renewInviteLinkTx(t, asMona, mine.inviteId))).rejects.toThrow(
+      manage.RENEW_NOT_YOURS,
+    );
+    await tx((t) => manage.renewInviteLinkTx(t, asBoss, mine.inviteId));
+    const all = await tx((t) => manage.inviteUserTx(t, asBoss, input("renew-all", null)));
+    await expect(tx((t) => manage.renewInviteLinkTx(t, asMona, all.inviteId))).rejects.toThrow(
+      manage.RENEW_NOT_YOURS,
+    );
+  });
 });

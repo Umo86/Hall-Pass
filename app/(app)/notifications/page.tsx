@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { notifications } from "@/lib/db/schema";
+import { editionScopeSql, sessionScope } from "@/lib/queries/edition-scope";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { pendingEntityIdsForUser } from "@/lib/queries/approvals";
 import {
@@ -50,7 +51,11 @@ export default async function NotificationsPage({
   const params = await searchParams;
   const unreadOnly = params.filter === "unread";
   const page = Math.max(1, Math.min(1000, Number.parseInt(params.page ?? "1", 10) || 1));
-  const mine = eq(notifications.userId, session.user.id);
+  // Users → Events: notifications about events they can't open are hidden.
+  const mine = and(
+    eq(notifications.userId, session.user.id),
+    editionScopeSql(sessionScope(session), notifications.editionId, { allowNull: true }),
+  );
   const where = unreadOnly ? and(mine, isNull(notifications.readAt)) : mine;
 
   const [rows, [{ n: total }], [{ n: unread }]] = await Promise.all([

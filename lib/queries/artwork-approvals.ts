@@ -16,6 +16,8 @@ import { departmentNames } from "@/lib/domain/departments";
 import { getDownloadUrl, getInlineUrl } from "@/lib/storage";
 import { isVideoArtwork } from "@/lib/artwork-rules";
 import { roleLabel } from "@/lib/format";
+import type { EditionScope } from "@/lib/authz";
+import { editionScopeSql } from "@/lib/queries/edition-scope";
 
 /** The artwork filters on the Approvals page, in plain words. */
 export const ARTWORK_FILTERS = {
@@ -75,6 +77,8 @@ const LIMIT = 150;
  */
 export async function listArtworkApprovals(opts: {
   organisationId: string;
+  /** The viewer's events (Users → Events); null/missing = every event. */
+  scope?: EditionScope;
   editionId?: string | null;
   filter: ArtworkFilter;
   search?: string;
@@ -85,6 +89,7 @@ export async function listArtworkApprovals(opts: {
     ne(editions.status, "archived"),
     isNull(signageItems.deletedAt),
     isNotNull(signageItems.currentArtworkVersionId),
+    editionScopeSql(opts.scope ?? null, signageItems.editionId),
     opts.editionId ? eq(signageItems.editionId, opts.editionId) : undefined,
     search
       ? or(ilike(signageItems.name, `%${search}%`), ilike(signageItems.ref, `%${search}%`))
@@ -387,7 +392,11 @@ export async function reviewArtworkForItems(
 }
 
 /** How many items are waiting for sign-off (for the empty "Waiting on me"). */
-export async function countItemsInSignoff(organisationId: string): Promise<number> {
+export async function countItemsInSignoff(
+  organisationId: string,
+  /** The viewer's events (Users → Events). */
+  scope: EditionScope = null,
+): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(signageItems)
@@ -399,6 +408,7 @@ export async function countItemsInSignoff(organisationId: string): Promise<numbe
         ne(editions.status, "archived"),
         isNull(signageItems.deletedAt),
         eq(signageItems.status, "in_review"),
+        editionScopeSql(scope, signageItems.editionId),
       ),
     );
   return Number(row?.n ?? 0);

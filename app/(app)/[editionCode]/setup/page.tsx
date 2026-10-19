@@ -5,7 +5,7 @@ import { CheckCircle2, Copy, Download, Plus } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { editions, events } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can } from "@/lib/authz";
+import { can, editionScope, seesEdition } from "@/lib/authz";
 import { editionIsReadOnly } from "@/lib/edition-lock";
 import { diffDaysIso } from "@/lib/deadlines";
 import { plural } from "@/lib/format";
@@ -123,7 +123,7 @@ export default async function SetupPage({ params }: { params: Promise<{ editionC
   const session = await requireStaffSession();
   const orgId = session.organisation.id;
   const { editionCode } = await params;
-  const ed = await getEditionByCode(editionCode.toUpperCase(), orgId);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
   const edition = ed.edition;
   const archived = editionIsReadOnly(edition.status);
@@ -134,16 +134,19 @@ export default async function SetupPage({ params }: { params: Promise<{ editionC
   const [status, contacts, deadlines, halls, copySources, venueRows, seriesRows, logoUrl, source] =
     await Promise.all([
       getSetupStatus(edition, orgId, perms),
-      setupContacts(orgId, "event.setup"),
+      setupContacts(orgId, "event.setup", { editionId: edition.id }),
       deadlinesForSetup(edition.id),
       hallsEditorData(edition.id),
-      perms.halls ? hallCopySources(orgId, edition) : Promise.resolve([]),
+      perms.halls
+        ? hallCopySources(orgId, edition, editionScope(session.actor))
+        : Promise.resolve([]),
       perms.details ? venuesForPicker(orgId) : Promise.resolve([]),
       perms.details
         ? db.select().from(events).where(eq(events.organisationId, orgId)).orderBy(events.name)
         : Promise.resolve([]),
       perms.details ? showLogoUrl(edition.logoPath) : Promise.resolve(null),
-      edition.clonedFromEditionId
+      // "Copied from" names the source only when the viewer can open it.
+      edition.clonedFromEditionId && seesEdition(session.actor, edition.clonedFromEditionId)
         ? db
             .select({ name: editions.name })
             .from(editions)

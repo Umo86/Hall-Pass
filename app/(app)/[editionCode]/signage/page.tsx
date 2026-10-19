@@ -49,7 +49,7 @@ export default async function SignagePage({
   if (!hasFeature(session.actor, "signage")) {
     return <SectionUnavailable feature="signage" backHref={`/${editionCode}/dashboard`} />;
   }
-  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
   const canSeeCosts = can(session.actor, { type: "costs.view" });
   const readOnly = editionIsReadOnly(ed.edition.status);
@@ -77,8 +77,8 @@ export default async function SignagePage({
     ? personOptionsForAny(
         await loadTeam(db, session.organisation.id),
         [
-          { type: "owner", item: { kind: "signage", sponsored: false } },
-          { type: "owner", item: { kind: "signage", sponsored: true } },
+          { type: "owner", item: { kind: "signage", sponsored: false }, editionId: ed.edition.id },
+          { type: "owner", item: { kind: "signage", sponsored: true }, editionId: ed.edition.id },
         ],
         { organisationId: session.organisation.id },
       )

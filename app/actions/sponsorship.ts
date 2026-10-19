@@ -9,6 +9,7 @@ import { signageItems, sponsors } from "@/lib/db/schema";
 import { can, missingAbilityMessage } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { requireSession, type Session } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
 import { EDITION_LOCKED_MESSAGE, editionIsReadOnly } from "@/lib/edition-lock";
 import { buildStoragePath, putObject } from "@/lib/storage";
@@ -21,7 +22,7 @@ async function editableItem(
   session: Session,
   itemId: string,
 ): Promise<{ bundle: Bundle; error?: never } | { error: string; bundle?: never }> {
-  const bundle = await loadItemBundle(db, itemId, { organisationId: session.organisation.id });
+  const bundle = await loadItemBundle(db, itemId, actorScope(session));
   if (!bundle || bundle.item.deletedAt) return { error: "Item not found" };
   if (bundle.organisation.id !== session.organisation.id) return { error: "Item not found" };
   if (editionIsReadOnly(bundle.edition.status)) return { error: EDITION_LOCKED_MESSAGE };

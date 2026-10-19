@@ -26,7 +26,7 @@ export default async function OnsitePage({ params }: { params: Promise<{ edition
   if (!hasFeature(session.actor, "onsite")) {
     return <SectionUnavailable feature="onsite" backHref={`/${editionCode}/dashboard`} />;
   }
-  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
   const readOnly = editionIsReadOnly(ed.edition.status);
   const rows = await listOnsiteRows(ed.edition.id);

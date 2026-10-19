@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db/client";
 import { requireSession } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { can } from "@/lib/authz";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
 import { editionIsReadOnly } from "@/lib/edition-lock";
@@ -44,9 +45,7 @@ export async function POST(request: Request) {
   const input = parsed.data;
   try {
     const session = await requireSession();
-    const bundle = await loadItemBundle(db, input.itemId, {
-      organisationId: session.organisation.id,
-    });
+    const bundle = await loadItemBundle(db, input.itemId, actorScope(session));
     if (!bundle || bundle.item.deletedAt) throw new Error("Item not found");
     if (editionIsReadOnly(bundle.edition.status)) throw new Error("This event is read-only");
     const blocked = artworkBlockedReason(bundle.item.status, await panelParent(db, bundle.item));

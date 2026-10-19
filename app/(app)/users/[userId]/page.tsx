@@ -10,8 +10,10 @@ import {
   can,
   canGrantManager,
   canRenewInvite,
+  editionScope,
   isSuperAdmin,
   managerScope,
+  seesEdition,
   type PermissionOverrides,
   type PersonCtx,
 } from "@/lib/authz";
@@ -19,10 +21,27 @@ import { londonDateOfAccessEnd } from "@/lib/access";
 import { standsEnabled } from "@/lib/config";
 import { formatDate, roleLabel } from "@/lib/format";
 import { departmentOptions, loadPerson } from "@/lib/users/queries";
-import { getRemovalImpact, workableOwnedItems } from "@/lib/users/manage";
+import {
+  departmentSigners,
+  getRemovalImpact,
+  handoverCandidates,
+  openTasksOf,
+  orgEditionIds,
+  signoffsNaming,
+  strandedEventSignoffs,
+  workableOwnedItems,
+} from "@/lib/users/manage";
+import { eventCardData } from "@/lib/users/event-options";
+import type { HandoverStep } from "@/lib/users/handover";
 import { accessHistory } from "@/lib/users/history";
 import { invitesCanBeEmailed } from "@/lib/users/email";
-import { abilityChoices, signoffPaused, visibleFeatures } from "@/lib/users/rules";
+import {
+  abilityChoices,
+  eventsSummary,
+  eventsTitle,
+  signoffPaused,
+  visibleFeatures,
+} from "@/lib/users/rules";
 import { lastActiveText, managerBadgeText, personStatus } from "@/lib/users/list";
 import { Page, PageHeader } from "@/components/page-header";
 import { DepartmentChip } from "@/components/users/person-fields";
@@ -122,6 +141,8 @@ export default async function PersonPage({
   );
 
   if (!canEdit) {
+    // Users → Events: codes only for events the viewer can open.
+    const roCodes = (await eventCardData(orgId, actor)).codes;
     return (
       <Page width="narrow">
         {header}
@@ -149,6 +170,10 @@ export default async function PersonPage({
             </dd>
             <dt className="text-muted-foreground">Role</dt>
             <dd>{roleLabel(person.role)}</dd>
+            <dt className="text-muted-foreground">Events</dt>
+            <dd title={eventsTitle(person.editionIds, (id) => roCodes[id] ?? null)}>
+              {eventsSummary(person.editionIds, (id) => roCodes[id] ?? null)}
+            </dd>
             <dt className="text-muted-foreground">Signs off artwork for</dt>
             <dd className="flex flex-wrap gap-1">
               {person.signsOffFor.length === 0
@@ -170,7 +195,7 @@ export default async function PersonPage({
 
   const member = person.kind === "member";
   const showAll = query.history === "all";
-  const [departments, impact, ownedItems, history] = await Promise.all([
+  const [departments, impact, ownedItems, history, eventCard] = await Promise.all([
     departmentOptions(db, orgId, {
       userId: member ? person.id : null,
       email: person.email,
@@ -178,14 +203,51 @@ export default async function PersonPage({
     member && !person.isSelf
       ? getRemovalImpact(db, orgId, person.id, { viewer: actor })
       : Promise.resolve(null),
-    member ? workableOwnedItems(db, orgId, person.id) : Promise.resolve([]),
+    // Items in events the viewer can't open come back hidden (counted, never named).
+    member ? workableOwnedItems(db, orgId, person.id, { viewer: actor }) : Promise.resolve([]),
     accessHistory(
       db,
       orgId,
       { userId: member ? person.id : null, email: person.email },
-      { limit: showAll ? 200 : 21 },
+      { limit: showAll ? 200 : 21, viewerScope: editionScope(actor) },
     ),
+    eventCardData(orgId, actor, { editionIds: person.role === "admin" ? null : person.editionIds }),
   ]);
+  // What narrowing their events would leave behind (members; not on your own page).
+  const eventWork =
+    member && !person.isSelf
+      ? await (async () => {
+          const [named, { names, signers }, candidates, tasks, allIds] = await Promise.all([
+            signoffsNaming(db, orgId, person.id),
+            departmentSigners(db, orgId, person.id),
+            handoverCandidates(db, orgId, person.id),
+            openTasksOf(db, orgId, person.id),
+            orgEditionIds(db, orgId),
+          ]);
+          const stranded = await strandedEventSignoffs(db, orgId, person.id, allIds, signers);
+          // Only steps in events the viewer can open can be taken away by them.
+          const steps: HandoverStep[] = [...named, ...stranded].filter((st) =>
+            seesEdition(actor, st.editionId),
+          );
+          return {
+            steps,
+            signers: Object.fromEntries(signers),
+            departmentNames: Object.fromEntries(names),
+            candidates: candidates.map((c) => ({
+              userId: c.userId,
+              name: c.name,
+              role: c.role,
+              departmentId: c.departmentId,
+              editionIds: c.editionIds,
+            })),
+            tasks: tasks.map((t) =>
+              t.editionId && !seesEdition(actor, t.editionId)
+                ? { id: t.id, title: "", editionId: t.editionId }
+                : t,
+            ),
+          };
+        })()
+      : undefined;
   const superAdmin = isSuperAdmin(actor);
   const giveable = assignableFeatures(actor);
   const visible = visibleFeatures(standsEnabled);
@@ -234,12 +296,13 @@ export default async function PersonPage({
             managerScope: person.managerScope,
             signoffs: person.allSignoffs,
             accessEndsAt: person.accessEndsAt,
+            editionIds: person.role === "admin" ? null : person.editionIds,
           })}
         />
       )}
       <PersonEditor
         // Fresh state whenever the saved person changes (e.g. after a save).
-        key={`${person.id}:${person.departmentId}:${person.role}:${person.managerScope}:${JSON.stringify(person.features)}:${JSON.stringify(person.allSignoffs)}:${person.pendingMainFor.join()}:${JSON.stringify(person.overrides)}`}
+        key={`${person.id}:${person.departmentId}:${person.role}:${person.managerScope}:${JSON.stringify(person.features)}:${JSON.stringify(person.allSignoffs)}:${person.pendingMainFor.join()}:${JSON.stringify(person.overrides)}:${JSON.stringify(person.editionIds)}`}
         kind={person.kind}
         id={person.id}
         email={person.email}
@@ -266,11 +329,29 @@ export default async function PersonPage({
           keepDepartment: managerScope(actor) === "department" && !superAdmin,
         }}
         work={{
-          items: ownedItems.map((i) => ({ ref: i.ref, kind: i.kind, href: i.href })),
+          items: ownedItems.map((i) =>
+            i.hidden
+              ? { ref: null, kind: i.kind, href: null, editionId: null, hidden: true }
+              : { ref: i.ref, kind: i.kind, href: i.href, editionId: i.editionId },
+          ),
           signoffs: handover.groups.flatMap((g) =>
-            g.steps.map((s) => ({ ref: s.ref, href: s.href, departmentId: s.departmentId })),
+            g.steps.map((s) => ({
+              ref: s.ref,
+              href: s.href,
+              departmentId: s.departmentId,
+              hidden: s.hidden,
+            })),
           ),
         }}
+        events={eventCard.events}
+        eventAccess={{
+          allowAll: eventCard.allowAll,
+          hiddenCount: eventCard.hiddenCount,
+          readOnly: eventCard.readOnly,
+          defaultEditionId: eventCard.defaultEditionId,
+        }}
+        eventWork={eventWork}
+        currentUserId={session.user.id}
         initial={{
           fullName: person.name,
           jobTitle: person.jobTitle ?? "",
@@ -282,6 +363,7 @@ export default async function PersonPage({
           signoffs: person.allSignoffs,
           paused: signoffPaused(person.overrides),
           managerScope: person.managerScope,
+          editionIds: person.role === "admin" ? null : eventCard.visibleIds,
         }}
       />
       <AccountCard

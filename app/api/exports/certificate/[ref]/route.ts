@@ -1,11 +1,23 @@
 import { appUrl } from "@/lib/app-url";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { db } from "@/lib/db/client";
+
 import { can } from "@/lib/authz";
 import { itemAuthzCtx, loadItemBundle } from "@/lib/domain/signage";
-import { getItemByRef, getItemInstances, getItemVersions, getLabelRows } from "@/lib/queries/signage";
+import {
+  getItemByRef,
+  getItemInstances,
+  getItemVersions,
+  getLabelRows,
+} from "@/lib/queries/signage";
 import { renderApprovalCertificate, type CertificateStep } from "@/lib/exports/pdf";
 import { labelWhere } from "@/lib/exports/label-fields";
-import { exportError, exportSession, recordAndServeExport, serveOrError } from "@/lib/exports/serve";
+import {
+  exportError,
+  exportSession,
+  recordAndServeExport,
+  serveOrError,
+} from "@/lib/exports/serve";
 import { APPROVED_OR_LATER } from "@/lib/status/signage";
 import { formatDate, statusLabel } from "@/lib/format";
 
@@ -16,7 +28,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ ref: str
   const { ref } = await params;
   const item = await getItemByRef(decodeURIComponent(ref));
   if (!item || item.deletedAt) return exportError(404, "That item could not be found.");
-  const bundle = await loadItemBundle(db, item.id);
+  const bundle = await loadItemBundle(db, item.id, actorScope(session));
   if (!bundle) return exportError(404, "That item could not be found.");
   if (
     !can(session.actor, { type: "export.run", kind: "certificate" }) ||

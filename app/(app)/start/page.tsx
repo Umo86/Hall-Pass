@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { events } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
-import { can, missingAbilityMessage } from "@/lib/authz";
+import { can, editionScope, missingAbilityMessage } from "@/lib/authz";
 import { addDaysIso } from "@/lib/deadlines";
 import { todayInLondon } from "@/lib/today";
 import { listEditions } from "@/lib/queries/editions";
@@ -42,7 +42,10 @@ export default async function StartPage({
   const session = await requireStaffSession();
   const orgId = session.organisation.id;
   if (!can(session.actor, { type: "events.create" })) {
-    const [active, contacts] = await Promise.all([countActiveEvents(orgId), setupContacts(orgId)]);
+    const [active, contacts] = await Promise.all([
+      countActiveEvents(orgId, editionScope(session.actor)),
+      setupContacts(orgId),
+    ]);
     return (
       <Page width="narrow">
         <PageHeader title="Create your event" />
@@ -65,10 +68,11 @@ export default async function StartPage({
   }
   const { mode } = await searchParams;
   const [rows, venueRows, seriesRows, countsFor] = await Promise.all([
-    listEditions(orgId),
+    // Users → Events: only events they can open are copy sources.
+    listEditions(orgId, editionScope(session.actor)),
     venuesForPicker(orgId),
     db.select().from(events).where(eq(events.organisationId, orgId)).orderBy(events.name),
-    copySourceCounts(orgId),
+    copySourceCounts(orgId, session.actor),
   ]);
   const today = todayInLondon();
   const canCopyAccess = can(session.actor, { type: "partners.invite" });

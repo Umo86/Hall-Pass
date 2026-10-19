@@ -12,7 +12,8 @@ import {
   sponsors as sponsorsTable,
   suppliers,
 } from "@/lib/db/schema";
-import { requireStaffSession } from "@/lib/auth/actor";
+import { getSession, requireStaffSession } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { can, type ApprovalStepCtx } from "@/lib/authz";
 import {
   loadTeam,
@@ -108,7 +109,11 @@ export async function generateMetadata({
 }) {
   const { ref } = await params;
   const item = await getItemByRef(decodeURIComponent(ref));
-  return { title: item ? `${item.ref} · ${item.name}` : "Not found" };
+  // Only what the viewer may open is titled (another organisation's or
+  // another event's item reads "Not found", as the page does).
+  const session = item ? await getSession() : null;
+  const bundle = item && session ? await loadItemBundle(db, item.id, actorScope(session)) : null;
+  return { title: item && bundle ? `${item.ref} · ${item.name}` : "Not found" };
 }
 
 type TabId = "details" | "artwork" | "panels" | "comments" | "history";
@@ -167,7 +172,7 @@ export default async function ItemDetailPage({
 
   const item = await getItemByRef(decodeURIComponent(ref));
   if (!item || item.deletedAt) notFound();
-  const bundle = await loadItemBundle(db, item.id, { organisationId: session.organisation.id });
+  const bundle = await loadItemBundle(db, item.id, actorScope(session));
   // Only this organisation's items, and only under their own event's address.
   if (!bundle || bundle.edition.code !== editionCode.toUpperCase()) notFound();
   const isSponsorship = item.kind === "sponsorship_item";
@@ -472,7 +477,7 @@ export default async function ItemDetailPage({
               }
               assignees={personOptions(
                 team,
-                { type: "task" },
+                { type: "task", editionId: bundle.edition.id },
                 {
                   organisationId: session.organisation.id,
                 },
@@ -735,6 +740,7 @@ async function DetailsTab({
               kind: item.kind,
               sponsored: Boolean(item.sponsorId) || item.category === "sponsor",
             },
+            editionId: bundle.edition.id,
           },
           { include: [item.ownerUserId], team },
         )
@@ -1283,7 +1289,7 @@ async function ArtworkAndSignOff({
   // Sign-offs go only to people who can sign now (lib/people.ts, canReceiveSignoff).
   const delegatableUsers = personOptions(
     team,
-    { type: "signoff" },
+    { type: "signoff", editionId: bundle.edition.id },
     {
       organisationId: session.organisation.id,
     },
@@ -1490,7 +1496,11 @@ async function StandDetails({
     peopleFor(
       db,
       bundle.organisation.id,
-      { type: "owner", item: { kind: "stand_design", sponsored: Boolean(item.sponsorId) } },
+      {
+        type: "owner",
+        item: { kind: "stand_design", sponsored: Boolean(item.sponsorId) },
+        editionId: bundle.edition.id,
+      },
       { include: [item.ownerUserId], team },
     ),
   ]);

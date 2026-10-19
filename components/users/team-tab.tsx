@@ -3,6 +3,7 @@ import { Users as UsersIcon } from "lucide-react";
 import {
   canManagePerson,
   canRenewInvite,
+  editionScope,
   FEATURE_LABELS,
   managerScope,
   type Actor,
@@ -10,7 +11,8 @@ import {
 import { standsEnabled } from "@/lib/config";
 import { db } from "@/lib/db/client";
 import { filterTeam, listTeam, needsDepartment, type TeamFilters } from "@/lib/users/queries";
-import { featuresSummary, visibleFeatures } from "@/lib/users/rules";
+import { eventsSummary, eventsTitle, featuresSummary, visibleFeatures } from "@/lib/users/rules";
+import { listEditions } from "@/lib/queries/editions";
 import {
   lastActiveText,
   managerBadgeText,
@@ -97,6 +99,14 @@ export async function TeamTab({
   );
   const visible = visibleFeatures(standsEnabled);
 
+  // Users → Events: codes only for events the viewer can open.
+  const codes = new Map(
+    (await listEditions(organisationId, editionScope(actor))).map((e) => [
+      e.edition.id,
+      e.edition.code,
+    ]),
+  );
+  const codeOf = (id: string) => codes.get(id) ?? null;
   const rows: TeamListRow[] = shown.map((r) => {
     const features = r.role === "admin" ? null : r.features;
     return {
@@ -119,6 +129,12 @@ export async function TeamTab({
               .filter((f) => visible.includes(f))
               .map((f) => FEATURE_LABELS[f])
               .join(", ") || "No sections",
+      events: r.editionIds
+        ? {
+            text: eventsSummary(r.editionIds, codeOf),
+            title: eventsTitle(r.editionIds, codeOf),
+          }
+        : null,
       signsOffFor: r.signsOffFor.map((s) => ({
         name: s.name,
         isMain: s.isMain,
@@ -144,6 +160,7 @@ export async function TeamTab({
             isMain: s.isMain || s.mainOnAccept,
           })),
           accessEndsAt: r.accessEndsAt,
+          editionIds: r.editionIds,
         }),
     };
   });

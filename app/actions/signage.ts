@@ -18,6 +18,7 @@ import { can } from "@/lib/authz";
 import { writeAudit } from "@/lib/audit";
 import { checkPick, ownerRoleOf, type OwnableItem } from "@/lib/people";
 import { requireSession } from "@/lib/auth/actor";
+import { actorScope } from "@/lib/queries/edition-scope";
 import { fail, success, type ActionResult } from "@/lib/actions/result";
 import {
   IllegalTransitionError,
@@ -141,8 +142,10 @@ async function resolveOwner(
   organisationId: string,
   userId: string,
   item: OwnableItem,
+  /** The item's event: the owner must be able to open it (Users → Events). */
+  editionId: string,
 ): Promise<{ role: "ops" | "marketing" | null; name: string }> {
-  const res = await checkPick(db, organisationId, userId, { type: "owner", item });
+  const res = await checkPick(db, organisationId, userId, { type: "owner", item, editionId });
   if (!res.ok) throw new Error(res.error);
   return { role: ownerRoleOf(res.member), name: res.member.name };
 }
@@ -192,7 +195,8 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
   // the organiser's own.
   const category = data.kind === "sponsorship_item" ? "sponsor" : (data.category ?? "organiser");
   // The show and everything linked must be this organisation's.
-  if (!(await ownEdition(db, session.organisation.id, data.editionId))) {
+  // Users → Events: an event they can't open is "not found".
+  if (!(await ownEdition(db, session.organisation.id, data.editionId, session.actor))) {
     return fail("Event not found");
   }
   const supplierError = await archivedSupplierError(session.organisation.id, data.supplierId);
@@ -209,10 +213,12 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
     if (own === "ops" || own === "marketing") ownerRole = own;
   } else {
     try {
-      const owner = await resolveOwner(session.organisation.id, data.ownerUserId, {
-        kind: data.kind,
-        sponsored: Boolean(data.sponsorId) || category === "sponsor",
-      });
+      const owner = await resolveOwner(
+        session.organisation.id,
+        data.ownerUserId,
+        { kind: data.kind, sponsored: Boolean(data.sponsorId) || category === "sponsor" },
+        data.editionId,
+      );
       ownerUserId = data.ownerUserId;
       ownerName = owner.name;
       ownerRole = owner.role ?? ownerRole;
@@ -238,6 +244,7 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
         (await defaultSignageWorkflowId(tx, session.organisation.id, data.itemTypeId ?? null));
       const signoffs = await normaliseSignoffs(tx, {
         organisationId: session.organisation.id,
+        editionId: data.editionId,
         workflowId,
         category,
         plan: data.signoffs,
@@ -313,6 +320,7 @@ export async function createSignageItem(input: unknown): Promise<ActionResult<{ 
         session.organisation.id,
         { kind: data.kind, category, ownerUserId, ownerRole },
         session.user.id,
+        data.editionId,
       );
       await notify(tx, {
         userIds: recipients,
@@ -353,9 +361,7 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
   const parsed = updateSchema.safeParse(input);
   if (!parsed.success) return fail("Check the highlighted fields", zodErrors(parsed.error));
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, parsed.data.id, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, parsed.data.id, actorScope(session));
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.edit", item: itemAuthzCtx(bundle) })) {
@@ -388,10 +394,15 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
     const nextSponsor = patch.sponsorId !== undefined ? patch.sponsorId : bundle.item.sponsorId;
     const nextCategory = patch.category !== undefined ? patch.category : bundle.item.category;
     try {
-      const owner = await resolveOwner(session.organisation.id, patch.ownerUserId, {
-        kind: bundle.item.kind,
-        sponsored: Boolean(nextSponsor) || nextCategory === "sponsor",
-      });
+      const owner = await resolveOwner(
+        session.organisation.id,
+        patch.ownerUserId,
+        {
+          kind: bundle.item.kind,
+          sponsored: Boolean(nextSponsor) || nextCategory === "sponsor",
+        },
+        bundle.edition.id,
+      );
       newOwner = { id: patch.ownerUserId, name: owner.name };
       if (owner.role) patch.ownerRole = owner.role;
     } catch (err) {
@@ -495,6 +506,7 @@ export async function updateSignageItem(input: unknown): Promise<ActionResult> {
           patch.signoffs !== undefined
             ? await normaliseSignoffs(tx, {
                 organisationId: session.organisation.id,
+                editionId: bundle.edition.id,
                 workflowId,
                 category: nextCategory,
                 plan: patch.signoffs,
@@ -632,12 +644,11 @@ export async function softDeleteSignageItem(input: unknown): Promise<ActionResul
     const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
     if (!parsed.success) return fail("Invalid request");
     const session = await requireSession();
-    const bundle = await loadItemBundle(db, parsed.data.id, {
-      organisationId: session.organisation.id,
-    });
+    const bundle = await loadItemBundle(db, parsed.data.id, actorScope(session));
     if (!bundle || bundle.item.deletedAt) return fail("Item not found");
     if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
-    if (!can(session.actor, { type: "signage.delete" })) return fail("You cannot delete items");
+    if (!can(session.actor, { type: "signage.delete", editionId: bundle.edition.id }))
+      return fail("You cannot delete items");
     await db.transaction(async (tx) => {
       await tx
         .update(signageItems)
@@ -674,12 +685,11 @@ export async function restoreSignageItem(
     const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
     if (!parsed.success) return fail("Invalid request");
     const session = await requireSession();
-    const bundle = await loadItemBundle(db, parsed.data.id, {
-      organisationId: session.organisation.id,
-    });
+    const bundle = await loadItemBundle(db, parsed.data.id, actorScope(session));
     if (!bundle || !bundle.item.deletedAt) return fail("Item not found");
     if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
-    if (!can(session.actor, { type: "signage.restore" })) return fail("You cannot restore items");
+    if (!can(session.actor, { type: "signage.restore", editionId: bundle.edition.id }))
+      return fail("You cannot restore items");
     await db.transaction(async (tx) => {
       await tx
         .update(signageItems)
@@ -717,9 +727,7 @@ export async function submitForReview(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, parsed.data.id, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, parsed.data.id, actorScope(session));
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.submit", item: itemAuthzCtx(bundle) })) {
@@ -755,9 +763,7 @@ export async function resubmitItem(
     .safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, parsed.data.id, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, parsed.data.id, actorScope(session));
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
   if (!can(session.actor, { type: "signage.submit", item: itemAuthzCtx(bundle) })) {
@@ -799,12 +805,11 @@ export async function holdSignageItem(input: unknown): Promise<ActionResult> {
     .safeParse(input);
   if (!parsed.success) return fail("A reason is required");
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, parsed.data.id, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, parsed.data.id, actorScope(session));
   if (!bundle) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
-  if (!can(session.actor, { type: "signage.hold" })) return fail("You cannot put items on hold");
+  if (!can(session.actor, { type: "signage.hold", editionId: bundle.edition.id }))
+    return fail("You cannot put items on hold");
   let next;
   try {
     next = signageTransition(bundle.item.status, "hold");
@@ -838,12 +843,11 @@ export async function resumeSignageItem(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, parsed.data.id, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, parsed.data.id, actorScope(session));
   if (!bundle) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
-  if (!can(session.actor, { type: "signage.resume" })) return fail("You cannot resume items");
+  if (!can(session.actor, { type: "signage.resume", editionId: bundle.edition.id }))
+    return fail("You cannot resume items");
   let next: SignageStatus;
   try {
     next = signageTransition(bundle.item.status, "resume", {
@@ -918,12 +922,11 @@ export async function reopenSignageItem(input: unknown): Promise<ActionResult> {
     .safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, parsed.data.id, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, parsed.data.id, actorScope(session));
   if (!bundle) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
-  if (!can(session.actor, { type: "signage.reopen" })) return fail("You cannot reopen items");
+  if (!can(session.actor, { type: "signage.reopen", editionId: bundle.edition.id }))
+    return fail("You cannot reopen items");
   const undoInstall = INSTALLED_STATUSES.includes(bundle.item.status as SignageStatus);
   const reason = parsed.data.reason?.trim() ?? "";
   if (undoInstall && !reason) return fail("Say why the install is being undone");
@@ -996,12 +999,10 @@ export async function closeSignageItem(input: unknown): Promise<ActionResult> {
   const parsed = z.object({ id: z.string().uuid() }).safeParse(input);
   if (!parsed.success) return fail("Invalid request");
   const session = await requireSession();
-  const bundle = await loadItemBundle(db, parsed.data.id, {
-    organisationId: session.organisation.id,
-  });
+  const bundle = await loadItemBundle(db, parsed.data.id, actorScope(session));
   if (!bundle || bundle.item.deletedAt) return fail("Item not found");
   if (editionIsReadOnly(bundle.edition.status)) return fail(EDITION_LOCKED_MESSAGE);
-  if (!can(session.actor, { type: "signage.close" })) {
+  if (!can(session.actor, { type: "signage.close", editionId: bundle.edition.id })) {
     return fail("You cannot mark items complete");
   }
   let next: SignageStatus;

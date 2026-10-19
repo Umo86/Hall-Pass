@@ -3,9 +3,15 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { editionDeadlines, editions, events, venues } from "@/lib/db/schema";
 import type { EditionForDeadlines } from "@/lib/deadlines";
+import { opensEdition, type Actor, type EditionScope } from "@/lib/authz";
+import { editionScopeSql } from "./edition-scope";
 
-/** The organisation's events (editions), earliest build-up first. */
-export async function listEditions(organisationId: string) {
+/**
+ * The organisation's events (editions), earliest build-up first — only the
+ * ones in `scope` (Users → Events; null = every event). Every caller passes
+ * the viewer's scope (tests/unit/event-scope-guard.test.ts).
+ */
+export async function listEditions(organisationId: string, scope: EditionScope) {
   return db
     .select({
       edition: editions,
@@ -15,20 +21,31 @@ export async function listEditions(organisationId: string) {
     .from(editions)
     .innerJoin(events, eq(editions.eventId, events.id))
     .innerJoin(venues, eq(editions.venueId, venues.id))
-    .where(eq(events.organisationId, organisationId))
+    .where(and(eq(events.organisationId, organisationId), editionScopeSql(scope, editions.id)))
     .orderBy(editions.buildStart);
 }
 
-/** An event by its code — only if it belongs to the given organisation. */
-export async function getEditionByCode(code: string, organisationId: string) {
+/**
+ * An event by its code — only if it belongs to the signed-in person's
+ * organisation and they can open it (Users → Events). Null otherwise, which
+ * every /[editionCode] page answers with notFound(), exactly as for a code
+ * that doesn't exist. The guard is here, in the data layer, not in a layout
+ * (layouts don't re-run on navigation).
+ */
+export async function getEditionByCode(
+  code: string,
+  session: { organisation: { id: string }; actor: Actor },
+) {
   const [row] = await db
     .select({ edition: editions, event: events, venue: venues })
     .from(editions)
     .innerJoin(events, eq(editions.eventId, events.id))
     .innerJoin(venues, eq(editions.venueId, venues.id))
-    .where(and(eq(editions.code, code), eq(events.organisationId, organisationId)))
+    .where(and(eq(editions.code, code), eq(events.organisationId, session.organisation.id)))
     .limit(1);
-  return row ?? null;
+  if (!row) return null;
+  if (!opensEdition(session.actor, row.edition.id)) return null;
+  return row;
 }
 
 export async function getEditionDeadlines(editionId: string) {

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Star } from "lucide-react";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
+import { EventsTag } from "@/components/users/person-fields";
 
 export type WhoSignsOffDepartment = {
   id: string;
@@ -16,6 +17,8 @@ export type WhoSignsOffDepartment = {
     /** Invited: becomes the main approver when they accept. */
     mainOnAccept?: boolean;
     state: "active" | "paused" | "invited" | "none";
+    /** Users → Events: "BIRM27 only" for someone limited; null/missing = All events. */
+    events?: { text: string; title: string } | null;
   }[];
 };
 
@@ -117,6 +120,11 @@ export function WhoSignsOff({
                         {(a.jobTitle || STATE_TEXT[a.state]) && (
                           <span className="text-muted-foreground block text-xs">
                             {[a.jobTitle, STATE_TEXT[a.state]].filter(Boolean).join(" · ")}
+                          </span>
+                        )}
+                        {a.events && (
+                          <span className="flex flex-wrap gap-1 pt-0.5">
+                            <EventsTag text={a.events.text} title={a.events.title} />
                           </span>
                         )}
                       </span>

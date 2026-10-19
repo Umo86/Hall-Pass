@@ -24,7 +24,7 @@ export default async function NewStandPage({
   if (!hasFeature(session.actor, "stand_designs")) {
     return <SectionUnavailable feature="stand_designs" backHref={`/${editionCode}/dashboard`} />;
   }
-  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
   if (editionIsReadOnly(ed.edition.status)) redirect("../stand-designs");
   const [options, owners] = await Promise.all([
@@ -37,6 +37,7 @@ export default async function NewStandPage({
     peopleFor(db, session.organisation.id, {
       type: "owner",
       item: { kind: "stand_design", sponsored: false },
+      editionId: ed.edition.id,
     }),
   ]);
 

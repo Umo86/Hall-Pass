@@ -20,7 +20,7 @@ import {
   eligibleIds,
   loadTeam,
   peopleFor,
-  signoffRefusal,
+  refusalFor,
   type PersonOption,
   type TeamMember,
 } from "@/lib/people";
@@ -201,14 +201,19 @@ export async function itemFormOptions(opts: {
     workflows: wfRows,
     owners: await ownerChoices(team, {
       organisationId: opts.organisationId,
+      editionId: opts.editionId,
       kind: opts.kind,
       ownerUserId: opts.ownerUserId ?? null,
     }),
     viewer: opts.viewer ?? null,
     signoffSteps: steps.filter(isDepartmentStep).map((s) => {
       const dept = s.departmentId ? deptById.get(s.departmentId) : undefined;
+      // Only approvers who can open this event (Users → Events).
       const people = (dept?.approvers ?? [])
-        .filter((a) => a.active && a.userId)
+        .filter(
+          (a) =>
+            a.active && a.userId && (a.editionIds == null || a.editionIds.includes(opts.editionId)),
+        )
         .map((a) => ({ id: a.userId!, name: a.fullName, jobTitle: a.jobTitle }));
       // Someone this item names for the step who can't sign it now stays
       // visible, with why, so the choice is never silently swapped.
@@ -220,8 +225,15 @@ export async function itemFormOptions(opts: {
             id: p.userId!,
             name: m?.name ?? "Someone who has left",
             reason:
-              signoffRefusal(m, { departmentId: s.departmentId ?? null })?.label ??
-              "Can't sign off",
+              refusalFor(
+                {
+                  type: "signoff",
+                  departmentId: s.departmentId ?? null,
+                  editionId: opts.editionId,
+                },
+                m,
+                { organisationId: opts.organisationId },
+              )?.label ?? "Can't sign off",
           };
         });
       return {
@@ -247,12 +259,14 @@ async function ownerChoices(
   team: TeamMember[],
   opts: {
     organisationId: string;
+    /** Only people who can open the event (Users → Events). */
+    editionId: string;
     kind: "signage" | "sponsorship_item";
     ownerUserId: string | null;
   },
 ): Promise<Record<"organiser" | "sponsor", PersonOption[]>> {
   const purpose = (sponsored: boolean) =>
-    ({ type: "owner", item: { kind: opts.kind, sponsored } }) as const;
+    ({ type: "owner", item: { kind: opts.kind, sponsored }, editionId: opts.editionId }) as const;
   const either = [
     ...eligibleIds(team, purpose(false), { organisationId: opts.organisationId }),
     ...eligibleIds(team, purpose(true), { organisationId: opts.organisationId }),

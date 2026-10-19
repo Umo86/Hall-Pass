@@ -5,9 +5,21 @@
  * safety net.
  */
 import { after } from "next/server";
-import { externalGrants, memberships, notifications, users } from "@/lib/db/schema";
+import {
+  editions,
+  events,
+  exhibitors,
+  externalGrants,
+  memberships,
+  notifications,
+  signageItems,
+  standSubmissions,
+  users,
+} from "@/lib/db/schema";
 import type { Db, Tx } from "@/lib/db/client";
 import { and, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { seesEdition, type StaffRole } from "@/lib/authz";
+import { linkEditionCode } from "@/lib/edition-path";
 import { activeMembership } from "@/lib/users/active";
 
 export type NotifyInput = {
@@ -30,29 +42,104 @@ export type NotifyInput = {
 export type RecipientScope = { organisationId: string; editionId?: string | null };
 
 /**
+ * The event a notification is about (Users → Events): the scope's event,
+ * else its record's event (item, stand, exhibitor, event), else the event
+ * code at the start of its link — looked up in the scope's organisation
+ * when one is given. Null: about no one event ("/approvals", "/my-work").
+ */
+export async function notificationEditionId(
+  exec: Db | Tx,
+  input: Pick<NotifyInput, "scope" | "entityType" | "entityId" | "link">,
+): Promise<string | null> {
+  if (input.scope?.editionId) return input.scope.editionId;
+  if (input.entityId) {
+    switch (input.entityType) {
+      case "edition":
+        return input.entityId;
+      case "signage_item": {
+        const [r] = await exec
+          .select({ id: signageItems.editionId })
+          .from(signageItems)
+          .where(eq(signageItems.id, input.entityId))
+          .limit(1);
+        if (r) return r.id;
+        break;
+      }
+      case "stand_submission": {
+        const [r] = await exec
+          .select({ id: standSubmissions.editionId })
+          .from(standSubmissions)
+          .where(eq(standSubmissions.id, input.entityId))
+          .limit(1);
+        if (r) return r.id;
+        break;
+      }
+      case "exhibitor": {
+        const [r] = await exec
+          .select({ id: exhibitors.editionId })
+          .from(exhibitors)
+          .where(eq(exhibitors.id, input.entityId))
+          .limit(1);
+        if (r) return r.id;
+        break;
+      }
+    }
+  }
+  const code = linkEditionCode(input.link);
+  if (!code) return null;
+  const [r] = await exec
+    .select({ id: editions.id })
+    .from(editions)
+    .innerJoin(events, eq(events.id, editions.eventId))
+    .where(
+      and(
+        eq(editions.code, code),
+        input.scope ? eq(events.organisationId, input.scope.organisationId) : undefined,
+      ),
+    )
+    .limit(1);
+  return r?.id ?? null;
+}
+
+/**
  * Of these people, the ones who may still be told anything: team members
  * whose access is active (not suspended, end date not reached), and portal
  * users with a live invitation (in `scope`, when given). People who have
  * left, been suspended or whose access has ended are dropped — the last
  * line of defence behind every recipient list. Whether a partner can see
- * the record itself is the caller's check (recipientsWhoCanSee).
+ * the record itself is the caller's check (recipientsWhoCanSee). With
+ * `opts.editionId`, team members who can't open that event are dropped too
+ * (Users → Events); partners are unchanged (their grants decide).
  */
 export async function activeRecipientIds(
   exec: Db | Tx,
   userIds: readonly string[],
   scope?: RecipientScope,
+  opts: { editionId?: string | null } = {},
 ): Promise<Set<string>> {
   const ids = [...new Set(userIds)].filter(Boolean);
   if (ids.length === 0) return new Set();
   const members = await exec
-    .select({ userId: memberships.userId, active: sql<boolean>`${activeMembership()}` })
+    .select({
+      userId: memberships.userId,
+      active: sql<boolean>`${activeMembership()}`,
+      role: memberships.role,
+      editionIds: memberships.editionIds,
+    })
     .from(memberships)
     .where(inArray(memberships.userId, ids));
   const keep = new Set<string>();
   const hasMembership = new Set<string>();
   for (const m of members) {
     hasMembership.add(m.userId);
-    if (m.active) keep.add(m.userId);
+    if (!m.active) continue;
+    if (
+      opts.editionId &&
+      !seesEdition({ role: m.role as StaffRole, editionIds: m.editionIds }, opts.editionId)
+    ) {
+      continue;
+    }
+    keep.add(m.userId);
   }
   const others = ids.filter((id) => !hasMembership.has(id));
   if (others.length > 0) {
@@ -76,7 +163,10 @@ export async function activeRecipientIds(
 export async function notify(tx: Tx, input: NotifyInput): Promise<void> {
   const wanted = [...new Set(input.userIds)].filter(Boolean);
   if (wanted.length === 0) return;
-  const allowed = await activeRecipientIds(tx, wanted, input.scope);
+  // The event it is about: nobody who can't open it is told, and the row
+  // keeps it so the bell and late emails stay filtered after a change.
+  const editionId = await notificationEditionId(tx, input);
+  const allowed = await activeRecipientIds(tx, wanted, input.scope, { editionId });
   const ids = wanted.filter((id) => allowed.has(id));
   if (ids.length === 0) return;
   const recipients = await tx.select().from(users).where(inArray(users.id, ids));
@@ -90,6 +180,7 @@ export async function notify(tx: Tx, input: NotifyInput): Promise<void> {
       link: input.link ?? null,
       entityType: input.entityType ?? null,
       entityId: input.entityId ?? null,
+      editionId,
     }));
   if (rows.length === 0) return;
   const inserted = await tx.insert(notifications).values(rows).returning({ id: notifications.id });

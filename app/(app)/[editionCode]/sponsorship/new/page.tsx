@@ -22,7 +22,7 @@ export default async function NewSponsorshipItemPage({
   if (!hasFeature(session.actor, "sponsorship")) {
     return <SectionUnavailable feature="sponsorship" backHref={`/${editionCode}/dashboard`} />;
   }
-  const ed = await getEditionByCode(editionCode.toUpperCase(), session.organisation.id);
+  const ed = await getEditionByCode(editionCode.toUpperCase(), session);
   if (!ed) notFound();
 
   const options = await itemFormOptions({
