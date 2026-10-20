@@ -3,6 +3,8 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { departments, users } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
+import { getAuthSession } from "@/lib/auth/session";
+import { hasPassword } from "@/lib/auth/accounts";
 import { roleLabel } from "@/lib/format";
 import { emailConfigured } from "@/lib/email/dispatch";
 import { calendarFeedUrl } from "@/lib/feed-url";
@@ -11,6 +13,7 @@ import { listEditions } from "@/lib/queries/editions";
 import { Page, PageHeader } from "@/components/page-header";
 import { CopyField } from "@/components/copy-field";
 import { NameForm } from "@/components/account/name-form";
+import { PasswordForm } from "@/components/account/password-form";
 import { NotificationPrefsForm } from "@/components/account/notification-prefs";
 
 export const metadata = { title: "My account" };
@@ -29,6 +32,10 @@ export default async function AccountPage() {
     scope === null ? Promise.resolve(null) : listEditions(session.organisation.id, scope),
   ]);
   const feed = calendarFeedUrl(session.user.id);
+  // Signed in for real (Better Auth), not with demo sign-in: they have a password to change.
+  const auth = await getAuthSession();
+  const realSignIn = auth?.user.id === session.user.id;
+  const passwordSet = realSignIn ? await hasPassword(session.user.id) : false;
   const isAdmin = can(actor, { type: "system.manage" });
   const emailOn = emailConfigured();
 
@@ -36,7 +43,7 @@ export default async function AccountPage() {
     <Page width="narrow">
       <PageHeader
         title="My account"
-        description="Your details, your calendar feed and what you're told about."
+        description="Your details, your password, your calendar feed and what you're told about."
       />
 
       <section className="space-y-3 rounded-lg border p-4" aria-labelledby="account-details">
@@ -86,6 +93,26 @@ export default async function AccountPage() {
         {!isAdmin && (
           <p className="text-muted-foreground text-xs">
             A super admin or your manager chooses which events you work on.
+          </p>
+        )}
+      </section>
+
+      <section className="space-y-3 rounded-lg border p-4" aria-labelledby="account-password">
+        <h2 id="account-password" className="text-sm font-semibold">
+          Password
+        </h2>
+        {realSignIn ? (
+          <>
+            <p className="text-muted-foreground text-sm">
+              {passwordSet
+                ? "Change your password. You'll stay signed in here and be signed out everywhere else."
+                : "Choose a password so you can sign in without an email link."}
+            </p>
+            <PasswordForm hasPassword={passwordSet} />
+          </>
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            You&rsquo;re signed in with demo sign-in, which has no password.
           </p>
         )}
       </section>

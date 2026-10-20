@@ -4,7 +4,7 @@ import { LoginCard, type DevUser } from "@/components/auth/login-card";
 import { brandName } from "@/lib/config";
 import { demoEmailAllowed, devAuthEnabled, getAccessBlock, getSession } from "@/lib/auth/actor";
 import type { AccessBlock } from "@/lib/access";
-import { authConfigured } from "@/lib/auth/config";
+import { authConfigured, devLinksShown } from "@/lib/auth/config";
 import { getAuthSession } from "@/lib/auth/session";
 import { loginNotice } from "@/lib/auth/messages";
 import { emailConfigured } from "@/lib/email/dispatch";
@@ -119,6 +119,7 @@ export default async function LoginPage({
       brandName={brandName}
       passwordSignIn={authConfigured()}
       emailEnabled={emailConfigured()}
+      devLinks={authConfigured() && !emailConfigured() && devLinksShown()}
       devEnabled={devAuthEnabled()}
       devUsers={await devUserList()}
       photo={brandImage("login")}
@@ -130,7 +131,8 @@ export default async function LoginPage({
         databaseUrl: Boolean(process.env.DATABASE_URL),
         databaseReachable,
         databaseError,
-        devAuth: process.env.DEV_AUTH === "1",
+        // Whether demo sign-in actually works here (never on Vercel production, whatever DEV_AUTH says).
+        devAuth: devAuthEnabled(),
       }}
     />
   );

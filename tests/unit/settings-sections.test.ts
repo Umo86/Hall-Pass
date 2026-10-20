@@ -7,7 +7,7 @@ import {
   type SettingsAllows,
   type SettingsNeed,
 } from "@/components/settings/sections";
-import { emailStatus, storageStatus } from "@/components/settings/system-status";
+import { emailStatus, signInStatus, storageStatus } from "@/components/settings/system-status";
 import { NOTIFICATION_GROUPS } from "@/components/account/notification-groups";
 import { MUTABLE_KINDS } from "@/lib/notification-kinds";
 
@@ -120,6 +120,30 @@ describe("system status in plain words", () => {
   it("says whether email works", () => {
     expect(emailStatus(true)).toMatchObject({ tone: "ok", title: "Email is working" });
     expect(emailStatus(false)).toMatchObject({ tone: "warn", title: "Email is off" });
+  });
+  it("says sign-in works, and how people get links without email", () => {
+    const on = signInStatus({ configured: true, demo: false, emailOn: true });
+    expect(on).toMatchObject({ tone: "ok", title: "Sign-in is working" });
+    expect(on.detail).toContain("emailed");
+    const noEmail = signInStatus({ configured: true, demo: false, emailOn: false });
+    expect(noEmail.tone).toBe("ok");
+    expect(noEmail.detail).toContain("super admin");
+  });
+  it("warns while demo sign-in is on, with or without real sign-in", () => {
+    expect(signInStatus({ configured: true, demo: true, emailOn: false })).toMatchObject({
+      tone: "warn",
+      title: "Demo sign-in is on",
+    });
+    expect(signInStatus({ configured: false, demo: true, emailOn: false })).toMatchObject({
+      tone: "warn",
+      title: "Only demo sign-in is on",
+    });
+  });
+  it("says nobody can sign in when neither is set up", () => {
+    expect(signInStatus({ configured: false, demo: false, emailOn: true })).toMatchObject({
+      tone: "error",
+      title: "Nobody can sign in",
+    });
   });
 });
 

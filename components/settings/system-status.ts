@@ -64,3 +64,43 @@ export function emailStatus(configured: boolean): StatusLine {
           "Notifications only appear in the bell, and inviting someone gives you a link to send them yourself. Ask your developer to switch email on.",
       };
 }
+
+/** Sign-in in plain words: real sign-in (Better Auth), demo sign-in, and links without email. */
+export function signInStatus(p: {
+  /** Real sign-in is set up (a secret is available). */
+  configured: boolean;
+  /** Demo sign-in (one click as a seeded account) is on. */
+  demo: boolean;
+  emailOn: boolean;
+}): StatusLine {
+  if (p.configured && p.demo) {
+    return {
+      tone: "warn",
+      title: "Demo sign-in is on",
+      detail:
+        "People sign in with their email and password, and the demo accounts can be used with one click too. Ask your developer to switch demo sign-in off before real use.",
+    };
+  }
+  if (p.configured) {
+    return {
+      tone: "ok",
+      title: "Sign-in is working",
+      detail: p.emailOn
+        ? "People sign in with their email and password. Sign-in links and password resets are emailed."
+        : "People sign in with their email and password. Email is off, so a super admin gives out sign-in and password reset links from the person's page in Users.",
+    };
+  }
+  if (p.demo) {
+    return {
+      tone: "warn",
+      title: "Only demo sign-in is on",
+      detail:
+        "Only the demo accounts can sign in. Ask your developer to set up real sign-in before anyone uses this for real.",
+    };
+  }
+  return {
+    tone: "error",
+    title: "Nobody can sign in",
+    detail: "Sign-in isn't set up on this site. Ask your developer to set it up.",
+  };
+}

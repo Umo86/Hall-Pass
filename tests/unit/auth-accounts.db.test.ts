@@ -557,6 +557,8 @@ d("sign-in on Better Auth: accounts, sessions and links", () => {
     expect(res.status).toBeGreaterThanOrEqual(300);
     expect(res.status).toBeLessThan(400);
     expect(res.headers.get("location")).toContain("error=");
+    // Without its error landing (cut short), a link still fails to the sign-in page.
+    expect(new URL(res.headers.get("location")!, BASE).pathname).toBe("/login");
     const { GET: callback } = await import("@/app/auth/callback/route");
     state.cookie = "";
     const cb = await callback(new Request(`${BASE}/auth/callback?code=old`));

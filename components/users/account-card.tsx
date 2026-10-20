@@ -27,6 +27,7 @@ import {
   type HandoverCandidateView,
 } from "./handover-fields";
 import { localToday } from "./add-user-form";
+import { AccessLinks } from "./access-links";
 
 /**
  * A person's account on their page: whether they can sign in, Suspend…
@@ -48,6 +49,7 @@ export function AccountCard({
   candidates,
   signersOnly = false,
   currentUserId,
+  accessLinks = null,
   children,
 }: {
   kind: "member" | "invite";
@@ -68,6 +70,8 @@ export function AccountCard({
   /** The viewer isn't a super admin: department sign-offs go to its own approvers only. */
   signersOnly?: boolean;
   currentUserId: string;
+  /** Super admins: "Copy a sign-in link" / "Copy a password reset link" (active members, not yourself). */
+  accessLinks?: { userId: string; emailOn: boolean } | null;
   /** Remove…, below the rest (super admins). */
   children?: React.ReactNode;
 }) {
@@ -230,6 +234,23 @@ export function AccountCard({
             <FieldError message={dateError} />
           </div>
         </>
+      )}
+      {accessLinks && (
+        <div className="space-y-2 border-t pt-4" role="group" aria-labelledby="sign-in-help-h">
+          <h3 id="sign-in-help-h" className="text-sm font-medium">
+            Sign-in help
+          </h3>
+          <p className="text-muted-foreground text-xs">
+            For when {firstName} can&apos;t get in
+            {accessLinks.emailOn ? "" : " (email isn't set up here)"}: make a link that signs them
+            in once, or one to choose a new password.
+          </p>
+          <AccessLinks
+            userId={accessLinks.userId}
+            firstName={firstName}
+            emailOn={accessLinks.emailOn}
+          />
+        </div>
       )}
       {children}
 

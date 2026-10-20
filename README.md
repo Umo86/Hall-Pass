@@ -60,6 +60,8 @@ Without `BETTER_AUTH_SECRET`, the login page offers **development sign-in** as a
 
 **Going live:** invite yourself as admin (Users), open the invitation link and choose a password, then remove `DEV_AUTH` and redeploy. See [Sign-in](#sign-in).
 
+**Real sign-in locally:** add `BETTER_AUTH_SECRET=` with any 32 or more characters (keep `DEV_AUTH=1` for the one-click demo accounts; with the secret set they're limited to `…@….test`). Email isn't set up locally, so "Forgot password?" and "Email me a link" show the link that would have been emailed right on the sign-in page (local development only). My account has Password; a super admin's person page has "Copy a sign-in link" and "Copy a password reset link".
+
 **Start a real organisation** (no demo data): on an empty, migrated database run
 
 ```bash
@@ -81,6 +83,7 @@ Checks:
 ```bash
 pnpm typecheck && pnpm lint && pnpm test   # unit suite (DB tests need TEST_DATABASE_URL)
 pnpm test:e2e                              # Playwright (needs the seeded DB; DEV_AUTH=1)
+BETTER_AUTH_SECRET=<32+ chars> pnpm test:e2e # as CI runs it: real sign-in on, auth.spec.ts too
 pnpm build
 ```
 
@@ -113,8 +116,9 @@ pnpm build
      auto-detected from the Vercel domain when unset
 6. Redeploy. `vercel.json` schedules the daily cron at 06:00 UTC (07:00 BST); the handler
    computes "today" in Europe/London so clock changes don't break it. Verify at
-   `/api/health` — it should return `"ok":true` and states which database variable and
-   storage backend are active.
+   `/api/health` — it should return `"ok":true`, `"auth":"better-auth"` (with
+   `"demoSignIn":false` on Production) and `"authBaseUrl"` naming your domain, and states
+   which database variable and storage backend are active.
 
 ## Releasing a new version (upgrading the live database)
 
@@ -207,6 +211,8 @@ database (`psql "$DIRECT_DATABASE_URL" -f scripts/auth-carry-over.sql`): it pick
 Supabase account created between migrating and deploying and changes nothing else. A
 rollback to the previous deployment is safe (it ignores the new tables and still finds the
 passwords in Supabase Auth); anyone who accepted an invitation in between needs a new one.
+After deploying, `/api/health` reports `"auth":"better-auth"` and `"demoSignIn":false`;
+`DEV_AUTH` no longer does anything on Production (set it to `0`, delete it when convenient).
 
 Supabase Postgres remains supported as the database (its pooler URIs in `DATABASE_URL`/
 `DIRECT_DATABASE_URL`). `database-setup.sql` runs unchanged in its SQL editor.
@@ -236,6 +242,14 @@ email-link landing (`GET /api/auth/magic-link/verify`) answers.
   the link that would have been sent. To switch email on: verify a sending domain at
   resend.com, create an API key, add `RESEND_API_KEY` (Sensitive) and `EMAIL_FROM`
   (e.g. `Hall Pass <noreply@mail.example.com>`) on Vercel and redeploy.
+- **Changing a password.** Staff: My account → Password (it asks for the current one and
+  signs out every other device). Partners use "Forgot password?". There is no email change.
+- **Demo sign-in** (`DEV_AUTH=1`, or local development without a secret) is never possible
+  on Vercel Production, whatever `DEV_AUTH` says; elsewhere, next to real sign-in, it only
+  takes the seeded `…@….test` accounts.
+- **Checking it.** Settings → System → Sign-in says, in plain words, whether real sign-in
+  and demo sign-in are on and where the secret comes from; `/api/health` reports `auth`
+  (`better-auth`, `demo` or `none`), `demoSignIn` and `authBaseUrl`.
 - **Locked out** (the last super admin forgot their password and email is off):
   `DATABASE_URL='<live database URL>' pnpm auth:set-password you@company.com` prints a new
   20-character password once, signs them out everywhere and writes an audit row.
@@ -246,13 +260,13 @@ The cheapest setup that still copes with large print-ready graphics:
 
 | Part                                        | Service                  | Free allowance                                       | What to know                                                                                                                        |
 | ------------------------------------------- | ------------------------ | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Database + sign-in                          | Supabase **Free**        | 500 MB database, 2 projects per organisation         | Pauses after a quiet week; the daily cron's queries keep it awake. No automatic backups — the weekly GitHub Action below takes one. |
-| Database, alternative (see 3b)              | Neon **Free** via Vercel | 1 GB, 6-hour restore window                          | Scales to zero and wakes by itself; Supabase then only handles sign-in.                                                             |
+| Database (sign-in data lives here too)      | Supabase **Free**        | 500 MB database, 2 projects per organisation         | Pauses after a quiet week; the daily cron's queries keep it awake. No automatic backups — the weekly GitHub Action below takes one. |
+| Database, alternative (see 3b)              | Neon **Free** via Vercel | 1 GB, 6-hour restore window                          | Scales to zero and wakes by itself.                                                                                                 |
 | Files (artwork, photos, documents, exports) | Cloudflare **R2**        | 10 GB storage, no egress fees, up to 5 GB per upload | Needs a Cloudflare account; R2 may ask for a payment method on first use but charges nothing inside the allowance.                  |
 | App                                         | Vercel **Hobby**         | Cron once a day, 1 GB Blob                           | Hobby is for non-commercial use; move to Pro when the tool runs a real show for a business.                                         |
 
-Supabase Storage on the Free plan caps every file at 50 MB. Vercel Blob is the simplest
-store (1a); R2 (1b) gives ten times the free space and no transfer fees.
+Vercel Blob is the simplest file store (1a); R2 (1b) gives ten times the free space and no
+transfer fees.
 
 Accepted artwork: PDF, AI, EPS, SVG, PNG, JPG, TIFF, WebP, ZIP, and MP4, MOV or WebM video
 for screens and digital signage; videos play inline on the item page and in the partner
@@ -333,19 +347,18 @@ A project transfer keeps the URL, keys, data and sign-ins, so nothing in Vercel 
 4. Check `/api/health` and sign in once. The daily cron keeps the free project from pausing;
    if it is ever paused, open it in the dashboard and click **Resume**.
 
-### 3b. Or: database on Neon via Vercel, Supabase for sign-in only
+### 3b. Or: database on Neon via Vercel
 
 Neon's Free plan (1 GB, scales to zero between requests and wakes by itself, 6-hour
 restore window) suits a tool that goes quiet between shows, and it lives in the Vercel
-dashboard. Sign-in stays on Supabase (its Free plan is fine for that); the daily cron
-makes one authenticated call a day so Supabase does not pause the idle project.
+dashboard. Sign-in runs in the app (Better Auth) and keeps its sessions and passwords in
+the `auth_*` tables, so they move with the data and nobody has to set a new password.
 
 1. Vercel → project → **Storage** → **Create Database** → **Neon** (Free), region
    Frankfurt, connect it to the project. Vercel adds `DATABASE_URL`,
    `DATABASE_URL_UNPOOLED` and `POSTGRES_URL`. If it refuses because `DATABASE_URL` already
    exists, delete the old Supabase `DATABASE_URL` and `DIRECT_DATABASE_URL` variables
-   (Settings → Environment Variables) and connect again. Keep every `NEXT_PUBLIC_SUPABASE_*`
-   and `SUPABASE_*` variable.
+   (Settings → Environment Variables) and connect again.
 2. Load the schema and data into the empty database with the import file generated from
    the live database (`neon-import.sql`, kept out of the repository because it holds real
    data): `psql "<DATABASE_URL_UNPOOLED from Vercel>" -v ON_ERROR_STOP=1 -f neon-import.sql`.
@@ -353,7 +366,7 @@ makes one authenticated call a day so Supabase does not pause the idle project.
    (macOS: `brew install libpq`). Make the file again if the old database was used after it
    was generated.
 3. **Redeploy** so the functions pick up the new variables. `/api/health` should show
-   `"databaseProvider":"neon"`, `"database":"ok"` and `"auth":"supabase"`. Sign in and open
+   `"databaseProvider":"neon"`, `"database":"ok"` and `"auth":"better-auth"`. Sign in and open
    the dashboard, Signage and Onsite.
 4. Then downgrade the Supabase organisation to Free (Billing). For the weekly backup, use
    the Neon `DATABASE_URL_UNPOOLED` as the `DIRECT_DATABASE_URL` secret.

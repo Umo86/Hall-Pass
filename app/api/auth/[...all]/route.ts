@@ -16,8 +16,15 @@ function toLogin(request: Request, error: string) {
 }
 
 export async function GET(request: Request) {
-  if (!authConfigured() || !OPEN.has(new URL(request.url).pathname)) {
+  const url = new URL(request.url);
+  if (!authConfigured() || !OPEN.has(url.pathname)) {
     return new NextResponse("Not found", { status: 404 });
+  }
+  // A link missing its error landing (typed by hand, or cut short by a mail
+  // client) fails to the sign-in page with a notice, not the home page.
+  if (!url.searchParams.has("errorCallbackURL")) {
+    url.searchParams.set("errorCallbackURL", "/login");
+    request = new Request(url, request);
   }
   let res: Response;
   try {

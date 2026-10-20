@@ -1,4 +1,4 @@
-import type { BrowserContext } from "@playwright/test";
+import type { BrowserContext, Page } from "@playwright/test";
 import postgres from "postgres";
 
 /** Development sign-in: the harness assumes a seeded user via cookie. */
@@ -14,6 +14,26 @@ export async function signInAs(context: BrowserContext, email: string, baseURL: 
       sameSite: "Lax",
     },
   ]);
+}
+
+/**
+ * Real sign-in (Better Auth; e2e runs with BETTER_AUTH_SECRET set): the
+ * sign-in page's email and password form. With demo sign-in also on, the
+ * page shows the demo list first, so this opens the email form from it.
+ */
+export async function signInWithPassword(
+  page: Page,
+  baseURL: string,
+  email: string,
+  password: string,
+  next?: string,
+) {
+  await page.goto(`${baseURL}/login${next ? `?next=${encodeURIComponent(next)}` : ""}`);
+  const instead = page.getByRole("button", { name: "Sign in with email instead" });
+  if (await instead.isVisible()) await instead.click();
+  await page.getByLabel("Email address").fill(email);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
 }
 
 const DB = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/hallpass";

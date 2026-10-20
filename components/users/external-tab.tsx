@@ -52,7 +52,20 @@ function Status({ g }: { g: GrantRow }) {
   );
 }
 
-function GrantTable({ rows, emailOn }: { rows: GrantRow[]; emailOn: boolean }) {
+/** Super admins get "Copy a sign-in link" for partners who have accepted and are live. */
+function accessLinkUserId(g: GrantRow, canAccessLink: boolean): string | null {
+  return canAccessLink && g.userId && g.status === "active" ? g.userId : null;
+}
+
+function GrantTable({
+  rows,
+  emailOn,
+  canAccessLink,
+}: {
+  rows: GrantRow[];
+  emailOn: boolean;
+  canAccessLink: boolean;
+}) {
   return (
     <>
       <div className="hidden rounded-lg border md:block">
@@ -93,6 +106,7 @@ function GrantTable({ rows, emailOn }: { rows: GrantRow[]; emailOn: boolean }) {
                       status={g.status}
                       endsOn={g.endsOn}
                       emailOn={emailOn}
+                      accessLinkUserId={accessLinkUserId(g, canAccessLink)}
                     />
                   )}
                 </TableCell>
@@ -119,6 +133,7 @@ function GrantTable({ rows, emailOn }: { rows: GrantRow[]; emailOn: boolean }) {
                   status={g.status}
                   endsOn={g.endsOn}
                   emailOn={emailOn}
+                  accessLinkUserId={accessLinkUserId(g, canAccessLink)}
                 />
               )}
             </div>
@@ -135,12 +150,15 @@ export async function ExternalTab({
   scope,
   params,
   lastEvent,
+  canAccessLink = false,
 }: {
   organisationId: string;
   /** The viewer's events (Users → Events): partner access elsewhere isn't shown. */
   scope: EditionScope;
   params: { event?: string; invite?: string; role?: string; scopeId?: string; edition?: string };
   lastEvent: string | null;
+  /** Super admins on a site with real sign-in: "Copy a sign-in link" for accepted partners. */
+  canAccessLink?: boolean;
 }) {
   const [eventList, grants, scopes] = await Promise.all([
     externalEvents(db, organisationId, todayInLondon(), scope),
@@ -212,14 +230,14 @@ export async function ExternalTab({
           description="Invite the venue, suppliers or sponsors so they can see and approve their own items."
         />
       ) : (
-        <GrantTable rows={live} emailOn={emailOn} />
+        <GrantTable rows={live} emailOn={emailOn} canAccessLink={canAccessLink} />
       )}
       {revoked.length > 0 && (
         <details className="space-y-2">
           <summary className="text-muted-foreground min-h-11 cursor-pointer py-2 text-sm select-none">
             Revoked ({revoked.length})
           </summary>
-          <GrantTable rows={revoked} emailOn={emailOn} />
+          <GrantTable rows={revoked} emailOn={emailOn} canAccessLink={false} />
         </details>
       )}
     </section>

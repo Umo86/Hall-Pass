@@ -126,7 +126,13 @@ export async function acceptInvite(input: unknown): Promise<InviteResult> {
     if (!user) {
       [user] = await db
         .insert(users)
-        .values({ id: randomUUID(), email: grant.invitedEmail, fullName, isExternal: true })
+        .values({
+          id: randomUUID(),
+          email: grant.invitedEmail,
+          fullName,
+          isExternal: true,
+          emailVerified: true,
+        })
         .returning();
     }
     const claimed = await claimGrant(grant.id, user.id, fullName);
@@ -171,7 +177,7 @@ async function acceptStaffInvite(
     if (!user) {
       [user] = await db
         .insert(users)
-        .values({ id: randomUUID(), email: invite.invitedEmail, fullName })
+        .values({ id: randomUUID(), email: invite.invitedEmail, fullName, emailVerified: true })
         .returning();
     }
     await claimStaffInvite(invite, user.id, fullName);

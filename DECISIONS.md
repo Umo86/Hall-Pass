@@ -85,7 +85,7 @@ stages A–G). Owner decisions and the choices made along the way:
   "Demo sign-in is on" bar. Once Supabase Auth is configured, demo sign-in
   only works for the seeded `…@….test` accounts and invitees always get an
   email link. Go-live: invite yourself as admin → sign in by the emailed
-  link → remove `DEV_AUTH` → redeploy. _(Superseded 2026-10-20: real sign-in is Better Auth (`BETTER_AUTH_SECRET`), and demo sign-in is never on for Vercel production — see "Sign-in on Better Auth (2026-10)".)_
+  link → remove `DEV_AUTH` → redeploy. _(Superseded 2026-10-20: real sign-in is Better Auth (`BETTER_AUTH_SECRET`), and demo sign-in is never on for Vercel production — see "Leaving Supabase: Better Auth (Oct 2026)".)_
 - **Staff land on My Work**; admins see their own sign-offs there with an
   "All open sign-offs" switch. Partners land on their sign-offs.
 - **Only admins choose who signs off**; viewers and people whose sign-off
@@ -184,7 +184,7 @@ password. Each department has a main approver.
   invitation link) and signs the person in. If they already have a login
   they sign in first. Without a service key the old emailed sign-in link is
   used. Sign-in defaults to email and password with "Forgot password"
-  (Supabase reset email → `/reset-password`). _(Superseded 2026-10-20: accepting an invitation now creates the account in our database (`createInvitedAccount`), then signs in through Better Auth — see "Sign-in on Better Auth (2026-10)".)_
+  (Supabase reset email → `/reset-password`). _(Superseded 2026-10-20: accepting an invitation now creates the account in our database (`createInvitedAccount`), then signs in through Better Auth — see "Leaving Supabase: Better Auth (Oct 2026)".)_
 - **My Work** keeps tasks and links to Approvals; staff land on My Work.
   Settings → Sign-off moved to Approvals → Approvers.
 
@@ -232,9 +232,9 @@ useful fields for every item.
   "Email me a link" and "Forgot password" only email invited people and give
   the same reply either way. Password sign-in also checks the person still
   has access. Supabase's own sign-up is never called (`shouldCreateUser`
-  only when no service key exists, and only for invited emails). _(Superseded 2026-10-20: invitations are our own email (or the link to pass on); Better Auth's sign-up is off and its session gate refuses anyone not invited — see "Sign-in on Better Auth (2026-10)".)_
+  only when no service key exists, and only for invited emails). _(Superseded 2026-10-20: invitations are our own email (or the link to pass on); Better Auth's sign-up is off and its session gate refuses anyone not invited — see "Leaving Supabase: Better Auth (Oct 2026)".)_
 - **Demo sign-in is off on any Vercel deployment with Supabase configured**,
-  whatever `DEV_AUTH` says; it remains for local development and tests. _(Superseded 2026-10-20: off on Vercel production whatever the configuration, and on other Vercel deployments with real sign-in (D10) — see "Sign-in on Better Auth (2026-10)".)_
+  whatever `DEV_AUTH` says; it remains for local development and tests. _(Superseded 2026-10-20: off on Vercel production whatever the configuration, and on other Vercel deployments with real sign-in (D10) — see "Leaving Supabase: Better Auth (Oct 2026)".)_
 - **Tenancy.** A security review found that records were looked up by id,
   ref or show code without checking the organisation, and `can()` never
   compared organisations. Now: records carry their organisation (from the
@@ -756,7 +756,7 @@ Only what the core section above doesn't already say.
   (`sponsorPortalAccess`, live grants only) on the Sponsors tab and the item
   page.
 - **Existing accounts** get our own "new access" email with the reason,
-  falling back to a Supabase sign-in link, then a link to pass on. _(Superseded 2026-10-20: no Supabase step: the new-access email, else the link to pass on — see "Sign-in on Better Auth (2026-10)".)_
+  falling back to a Supabase sign-in link, then a link to pass on. _(Superseded 2026-10-20: no Supabase step: the new-access email, else the link to pass on — see "Leaving Supabase: Better Auth (Oct 2026)".)_
 - **Event copy:** partner end dates move with the event's breakdown end (end
   of the London day); ended grants come across moved unless still past;
   revoked never. An owner who can't own the copy is replaced by the copier.
@@ -1197,7 +1197,7 @@ Where the build spec and the code differ:
   route handlers still return 404. Removing the loading state for a status
   code nobody sees wasn't worth the slower-feeling navigation.
 
-## Sign-in on Better Auth (2026-10)
+## Leaving Supabase: Better Auth (Oct 2026)
 
 Phase 1 of the move off Supabase (build spec "Hall Pass off Supabase"; detail in the auth
 spec): sign-in moves from Supabase Auth to Better Auth inside the app, on the current
@@ -1278,3 +1278,38 @@ production` counts too. Elsewhere it is as before, fenced to `…@….test` acco
   drizzle's migrator, not inside a rolled-back transaction on the shared test database: its
   `ALTER TABLE users` would hold locks other test files need (risking deadlocks), and it also
   checks the "existing rows become verified" path.
+- **Sign-in pages, admin links and docs (Phase 1, second half).**
+  - **"Copy a sign-in link" / "Copy a password reset link"** (Users → person → Account →
+    Sign-in help) show for super admins only, only on a site with real sign-in, and only for
+    a member who can sign in now: active, including one whose end date is still to come
+    (the spec said status "active", which would have hidden people with an end date set).
+    Not on your own page. The server re-checks everything (`people.access_link`,
+    `emailIsInvited`, same organisation) and audits the link.
+  - **Partners' sign-in link** (Users → External, accepted and live grants) opens in a
+    dialog with the link to copy: a table cell is too narrow for the copy field.
+  - **My account → Password** only for a real session; demo sign-in says it has no
+    password. Changing it asks for the current one and signs out every other device.
+  - **Local development wording.** With real sign-in on and no email, the sign-in page still
+    offers "Email me a link" and says reset links are shown on the page, because they are
+    (`devLinksShown`); elsewhere without email it says to use the invitation link or ask a
+    super admin.
+  - **The setup panel's sign-in row uses `devAuthEnabled()`**, not `DEV_AUTH === "1"`, so a
+    production deployment with `DEV_AUTH=1` and no secret never shows a tick for a sign-in
+    method that is refused there.
+  - **Settings → System has a "Sign-in" line** (real sign-in, demo sign-in, how links reach
+    people without email) and, under Technical details, where the secret comes from
+    (`BETTER_AUTH_SECRET` or derived from `CRON_SECRET`) — never the value — and the host
+    links point at. The section's menu text says "File storage, email and sign-in".
+  - **An email-link landing without its error address** (typed by hand or cut short) fails
+    to `/login?error=…`, with the "expired or already used" notice, not the home page.
+  - **Seeded demo accounts, the starter seed's demo admin and accounts made by demo
+    invitation acceptance are marked email-verified**, like every account Better Auth or
+    our invitation code makes: none has a password, and Better Auth's "unproven account"
+    clean-up (best-effort in 1.7.7) then never runs when a super admin makes them a link.
+  - **`AuthHashForwarder` is gone**: it forwarded Supabase's `#access_token` links; nothing
+    sends them any more and `/auth/callback` sends old links to the sign-in page.
+  - **`tests/e2e/auth.spec.ts` runs only with `BETTER_AUTH_SECRET`** (CI's e2e step):
+    invitation → password → sign out; reset with the development link (works once); My
+    account password change; "Email me a link" to `next`; super-admin member and partner
+    links (once only; managers don't see them); suspension signs out and the correct
+    password is told who to ask. Without the secret the suite runs as before (demo path).

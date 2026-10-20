@@ -16,7 +16,7 @@ Internal signage schedule and design sign-off platform for Media10 (first event:
 
 - Next.js (App Router) · React · TypeScript strict
 - Tailwind CSS · shadcn/ui · Inter via `next/font` · lucide-react
-- Supabase (Postgres, Auth, Storage) — RLS deny-by-default on every table; the app uses the service role from the server only
+- Supabase Postgres (moving to Neon) · Better Auth (self-hosted, sessions in our database) · Cloudflare R2 (S3-compatible) for files — RLS deny-by-default on every table; the app connects as the table owner from the server only
 - Drizzle ORM + drizzle-kit migrations (`DATABASE_URL` pooled/transaction mode; `DIRECT_DATABASE_URL` for migrations)
 - Zod schemas shared client/server for every form and import
 - TanStack Table (schedule grid) · `nuqs` (URL-synced filters) · react-hook-form
@@ -72,7 +72,7 @@ tests/
 One intent per file under `app/actions/`, named by intent (`submitForReview`, `decideApproval`, `uploadArtworkVersion`). Every action follows the same shape:
 
 1. Parse input with zod
-2. Load the actor (verify the Supabase session)
+2. Load the actor (verify the Better Auth session)
 3. `authz.can(actor, action, resource)` — before every read of non-public data and every mutation
 4. Transaction: the change **plus its audit row** in the same transaction
 5. Revalidate
@@ -92,7 +92,7 @@ Tests first for the workflow engine, status machines and authz; alongside the co
 
 ### Security
 
-Secrets only in environment variables (`.env.example` kept complete, one comment per variable); the Supabase service role key never appears in client code; signed URLs only, no public buckets; magic-link and invite endpoints rate-limited; security headers (CSP, HSTS, nosniff, frame-ancestors none).
+Secrets only in environment variables (`.env.example` kept complete, one comment per variable); `BETTER_AUTH_SECRET` and other secrets never appear in client code; `lib/auth/server.ts` is server-only; signed URLs only, no public buckets; magic-link and invite endpoints rate-limited; security headers (CSP, HSTS, nosniff, frame-ancestors none).
 
 ### Git
 

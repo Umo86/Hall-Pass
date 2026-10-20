@@ -38,6 +38,8 @@ type Props = {
   passwordSignIn: boolean;
   /** Email goes out (Resend); otherwise links are given another way. */
   emailEnabled: boolean;
+  /** Local development without email: the link that would have been emailed is shown here. */
+  devLinks?: boolean;
   devEnabled: boolean;
   devUsers: DevUser[];
   configStatus: ConfigStatus;
@@ -54,6 +56,7 @@ export function LoginCard({
   brandName,
   passwordSignIn,
   emailEnabled,
+  devLinks = false,
   devEnabled,
   devUsers,
   configStatus,
@@ -135,10 +138,11 @@ export function LoginCard({
                 users={devUsers}
                 passwordSignIn={passwordSignIn}
                 emailEnabled={emailEnabled}
+                devLinks={devLinks}
                 next={next}
               />
             ) : (
-              <EmailSignIn next={next} emailEnabled={emailEnabled} />
+              <EmailSignIn next={next} emailEnabled={emailEnabled} devLinks={devLinks} />
             )}
           </main>
         </div>
@@ -147,7 +151,15 @@ export function LoginCard({
   );
 }
 
-function EmailSignIn({ next, emailEnabled }: { next: string | null; emailEnabled: boolean }) {
+function EmailSignIn({
+  next,
+  emailEnabled,
+  devLinks,
+}: {
+  next: string | null;
+  emailEnabled: boolean;
+  devLinks: boolean;
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [mode, setMode] = useState<"password" | "magic" | "reset">("password");
@@ -236,7 +248,9 @@ function EmailSignIn({ next, emailEnabled }: { next: string | null; emailEnabled
           <p className="text-muted-foreground text-xs">
             {emailEnabled
               ? "We'll email you a link to choose a new password."
-              : "Email isn't set up here — a super admin can give you a reset link."}
+              : devLinks
+                ? "Email isn't set up here (development), so the link is shown on this page instead."
+                : "Email isn't set up here — a super admin can give you a reset link."}
           </p>
         )}
         <button
@@ -251,7 +265,7 @@ function EmailSignIn({ next, emailEnabled }: { next: string | null; emailEnabled
         >
           {mode !== "password"
             ? "Sign in with my password"
-            : emailEnabled
+            : emailEnabled || devLinks
               ? "First time here, or no password yet? Email me a link"
               : "First time here? Use the invitation link you were sent."}
         </button>
@@ -282,11 +296,13 @@ function DevSignIn({
   users,
   passwordSignIn,
   emailEnabled,
+  devLinks,
   next,
 }: {
   users: DevUser[];
   passwordSignIn: boolean;
   emailEnabled: boolean;
+  devLinks: boolean;
   next: string | null;
 }) {
   const [error, setError] = useState<string | null>(null);
@@ -305,7 +321,7 @@ function DevSignIn({
         >
           ← Back to demo sign-in
         </button>
-        <EmailSignIn next={next} emailEnabled={emailEnabled} />
+        <EmailSignIn next={next} emailEnabled={emailEnabled} devLinks={devLinks} />
       </div>
     );
   }
@@ -430,7 +446,7 @@ function SetupPanel({ status }: { status: ConfigStatus }) {
     [
       "Sign-in method",
       status.devAuth || status.authSecret,
-      "Set DEV_AUTH=1 for demo sign-in, or BETTER_AUTH_SECRET (openssl rand -base64 32) for real sign-in",
+      "Set BETTER_AUTH_SECRET (openssl rand -base64 32) for real sign-in, or DEV_AUTH=1 for demo sign-in (never on Vercel production)",
     ],
   ];
   return (

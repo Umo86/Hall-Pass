@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { Lock } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { requireStaffSession } from "@/lib/auth/actor";
+import { authConfigured } from "@/lib/auth/config";
 import { can, editionScope, managerScope } from "@/lib/authz";
 import { abilityHolders, listDepartmentCards, memberOptions } from "@/lib/users/queries";
 import { AskContacts } from "@/components/setup/no-events-state";
@@ -124,6 +125,7 @@ export default async function UsersPage({
           organisationId={orgId}
           scope={editionScope(actor)}
           lastEvent={(await cookies()).get(LAST_EVENT_COOKIE)?.value ?? null}
+          canAccessLink={authConfigured() && can(actor, { type: "people.access_link" })}
           params={{
             event: one(params.event),
             invite: one(params.invite),

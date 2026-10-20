@@ -223,7 +223,7 @@ async function main() {
   for (const u of staffUsers) {
     await db
       .insert(s.users)
-      .values({ id: u.id, email: u.email, fullName: u.fullName })
+      .values({ id: u.id, email: u.email, fullName: u.fullName, emailVerified: true })
       .onConflictDoUpdate({ target: s.users.email, set: { fullName: u.fullName } });
     await db
       .insert(s.memberships)
@@ -854,7 +854,13 @@ async function main() {
   for (const e of externalDefs) {
     await db
       .insert(s.users)
-      .values({ id: e.id, email: e.email, fullName: e.fullName, isExternal: true })
+      .values({
+        id: e.id,
+        email: e.email,
+        fullName: e.fullName,
+        isExternal: true,
+        emailVerified: true,
+      })
       .onConflictDoUpdate({ target: s.users.email, set: { fullName: e.fullName } });
     const existing = await db.query.externalGrants.findFirst({
       where: and(
@@ -999,6 +1005,7 @@ async function main() {
       email: "stand@exhibitorco.test",
       fullName: "Erin at Exhibitor Co",
       isExternal: true,
+      emailVerified: true,
     })
     .onConflictDoNothing();
   const exhibitorGrant = await db.query.externalGrants.findFirst({
@@ -2208,7 +2215,12 @@ async function starter() {
   } else if (email.endsWith(".test")) {
     const [user] = await db
       .insert(s.users)
-      .values({ id: randomUUID(), email, fullName: process.env.FIRST_ADMIN_NAME?.trim() ?? "" })
+      .values({
+        id: randomUUID(),
+        email,
+        fullName: process.env.FIRST_ADMIN_NAME?.trim() ?? "",
+        emailVerified: true,
+      })
       .returning();
     await db
       .insert(s.memberships)

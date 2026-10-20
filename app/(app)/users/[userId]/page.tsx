@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { Mail } from "lucide-react";
 import { db } from "@/lib/db/client";
 import { requireStaffSession } from "@/lib/auth/actor";
+import { authConfigured } from "@/lib/auth/config";
 import {
   assignableAbilities,
   assignableFeatures,
@@ -266,6 +267,14 @@ export default async function PersonPage({
         ? "You can't change this person's access."
         : null;
   const handover = impact?.handover ?? { groups: [], candidates: [] };
+  // Super admins can make a one-time sign-in or reset link for a member who
+  // can sign in now (active, also with an end date coming; not themselves).
+  const showAccessLinks =
+    member &&
+    !person.isSelf &&
+    person.status === "active" &&
+    authConfigured() &&
+    can(actor, { type: "people.access_link" });
   const suspendedLine =
     status === "suspended" && person.suspendedAt
       ? `Suspended since ${formatDate(person.suspendedAt)}${person.suspendedByName ? ` by ${person.suspendedByName}` : ""}`
@@ -380,6 +389,7 @@ export default async function PersonPage({
         candidates={handover.candidates}
         signersOnly={handover.signersOnly}
         currentUserId={session.user.id}
+        accessLinks={showAccessLinks ? { userId: person.id, emailOn: invitesCanBeEmailed() } : null}
       >
         {impact && canRemove && (
           <RemoveUser
