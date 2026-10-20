@@ -14,6 +14,12 @@ test.describe("exports and the external item page", () => {
     await page.goto(`${baseURL}/BIRM27/reports`);
     const main = page.getByRole("main");
     await expect(page).toHaveTitle(/Reports · BIRM27/);
+    // Downloads already on record (other specs and earlier runs add some).
+    const sql = postgres(DB, { max: 1 });
+    const [{ n: before }] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM exports
+      WHERE edition_id = (SELECT id FROM editions WHERE code = 'BIRM27')`;
+    await sql.end();
     // Grouped by who receives them; stands are switched off here.
     for (const heading of [
       "For the venue",
@@ -42,7 +48,7 @@ test.describe("exports and the external item page", () => {
     await expect(schedule.getByText(/^Last downloaded by Olivia Ops · /)).toBeVisible();
     await main.getByText("Download history").click();
     const history = main.locator("details").filter({ hasText: "Download history" });
-    await expect(history.getByRole("listitem")).toHaveCount(10);
+    await expect(history.getByRole("listitem")).toHaveCount(Math.min(10, before + 4));
     await expect(history.getByRole("listitem").first()).toContainText("Olivia Ops");
     // Import now lives on the Signage page; the link opens it there.
     const importLink = main.getByRole("link", { name: "Import a schedule from the Signage page" });

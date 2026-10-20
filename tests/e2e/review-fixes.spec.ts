@@ -1,7 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { signInAs } from "./helpers";
+import { ensureSecondEvent, signInAs } from "./helpers";
 
 test.describe("platform review fixes", () => {
+  // The switcher test needs another event to switch to.
+  test.beforeAll(async () => {
+    await ensureSecondEvent();
+  });
+
   test("dashboard groups sign-offs by name and lists the week's deadlines", async ({
     browser,
     baseURL,
@@ -30,10 +35,8 @@ test.describe("platform review fixes", () => {
     const page = await ctx.newPage();
     await page.goto(`${baseURL}/BIRM27/signage/SIG-BIRM27-001?tab=artwork`);
     await page.getByRole("button", { name: /^Event: .*BIRM27/ }).click();
-    const other = page
-      .locator("[role=menuitem][data-code]")
-      .filter({ hasNotText: "BIRM27" })
-      .first();
+    // By code, not text: copies are often named "Copy of BIRM27 …".
+    const other = page.locator('[role=menuitem][data-code]:not([data-code="BIRM27"])').first();
     const code = (await other.getAttribute("data-code"))!;
     await other.click();
     await page.waitForURL(`**/${code}/signage`);

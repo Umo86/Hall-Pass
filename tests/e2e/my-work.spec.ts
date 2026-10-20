@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { signInAs } from "./helpers";
+import { ensureSecondEvent, signInAs } from "./helpers";
 
 const PDF = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF");
 const day = (offset: number) =>
@@ -9,6 +9,11 @@ const column = (page: Page, name: "To do" | "In progress" | "Done") =>
   page.getByRole("region", { name, exact: true });
 
 test.describe("My Work board", () => {
+  // "Show tasks for" only appears with two or more events.
+  test.beforeAll(async () => {
+    await ensureSecondEvent();
+  });
+
   test("ops gives marketing a job; marketing works it through with subtasks and files", async ({
     browser,
     baseURL,
