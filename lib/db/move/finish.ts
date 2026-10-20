@@ -3,18 +3,24 @@
  * (frozen) source after the copy — its fingerprint still equals the one the
  * copy reported — and the target has at least as many rows per table. Then
  * one audit row on the target says so. Running it again writes nothing more.
+ * On a mismatch it names the source tables that changed since the copy, from
+ * the snapshot the copy kept on the target (./snapshot.ts).
  */
 import { and, eq, sql as dsql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { writeAudit } from "../../audit";
 import * as schema from "../schema";
 import type { MoveSql } from "./connect";
+import { changedTables, readSnapshot } from "./snapshot";
 import { databaseFingerprint } from "./verify";
 
 export type FinishReport = {
   sourceUnchanged: boolean;
   sourceFingerprint: string;
-  /** Tables whose digests differ between the two now (after the switch, either side may have changed). */
+  /**
+   * On a mismatch, the source tables whose rows changed since the copy's
+   * snapshot (absent when no copy with `expect` is recorded on the target).
+   */
   differingTables?: string[];
   counts: Record<string, { source: number; target: number }>;
   totalRows: number;
@@ -54,18 +60,29 @@ export async function finishMove(
     .reduce((sum, [, c]) => sum + c.source, 0);
 
   if (src.fingerprint !== expect) {
-    const differingTables = Object.keys(src.digests)
-      .filter((k) => src.digests[k].digest !== dst.digests[k]?.digest)
-      .sort();
+    const snapshot = await readSnapshot(target, expect);
+    if (!snapshot) {
+      return {
+        sourceUnchanged: false,
+        sourceFingerprint: src.fingerprint,
+        counts,
+        totalRows,
+        audit: "not written",
+        warnings: [
+          "No copy with this fingerprint is recorded on the target: expect must be the fingerprint the copy returned.",
+          ...warnings,
+        ],
+      };
+    }
     return {
       sourceUnchanged: false,
       sourceFingerprint: src.fingerprint,
-      differingTables,
+      differingTables: changedTables(snapshot, src.digests),
       counts,
       totalRows,
       audit: "not written",
       warnings: [
-        "The source changed after the copy (or expect is not the copy's fingerprint): writes may have landed on the source after the snapshot.",
+        "The source changed after the copy: writes landed on it after the snapshot (differingTables names the tables).",
         ...warnings,
       ],
     };

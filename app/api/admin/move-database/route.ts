@@ -35,7 +35,8 @@ export const maxDuration = 300;
  * - files            every file the database refers to exists in the bucket (db=, default live)
  * - freeze           db=supabase|neon, confirm=freeze: that database becomes read-only
  * - unfreeze         db=…, confirm=unfreeze
- * - copy             confirm=copy [&from=&to=] [&replace=1] [&batch=50–2000]
+ * - copy             confirm=copy [&from=&to=] [&replace=1] [&batch=50–2000]; a live
+ *                    source must be frozen first (unfrozen=1 only when it can't be)
  * - verify           [&from=&to=] [&detail=1]: live comparison
  * - finish           confirm=finish&expect=<copy's fingerprint>, once the app is on Neon
  * - back-copy        confirm=back-copy: copy neon → supabase, replacing Supabase's data
@@ -131,7 +132,9 @@ async function runStep(
     case "check": {
       const src = await open(r.from);
       const dst = await open(r.to);
-      const report = await checkDatabases(src, dst);
+      const report = await checkDatabases(src, dst, {
+        liveSource: r.from === r.live ? r.from : undefined,
+      });
       return {
         live: r.live,
         functionRegion,
@@ -172,6 +175,8 @@ async function runStep(
         replace: r.replace,
         batchRows: r.batch,
         budgetMs: 270_000,
+        liveSource: r.from === r.live ? r.from : undefined,
+        allowUnfrozenSource: r.unfrozen,
       });
       return {
         live: r.live,

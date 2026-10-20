@@ -10,7 +10,9 @@
  * 3. `step` must be known → else 400; steps that change something also need
  *    `confirm=<step>`.
  * 4. Guards that need no database: the tool never copies into the live
- *    database, and `finish` runs only once the app is on Neon.
+ *    database, and `finish` runs only once the app is on Neon. (Copying
+ *    from the live database needs it frozen: copy checks that, as it needs
+ *    the database; `unfrozen=1` overrides it when freezing is refused.)
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 import { databaseTarget, type Env } from "../urls";
@@ -45,6 +47,8 @@ export type MoveRequest = {
   db: MoveDb;
   live: MoveDb;
   replace: boolean;
+  /** copy, back-copy: copy from the live database although it isn't frozen. */
+  unfrozen: boolean;
   batch: number;
   detail: boolean;
   expect: string | null;
@@ -163,6 +167,7 @@ export function authoriseMove(
       db,
       live,
       replace,
+      unfrozen: params.get("unfrozen") === "1",
       batch,
       detail: params.get("detail") === "1",
       expect: params.get("expect"),

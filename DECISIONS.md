@@ -1372,6 +1372,13 @@ journal: 15 entries, latest `0014_better_auth`). One line per decision.
   TRUNCATE (strategy A; it applies to pooled sessions at once), or, if it doesn't own every
   table or the revoke is refused, its sessions default to read-only and are ended (B). The
   freeze also stops sign-in (B17): Better Auth writes to `public`.
+- **Undoing strategy B also ends the role's other sessions** (review fix): a session keeps
+  the read-only default it started with, so the app's pooled connections and a pooler's
+  server connections opened during the freeze would otherwise stay read-only for up to an
+  hour; ended, they reconnect writable (`sessionsEnded` in the reply). Whether a database is
+  frozen is judged by a write probe in a `READ WRITE` transaction (A: permission denied) and
+  by the role's setting in the catalog (B), never by the probing session's own default, so
+  an unfreeze that worked no longer answers 409 "frozen".
 - **D5 The switch is one variable, `DATABASE_TARGET=neon`**; unset, empty or `auto` is
   today's behaviour (rollback sets `auto`: the Vercel MCP can't delete a variable), anything
   else means no database, with a reason. Functions move to `lhr1` in Release B.
@@ -1385,7 +1392,10 @@ journal: 15 entries, latest `0014_better_auth`). One line per decision.
   app runs on.
 - **D8 Backups run daily**, with the `pg_dump` client matching the server's major version
   (read with the runner's `psql`), refuse pooled hosts (`-pooler.`, port 6543), and stop
-  before uploading unless `pg_restore --list` shows at least 48 tables with data. A new
+  before uploading unless `pg_restore --list` shows at least 48 tables with data. The log
+  names the host and provider it dumps ("Backing up the database at <host> (Neon)", review
+  fix; never the credentials), so the after-move check can tell a Neon backup from a stale
+  Supabase one; the file name stays `hallpass-<date>.dump`, which the runbooks expect. A new
   on-demand "Database migrate" workflow (`pnpm db:migrate` with the `DIRECT_DATABASE_URL`
   secret) replaces migrating by hand, so Claude can trigger it.
 - **D9 (move spec) superseded:** the Supabase keep-alive went in Phase 1; nothing keeps
@@ -1418,10 +1428,23 @@ journal: 15 entries, latest `0014_better_auth`). One line per decision.
   live database is what is refused.
 - **`back-copy` is its own step** (`confirm=back-copy`, always Neon → Supabase, always
   replacing: Supabase holds the earlier data), besides `copy&from=neon&to=supabase&replace=1`.
-- **`finish` can't name the tables that changed on the source** (only the copy's
-  fingerprint is kept): on a mismatch it lists the tables whose digests differ between the
-  two databases now, and says either side may have changed since the copy. Its audit row
-  carries the organisation when there is exactly one, else none.
+- **Each copy keeps its snapshot's per-table digests on the target** (review fix), in its own
+  transaction, in `db_move.snapshots` (keyed by fingerprint; outside `public` and `drizzle`,
+  so the copy, verify, backups and the app never see it; RLS on). On a mismatch `finish`
+  compares the source with that snapshot, so `differingTables` names exactly the source
+  tables changed since the copy (as the move spec's step 2 and contingency C2 need), not what
+  the app has since written on Neon; with no recorded copy for `expect` it says so. Phase 3
+  drops the schema with the tool. `finish`'s audit row carries the organisation when there is
+  exactly one, else none.
+- **The database the app runs on is copied from only once frozen** (review fix): `copy` and
+  `back-copy` refuse a live source that isn't frozen ("freeze it first"), as a write after the
+  snapshot would be lost (a back-copy has no `finish` to catch it). `unfrozen=1` overrides
+  that for contingency C2 (freezing refused), the only runbook path without a freeze. The
+  route passes the live database's name; the copy checks, as only it reads the frozen state.
+- **json and jsonb columns travel as their text** (review fix): JSON can't tell a top-level
+  JSON null from SQL NULL, so a `'null'::jsonb` (only hand-written SQL makes one) failed the
+  copy's own check, or a NOT NULL insert. They are read as `col::text` and cast back on the
+  target; every other column still goes through `json_populate_record`.
 - **`copy` reports `migrationsApplied`** as the migration rows on the target after the copy
   (15) and `migrationsRun` as those it ran first (15 on an empty target, 0 on a previous
   copy). `verify` and `finish` answer 409 when they ran but don't pass.
@@ -1430,7 +1453,13 @@ journal: 15 entries, latest `0014_better_auth`). One line per decision.
 - **`DATABASE_TARGET` is read trimmed and case-insensitively** (`Neon` is `neon`): a pasted
   value with a trailing space must not leave production without a database.
 - **In auto mode the candidate URLs are trimmed, unquoted and stripped of `channel_binding`
-  too:** only values that could never connect change, and a local Neon URL works.
+  too,** so a local Neon URL works; **but on Vercel a Neon URL is never an auto candidate**
+  (review fix). Before Release A those URLs could never connect (`channel_binding`); once
+  normalised, a cold start whose Supabase probe failed would have run that instance on Neon
+  while the move tool treats Supabase as live, and a re-copy would erase its writes. On
+  Vercel, Neon is reached only through `DATABASE_TARGET=neon`; with only Neon variables
+  set, auto mode means no database, with a reason. Rolling back with a copy on Neon also
+  freezes Neon (README), so nothing can write to the leftover copy.
 - **Health, the login page and Settings → System describe the connection actually used**
   (`lib/db/status.ts:checkDatabase` over `databaseInfo`): `databaseTarget`, `databaseProvider`,
   `databaseProject`, `databaseRegion`, `databaseVia`, `functionRegion`; `databaseError` also

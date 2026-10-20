@@ -132,6 +132,41 @@ describe("appDatabaseUrl", () => {
   it("production without a target: today's probing", () => {
     expect(appDatabaseUrl({ VERCEL_ENV: "production", DATABASE_URL: STALE }).kind).toBe("probe");
   });
+  it("on Vercel, auto mode never falls back onto Neon (only DATABASE_TARGET=neon runs there)", () => {
+    // Production's variables before the switch: the Neon integration's URLs are set too.
+    const production = {
+      VERCEL_ENV: "production",
+      DATABASE_URL: STALE,
+      DIRECT_DATABASE_URL: SUPA_POOLER,
+      POSTGRES_URL: NEON_POOLED,
+      DATABASE_URL_UNPOOLED: NEON_DIRECT,
+      POSTGRES_URL_NON_POOLING: NEON_DIRECT,
+    };
+    for (const DATABASE_TARGET of [undefined, "", "auto"]) {
+      expect(appDatabaseUrl({ ...production, DATABASE_TARGET })).toEqual({
+        kind: "probe",
+        candidates: [
+          { url: STALE, via: "DATABASE_URL" },
+          { url: SUPA_POOLER, via: "DIRECT_DATABASE_URL" },
+        ],
+      });
+    }
+    // Only Neon left: no database, rather than Neon behind the move tool's back.
+    const neonOnly = appDatabaseUrl({ VERCEL_ENV: "production", POSTGRES_URL: NEON_POOLED });
+    expect(neonOnly.kind).toBe("none");
+    expect(neonOnly.kind === "none" && neonOnly.reason).toMatch(/DATABASE_TARGET=neon/);
+    // The switch itself is unchanged.
+    expect(appDatabaseUrl({ ...production, DATABASE_TARGET: "neon" })).toEqual({
+      kind: "single",
+      url: normaliseDatabaseUrl(NEON_POOLED),
+      via: "POSTGRES_URL",
+    });
+    // Off Vercel (local development, CI) a Neon URL still works in auto mode.
+    expect(appDatabaseUrl({ POSTGRES_URL: NEON_POOLED })).toEqual({
+      kind: "probe",
+      candidates: [{ url: normaliseDatabaseUrl(NEON_POOLED), via: "POSTGRES_URL" }],
+    });
+  });
 });
 
 describe("migrationDatabaseUrl", () => {

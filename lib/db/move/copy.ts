@@ -14,15 +14,20 @@
  * 4. Before committing, every table's digest on the target must equal the
  *    source's in the same snapshot; any difference rolls both back.
  *
- * Rows travel as JSON text (json_agg → json_populate_recordset), never
+ * Rows travel as JSON text (json_agg → json_populate_record), never
  * through JavaScript values, so microsecond timestamps, numeric scale and
- * bigints arrive exactly.
+ * bigints arrive exactly. json and jsonb columns travel as their own text
+ * (cast back on the target), because JSON can't tell a JSON null from SQL
+ * NULL. The source must be frozen when the app runs on it (`liveSource`).
+ * The snapshot's per-table digests are kept on the target (./snapshot.ts)
+ * for `finish`.
  */
 import { defaultMigrationsFolder, runMigrationsOn } from "../migrate-core";
-import { readCatalog, tableMap, type TableInfo } from "./catalog";
+import { readCatalog, tableMap, type ColumnInfo, type TableInfo } from "./catalog";
 import { checkDatabases, type CheckReport } from "./check";
 import { ident, MoveRefused, pinSession, qualified, type MoveSql, type Queryable } from "./connect";
 import { describeDeferred, planCopy } from "./plan";
+import { recordSnapshot } from "./snapshot";
 import { digestAll, fingerprint, type TableDigest } from "./verify";
 
 export type CopyOptions = {
@@ -33,6 +38,13 @@ export type CopyOptions = {
   /** Give up (and roll back) after this long (default 270 s, inside Vercel's 300 s). */
   budgetMs?: number;
   folder?: string;
+  /**
+   * The source's name when the app runs on it: then it must be frozen, or writes
+   * made after the snapshot would be lost.
+   */
+  liveSource?: string;
+  /** Copy from the live source even so (contingency C2: freezing was refused). */
+  allowUnfrozenSource?: boolean;
   /** Test only: throw after inserting this table's rows, to prove nothing is kept. */
   failAfterTable?: string;
 };
@@ -53,6 +65,12 @@ export type CopyReport = {
 };
 
 const DRIZZLE_TABLE = "drizzle.__drizzle_migrations";
+
+/** json, jsonb and arrays of them: carried as text, so a JSON null stays apart from SQL NULL. */
+export const carriedAsText = (c: Pick<ColumnInfo, "type">): boolean =>
+  /^jsonb?(\[\])*$/.test(c.type);
+
+const literal = (s: string): string => `'${s.replaceAll("'", "''")}'`;
 
 function sameColumns(a: TableInfo, b: TableInfo): string | null {
   const names = (t: TableInfo) => t.columns.filter((c) => !c.generated).map((c) => c.name);
@@ -108,9 +126,15 @@ export async function copyDatabase(
   };
 
   // 1. Preflight.
-  const check = await checkDatabases(source, target, { folder });
+  const check = await checkDatabases(source, target, { folder, liveSource: options.liveSource });
   if (!check.readyToCopy) {
     throw new MoveRefused(`Not ready to copy: ${check.blockers.join("; ")}`, check.blockers);
+  }
+  if (options.liveSource && !check.source.frozen && !options.allowUnfrozenSource) {
+    const db = options.liveSource;
+    throw new MoveRefused(
+      `Refused: ${db} is the live database and isn't frozen, so writes made after the snapshot would be lost. Freeze it first (step=freeze&db=${db}&confirm=freeze); add unfrozen=1 only if it can't be frozen.`,
+    );
   }
   if (
     check.target.state === "previousCopy" &&
@@ -164,13 +188,26 @@ export async function copyDatabase(
 
       for (const key of plan.order) {
         const t = srcTables.get(key)!;
-        const cols = t.columns.filter((c) => !c.generated).map((c) => c.name);
+        const cols = t.columns.filter((c) => !c.generated);
         const nullFirst = new Set(
           plan.deferred.filter((d) => d.table === key).flatMap((d) => d.cols),
         );
-        const colList = cols.map(ident).join(", ");
+        const colList = cols.map((c) => ident(c.name)).join(", ");
         const selectList = cols
-          .map((c) => (nullFirst.has(c) ? `NULL AS ${ident(c)}` : `t.${ident(c)}`))
+          .map((c) =>
+            nullFirst.has(c.name)
+              ? `NULL AS ${ident(c.name)}`
+              : carriedAsText(c)
+                ? `t.${ident(c.name)}::text AS ${ident(c.name)}`
+                : `t.${ident(c.name)}`,
+          )
+          .join(", ");
+        // Each row's JSON object: typed by the table's row type, except the
+        // columns carried as text, which are cast back from it.
+        const insertList = cols
+          .map((c) =>
+            carriedAsText(c) ? `(e.v->>${literal(c.name)})::${c.type}` : `r.${ident(c.name)}`,
+          )
           .join(", ");
         const overriding = t.columns.some((c) => c.identity === "a")
           ? "OVERRIDING SYSTEM VALUE"
@@ -182,7 +219,9 @@ export async function copyDatabase(
           if (!page.n) break;
           await dst.unsafe(
             `INSERT INTO ${qualified(key)} (${colList}) ${overriding}
-             SELECT ${colList} FROM json_populate_recordset(NULL::${qualified(key)}, $1::text::json)`,
+             SELECT ${insertList}
+             FROM json_array_elements($1::text::json) AS e(v),
+                  json_populate_record(NULL::${qualified(key)}, e.v) AS r`,
             [page.rows!],
           );
           n += page.n;
@@ -260,6 +299,8 @@ export async function copyDatabase(
             .join("; ")}); nothing was written`,
         );
       }
+      // Kept with the copy, for finish to name the source tables changed since.
+      await recordSnapshot(dst, fingerprint(sourceDigests), sourceDigests);
       overBudget();
     });
   });

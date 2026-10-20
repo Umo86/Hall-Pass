@@ -242,24 +242,29 @@ switched on: Release A ships the tool and the switch; Release B (`vercel.json` �
 
 - **The switch:** `DATABASE_TARGET=neon` (Production, plain). Unset or `auto` is the
   behaviour before the move (the rollback value, as a variable can't be deleted with the
-  tools at hand); anything else means no database.
+  tools at hand); anything else means no database. On Vercel, `auto` never falls back onto
+  a Neon URL: an instance that couldn't reach Supabase at start-up would otherwise write to
+  Neon while the tool treats Supabase as live.
 - **The tool:** `GET /api/admin/move-database?step=<step>&token=<MOVE_DATABASE_TOKEN>` (or
   `Authorization: Bearer <token>`). It is a 404 unless `MOVE_DATABASE_TOKEN` (Production,
   Sensitive, `openssl rand -hex 32`) is set and isn't `off`. Steps that change something also
   need `confirm=<step>`. It reads Supabase from `DIRECT_DATABASE_URL` and Neon from
-  `DATABASE_URL_UNPOOLED`, never copies into the database the app runs on, and replies with
-  hosts only. While the token is set the daily orphan-artwork sweep is paused.
+  `DATABASE_URL_UNPOOLED`, never copies into the database the app runs on, copies from it
+  only once it is frozen (`unfrozen=1` overrides that, for when freezing is refused), and
+  replies with hosts only. While the token is set the daily orphan-artwork sweep is paused.
+  Each copy also keeps its snapshot's per-table digests on the target, in schema `db_move`
+  (outside `public` and `drizzle`, so nothing else sees it), for `finish`.
 
-  | Step        | What it does                                                                                                                                            |
-  | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `check`     | Read-only preflight: versions, collation, owners, frozen or not, rows, migrations against this release                                                  |
-  | `files`     | Read-only: every file the database (`db=`, default the live one) refers to exists in the bucket                                                         |
-  | `freeze`    | `db=supabase\|neon`: that database becomes read-only (strategy A or B in the reply)                                                                     |
-  | `unfreeze`  | `db=…`: writable again                                                                                                                                  |
-  | `copy`      | Migrates the target, then copies in one snapshot and one transaction, checked before commit (`replace=1` to overwrite a previous copy, `batch=50–2000`) |
-  | `verify`    | Live comparison: every table, the schema, sequences, both fingerprints (`detail=1` for full lists)                                                      |
-  | `finish`    | `expect=<copy's fingerprint>`, once the app is on Neon: Supabase unchanged since the copy, then one audit row                                           |
-  | `back-copy` | Neon → Supabase, replacing Supabase's data (the lossless rollback)                                                                                      |
+  | Step        | What it does                                                                                                                                              |
+  | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `check`     | Read-only preflight: versions, collation, owners, frozen or not, rows, migrations against this release                                                    |
+  | `files`     | Read-only: every file the database (`db=`, default the live one) refers to exists in the bucket                                                           |
+  | `freeze`    | `db=supabase\|neon`: that database becomes read-only (strategy A or B in the reply)                                                                       |
+  | `unfreeze`  | `db=…`: writable again; after strategy B it also ends the sessions opened during the freeze, so they reconnect writable                                   |
+  | `copy`      | Migrates the target, then copies in one snapshot and one transaction, checked before commit (`replace=1` to overwrite a previous copy, `batch=50–2000`)   |
+  | `verify`    | Live comparison: every table, the schema, sequences, both fingerprints (`detail=1` for full lists)                                                        |
+  | `finish`    | `expect=<copy's fingerprint>`, once the app is on Neon: Supabase unchanged since the copy (else `differingTables` names what changed), then one audit row |
+  | `back-copy` | Neon → Supabase, replacing Supabase's data (the lossless rollback)                                                                                        |
 
 **Runbook** (a weekday, 10:00–10:45 London; Hall Pass, sign-in included, is unavailable
 during the window). Save every reply.
@@ -286,11 +291,15 @@ during the window). Save every reply.
 10. `step=finish&expect=F&confirm=finish` → `sourceUnchanged:true` and the audit row
     "Database moved from Supabase to Neon (London): N rows verified". The window ends.
 11. **After:** set the GitHub secret `DIRECT_DATABASE_URL` to Neon's `DATABASE_URL_UNPOOLED`
-    and run "Database backup". Keep Supabase frozen and the token set until Phase 3.
+    and run "Database backup": its log says "Backing up the database at ep-….neon.tech
+    (Neon)" (a Supabase host there means the secret wasn't changed). Keep Supabase frozen and
+    the token set until Phase 3.
 
 **Rolling back.** Before step 7: `step=unfreeze&db=supabase&confirm=unfreeze`. After it, with
 nothing written to Neon yet: Instant Rollback to Release A, `DATABASE_TARGET=auto`, unfreeze
-Supabase, revert Release B. After people have used Neon (nothing lost): if Supabase is
+Supabase, revert Release B. Either way, once a copy reached Neon also
+`step=freeze&db=neon&confirm=freeze`, so the copy can't take writes (`unfreeze` it before the
+next attempt). After people have used Neon (nothing lost): if Supabase is
 paused, restore it first; `step=freeze&db=neon&confirm=freeze`;
 `step=unfreeze&db=supabase&confirm=unfreeze`; `step=back-copy&confirm=back-copy`;
 `step=verify&from=neon&to=supabase` → `ok:true`; Instant Rollback to Release A;

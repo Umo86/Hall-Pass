@@ -11,7 +11,9 @@
  * - unset, "" or "auto": today's behaviour, the first reachable of the candidate
  *   variables (local development, CI and production before the move). Preview
  *   deployments get no database in this mode: the Neon integration injects the
- *   production URLs into Preview too.
+ *   production URLs into Preview too. On Vercel a Neon URL is never a
+ *   candidate in this mode: an instance whose Supabase probe failed would
+ *   otherwise run on Neon while the move tool treats Supabase as live.
  * - anything else: no database, with a reason.
  *
  * Imported by drizzle.config.ts, so it only uses relative imports (none).
@@ -45,6 +47,8 @@ export const NEON_DIRECT_VARS = ["DATABASE_URL_UNPOOLED", "POSTGRES_URL_NON_POOL
 const PREVIEW_REASON =
   "Preview deployments have no database unless DATABASE_TARGET is set for Preview (the Neon integration would otherwise give them production data).";
 const INVALID_REASON = "DATABASE_TARGET has an unknown value: use neon, or leave it unset.";
+const NEON_AUTO_REASON =
+  "Only Neon database variables are set, and on Vercel the app runs on Neon only with DATABASE_TARGET=neon.";
 
 /** "neon" | unset, "" or "auto" → "auto" | anything else → "invalid". */
 export function databaseTarget(env: Env): DatabaseTarget {
@@ -239,14 +243,24 @@ export function appDatabaseUrl(env: Env): AppDatabaseUrl {
     return { kind: "single", url, via: "POSTGRES_URL" };
   }
   if (env.VERCEL_ENV === "preview") return { kind: "none", reason: PREVIEW_REASON };
+  // On Vercel, Neon is reached only through the switch (never split-brain): before
+  // Release A its URLs could never connect here (channel_binding), and they mustn't now.
+  const onVercel = read(env, "VERCEL_ENV") !== null;
   const candidates: { url: string; via: string }[] = [];
+  let skippedNeon = false;
   for (const name of AUTO_CANDIDATE_VARS) {
     const raw = read(env, name);
     if (!raw) continue;
     const url = normaliseDatabaseUrl(raw);
+    if (onVercel && databaseProviderOf(url) === "neon") {
+      skippedNeon = true;
+      continue;
+    }
     if (!candidates.some((c) => c.url === url)) candidates.push({ url, via: name });
   }
-  if (candidates.length === 0) return { kind: "none", reason: "DATABASE_URL is not set" };
+  if (candidates.length === 0) {
+    return { kind: "none", reason: skippedNeon ? NEON_AUTO_REASON : "DATABASE_URL is not set" };
+  }
   return { kind: "probe", candidates };
 }
 

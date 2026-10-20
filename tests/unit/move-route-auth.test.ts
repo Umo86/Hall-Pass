@@ -107,6 +107,18 @@ describe("authoriseMove: never into the live database", () => {
     });
   });
 
+  it("unfrozen=1 (copy from a live database that can't be frozen) is passed on; off by default", () => {
+    expect(call(`step=copy&confirm=copy&token=${TOKEN}`)).toMatchObject({
+      ok: true,
+      request: { unfrozen: false },
+    });
+    expect(
+      call(`step=back-copy&confirm=back-copy&unfrozen=1&token=${TOKEN}`, {
+        DATABASE_TARGET: "neon",
+      }),
+    ).toMatchObject({ ok: true, request: { from: "neon", live: "neon", unfrozen: true } });
+  });
+
   it("back-copy is Neon → Supabase, replacing, and only once Neon is live", () => {
     expect(
       call(`step=back-copy&confirm=back-copy&token=${TOKEN}`, { DATABASE_TARGET: "neon" }),

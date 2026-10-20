@@ -201,11 +201,15 @@ async function nonEmpty(q: Queryable, catalog: Catalog): Promise<string[]> {
 
 const DRIZZLE_TABLE = "drizzle.__drizzle_migrations";
 
-/** Read-only preflight of a copy from `source` into `target`. */
+/**
+ * Read-only preflight of a copy from `source` into `target`. `liveSource`
+ * names the source when the app runs on it: unfrozen, that is a warning here
+ * (copy refuses it).
+ */
 export async function checkDatabases(
   source: MoveSql,
   target: MoveSql,
-  { folder = defaultMigrationsFolder() }: { folder?: string } = {},
+  { folder = defaultMigrationsFolder(), liveSource }: { folder?: string; liveSource?: string } = {},
 ): Promise<CheckReport> {
   const bundled = bundledMigrations(folder);
   const srcFacts = await sideFacts(source);
@@ -263,6 +267,11 @@ export async function checkDatabases(
   if (!dstFacts.ownsAllTables) blockers.push("The target's tables are not all owned by its user");
   if (!dstFacts.canCreate) blockers.push("The target's user can't create tables");
   if (dstFacts.frozen) blockers.push("The target is frozen: unfreeze it first");
+  if (liveSource && !srcFacts.frozen) {
+    warnings.push(
+      `${liveSource} is the live database and isn't frozen: copy refuses it until it is (step=freeze&db=${liveSource}&confirm=freeze), as writes after the snapshot would be lost`,
+    );
+  }
   if (srcFacts.extensionDependencies > 0) {
     blockers.push("The source's public schema uses extension objects the target won't have");
   }

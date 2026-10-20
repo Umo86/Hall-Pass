@@ -18,8 +18,9 @@ import {
  *   no probing and no fallback;
  * - otherwise (local development, CI): the candidate variables in order,
  *   and the first reachable one wins, so one mistyped or stale URI does not
- *   take the platform down. Preview deployments get no database unless
- *   DATABASE_TARGET is set for Preview.
+ *   take the platform down. On Vercel a Neon URL is never a candidate here
+ *   (Neon only through the switch), and Preview deployments get no database
+ *   unless DATABASE_TARGET is set for Preview.
  * Lazily initialised so importing this module during a build without any
  * database variables does not crash; the first query needs one set.
  */

@@ -34,6 +34,10 @@ const DST_ROLE = `hp_move_dst_${RUN}`;
 const SRC_DB = `hp_move_src_${RUN}`;
 const DST_DB = `hp_move_dst_${RUN}`;
 const BUSY_DB = `hp_move_busy_${RUN}`;
+// Case 13's own owner, group and database (freezing with strategy B ends the role's sessions).
+const FRZ_ROLE = `hp_move_frz_${RUN}`;
+const FRZ_GROUP = `hp_move_frz_group_${RUN}`;
+const FRZ_DB = `hp_move_frz_${RUN}`;
 const PASSWORD = randomBytes(16).toString("hex");
 const SLOW = { timeout: 120_000 };
 
@@ -120,10 +124,10 @@ d("database move: copy, verify, freeze, finish", () => {
     await src?.end({ timeout: 5 });
     await dst?.end({ timeout: 5 });
     if (admin) {
-      for (const database of [SRC_DB, DST_DB, BUSY_DB]) {
+      for (const database of [SRC_DB, DST_DB, BUSY_DB, FRZ_DB]) {
         await admin.unsafe(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`).catch(() => {});
       }
-      for (const role of [SRC_ROLE, DST_ROLE]) {
+      for (const role of [SRC_ROLE, DST_ROLE, FRZ_ROLE, FRZ_GROUP]) {
         await admin.unsafe(`DROP ROLE IF EXISTS "${role}"`).catch(() => {});
       }
       await admin.end({ timeout: 5 });
@@ -153,6 +157,13 @@ d("database move: copy, verify, freeze, finish", () => {
       expect(report.collationMatch).toBe(true);
       expect(report.blockers).toEqual([]);
       expect(report.readyToCopy).toBe(true);
+      expect(report.warnings).toEqual([]);
+      // When the app runs on the source, check says it must be frozen before the copy.
+      const live = await checkDatabases(src, dst, { liveSource: "supabase" });
+      expect(live.readyToCopy).toBe(true);
+      expect(live.warnings).toEqual([
+        expect.stringMatching(/^supabase is the live database and isn't frozen: copy refuses/),
+      ]);
     },
   );
 
@@ -311,6 +322,20 @@ d("database move: copy, verify, freeze, finish", () => {
     SLOW,
     async (ctx) => {
       if (!ready) ctx.skip();
+      // The database the app runs on is copied only once it is frozen (or when told it can't be).
+      const before = (await databaseFingerprint(dst)).fingerprint;
+      const live = await refusal(copyDatabase(src, dst, { replace: true, liveSource: "supabase" }));
+      expect(live.message).toMatch(
+        /supabase is the live database and isn't frozen.*step=freeze&db=supabase/,
+      );
+      expect((await databaseFingerprint(dst)).fingerprint).toBe(before);
+      const told = await copyDatabase(src, dst, {
+        replace: true,
+        liveSource: "supabase",
+        allowUnfrozenSource: true,
+      });
+      expect(told.fingerprint).toBe(firstCopy.fingerprint);
+
       expect(await freeze(src)).toMatchObject({ frozen: true, strategy: "A" });
       try {
         expect(await isFrozen(src)).toEqual({ frozen: true, strategy: "A" });
@@ -327,7 +352,7 @@ d("database move: copy, verify, freeze, finish", () => {
           await other.end();
         }
         expect((await checkDatabases(src, dst)).source.frozen).toBe(true);
-        const copy = await copyDatabase(src, dst, { replace: true });
+        const copy = await copyDatabase(src, dst, { replace: true, liveSource: "supabase" });
         expect(copy.fingerprint).toBe(firstCopy.fingerprint);
       } finally {
         expect(await unfreeze(src)).toMatchObject({ frozen: false, undid: ["A"] });
@@ -443,15 +468,151 @@ d("database move: copy, verify, freeze, finish", () => {
         audit: "already written",
       });
 
-      // A write that reached the old database after the copy.
+      // A write that reached the old database after the copy: only that table is named,
+      // not the ones the app (reminder_log) and finish (audit_log) wrote on the new one.
       await src.unsafe(
-        `INSERT INTO audit_log (actor_type, entity_type, action, summary)
-       VALUES ('user', 'signage_item', 'update', 'A late write')`,
+        `UPDATE users SET full_name = full_name || ' (late)' WHERE id = 'f1000000-0000-4000-8000-000000000011'`,
       );
       const late = await finishMove(src, dst, { expect: copy.fingerprint, summary });
       expect(late.sourceUnchanged).toBe(false);
       expect(late.audit).toBe("not written");
-      expect(late.differingTables).toContain("public.audit_log");
+      expect(late.differingTables).toEqual(["public.users"]);
+
+      // A mistyped expect is said to be one, rather than blamed on the data.
+      const typo = await finishMove(src, dst, { expect: "0".repeat(32), summary });
+      expect(typo.sourceUnchanged).toBe(false);
+      expect(typo.differingTables).toBeUndefined();
+      expect(typo.warnings[0]).toMatch(/No copy with this fingerprint/);
+    },
+  );
+
+  it("12. a top-level JSON null stays a JSON null, apart from SQL NULL", SLOW, async (ctx) => {
+    if (!ready) ctx.skip();
+    const ORG = "f1000000-0000-4000-8000-000000000001";
+    const settings = await one<string>(
+      src,
+      `SELECT settings::text FROM organisations WHERE id = '${ORG}'`,
+    );
+    await src.unsafe(
+      `INSERT INTO audit_log (actor_type, entity_type, action, summary, before, after)
+         VALUES ('system', 'database', 'settings_change', 'JSON null', 'null'::jsonb, NULL)`,
+    );
+    // A NOT NULL jsonb column holding JSON null (only SQL run by hand can do this).
+    await src.unsafe(`UPDATE organisations SET settings = 'null'::jsonb WHERE id = '${ORG}'`);
+    try {
+      const copy = await copyDatabase(src, dst, { replace: true });
+      const v = await verifyDatabases(src, dst);
+      expect(v.mismatched).toEqual([]);
+      expect(v.targetFingerprint).toBe(copy.fingerprint);
+      expect(
+        await one<string>(
+          dst,
+          `SELECT jsonb_typeof(before) || '|' || (after IS NULL)::text FROM audit_log WHERE summary = 'JSON null'`,
+        ),
+      ).toBe("null|true");
+      expect(
+        await one<string>(dst, `SELECT settings::text FROM organisations WHERE id = '${ORG}'`),
+      ).toBe("null");
+    } finally {
+      await src.unsafe(`UPDATE organisations SET settings = $1::jsonb WHERE id = '${ORG}'`, [
+        settings,
+      ]);
+    }
+  });
+
+  it(
+    "13. freeze strategy B: sessions opened during the freeze are ended by unfreeze, which says it worked",
+    SLOW,
+    async (ctx) => {
+      if (!ready) ctx.skip();
+      await admin.unsafe(
+        `CREATE ROLE "${FRZ_ROLE}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '${PASSWORD}'`,
+      );
+      await admin.unsafe(`CREATE ROLE "${FRZ_GROUP}" NOLOGIN`);
+      await admin.unsafe(`GRANT "${FRZ_GROUP}" TO "${FRZ_ROLE}"`);
+      await admin.unsafe(`CREATE DATABASE "${FRZ_DB}" OWNER "${FRZ_ROLE}"`);
+      const setup = postgres(urlFor(FRZ_DB), { max: 1, onnotice: () => {} });
+      await setup.unsafe(`ALTER SCHEMA public OWNER TO "${FRZ_ROLE}"`);
+      await setup.end();
+
+      const sessions: MoveSql[] = [];
+      // The tool's connections (one session each), and the app's pooled client.
+      const session = () => {
+        const s = connectForMove(urlFor(FRZ_DB, FRZ_ROLE));
+        sessions.push(s);
+        return s;
+      };
+      const app = postgres(urlFor(FRZ_DB, FRZ_ROLE), { prepare: false, onnotice: () => {} });
+      sessions.push(app);
+      const write = (s: MoveSql, kind: string) =>
+        s.unsafe(`INSERT INTO reminder_log (kind) VALUES ('${kind}')`);
+      const pid = (s: MoveSql) => one<number>(s, `SELECT pg_backend_pid()`);
+      // The server ends a session a moment after pg_terminate_backend returns.
+      const ended = async (backend: number) => {
+        for (let i = 0; i < 50; i++) {
+          const [r] = await admin.unsafe<{ n: number }[]>(
+            `SELECT count(*)::int AS n FROM pg_stat_activity WHERE pid = $1`,
+            [backend],
+          );
+          if (Number(r.n) === 0) return true;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return false;
+      };
+      // A pooled connection the server ended fails its next query once, as in the app.
+      const ENDED = /^(57P01|CONNECTION_CLOSED|CONNECTION_ENDED|ECONNRESET|EPIPE)$/;
+      const afterReconnect = async <T>(run: () => Promise<T>): Promise<T> => {
+        try {
+          return await run();
+        } catch (err) {
+          if (!ENDED.test((err as { code?: string }).code ?? "")) throw err;
+          return run();
+        }
+      };
+      try {
+        const tool = session();
+        await tool.unsafe(`CREATE TABLE reminder_log (id serial PRIMARY KEY, kind text NOT NULL)`);
+        // A privilege held through role membership: revoking the owner's own isn't enough.
+        await tool.unsafe(`GRANT ALL ON reminder_log TO "${FRZ_GROUP}"`);
+
+        const frozen = await freeze(tool);
+        expect(frozen).toMatchObject({ frozen: true, strategy: "B" });
+        // The app reconnects during the freeze: read-only.
+        await expect(write(app, "during")).rejects.toMatchObject({ code: "25006" });
+        const appDuringFreeze = await pid(app);
+
+        // The next route call opens a new (read-only) session and unfreezes.
+        const route = session();
+        expect(await isFrozen(route)).toEqual({ frozen: true, strategy: "B" });
+        const undone = await unfreeze(route);
+        expect(undone).toMatchObject({ frozen: false, strategy: null, undid: ["B", "A"] });
+        expect(undone.sessionsEnded).toBeGreaterThanOrEqual(2); // the app's and the first tool's
+        // The app's session from the freeze was ended; it reconnects writable.
+        expect(await ended(appDuringFreeze)).toBe(true);
+        await afterReconnect(() => write(app, "after"));
+        expect(await one<string>(app, `SHOW default_transaction_read_only`)).toBe("off");
+        // The route's own session (opened read-only) can write too.
+        await write(route, "route");
+        expect(await isFrozen(session())).toEqual({ frozen: false, strategy: null });
+
+        // A table the role doesn't own: strategy B straight away, and back.
+        await route.unsafe(`CREATE TABLE not_ours (id int PRIMARY KEY)`);
+        await route.unsafe(`GRANT CREATE ON SCHEMA public TO "${FRZ_GROUP}"`);
+        await route.unsafe(`ALTER TABLE not_ours OWNER TO "${FRZ_GROUP}"`);
+        const appBefore = await pid(app);
+        expect(await freeze(route)).toMatchObject({ frozen: true, strategy: "B" });
+        expect(await ended(appBefore)).toBe(true);
+        await expect(afterReconnect(() => write(app, "frozen again"))).rejects.toMatchObject({
+          code: "25006",
+        });
+        const appFrozen = await pid(app);
+        expect(await unfreeze(session())).toMatchObject({ frozen: false, undid: ["B"] });
+        expect(await ended(appFrozen)).toBe(true);
+        await afterReconnect(() => write(app, "after again"));
+        expect(await one<number>(app, `SELECT count(*)::int FROM reminder_log`)).toBe(3);
+      } finally {
+        await Promise.all(sessions.map((s) => s.end({ timeout: 5 }).catch(() => {})));
+      }
     },
   );
 });
