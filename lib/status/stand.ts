@@ -49,7 +49,8 @@ export function standTransition(
   }
   if (event === "resume") {
     if (current !== "on_hold") throw new IllegalTransitionError(current, event);
-    if (!ctx.previousStatus) throw new IllegalTransitionError(current, `${event} (no previous status)`);
+    if (!ctx.previousStatus)
+      throw new IllegalTransitionError(current, `${event} (no previous status)`);
     return ctx.previousStatus;
   }
 
@@ -89,7 +90,10 @@ export function standTransition(
     case "approved_with_conditions":
       if (event === "build_check") {
         if (ctx.hadConditions && !ctx.buildCheckNotes) {
-          throw new IllegalTransitionError(current, `${event} (notes mandatory when conditions exist)`);
+          throw new IllegalTransitionError(
+            current,
+            `${event} (notes mandatory when conditions exist)`,
+          );
         }
         return "build_checked";
       }

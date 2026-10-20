@@ -69,8 +69,7 @@ type ActivationOpts = {
 function dueDateFor(i: Instance, opts: ActivationOpts): Date | null {
   const sla = i.slaDaysSnapshot ?? 0;
   if (i.stepKind === "confirmation") {
-    const planned =
-      opts.entity.kind === "signage" ? opts.entity.stepDueDates?.[i.stepName] : null;
+    const planned = opts.entity.kind === "signage" ? opts.entity.stepDueDates?.[i.stepName] : null;
     if (planned) return new Date(`${planned}T17:00:00Z`);
     return sla > 0 ? addDays(opts.now, sla) : null;
   }

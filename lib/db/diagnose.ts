@@ -39,7 +39,9 @@ export function describeDbError(err: unknown, connectionString?: string): string
     return "The database name in the URI is wrong — it should end in /postgres.";
   }
 
-  const redacted = messageOf(err).replace(/\/\/[^@/\s]+@/g, "//***@").slice(0, 200);
+  const redacted = messageOf(err)
+    .replace(/\/\/[^@/\s]+@/g, "//***@")
+    .slice(0, 200);
   return redacted ? `Connection failed: ${redacted}` : "Connection failed for an unknown reason.";
 }
 

@@ -29,7 +29,13 @@ function brandWords(name: string): [string, string] {
  * The one transactional template: brand wordmark, one clear call-to-action
  * deep link, plain-text fallback. Subject and intro copy vary per notification.
  */
-export function NotificationEmail({ brandName, title, bodyText, ctaLabel, ctaUrl }: NotificationEmailProps) {
+export function NotificationEmail({
+  brandName,
+  title,
+  bodyText,
+  ctaLabel,
+  ctaUrl,
+}: NotificationEmailProps) {
   return (
     <Html lang="en-GB">
       <Head />

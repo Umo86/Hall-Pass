@@ -73,9 +73,9 @@ describe("stand status machine — guards", () => {
     ).toThrow(IllegalTransitionError);
   });
   it("cannot submit without max height", () => {
-    expect(() => standTransition("not_submitted", "submit", { ...ok, maxHeightSet: false })).toThrow(
-      IllegalTransitionError,
-    );
+    expect(() =>
+      standTransition("not_submitted", "submit", { ...ok, maxHeightSet: false }),
+    ).toThrow(IllegalTransitionError);
   });
   it("resubmit requires documents present", () => {
     expect(() =>

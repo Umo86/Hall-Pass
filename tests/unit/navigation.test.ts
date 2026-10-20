@@ -8,7 +8,17 @@ describe("safeNext", () => {
     expect(safeNext("/approvals")).toBe("/approvals");
   });
   it("refuses other sites, sign-in loops and junk", () => {
-    for (const bad of ["//evil.test", "/\\evil.test", "https://evil.test", "evil", "/login?next=/x", "/auth/callback", null, undefined, 42]) {
+    for (const bad of [
+      "//evil.test",
+      "/\\evil.test",
+      "https://evil.test",
+      "evil",
+      "/login?next=/x",
+      "/auth/callback",
+      null,
+      undefined,
+      42,
+    ]) {
       expect(safeNext(bad)).toBeNull();
     }
   });

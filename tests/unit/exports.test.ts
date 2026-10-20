@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { safeSheetName } from "@/lib/exports/sheet-name";
-import {
-  labelWhen,
-  labelWhere,
-  specLabelFields,
-  type LabelRow,
-} from "@/lib/exports/label-fields";
+import { labelWhen, labelWhere, specLabelFields, type LabelRow } from "@/lib/exports/label-fields";
 import { renderApprovalCertificate, renderSpecLabels } from "@/lib/exports/pdf";
 
 describe("safeSheetName", () => {
@@ -83,8 +78,22 @@ describe("PDF rendering", () => {
     const labels = await renderSpecLabels({
       brandName: "Hall Pass",
       labels: [
-        { ref: "SIG-X-001", name: "Giriş / Çıkış", where: "Hall 1 · Łódź", when: null, fields: [], qrUrl: "https://example.test/q/SIG-X-001" },
-        { ref: "SIG-X-002", name: "Second", where: null, when: null, fields: [["Size", "1 × 2 mm"]], qrUrl: "https://example.test/q/SIG-X-002" },
+        {
+          ref: "SIG-X-001",
+          name: "Giriş / Çıkış",
+          where: "Hall 1 · Łódź",
+          when: null,
+          fields: [],
+          qrUrl: "https://example.test/q/SIG-X-001",
+        },
+        {
+          ref: "SIG-X-002",
+          name: "Second",
+          where: null,
+          when: null,
+          fields: [["Size", "1 × 2 mm"]],
+          qrUrl: "https://example.test/q/SIG-X-002",
+        },
       ],
     });
     expect(labels.subarray(0, 4).toString()).toBe("%PDF");

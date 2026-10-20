@@ -52,40 +52,40 @@ export default async function Home() {
       <main className="flex flex-1 flex-col">
         <section className="mx-auto grid w-full max-w-5xl items-center gap-10 px-6 pt-14 pb-16 sm:pt-20 lg:grid-cols-[7fr_5fr]">
           <div>
-          <p className="text-xs font-semibold tracking-[0.2em] text-indigo-600 uppercase dark:text-indigo-400">
-            Signage schedule &amp; design sign-off
-          </p>
-          <h1 className="mt-4 max-w-2xl text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
-            Every sign. Every stand.{" "}
-            <span className="text-indigo-600 dark:text-indigo-400">Signed off, on time.</span>
-          </h1>
-          <p className="text-muted-foreground mt-5 max-w-xl text-lg leading-relaxed">
-            <Wordmark name={brandName} size="sm" className="align-baseline text-lg" /> is the
-            single register for organiser signage and exhibitor stand designs — with approval
-            chains, deadline chasing and an immutable audit trail built in.
-          </p>
+            <p className="text-xs font-semibold tracking-[0.2em] text-indigo-600 uppercase dark:text-indigo-400">
+              Signage schedule &amp; design sign-off
+            </p>
+            <h1 className="mt-4 max-w-2xl text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
+              Every sign. Every stand.{" "}
+              <span className="text-indigo-600 dark:text-indigo-400">Signed off, on time.</span>
+            </h1>
+            <p className="text-muted-foreground mt-5 max-w-xl text-lg leading-relaxed">
+              <Wordmark name={brandName} size="sm" className="align-baseline text-lg" /> is the
+              single register for organiser signage and exhibitor stand designs — with approval
+              chains, deadline chasing and an immutable audit trail built in.
+            </p>
 
-          <div className="mt-8 flex flex-wrap gap-3">
-            <Button asChild size="lg" className="bg-indigo-600 text-white hover:bg-indigo-700">
-              <Link href="/login">
-                Staff sign in <ArrowRight className="size-4" aria-hidden />
-              </Link>
-            </Button>
-            <Button asChild size="lg" variant="outline">
-              <Link href="/login">Exhibitor &amp; partner portal</Link>
-            </Button>
-          </div>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <Button asChild size="lg" className="bg-indigo-600 text-white hover:bg-indigo-700">
+                <Link href="/login">
+                  Staff sign in <ArrowRight className="size-4" aria-hidden />
+                </Link>
+              </Button>
+              <Button asChild size="lg" variant="outline">
+                <Link href="/login">Exhibitor &amp; partner portal</Link>
+              </Button>
+            </div>
 
-          <div className="mt-12 flex flex-wrap items-center gap-2" aria-label="Item lifecycle">
-            {PIPELINE.map((status, i) => (
-              <span key={status} className="flex items-center gap-2">
-                <StatusBadge status={status} />
-                {i < PIPELINE.length - 1 && (
-                  <ArrowRight className="text-muted-foreground/50 size-3.5" aria-hidden />
-                )}
-              </span>
-            ))}
-          </div>
+            <div className="mt-12 flex flex-wrap items-center gap-2" aria-label="Item lifecycle">
+              {PIPELINE.map((status, i) => (
+                <span key={status} className="flex items-center gap-2">
+                  <StatusBadge status={status} />
+                  {i < PIPELINE.length - 1 && (
+                    <ArrowRight className="text-muted-foreground/50 size-3.5" aria-hidden />
+                  )}
+                </span>
+              ))}
+            </div>
           </div>
           <Scene
             kind="hall"
@@ -99,9 +99,7 @@ export default async function Home() {
           <div className="mx-auto grid w-full max-w-5xl gap-6 px-6 py-14 sm:grid-cols-3 sm:gap-10">
             {FEATURES.map((f) => (
               <div key={f.title}>
-                <span
-                  className={`flex size-10 items-center justify-center rounded-lg ${f.tile}`}
-                >
+                <span className={`flex size-10 items-center justify-center rounded-lg ${f.tile}`}>
                   <f.icon className="size-5" aria-hidden />
                 </span>
                 <h2 className="mt-4 text-sm font-semibold">{f.title}</h2>
@@ -129,9 +127,18 @@ export default async function Home() {
                 locked version. When the doors open, the audit trail already tells the whole story.
               </p>
               <ul className="text-muted-foreground mt-5 space-y-2 text-sm">
-                <li className="flex gap-2"><span className="mt-1.5 size-2 shrink-0 rounded-full bg-indigo-500" />Automatic reminders and escalation keep every approval moving</li>
-                <li className="flex gap-2"><span className="mt-1.5 size-2 shrink-0 rounded-full bg-amber-500" />Excel in, Excel out — plus certificates and spec labels as PDFs</li>
-                <li className="flex gap-2"><span className="mt-1.5 size-2 shrink-0 rounded-full bg-emerald-500" />Exhibitors and contractors submit through their own portal</li>
+                <li className="flex gap-2">
+                  <span className="mt-1.5 size-2 shrink-0 rounded-full bg-indigo-500" />
+                  Automatic reminders and escalation keep every approval moving
+                </li>
+                <li className="flex gap-2">
+                  <span className="mt-1.5 size-2 shrink-0 rounded-full bg-amber-500" />
+                  Excel in, Excel out — plus certificates and spec labels as PDFs
+                </li>
+                <li className="flex gap-2">
+                  <span className="mt-1.5 size-2 shrink-0 rounded-full bg-emerald-500" />
+                  Exhibitors and contractors submit through their own portal
+                </li>
               </ul>
             </div>
           </div>

@@ -67,7 +67,10 @@ export function buildCalendar(
   events: CalendarEvent[],
   stamp: Date = new Date(),
 ): string {
-  const dtstamp = stamp.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const dtstamp = stamp
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}/, "");
   const lines: string[] = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",

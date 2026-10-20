@@ -151,13 +151,17 @@ export async function renderSpecLabels(input: {
     input.labels.map((l) => QRCode.toDataURL(l.qrUrl, { margin: 0, width: 160 })),
   );
   const doc = (
-    <Document title={input.labels.length === 1 ? `${input.labels[0].ref} spec label` : "Spec labels"}>
+    <Document
+      title={input.labels.length === 1 ? `${input.labels[0].ref} spec label` : "Spec labels"}
+    >
       {input.labels.map((l, i) => (
         <Page key={l.ref} size="A6" style={styles.labelPage}>
           <BrandMark name={input.brandName} />
           <Text style={{ fontSize: 14, ...BOLD }}>{l.ref}</Text>
           <Text style={{ fontSize: 10, marginBottom: 6 }}>{l.name}</Text>
-          {l.where ? <Text style={{ fontSize: 15, ...BOLD, marginBottom: 2 }}>{l.where}</Text> : null}
+          {l.where ? (
+            <Text style={{ fontSize: 15, ...BOLD, marginBottom: 2 }}>{l.where}</Text>
+          ) : null}
           {l.when ? <Text style={{ fontSize: 10, marginBottom: 6 }}>{l.when}</Text> : null}
           <View style={{ marginTop: 4, paddingRight: 72 }}>
             {l.fields.map(([k, v]) => (

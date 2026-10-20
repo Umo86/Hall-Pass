@@ -24,7 +24,13 @@ describe("missingSubmitFields", () => {
 
   it("a sign needs hall, location, size and fixing", () => {
     expect(
-      missingSubmitFields({ ...complete, hallId: null, locationId: null, widthMm: null, fixingMethod: null }),
+      missingSubmitFields({
+        ...complete,
+        hallId: null,
+        locationId: null,
+        widthMm: null,
+        fixingMethod: null,
+      }),
     ).toEqual(["hall", "location", "width", "fixing method"]);
   });
 
@@ -81,7 +87,13 @@ describe("commentRecipients", () => {
 
   it("falls back to the creator when an imported item has no owner", () => {
     expect(
-      commentRecipients({ authorId: "me", ownerId: null, createdBy: "creator", priorAuthors: [], isInternal: true }),
+      commentRecipients({
+        authorId: "me",
+        ownerId: null,
+        createdBy: "creator",
+        priorAuthors: [],
+        isInternal: true,
+      }),
     ).toEqual(["creator"]);
   });
 

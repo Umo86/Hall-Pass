@@ -87,7 +87,8 @@ export function signageTransition(
   }
   if (event === "resume") {
     if (current !== "on_hold") throw new IllegalTransitionError(current, event);
-    if (!ctx.previousStatus) throw new IllegalTransitionError(current, `${event} (no previous status)`);
+    if (!ctx.previousStatus)
+      throw new IllegalTransitionError(current, `${event} (no previous status)`);
     return ctx.previousStatus;
   }
 

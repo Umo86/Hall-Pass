@@ -11,9 +11,7 @@ describe("describeConfigShape", () => {
     expect(describeConfigShape(`"${GOOD}"`)).toMatch(/quote marks/);
   });
   it("catches the password placeholder", () => {
-    expect(
-      describeConfigShape(GOOD.replace("secret", "[YOUR-PASSWORD]")),
-    ).toMatch(/placeholder/);
+    expect(describeConfigShape(GOOD.replace("secret", "[YOUR-PASSWORD]"))).toMatch(/placeholder/);
   });
   it("catches spaces and line breaks", () => {
     expect(describeConfigShape(GOOD.replace("pooler", "poo ler"))).toMatch(/space or line break/);
