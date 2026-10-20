@@ -100,15 +100,32 @@ export const STAFF_HOME = "/my-work";
 /** Where external users land. */
 export const PORTAL_HOME = "/portal/approvals";
 
+/** Control characters (which URL parsers drop) and backslashes (read as "/"). */
+const UNSAFE_IN_NEXT = /[\u0000-\u001f\u007f\\]/;
+const NEXT_BASE = "http://x";
+
 /**
  * A same-site path to continue to after sign-in, or null. Only plain
- * paths are accepted, never another site ("//evil.test", "/\\evil.test").
+ * paths are accepted, never another site ("//evil.test", "/\\evil.test",
+ * "/<tab>/evil.test" — the URL parser drops tabs and newlines, so that one
+ * would become "//evil.test"). The path is returned as the browser will
+ * read it (parsed against a placeholder origin, which must survive), so the
+ * sign-in loop checks see "/x/../login" as "/login".
  */
 export function safeNext(value: unknown): string | null {
   if (typeof value !== "string" || !value.startsWith("/")) return null;
-  if (value.startsWith("//") || value.startsWith("/\\")) return null;
-  if (value.startsWith("/login") || value.startsWith("/auth/") || value.startsWith("/api/")) {
+  if (UNSAFE_IN_NEXT.test(value) || value.startsWith("//")) return null;
+  let url: URL;
+  try {
+    url = new URL(value, NEXT_BASE);
+  } catch {
     return null;
   }
-  return value;
+  if (url.origin !== NEXT_BASE) return null;
+  const path = url.pathname;
+  if (path.startsWith("//")) return null;
+  if (path.startsWith("/login") || path.startsWith("/auth/") || path.startsWith("/api/")) {
+    return null;
+  }
+  return path + url.search + url.hash;
 }

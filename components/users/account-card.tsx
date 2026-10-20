@@ -70,8 +70,12 @@ export function AccountCard({
   /** The viewer isn't a super admin: department sign-offs go to its own approvers only. */
   signersOnly?: boolean;
   currentUserId: string;
-  /** Super admins: "Copy a sign-in link" / "Copy a password reset link" (active members, not yourself). */
-  accessLinks?: { userId: string; emailOn: boolean } | null;
+  /**
+   * Super admins: "Copy a sign-in link" / "Copy a password reset link" (active
+   * members, not yourself; or an invitation for someone with an account from
+   * before, with a note saying so).
+   */
+  accessLinks?: { userId: string; emailOn: boolean; note?: string } | null;
   /** Remove…, below the rest (super admins). */
   children?: React.ReactNode;
 }) {
@@ -245,6 +249,7 @@ export function AccountCard({
             {accessLinks.emailOn ? "" : " (email isn't set up here)"}: make a link that signs them
             in once, or one to choose a new password.
           </p>
+          {accessLinks.note && <p className="text-muted-foreground text-xs">{accessLinks.note}</p>}
           <AccessLinks
             userId={accessLinks.userId}
             firstName={firstName}

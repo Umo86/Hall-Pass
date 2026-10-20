@@ -92,17 +92,33 @@ export async function createInvitedAccount(opts: {
   }
 }
 
-/** Set (or replace) the password and name of the signed-in person, audited ("set up their account"). */
+/**
+ * The first password and the name of someone an email link has just signed
+ * in (/auth/accept), audited ("set up their account"). Never replaces a
+ * password: "exists" when they already have one (changing it is
+ * changeOwnPassword's job, which asks for the current one and ends other
+ * sessions), and nothing is written. Two tabs at once: the first wins.
+ */
 export async function setPasswordAndName(opts: {
   userId: string;
   email: string;
   fullName: string;
   password: string;
-}): Promise<void> {
+}): Promise<"ok" | "exists"> {
   const hash = await hashPassword(opts.password);
   const organisationId = await accountOrganisationId(opts.userId);
-  await db.transaction(async (tx) => {
-    await upsertPasswordTx(tx, opts.userId, hash);
+  return db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(authAccount)
+      .values({
+        userId: opts.userId,
+        accountId: opts.userId,
+        providerId: "credential",
+        password: hash,
+      })
+      .onConflictDoNothing({ target: [authAccount.providerId, authAccount.accountId] })
+      .returning({ id: authAccount.id });
+    if (!created) return "exists" as const;
     await tx
       .update(users)
       .set({ fullName: opts.fullName.trim(), emailVerified: true, updatedAt: new Date() })
@@ -117,6 +133,7 @@ export async function setPasswordAndName(opts: {
       subjectUserId: opts.userId,
       subjectEmail: opts.email,
     });
+    return "ok" as const;
   });
 }
 

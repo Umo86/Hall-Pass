@@ -1,5 +1,10 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
+import postgres from "postgres";
 import { signInAs, signInWithPassword } from "./helpers";
+
+const DB = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/hallpass";
+const DAY = 24 * 60 * 60;
+const SESSION_COOKIE = "hp.session_token";
 
 /**
  * Real sign-in (Better Auth), as production runs it. Needs BETTER_AUTH_SECRET
@@ -27,6 +32,36 @@ async function signOutFromMenu(page: Page, name: string) {
   await page.getByRole("button", { name: `Account: ${name}` }).click();
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await page.waitForURL(/\/login$/);
+}
+
+/**
+ * As if this browser signed in four weeks ago and was last rolled then: the
+ * session cookie and its database row both run out in two days.
+ */
+async function ageSession(ctx: BrowserContext) {
+  const cookie = (await ctx.cookies()).find((c) => c.name === SESSION_COOKIE);
+  expect(cookie, "a real session cookie").toBeDefined();
+  await ctx.addCookies([{ ...cookie!, expires: Math.floor(Date.now() / 1000) + 2 * DAY }]);
+  const token = decodeURIComponent(cookie!.value).split(".")[0];
+  const sql = postgres(DB, { max: 1, onnotice: () => {} });
+  try {
+    const rows = await sql`UPDATE auth_session SET expires_at = now() + interval '2 days'
+      WHERE token = ${token} RETURNING id`;
+    expect(rows).toHaveLength(1);
+  } finally {
+    await sql.end();
+  }
+}
+
+/** A full page load rolls the session: the cookie comes back good for 30 days. */
+async function expectRolledOnPageLoad(page: Page, url: string) {
+  const ping = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/session");
+  await page.goto(url);
+  const res = await ping;
+  expect(res.status()).toBe(204);
+  expect(await res.headerValue("set-cookie")).toContain("Max-Age=2592000");
+  const cookie = (await page.context().cookies()).find((c) => c.name === SESSION_COOKIE);
+  expect(cookie!.expires).toBeGreaterThan(Date.now() / 1000 + 29 * DAY);
 }
 
 /** The email form on /login (the demo list shows first while demo sign-in is on too). */
@@ -217,6 +252,109 @@ test.describe("Real sign-in", () => {
     await ops.goto(`${baseURL}/users?tab=external&event=all`);
     await expect(ops.getByRole("button", { name: /^Copy a sign-in link for / })).toHaveCount(0);
     await ops.context().close();
+  });
+
+  test("sessions roll on page loads, for staff and partners: the cookie too, not just the database", async ({
+    browser,
+    baseURL,
+  }) => {
+    test.skip(!userId, "needs the account made above");
+    const pat = await fresh(browser);
+    await signInWithPassword(pat, baseURL!, email, password);
+    await pat.waitForURL("**/my-work");
+    await ageSession(pat.context());
+    await expectRolledOnPageLoad(pat, `${baseURL}/my-work`);
+    await pat.context().close();
+
+    const admin = await demo(browser, "admin@media10.test", baseURL!);
+    await admin.goto(`${baseURL}/users?tab=external&event=all`);
+    await admin
+      .getByRole("button", { name: /^Copy a sign-in link for / })
+      .first()
+      .click();
+    const partnerLink = await admin.getByRole("dialog").getByLabel("Sign-in link").inputValue();
+    await admin.context().close();
+    const partner = await fresh(browser);
+    await partner.goto(partnerLink);
+    await partner.waitForURL("**/portal/**");
+    await ageSession(partner.context());
+    await expectRolledOnPageLoad(partner, `${baseURL}/portal/approvals`);
+    await partner.context().close();
+  });
+
+  test("someone invited again with an account from before gets back in with a super admin's link", async ({
+    browser,
+    baseURL,
+  }) => {
+    // A partner whose access was revoked, invited again; a team member who
+    // was removed (no membership), invited again. Both have accounts already.
+    const partnerEmail = `again-${n}@partner.test`;
+    const staffEmail = `gone-${n}@auth.test`;
+    const staffName = `Gil Gone ${n}`;
+    const sql = postgres(DB, { max: 1, onnotice: () => {} });
+    try {
+      const [ctx] = await sql`
+        SELECT e.id AS edition_id, ev.organisation_id,
+               (SELECT id FROM users WHERE email = 'admin@media10.test') AS admin_id
+        FROM editions e JOIN events ev ON ev.id = e.event_id WHERE e.code = 'BIRM27'`;
+      const [ada] = await sql`
+        INSERT INTO users (email, full_name, is_external, email_verified)
+        VALUES (${partnerEmail}, ${`Ada Again ${n}`}, true, true) RETURNING id`;
+      await sql`
+        INSERT INTO external_grants (invited_email, user_id, organisation_id, edition_id, role,
+                                     invited_by, invite_token_hash, accepted_at, revoked_at)
+        VALUES (${partnerEmail}, ${ada.id}, ${ctx.organisation_id}, ${ctx.edition_id}, 'hs',
+                ${ctx.admin_id}, ${`e2e-old-${n}`}, now() - interval '30 days', now() - interval '1 day')`;
+      await sql`
+        INSERT INTO external_grants (invited_email, organisation_id, edition_id, role, invited_by,
+                                     invite_token_hash)
+        VALUES (${partnerEmail}, ${ctx.organisation_id}, ${ctx.edition_id}, 'hs', ${ctx.admin_id},
+                ${`e2e-new-${n}`})`;
+      await sql`
+        INSERT INTO users (email, full_name, email_verified) VALUES (${staffEmail}, ${staffName}, true)`;
+    } finally {
+      await sql.end();
+    }
+
+    const admin = await demo(browser, "admin@media10.test", baseURL!);
+    await admin.goto(`${baseURL}/users?tab=external&event=all`);
+    await admin
+      .getByRole("button", { name: `Copy a password reset link for ${partnerEmail}` })
+      .click();
+    const resetUrl = await admin.getByRole("dialog").getByLabel("Password reset link").inputValue();
+    expect(resetUrl).toContain("/reset-password?token=");
+    await admin.getByRole("button", { name: "Done" }).click();
+    const ada = await fresh(browser);
+    await ada.goto(resetUrl);
+    await ada.getByLabel("New password").fill("ada-again-pass");
+    await ada.getByLabel("Type it again").fill("ada-again-pass");
+    await ada.getByRole("button", { name: "Save password" }).click();
+    await ada.waitForURL("**/portal/**");
+    await ada.context().close();
+
+    await admin.goto(`${baseURL}/users/new`);
+    await admin.getByLabel("Full name").fill(staffName);
+    await admin.getByLabel("Email").fill(staffEmail);
+    await admin.getByLabel("Department", { exact: true }).selectOption({ label: "Marketing" });
+    await admin.getByRole("checkbox", { name: "Signs off Marketing artwork" }).uncheck();
+    await admin.getByRole("button", { name: "Send invitation" }).click();
+    await expect(admin.getByText(`${staffName} is invited`)).toBeVisible();
+    await admin.goto(`${baseURL}/users?q=${encodeURIComponent(staffEmail)}`);
+    await admin
+      .getByRole("row")
+      .filter({ hasText: staffEmail })
+      .getByRole("link", { name: staffName })
+      .click();
+    await expect(admin.getByRole("heading", { name: "Sign-in help" })).toBeVisible();
+    await expect(admin.getByText(/already have an account from before/)).toBeVisible();
+    await admin.getByRole("button", { name: "Copy a sign-in link" }).click();
+    const signIn = await admin.getByLabel("Sign-in link").inputValue();
+    const gil = await fresh(browser);
+    await gil.goto(signIn);
+    await gil.waitForURL("**/my-work");
+    await expect(gil.getByRole("button", { name: `Account: ${staffName}` })).toBeVisible();
+    await gil.context().close();
+    await admin.context().close();
   });
 
   test("suspending signs them out; a correct password is told who to ask", async ({

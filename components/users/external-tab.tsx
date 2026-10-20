@@ -52,9 +52,16 @@ function Status({ g }: { g: GrantRow }) {
   );
 }
 
-/** Super admins get "Copy a sign-in link" for partners who have accepted and are live. */
+/**
+ * Super admins get sign-in help (a sign-in or password reset link) for
+ * partners who can sign in now: accepted and live, or invited again with an
+ * account from before (without email, their only way back in).
+ */
 function accessLinkUserId(g: GrantRow, canAccessLink: boolean): string | null {
-  return canAccessLink && g.userId && g.status === "active" ? g.userId : null;
+  if (!canAccessLink) return null;
+  if (g.status === "active") return g.userId;
+  if (g.status === "invited") return g.accountUserId;
+  return null;
 }
 
 function GrantTable({

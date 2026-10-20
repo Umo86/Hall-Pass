@@ -4,9 +4,10 @@
  * tables other test files are using), with a Supabase-shaped `auth.users`
  * beside data shaped like live, then run again: existing people are marked
  * verified and their emails lower-cased; each Supabase bcrypt password
- * becomes the credential account of the users row with the same id (or,
- * failing that, the same confirmed email), never an empty or deleted one;
- * a second run keeps a password changed since; the new tables are
+ * becomes the credential account of the users row with the same id, never
+ * an empty or deleted one, and never one matched only by email (a Supabase
+ * sign-up can't take over a seeded demo account); a second run, and
+ * scripts/auth-carry-over.sql, keep a password changed since; the new tables are
  * deny-by-default and owned like users. Then, in the shared test database,
  * a carried-over bcrypt password signs in through Better Auth and is
  * rehashed to scrypt.
@@ -32,6 +33,8 @@ if (url) {
 }
 
 const FILE = readFileSync("lib/db/migrations/0014_better_auth.sql", "utf8");
+const CARRY_OVER = readFileSync("scripts/auth-carry-over.sql", "utf8");
+const PART_3 = "-- (3) Carry-over from Supabase Auth";
 /** The file as psql would run it: drizzle's breakpoint markers stripped. */
 const SQL_TEXT = FILE.replaceAll("--> statement-breakpoint", "");
 const AUTH_TABLES = ["auth_session", "auth_account", "auth_verification", "auth_rate_limit"];
@@ -92,6 +95,8 @@ d("migration 0014: sign-in on Better Auth", () => {
     await c.unsafe(`CREATE SCHEMA auth;
       CREATE TABLE auth.users (id uuid PRIMARY KEY, email text, encrypted_password text,
         email_confirmed_at timestamptz, deleted_at timestamptz, created_at timestamptz)`);
+    // byemail@ has a confirmed Supabase account under another id (as the
+    // seeded demo accounts would after a Supabase sign-up with their email).
     await c`INSERT INTO auth.users VALUES
       (${owner}, 'owner@example.test', ${ownerHash}, now(), NULL, now() - interval '30 days'),
       (${randomUUID()}, 'ByEmail@example.test', ${byEmailHash}, now(), NULL, now()),
@@ -103,10 +108,11 @@ d("migration 0014: sign-in on Better Auth", () => {
 
     const credentials = await c<{ user_id: string; account_id: string; password: string }[]>`
       SELECT user_id, account_id, password FROM auth_account WHERE provider_id = 'credential'`;
-    expect(new Set(credentials.map((r) => r.user_id))).toEqual(new Set([owner, byEmail]));
+    // Only the account with the same id; never by email alone.
+    expect(credentials.map((r) => r.user_id)).toEqual([owner]);
     expect(credentials.every((r) => r.account_id === r.user_id)).toBe(true);
     expect(credentials.find((r) => r.user_id === owner)?.password).toBe(ownerHash);
-    expect(credentials.find((r) => r.user_id === byEmail)?.password).toBe(byEmailHash);
+    expect(credentials.some((r) => r.password === byEmailHash)).toBe(false);
 
     const people = await c<{ id: string; email: string; email_verified: boolean }[]>`
       SELECT id, email, email_verified FROM users
@@ -126,9 +132,10 @@ d("migration 0014: sign-in on Better Auth", () => {
     await c`UPDATE auth_account SET password = 'changed-since' WHERE user_id = ${owner}`;
     await c`UPDATE users SET email_verified = false WHERE id IN ${c([owner, byEmail])}`;
     await c.unsafe(SQL_TEXT);
+    await c.unsafe(CARRY_OVER); // the catch-up run after the release (P1-6)
     const again = await c<{ user_id: string; password: string }[]>`
       SELECT user_id, password FROM auth_account WHERE provider_id = 'credential'`;
-    expect(again).toHaveLength(2);
+    expect(again.map((r) => r.user_id)).toEqual([owner]);
     expect(again.find((r) => r.user_id === owner)?.password).toBe("changed-since");
     const verified = await c<{ id: string; email_verified: boolean }[]>`
       SELECT id, email_verified FROM users WHERE id IN ${c([owner, byEmail])}`;
@@ -141,7 +148,13 @@ d("migration 0014: sign-in on Better Auth", () => {
     // And without Supabase's auth schema it runs, changing nothing.
     await c.unsafe("DROP SCHEMA auth CASCADE");
     await c.unsafe(SQL_TEXT);
-    expect((await c`SELECT 1 FROM auth_account WHERE provider_id = 'credential'`).length).toBe(2);
+    expect((await c`SELECT 1 FROM auth_account WHERE provider_id = 'credential'`).length).toBe(1);
+  });
+
+  it("scripts/auth-carry-over.sql is part 3 of 0014, word for word", () => {
+    const part3 = FILE.slice(FILE.indexOf(PART_3));
+    expect(FILE.indexOf(PART_3)).toBeGreaterThan(0);
+    expect(CARRY_OVER.slice(CARRY_OVER.indexOf(PART_3)).trim()).toBe(part3.trim());
   });
 
   it("makes the four tables deny-by-default, owned like users, with updated_at kept", async () => {

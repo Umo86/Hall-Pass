@@ -36,6 +36,7 @@ import { eventCardData } from "@/lib/users/event-options";
 import type { HandoverStep } from "@/lib/users/handover";
 import { accessHistory } from "@/lib/users/history";
 import { invitesCanBeEmailed } from "@/lib/users/email";
+import { reinvitedAccounts } from "@/lib/users/reinvited";
 import {
   abilityChoices,
   eventsSummary,
@@ -275,6 +276,23 @@ export default async function PersonPage({
     person.status === "active" &&
     authConfigured() &&
     can(actor, { type: "people.access_link" });
+  // An open invitation for someone who has an account from before (removed
+  // from the team, then invited again): the invitation link asks them to sign
+  // in first, so without email this is their way back in.
+  const reinvitedAccount =
+    person.kind === "invite" && authConfigured() && can(actor, { type: "people.access_link" })
+      ? ((await reinvitedAccounts(db, orgId, [person.email])).get(person.email.toLowerCase()) ??
+        null)
+      : null;
+  const accessLinks = showAccessLinks
+    ? { userId: person.id, emailOn: invitesCanBeEmailed() }
+    : reinvitedAccount
+      ? {
+          userId: reinvitedAccount,
+          emailOn: invitesCanBeEmailed(),
+          note: "They already have an account from before, so the invitation link asks them to sign in first. Signing in applies this invitation.",
+        }
+      : null;
   const suspendedLine =
     status === "suspended" && person.suspendedAt
       ? `Suspended since ${formatDate(person.suspendedAt)}${person.suspendedByName ? ` by ${person.suspendedByName}` : ""}`
@@ -389,7 +407,7 @@ export default async function PersonPage({
         candidates={handover.candidates}
         signersOnly={handover.signersOnly}
         currentUserId={session.user.id}
-        accessLinks={showAccessLinks ? { userId: person.id, emailOn: invitesCanBeEmailed() } : null}
+        accessLinks={accessLinks}
       >
         {impact && canRemove && (
           <RemoveUser

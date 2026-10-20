@@ -28,7 +28,7 @@ import { useConfirm } from "@/components/confirm-dialog";
 import { appTimezone } from "@/lib/config";
 import { formatDate } from "@/lib/format";
 import { absoluteLink, LinkDialog } from "./invite-actions";
-import { PartnerSignInLink } from "./access-links";
+import { PartnerAccessLinks } from "./access-links";
 import { FieldError } from "./person-fields";
 
 /** A venue or company an invitation can be for, with the contact on its record. */
@@ -629,7 +629,7 @@ export function GrantActions({
   /** The London date access ends (or ended) on. */
   endsOn: string | null;
   emailOn: boolean;
-  /** Super admins, accepted and live: the partner's account, for "Copy a sign-in link". */
+  /** Super admins: the partner's account when they can sign in now, for the sign-in and reset links. */
   accessLinkUserId?: string | null;
 }) {
   const [pending, start] = useTransition();
@@ -667,7 +667,7 @@ export function GrantActions({
         </Button>
       )}
       {accessLinkUserId && (
-        <PartnerSignInLink userId={accessLinkUserId} who={who} emailOn={emailOn} />
+        <PartnerAccessLinks userId={accessLinkUserId} who={who} emailOn={emailOn} />
       )}
       <Button
         type="button"

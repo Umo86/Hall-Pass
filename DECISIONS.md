@@ -1313,3 +1313,41 @@ production` counts too. Elsewhere it is as before, fenced to `…@….test` acco
     account password change; "Email me a link" to `next`; super-admin member and partner
     links (once only; managers don't see them); suspension signs out and the correct
     password is told who to ask. Without the secret the suite runs as before (demo path).
+- **Phase 1 review fixes.**
+  - **`safeNext` parses the path as the browser will.** Control characters and backslashes
+    are refused (the URL parser drops tabs and newlines, so `/<tab>/evil.test` was
+    `//evil.test`), the value is parsed against a placeholder origin that must survive, and
+    the sign-in loop checks run on the normalised path (`/x/../login` is `/login`). One
+    function covers every post-sign-in redirect.
+  - **Account set-up never replaces a password.** `completeAccount` (/auth/accept) refuses
+    anyone who already has one ("…so nothing was changed"), and `setPasswordAndName` only
+    inserts (two tabs at once: the first wins). Replacing a password stays with My account
+    (current password, other sessions ended) and reset links.
+  - **Sessions roll only where the cookie is rewritten too.** A page render (document load
+    or client navigation) can't set cookies, and Better Auth swallowed that refusal after
+    extending the database row, so cookies ran out 30 days after sign-in. `getAuthSession`
+    passes `disableRefresh` unless the request is a server action (`next-action`) or a route
+    handler (proxy's `x-hp-path` under `/api/`), and both layouts ping `/api/session` on each
+    full page load and hourly, so partners (no bell) roll too.
+  - **A cut-short email link still lands in the app.** The auth route fills in any missing
+    `callbackURL` (`/`), `newUserCallbackURL` (`/auth/accept`) and `errorCallbackURL`
+    (`/login`); without `callbackURL` better-auth 1.7.7 signed the person in and answered
+    with raw JSON.
+  - **0014's carry-over matches by id only** (change to [A§2.2]'s SQL, made before P1-3
+    froze the file). The second INSERT gave a users row with a non-Supabase id the password
+    of a confirmed Supabase account with the same email: on live those rows are the seeded
+    demo accounts, including the demo super admin, and a Supabase sign-up with that email
+    (if sign-ups were auto-confirmed) would have become their password. Live needs only the
+    id match (the owner). `scripts/auth-carry-over.sql` is part 3 word for word (tested).
+    The release notes now say to stop when the Supabase account count or the credential
+    count after migrating or after the catch-up isn't the expected one (1 on live).
+  - **Sign-in help for someone invited again who has an account from before** (D12): a
+    removed team member or a partner whose access was revoked or ran out, invited again,
+    is asked by the invitation page to sign in first, and without email had no way to.
+    Super admins now get "Copy a sign-in link" and "Copy a password reset link" on the
+    invitation page under Users and on the waiting row in Users → External (partners get a
+    reset link everywhere they get a sign-in link: they have no My account page). The
+    server accepts such a person (`lib/users/reinvited.ts`) only with an open staff
+    invitation or a live partner invitation in this organisation, and never when the
+    account has ties to another organisation (a membership, a grant or an open invitation
+    there): inviting someone's email must not hand a link to their access elsewhere.

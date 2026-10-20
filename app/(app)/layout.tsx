@@ -12,6 +12,7 @@ import { db } from "@/lib/db/client";
 import { departments, notifications } from "@/lib/db/schema";
 import { requireStaffSession } from "@/lib/auth/actor";
 import { DemoBanner } from "@/components/demo-banner";
+import { SessionKeepAlive } from "@/components/auth/session-keep-alive";
 import {
   LAST_EVENT_COOKIE,
   eventGroup,
@@ -182,6 +183,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       data-sidebar={sidebarHidden ? "hidden" : "shown"}
     >
       <DemoBanner />
+      <SessionKeepAlive />
       <header className="bg-background sticky top-0 z-40 flex h-14 items-center gap-2 border-b px-3 sm:gap-4 sm:px-4">
         <MobileNav
           editions={navEditions}

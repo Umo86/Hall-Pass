@@ -208,7 +208,14 @@ Sign-in moves from Supabase Auth to Better Auth, in this database. 0014 only add
 the account with the same id, so people keep their passwords; the first password sign-in
 rehashes it. Migrate, deploy, then run `scripts/auth-carry-over.sql` once against the same
 database (`psql "$DIRECT_DATABASE_URL" -f scripts/auth-carry-over.sql`): it picks up any
-Supabase account created between migrating and deploying and changes nothing else. A
+Supabase account created between migrating and deploying and changes nothing else.
+Passwords are matched by account id only, never by email, so a seeded demo account can't
+take a password from a Supabase sign-up. Stop and find out why before going on if, before
+migrating, the number of Supabase accounts
+(`SELECT count(*) FROM auth.users WHERE deleted_at IS NULL`) isn't the number of people who
+sign in with a password today, or if, after migrating or after the catch-up script, the
+number of passwords (`SELECT count(*) FROM auth_account WHERE provider_id = 'credential'`)
+isn't that number either (one on the live site, the owner). A
 rollback to the previous deployment is safe (it ignores the new tables and still finds the
 passwords in Supabase Auth); anyone who accepted an invitation in between needs a new one.
 After deploying, `/api/health` reports `"auth":"better-auth"` and `"demoSignIn":false`;
@@ -230,15 +237,20 @@ email-link landing (`GET /api/auth/magic-link/verify`) answers.
   typed or shown anywhere. Real sign-in is on when either gives a secret; changing either
   value signs everyone out (sessions and links stop validating). Locally and in CI's unit
   step nothing changes; CI's end-to-end step sets `BETTER_AUTH_SECRET`.
-- **Sessions** last 30 days and roll while people use the app. Suspending someone, removing
-  them, their access end date passing, a password reset and a password change (other
-  devices) end their sessions at once.
+- **Sessions** last 30 days and roll while people use the app: once a day at most, the
+  session and its cookie are extended together. Pages can't rewrite cookies, so they read
+  the session without rolling it; the staff and partner layouts ping `/api/session` on each
+  full page load and hourly (as do the bell and server actions), and that rolls it.
+  Suspending someone, removing them, their access end date passing, a password reset and a
+  password change (other devices) end their sessions at once.
 - **Links** (sign-in and reset) work once, for an hour, and are stored hashed. Sign-in, link
   and reset requests are rate-limited in production (`AUTH_RATE_LIMIT=1` elsewhere).
 - **Email.** With `RESEND_API_KEY` and `EMAIL_FROM` set, invitations, sign-in links and
   resets are emailed. Without them invitations show the link to pass on, "Email me a link"
   and "Forgot password?" say email isn't set up, and super admins can make one-time sign-in
-  and reset links on a person's page. In local development (no email) the login page shows
+  and reset links on a person's page, on Users → External for partners, and on the
+  invitation page of someone invited again who already has an account (a removed team
+  member, a partner whose access ended). In local development (no email) the login page shows
   the link that would have been sent. To switch email on: verify a sending domain at
   resend.com, create an API key, add `RESEND_API_KEY` (Sensitive) and `EMAIL_FROM`
   (e.g. `Hall Pass <noreply@mail.example.com>`) on Vercel and redeploy.

@@ -20,6 +20,9 @@ import * as schema from "@/lib/db/schema";
 
 const state = vi.hoisted(() => ({
   cookie: "",
+  /** proxy.ts's x-hp-path (the requested path), and a server action's id. */
+  path: "",
+  action: "",
   limiter: null as null | "limited" | "unavailable",
 }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
@@ -36,6 +39,8 @@ vi.mock("next/headers", () => ({
       host: "localhost:3901",
       "x-real-ip": "198.51.100.1",
       ...(state.cookie ? { cookie: state.cookie } : {}),
+      ...(state.path ? { "x-hp-path": state.path } : {}),
+      ...(state.action ? { "next-action": state.action } : {}),
     }),
 }));
 vi.mock("next/navigation", async (importOriginal) => ({
@@ -398,6 +403,113 @@ d("sign-in on Better Auth: accounts, sessions and links", () => {
     expect(await cookieFor(email, "mia-pass-1")).toContain("hp.session_token=");
   });
 
+  it("set-up never replaces a password: someone with one is refused, and nothing changes", async () => {
+    // Two sessions for someone who already has a password; one of them posts
+    // the /auth/accept action directly with a password of their choosing.
+    state.cookie = "";
+    const id = await memberWithPassword("pat", "ops", "pat-real-pass");
+    const [before] = await db
+      .select()
+      .from(schema.authAccount)
+      .where(eq(schema.authAccount.userId, id));
+    const cookieA = await cookieFor(mail("pat"), "pat-real-pass");
+    await cookieFor(mail("pat"), "pat-real-pass");
+    const auditBefore = (await auditFor(id)).length;
+    state.cookie = cookieA;
+    expect(
+      await auth.completeAccount({
+        fullName: "Taken Over",
+        password: "attacker-pass-123",
+        confirm: "attacker-pass-123",
+      }),
+    ).toEqual({ ok: false, error: messages.ALREADY_HAS_PASSWORD });
+    const [after] = await db
+      .select()
+      .from(schema.authAccount)
+      .where(eq(schema.authAccount.userId, id));
+    expect(after.password).toBe(before.password);
+    expect((await userByEmail(mail("pat"))).fullName).toBe("pat");
+    expect(await sessionsOf(id)).toHaveLength(2);
+    expect((await auditFor(id)).length).toBe(auditBefore);
+    state.cookie = "";
+    expect(
+      await auth.signInWithPassword({ email: mail("pat"), password: "attacker-pass-123" }),
+    ).toEqual({ ok: false, error: messages.INCORRECT });
+  });
+
+  it("set-up saves a password only when there is none (two tabs at once: the first wins)", async () => {
+    const { setPasswordAndName } = await import("@/lib/auth/accounts");
+    const id = randomUUID();
+    const email = mail("tab");
+    await db.insert(schema.users).values({ id, email, fullName: "", emailVerified: true });
+    await db.insert(schema.memberships).values({ userId: id, organisationId: orgId, role: "ops" });
+    const results = await Promise.all([
+      setPasswordAndName({ userId: id, email, fullName: "Tab One", password: "tab-one-pass" }),
+      setPasswordAndName({ userId: id, email, fullName: "Tab Two", password: "tab-two-pass" }),
+    ]);
+    expect(results.sort()).toEqual(["exists", "ok"]);
+    const accounts = await db
+      .select()
+      .from(schema.authAccount)
+      .where(eq(schema.authAccount.userId, id));
+    expect(accounts).toHaveLength(1);
+    const winner = (await userByEmail(email)).fullName;
+    const winnerPass = winner === "Tab One" ? "tab-one-pass" : "tab-two-pass";
+    expect(
+      await password.verifyPassword({ hash: accounts[0].password!, password: winnerPass }),
+    ).toBe(true);
+    expect(
+      (await auditFor(id)).filter((a) => a.summary.endsWith("set up their account")),
+    ).toHaveLength(1);
+    expect(
+      await setPasswordAndName({ userId: id, email, fullName: "Later", password: "later-pass-1" }),
+    ).toBe("exists");
+  });
+
+  it("sessions roll only where the cookie is rewritten too: route handlers and actions, not pages", async () => {
+    // Better Auth extends a session once a day. A page render can't set
+    // cookies, so rolling there would move the database alone and the
+    // browser's cookie would still run out 30 days after sign-in.
+    const DAY = 24 * 60 * 60 * 1000;
+    const id = await memberWithPassword("rio", "ops", "rio-pass-123");
+    state.cookie = await cookieFor(mail("rio"), "rio-pass-123");
+    const age = () =>
+      db
+        .update(schema.authSession)
+        .set({ expiresAt: new Date(Date.now() + 28 * DAY) })
+        .where(eq(schema.authSession.userId, id));
+    const expiry = async () => (await sessionsOf(id))[0].expiresAt.getTime();
+    const { getAuthSession } = await import("@/lib/auth/session");
+    try {
+      await age();
+      state.path = "/my-work"; // a page (document load or client navigation)
+      expect((await getAuthSession())?.user.id).toBe(id);
+      expect(await expiry()).toBeLessThan(Date.now() + 29 * DAY);
+
+      state.path = "/api/session"; // the layouts' keep-alive ping
+      const { GET } = await import("@/app/api/session/route");
+      const res = await GET();
+      expect(res.status).toBe(204);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(await expiry()).toBeGreaterThan(Date.now() + 29 * DAY);
+
+      await age();
+      state.path = "/my-work";
+      state.action = "7f00aa"; // a server action posted from that page
+      expect((await getAuthSession())?.user.id).toBe(id);
+      expect(await expiry()).toBeGreaterThan(Date.now() + 29 * DAY);
+
+      state.action = "";
+      state.path = "/api/session";
+      state.cookie = "";
+      expect((await GET()).status).toBe(401);
+    } finally {
+      state.path = "";
+      state.action = "";
+      state.cookie = "";
+    }
+  });
+
   it("an email link for someone never invited makes no account", async () => {
     const email = mail("stranger");
     const link = await links.createSignInLink(email);
@@ -519,6 +631,102 @@ d("sign-in on Better Auth: accounts, sessions and links", () => {
     state.cookie = "";
   });
 
+  it("someone invited again who has an account from before gets sign-in help (never another organisation's)", async () => {
+    const { listGrants } = await import("@/lib/users/external");
+    const { reinvitedAccounts } = await import("@/lib/users/reinvited");
+    const account = async (key: string, external = false) => {
+      const id = randomUUID();
+      await db
+        .insert(schema.users)
+        .values({ id, email: mail(key), fullName: key, emailVerified: true, isExternal: external });
+      await db.insert(schema.authAccount).values({
+        userId: id,
+        accountId: id,
+        providerId: "credential",
+        password: await password.hashPassword(`${key}-old-pass`),
+      });
+      return id;
+    };
+    // Removed from the team (no membership any more), then invited again.
+    const remy = await account("remy");
+    await staffInviteFor(mail("remy"), "ops");
+    // A partner whose access was revoked, invited again (the new grant has no account yet).
+    const paz = await account("paz", true);
+    await db.insert(schema.externalGrants).values([
+      {
+        invitedEmail: mail("paz"),
+        userId: paz,
+        organisationId: orgId,
+        editionId,
+        role: "sponsor",
+        invitedBy: adminId,
+        inviteTokenHash: inviteToken.hashInviteToken(inviteToken.generateInviteToken()),
+        acceptedAt: new Date(),
+        revokedAt: new Date(),
+      },
+      {
+        invitedEmail: mail("paz"),
+        organisationId: orgId,
+        editionId,
+        role: "sponsor",
+        invitedBy: adminId,
+        inviteTokenHash: inviteToken.hashInviteToken(inviteToken.generateInviteToken()),
+      },
+    ]);
+    // A member of another organisation whose email is invited here as a partner.
+    const otto = await account("otto");
+    await db
+      .insert(schema.memberships)
+      .values({ userId: otto, organisationId: otherOrgId, role: "ops" });
+    await db.insert(schema.externalGrants).values({
+      invitedEmail: mail("otto"),
+      organisationId: orgId,
+      editionId,
+      role: "sponsor",
+      invitedBy: adminId,
+      inviteTokenHash: inviteToken.hashInviteToken(inviteToken.generateInviteToken()),
+    });
+
+    const found = await reinvitedAccounts(db, orgId, [mail("remy"), mail("PAZ"), mail("otto")]);
+    expect(Object.fromEntries(found)).toEqual({ [mail("remy")]: remy, [mail("paz")]: paz });
+    // Users → External: the waiting invitation knows the account it will sign in as.
+    const rows = (await listGrants(db, orgId, null)).filter((g) => g.email === mail("paz"));
+    expect(rows.map((g) => [g.status, g.accountUserId])).toEqual(
+      expect.arrayContaining([
+        ["invited", paz],
+        ["revoked", paz],
+      ]),
+    );
+    expect(
+      (await listGrants(db, orgId, null)).find((g) => g.email === mail("otto"))?.accountUserId,
+    ).toBeNull();
+
+    state.cookie = await cookieFor(mail("alex"), ADMIN_PASSWORD);
+    try {
+      const reset = await usersActions.createAccessLink({ userId: remy, kind: "password_reset" });
+      expect(reset).toMatchObject({ ok: true });
+      const signIn = await usersActions.createAccessLink({ userId: paz, kind: "sign_in" });
+      expect(signIn).toMatchObject({ ok: true });
+      expect(await usersActions.createAccessLink({ userId: otto, kind: "sign_in" })).toEqual({
+        ok: false,
+        error: "Person not found",
+      });
+      // The reset link works: Remy chooses a new password and is signed in.
+      const token = new URL((reset as { data: { url: string } }).data.url).searchParams.get(
+        "token",
+      )!;
+      state.cookie = "";
+      expect(
+        await redirectOf(
+          auth.updatePassword({ token, password: "remy-new-pass", confirm: "remy-new-pass" }),
+        ),
+      ).toBe("/");
+      expect(await sessionsOf(remy)).toHaveLength(1);
+    } finally {
+      state.cookie = "";
+    }
+  });
+
   it("without email, links and resets say so (outside local development)", async () => {
     state.cookie = "";
     expect(await auth.signInWithMagicLink({ email: mail("sam") })).toEqual({
@@ -563,5 +771,30 @@ d("sign-in on Better Auth: accounts, sessions and links", () => {
     state.cookie = "";
     const cb = await callback(new Request(`${BASE}/auth/callback?code=old`));
     expect(cb.headers.get("location")).toBe(`${BASE}/login?error=auth`);
+  });
+
+  it("an email link cut short after its token still lands in the app, never on raw JSON", async () => {
+    const { GET } = await import("@/app/api/auth/[...all]/route");
+    state.cookie = "";
+    const cut = (link: string) => link.slice(0, link.indexOf("&"));
+    // Someone with an account: signed in, then the home page.
+    await memberWithPassword("cora", "ops", "cora-pass-123");
+    const link = await links.createSignInLink(mail("cora"), "/approvals");
+    expect(cut(link!)).toMatch(/\/api\/auth\/magic-link\/verify\?token=[^&]+$/);
+    const res = await GET(new Request(cut(link!), { headers: { "x-real-ip": "198.51.100.3" } }));
+    expect(res.status).toBe(302);
+    expect(await res.text()).not.toContain("token");
+    expect(new URL(res.headers.get("location")!, BASE).pathname).toBe("/");
+    expect(res.headers.getSetCookie().join(";")).toContain("hp.session_token=");
+    // A new invitee: their account is made, then they choose a name and password.
+    const email = mail("nell");
+    await staffInviteFor(email, "viewer");
+    const first = await links.createSignInLink(email);
+    const landed = await GET(
+      new Request(cut(first!), { headers: { "x-real-ip": "198.51.100.3" } }),
+    );
+    expect(landed.status).toBe(302);
+    expect(new URL(landed.headers.get("location")!, BASE).pathname).toBe("/auth/accept");
+    expect((await userByEmail(email)).emailVerified).toBe(true);
   });
 });

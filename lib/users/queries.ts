@@ -33,6 +33,7 @@ import { formatDayMonth } from "@/lib/format";
 import { staffInviteExpired } from "@/lib/auth/staff-invite";
 import { inviteStatusText, sortPeople } from "./rules";
 import { activeMembership } from "./active";
+import { reinvitedAccounts } from "./reinvited";
 import { filterPeople, lacksDepartment, type ListFilters } from "./list";
 
 export type SignsOffFor = {
@@ -682,8 +683,9 @@ export async function abilityHolders(
 
 /**
  * Someone a super admin may make a sign-in or reset link for: a member of
- * this organisation, or a partner with a grant in it. Null otherwise, so
- * another organisation's people read as "not found".
+ * this organisation, a partner with a grant in it, or someone invited here
+ * again who has an account from before (lib/users/reinvited.ts). Null
+ * otherwise, so another organisation's people read as "not found".
  */
 export async function accessLinkTarget(
   db: Db | Tx,
@@ -709,7 +711,10 @@ export async function accessLinkTarget(
         and(eq(externalGrants.userId, userId), eq(externalGrants.organisationId, organisationId)),
       )
       .limit(1);
-    if (!grant) return null;
+    if (!grant) {
+      const again = await reinvitedAccounts(db, organisationId, [user.email]);
+      if (again.get(user.email.toLowerCase()) !== user.id) return null;
+    }
   }
   return { id: user.id, email: user.email, name: user.name || user.email };
 }

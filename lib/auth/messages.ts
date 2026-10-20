@@ -17,6 +17,8 @@ export const EMAIL_OFF_LINK =
   "Email isn't set up on this site yet, so sign-in links can't be sent. Sign in with your password, or ask a super admin for a sign-in link.";
 export const EMAIL_OFF_RESET =
   "Email isn't set up on this site yet, so reset links can't be sent. Ask a super admin for a password reset link.";
+export const ALREADY_HAS_PASSWORD =
+  "Your account already has a password, so nothing was changed. To choose a new one, use My account or a password reset link.";
 export const DEV_LINK =
   "Email isn't set up here (development), so here is the link that would have been sent.";
 

@@ -11,6 +11,13 @@ export const dynamic = "force-dynamic";
  */
 const OPEN = new Set(["/api/auth/magic-link/verify"]);
 
+/** The email-link landings, as lib/auth/links.ts sets them (callbackURL: "next", else home). */
+const LANDINGS = [
+  ["callbackURL", "/"],
+  ["newUserCallbackURL", "/auth/accept"],
+  ["errorCallbackURL", "/login"],
+] as const;
+
 function toLogin(request: Request, error: string) {
   return NextResponse.redirect(new URL(`/login?error=${error}`, request.url), 303);
 }
@@ -20,12 +27,18 @@ export async function GET(request: Request) {
   if (!authConfigured() || !OPEN.has(url.pathname)) {
     return new NextResponse("Not found", { status: 404 });
   }
-  // A link missing its error landing (typed by hand, or cut short by a mail
-  // client) fails to the sign-in page with a notice, not the home page.
-  if (!url.searchParams.has("errorCallbackURL")) {
-    url.searchParams.set("errorCallbackURL", "/login");
-    request = new Request(url, request);
+  // A link cut short by a mail client (the token comes first) or typed by
+  // hand gets the landings our links carry (lib/auth/links.ts): without
+  // callbackURL Better Auth would sign them in and answer with raw JSON;
+  // without newUserCallbackURL a new invitee would skip /auth/accept; without
+  // errorCallbackURL a failure would land on the home page, not the notice.
+  let filled = false;
+  for (const [name, value] of LANDINGS) {
+    if (url.searchParams.has(name)) continue;
+    url.searchParams.set(name, value);
+    filled = true;
   }
+  if (filled) request = new Request(url, request);
   let res: Response;
   try {
     res = await getAuth().handler(request);

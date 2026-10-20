@@ -41,6 +41,7 @@ import { sendInviteEmail, type InviteDelivery } from "@/lib/auth/staff-invite";
 import { renderNotificationEmail } from "@/lib/email/template";
 import { sendEmail } from "@/lib/email/send";
 import { activeMembership, memberSeesEditionSql } from "@/lib/users/active";
+import { reinvitedAccounts } from "@/lib/users/reinvited";
 import { editionScopeSql } from "@/lib/queries/edition-scope";
 import { grantStatus, type GrantStatus } from "@/components/portal/summary";
 
@@ -371,8 +372,14 @@ export function defaultEventId(list: ExternalEvent[], lastEvent?: string | null)
 
 export type GrantRow = {
   id: string;
-  /** The partner's account once they have accepted (super admins can make them a sign-in link). */
+  /** The partner's account once they have accepted. */
   userId: string | null;
+  /**
+   * The account this row signs in as, for super admins' sign-in help: the
+   * partner's once accepted, or, for an invitation still waiting, an account
+   * they already have from before (lib/users/reinvited.ts). Null otherwise.
+   */
+  accountUserId: string | null;
   name: string | null;
   email: string;
   editionId: string;
@@ -412,10 +419,16 @@ export async function listGrants(
     organisationId,
     rows.map((r) => r.g),
   );
+  const reinvited = await reinvitedAccounts(
+    db,
+    organisationId,
+    rows.filter((r) => !r.g.userId).map((r) => r.g.invitedEmail),
+  );
   const now = new Date();
   return rows.map(({ g, name, eventName }) => ({
     id: g.id,
     userId: g.userId,
+    accountUserId: g.userId ?? reinvited.get(g.invitedEmail.toLowerCase()) ?? null,
     name: name || null,
     email: g.invitedEmail,
     editionId: g.editionId,

@@ -26,12 +26,14 @@ import {
   sendSignInLink,
 } from "@/lib/auth/links";
 import {
+  hasPassword,
   normaliseEmail,
   resetPasswordWithVerification,
   setPasswordAndName,
 } from "@/lib/auth/accounts";
 import { allow } from "@/lib/auth/rate-limit";
 import {
+  ALREADY_HAS_PASSWORD,
   DEV_LINK,
   EMAIL_OFF_LINK,
   EMAIL_OFF_RESET,
@@ -234,12 +236,16 @@ export async function completeAccount(input: unknown): Promise<AuthResult> {
       error: "This invitation has been withdrawn — ask the person who invited you",
     };
   }
-  await setPasswordAndName({
+  // Set-up is for a first password only. Replacing one goes through My
+  // account (current password, other sessions ended) or a reset link.
+  if (await hasPassword(auth.user.id)) return { ok: false, error: ALREADY_HAS_PASSWORD };
+  const saved = await setPasswordAndName({
     userId: auth.user.id,
     email: auth.user.email,
     fullName: parsed.data.fullName,
     password: parsed.data.password,
   });
+  if (saved === "exists") return { ok: false, error: ALREADY_HAS_PASSWORD };
   // Loading the session applies their invitation (membership or partner access).
   const session = await getSession();
   if (!session) {

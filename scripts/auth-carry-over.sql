@@ -10,8 +10,10 @@
 
 -- (3) Carry-over from Supabase Auth (runs only on the Supabase database) ----
 -- bcrypt hashes start "$2a$"/"$2b$"/"$2y$"; the pattern is built with chr(36)
--- ("$") so no "$2" appears in the SQL text. Confirmed Supabase emails are
--- verified ones. ON CONFLICT keeps a password set since the first run.
+-- ("$") so no "$2" appears in the SQL text. Matched by id only, never by
+-- email: a users row with another id (the seeded demo accounts) never takes
+-- a password from a Supabase sign-up. Confirmed Supabase emails are verified
+-- ones. ON CONFLICT keeps a password set since the first run.
 DO $$
 BEGIN
   IF to_regclass('auth.users') IS NOT NULL THEN
@@ -21,19 +23,6 @@ BEGIN
     JOIN "users" u ON u."id" = au."id"
     WHERE au."encrypted_password" LIKE chr(36) || '2_' || chr(36) || '%'
       AND au."deleted_at" IS NULL
-    ON CONFLICT ("provider_id", "account_id") DO NOTHING;
-    -- A users row whose id is not a Supabase account id (created outside the
-    -- sign-in flow) takes the password of the confirmed Supabase account with
-    -- the same email, when it has none yet.
-    INSERT INTO "auth_account" ("user_id", "account_id", "provider_id", "password", "created_at", "updated_at")
-    SELECT u."id", u."id"::text, 'credential', au."encrypted_password", coalesce(au."created_at", now()), now()
-    FROM auth.users au
-    JOIN "users" u ON lower(u."email") = lower(au."email")
-    WHERE au."encrypted_password" LIKE chr(36) || '2_' || chr(36) || '%'
-      AND au."deleted_at" IS NULL
-      AND au."email_confirmed_at" IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM auth.users same WHERE same."id" = u."id")
-      AND NOT EXISTS (SELECT 1 FROM "auth_account" a WHERE a."user_id" = u."id" AND a."provider_id" = 'credential')
     ON CONFLICT ("provider_id", "account_id") DO NOTHING;
     UPDATE "users" u SET "email_verified" = true
     FROM auth.users au
