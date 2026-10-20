@@ -19,6 +19,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import "dotenv/config";
 import * as s from "../schema";
+import { migrationDatabaseMissingReason, migrationDatabaseUrl } from "../urls";
 import {
   applyDecision,
   createRun,
@@ -35,13 +36,9 @@ import { formatSignageRef, formatStandDesignRef, formatStandRef, STAND_SEQ_BASE 
 import { ensureStandDesignWorkflow } from "@/lib/domain/stand-designs";
 import { savePackageTx, sellPackageTx } from "@/lib/sponsorship/packages";
 
-const url =
-  process.env.DIRECT_DATABASE_URL ??
-  process.env.DATABASE_URL_UNPOOLED ??
-  process.env.POSTGRES_URL_NON_POOLING ??
-  process.env.DATABASE_URL ??
-  process.env.POSTGRES_URL;
-if (!url) throw new Error("DATABASE_URL is not set");
+// The direct connection, as migrations use (lib/db/urls.ts).
+const url = migrationDatabaseUrl(process.env)?.url;
+if (!url) throw new Error(migrationDatabaseMissingReason(process.env));
 const client = postgres(url, { max: 1, prepare: false, onnotice: () => {} });
 const db = drizzle(client, { schema: s });
 

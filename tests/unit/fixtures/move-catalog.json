@@ -1,0 +1,1123 @@
+{
+  "tables": [
+    {
+      "key": "drizzle.__drizzle_migrations",
+      "schema": "drizzle",
+      "name": "__drizzle_migrations",
+      "rls": false,
+      "columns": [],
+      "pk": ["id"],
+      "fks": []
+    },
+    {
+      "key": "public.approval_instances",
+      "schema": "public",
+      "name": "approval_instances",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "approval_instances_assigned_department_id_departments_id_fk",
+          "ref": "public.departments",
+          "cols": ["assigned_department_id"],
+          "nullable": true
+        },
+        {
+          "name": "approval_instances_assigned_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["assigned_user_id"],
+          "nullable": true
+        },
+        {
+          "name": "approval_instances_decided_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["decided_by"],
+          "nullable": true
+        },
+        {
+          "name": "approval_instances_delegated_from_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["delegated_from_user_id"],
+          "nullable": true
+        },
+        {
+          "name": "approval_instances_workflow_step_id_workflow_steps_id_fk",
+          "ref": "public.workflow_steps",
+          "cols": ["workflow_step_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.approvers",
+      "schema": "public",
+      "name": "approvers",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "approvers_department_id_departments_id_fk",
+          "ref": "public.departments",
+          "cols": ["department_id"],
+          "nullable": false
+        },
+        {
+          "name": "approvers_main_on_accept_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["main_on_accept_by"],
+          "nullable": true
+        },
+        {
+          "name": "approvers_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        },
+        {
+          "name": "approvers_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["user_id"],
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "key": "public.artwork_annotations",
+      "schema": "public",
+      "name": "artwork_annotations",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "artwork_annotations_artwork_version_id_artwork_versions_id_fk",
+          "ref": "public.artwork_versions",
+          "cols": ["artwork_version_id"],
+          "nullable": false
+        },
+        {
+          "name": "artwork_annotations_comment_fk",
+          "ref": "public.comments",
+          "cols": ["comment_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.artwork_versions",
+      "schema": "public",
+      "name": "artwork_versions",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "artwork_versions_signage_item_id_signage_items_id_fk",
+          "ref": "public.signage_items",
+          "cols": ["signage_item_id"],
+          "nullable": false
+        },
+        {
+          "name": "artwork_versions_uploaded_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["uploaded_by"],
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "key": "public.audit_log",
+      "schema": "public",
+      "name": "audit_log",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": []
+    },
+    {
+      "key": "public.auth_account",
+      "schema": "public",
+      "name": "auth_account",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "auth_account_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["user_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.auth_rate_limit",
+      "schema": "public",
+      "name": "auth_rate_limit",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": []
+    },
+    {
+      "key": "public.auth_session",
+      "schema": "public",
+      "name": "auth_session",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "auth_session_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["user_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.auth_verification",
+      "schema": "public",
+      "name": "auth_verification",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": []
+    },
+    {
+      "key": "public.change_requests",
+      "schema": "public",
+      "name": "change_requests",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "change_requests_decided_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["decided_by"],
+          "nullable": true
+        },
+        {
+          "name": "change_requests_requested_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["requested_by"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.comment_attachments",
+      "schema": "public",
+      "name": "comment_attachments",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "comment_attachments_comment_id_comments_id_fk",
+          "ref": "public.comments",
+          "cols": ["comment_id"],
+          "nullable": false
+        },
+        {
+          "name": "comment_attachments_document_id_documents_id_fk",
+          "ref": "public.documents",
+          "cols": ["document_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.comments",
+      "schema": "public",
+      "name": "comments",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "comments_author_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["author_id"],
+          "nullable": false
+        },
+        {
+          "name": "comments_parent_fk",
+          "ref": "public.comments",
+          "cols": ["parent_id"],
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "key": "public.contractors",
+      "schema": "public",
+      "name": "contractors",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "contractors_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.departments",
+      "schema": "public",
+      "name": "departments",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "departments_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.documents",
+      "schema": "public",
+      "name": "documents",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "documents_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": true
+        },
+        {
+          "name": "documents_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        },
+        {
+          "name": "documents_uploaded_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["uploaded_by"],
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "key": "public.edition_counters",
+      "schema": "public",
+      "name": "edition_counters",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "edition_counters_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.edition_deadlines",
+      "schema": "public",
+      "name": "edition_deadlines",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "edition_deadlines_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.editions",
+      "schema": "public",
+      "name": "editions",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "editions_cloned_from_fk",
+          "ref": "public.editions",
+          "cols": ["cloned_from_edition_id"],
+          "nullable": true
+        },
+        {
+          "name": "editions_event_id_events_id_fk",
+          "ref": "public.events",
+          "cols": ["event_id"],
+          "nullable": false
+        },
+        {
+          "name": "editions_venue_id_venues_id_fk",
+          "ref": "public.venues",
+          "cols": ["venue_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.email_log",
+      "schema": "public",
+      "name": "email_log",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": []
+    },
+    {
+      "key": "public.events",
+      "schema": "public",
+      "name": "events",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "events_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.exhibitors",
+      "schema": "public",
+      "name": "exhibitors",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "exhibitors_contractor_id_contractors_id_fk",
+          "ref": "public.contractors",
+          "cols": ["contractor_id"],
+          "nullable": true
+        },
+        {
+          "name": "exhibitors_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": false
+        },
+        {
+          "name": "exhibitors_hall_id_halls_id_fk",
+          "ref": "public.halls",
+          "cols": ["hall_id"],
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "key": "public.exports",
+      "schema": "public",
+      "name": "exports",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "exports_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": false
+        },
+        {
+          "name": "exports_generated_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["generated_by"],
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "key": "public.external_grants",
+      "schema": "public",
+      "name": "external_grants",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "external_grants_edition_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": false
+        },
+        {
+          "name": "external_grants_invited_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["invited_by"],
+          "nullable": true
+        },
+        {
+          "name": "external_grants_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        },
+        {
+          "name": "external_grants_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["user_id"],
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "key": "public.halls",
+      "schema": "public",
+      "name": "halls",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "halls_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.item_types",
+      "schema": "public",
+      "name": "item_types",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "item_types_default_workflow_id_workflows_id_fk",
+          "ref": "public.workflows",
+          "cols": ["default_workflow_id"],
+          "nullable": true
+        },
+        {
+          "name": "item_types_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.locations",
+      "schema": "public",
+      "name": "locations",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "locations_hall_id_halls_id_fk",
+          "ref": "public.halls",
+          "cols": ["hall_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.memberships",
+      "schema": "public",
+      "name": "memberships",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "memberships_department_id_departments_id_fk",
+          "ref": "public.departments",
+          "cols": ["department_id"],
+          "nullable": true
+        },
+        {
+          "name": "memberships_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        },
+        {
+          "name": "memberships_suspended_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["suspended_by"],
+          "nullable": true
+        },
+        {
+          "name": "memberships_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["user_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.notifications",
+      "schema": "public",
+      "name": "notifications",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "notifications_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": true
+        },
+        {
+          "name": "notifications_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["user_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.organisations",
+      "schema": "public",
+      "name": "organisations",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": []
+    },
+    {
+      "key": "public.reminder_log",
+      "schema": "public",
+      "name": "reminder_log",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": []
+    },
+    {
+      "key": "public.signage_items",
+      "schema": "public",
+      "name": "signage_items",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "signage_items_created_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["created_by"],
+          "nullable": true
+        },
+        {
+          "name": "signage_items_current_artwork_version_fk",
+          "ref": "public.artwork_versions",
+          "cols": ["current_artwork_version_id"],
+          "nullable": true
+        },
+        {
+          "name": "signage_items_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": false
+        },
+        {
+          "name": "signage_items_hall_id_halls_id_fk",
+          "ref": "public.halls",
+          "cols": ["hall_id"],
+          "nullable": true
+        },
+        {
+          "name": "signage_items_install_contractor_id_contractors_id_fk",
+          "ref": "public.contractors",
+          "cols": ["install_contractor_id"],
+          "nullable": true
+        },
+        {
+          "name": "signage_items_installed_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["installed_by"],
+          "nullable": true
+        },
+        {
+          "name": "signage_items_item_type_id_item_types_id_fk",
+          "ref": "public.item_types",
+          "cols": ["item_type_id"],
+          "nullable": true
+        },
+        {
+          "name": "signage_items_location_id_locations_id_fk",
+          "ref": "public.locations",
+          "cols": ["location_id"],
+          "nullable": true
+        },
+        {
+          "name": "signage_items_owner_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["owner_user_id"],
+          "nullable": true
+        },
+        {
+          "name": "signage_items_parent_item_id_signage_items_id_fk",
+          "ref": "public.signage_items",
+          "cols": ["parent_item_id"],
+          "nullable": true
+        },
+        {
+          "name": "signage_items_sponsor_entitlement_id_sponsor_entitlements_id_fk",
+          "ref": "public.sponsor_entitlements",
+          "cols": ["sponsor_entitlement_id"],
+          "nullable": true
+        },
+        {
+          "name": "signage_items_sponsor_id_sponsors_id_fk",
+          "ref": "public.sponsors",
+          "cols": ["sponsor_id"],
+          "nullable": true
+        },
+        {
+          "name": "signage_items_supplier_id_suppliers_id_fk",
+          "ref": "public.suppliers",
+          "cols": ["supplier_id"],
+          "nullable": true
+        },
+        {
+          "name": "signage_items_workflow_id_workflows_id_fk",
+          "ref": "public.workflows",
+          "cols": ["workflow_id"],
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "key": "public.snags",
+      "schema": "public",
+      "name": "snags",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "snags_assigned_contractor_id_contractors_id_fk",
+          "ref": "public.contractors",
+          "cols": ["assigned_contractor_id"],
+          "nullable": true
+        },
+        {
+          "name": "snags_assigned_supplier_id_suppliers_id_fk",
+          "ref": "public.suppliers",
+          "cols": ["assigned_supplier_id"],
+          "nullable": true
+        },
+        {
+          "name": "snags_assigned_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["assigned_user_id"],
+          "nullable": true
+        },
+        {
+          "name": "snags_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": false
+        },
+        {
+          "name": "snags_raised_by_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["raised_by_user_id"],
+          "nullable": true
+        },
+        {
+          "name": "snags_resolved_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["resolved_by"],
+          "nullable": true
+        },
+        {
+          "name": "snags_signage_item_id_signage_items_id_fk",
+          "ref": "public.signage_items",
+          "cols": ["signage_item_id"],
+          "nullable": true
+        },
+        {
+          "name": "snags_stand_submission_id_stand_submissions_id_fk",
+          "ref": "public.stand_submissions",
+          "cols": ["stand_submission_id"],
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "key": "public.sponsor_entitlements",
+      "schema": "public",
+      "name": "sponsor_entitlements",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "sponsor_entitlements_from_package_id_sponsorship_packages_id_fk",
+          "ref": "public.sponsorship_packages",
+          "cols": ["from_package_id"],
+          "nullable": true
+        },
+        {
+          "name": "sponsor_entitlements_sponsor_id_sponsors_id_fk",
+          "ref": "public.sponsors",
+          "cols": ["sponsor_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.sponsors",
+      "schema": "public",
+      "name": "sponsors",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "sponsors_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": false
+        },
+        {
+          "name": "sponsors_package_same_event_fk",
+          "ref": "public.sponsorship_packages",
+          "cols": ["package_id", "edition_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.sponsorship_package_lines",
+      "schema": "public",
+      "name": "sponsorship_package_lines",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "sponsorship_package_lines_package_id_sponsorship_packages_id_fk",
+          "ref": "public.sponsorship_packages",
+          "cols": ["package_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.sponsorship_packages",
+      "schema": "public",
+      "name": "sponsorship_packages",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "sponsorship_packages_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.staff_invites",
+      "schema": "public",
+      "name": "staff_invites",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "staff_invites_department_id_departments_id_fk",
+          "ref": "public.departments",
+          "cols": ["department_id"],
+          "nullable": true
+        },
+        {
+          "name": "staff_invites_invited_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["invited_by"],
+          "nullable": true
+        },
+        {
+          "name": "staff_invites_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.stand_submissions",
+      "schema": "public",
+      "name": "stand_submissions",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "stand_submissions_build_check_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["build_check_by"],
+          "nullable": true
+        },
+        {
+          "name": "stand_submissions_contractor_id_contractors_id_fk",
+          "ref": "public.contractors",
+          "cols": ["contractor_id"],
+          "nullable": true
+        },
+        {
+          "name": "stand_submissions_created_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["created_by"],
+          "nullable": true
+        },
+        {
+          "name": "stand_submissions_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": false
+        },
+        {
+          "name": "stand_submissions_exhibitor_id_exhibitors_id_fk",
+          "ref": "public.exhibitors",
+          "cols": ["exhibitor_id"],
+          "nullable": false
+        },
+        {
+          "name": "stand_submissions_submitted_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["submitted_by"],
+          "nullable": true
+        },
+        {
+          "name": "stand_submissions_workflow_id_workflows_id_fk",
+          "ref": "public.workflows",
+          "cols": ["workflow_id"],
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "key": "public.supplier_service_links",
+      "schema": "public",
+      "name": "supplier_service_links",
+      "rls": true,
+      "columns": [],
+      "pk": ["supplier_id", "service_id"],
+      "fks": [
+        {
+          "name": "supplier_service_links_service_id_supplier_services_id_fk",
+          "ref": "public.supplier_services",
+          "cols": ["service_id"],
+          "nullable": false
+        },
+        {
+          "name": "supplier_service_links_supplier_id_suppliers_id_fk",
+          "ref": "public.suppliers",
+          "cols": ["supplier_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.supplier_services",
+      "schema": "public",
+      "name": "supplier_services",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "supplier_services_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.suppliers",
+      "schema": "public",
+      "name": "suppliers",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "suppliers_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.task_attachments",
+      "schema": "public",
+      "name": "task_attachments",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "task_attachments_task_id_tasks_id_fk",
+          "ref": "public.tasks",
+          "cols": ["task_id"],
+          "nullable": false
+        },
+        {
+          "name": "task_attachments_uploaded_by_users_id_fk",
+          "ref": "public.users",
+          "cols": ["uploaded_by"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.tasks",
+      "schema": "public",
+      "name": "tasks",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "tasks_assigned_to_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["assigned_to_user_id"],
+          "nullable": false
+        },
+        {
+          "name": "tasks_created_by_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["created_by_user_id"],
+          "nullable": false
+        },
+        {
+          "name": "tasks_edition_id_editions_id_fk",
+          "ref": "public.editions",
+          "cols": ["edition_id"],
+          "nullable": true
+        },
+        {
+          "name": "tasks_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        },
+        {
+          "name": "tasks_parent_task_id_tasks_id_fk",
+          "ref": "public.tasks",
+          "cols": ["parent_task_id"],
+          "nullable": true
+        }
+      ]
+    },
+    {
+      "key": "public.users",
+      "schema": "public",
+      "name": "users",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": []
+    },
+    {
+      "key": "public.venue_rules",
+      "schema": "public",
+      "name": "venue_rules",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "venue_rules_venue_id_venues_id_fk",
+          "ref": "public.venues",
+          "cols": ["venue_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.venues",
+      "schema": "public",
+      "name": "venues",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "venues_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.workflow_steps",
+      "schema": "public",
+      "name": "workflow_steps",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "workflow_steps_approver_user_id_users_id_fk",
+          "ref": "public.users",
+          "cols": ["approver_user_id"],
+          "nullable": true
+        },
+        {
+          "name": "workflow_steps_department_id_departments_id_fk",
+          "ref": "public.departments",
+          "cols": ["department_id"],
+          "nullable": true
+        },
+        {
+          "name": "workflow_steps_workflow_id_workflows_id_fk",
+          "ref": "public.workflows",
+          "cols": ["workflow_id"],
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "key": "public.workflows",
+      "schema": "public",
+      "name": "workflows",
+      "rls": true,
+      "columns": [],
+      "pk": ["id"],
+      "fks": [
+        {
+          "name": "workflows_organisation_id_organisations_id_fk",
+          "ref": "public.organisations",
+          "cols": ["organisation_id"],
+          "nullable": false
+        }
+      ]
+    }
+  ],
+  "sequences": ["drizzle.__drizzle_migrations_id_seq"]
+}

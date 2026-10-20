@@ -91,9 +91,14 @@ pnpm build
 
 1. Import `Umo86/Hall-Pass` at [vercel.com/new](https://vercel.com/new).
 2. **Database** — in the project's **Storage** tab, create/connect a **Postgres (Neon)**
-   database. The integration injects `DATABASE_URL` and friends automatically; the app
-   accepts any of `DATABASE_URL`, `DIRECT_DATABASE_URL`, `POSTGRES_URL`,
-   `DATABASE_URL_UNPOOLED`, `POSTGRES_URL_NON_POOLING` and uses the first reachable one.
+   database. The integration injects `POSTGRES_URL` (pooled) and `DATABASE_URL_UNPOOLED`
+   (direct) among others. Set `DATABASE_TARGET=neon` on Production: the app then runs on
+   `POSTGRES_URL` only and migrations use `DATABASE_URL_UNPOOLED` (then
+   `POSTGRES_URL_NON_POOLING`), with no probing and no fallback. Without `DATABASE_TARGET`
+   (local development, CI) the app accepts any of `DATABASE_URL`, `DIRECT_DATABASE_URL`,
+   `POSTGRES_URL`, `DATABASE_URL_UNPOOLED`, `POSTGRES_URL_NON_POOLING` and uses the first
+   reachable one. Preview deployments get no database unless `DATABASE_TARGET` is set for
+   Preview too (the integration hands Preview the production database's URLs).
 3. **Schema + demo data** — open the database's SQL editor (Storage tab → Open in Neon →
    SQL Editor), paste the whole of `database-setup.sql` (repo root; re-runnable) and run it.
 4. **Files** — an S3-compatible bucket (Cloudflare R2 recommended, see
@@ -118,7 +123,9 @@ pnpm build
    computes "today" in Europe/London so clock changes don't break it. Verify at
    `/api/health` — it should return `"ok":true`, `"auth":"better-auth"` (with
    `"demoSignIn":false` on Production) and `"authBaseUrl"` naming your domain, and states
-   which database variable and storage backend are active.
+   which database is in use (`databaseTarget`, `databaseProvider`, `databaseProject`,
+   `databaseRegion`, `databaseVia`), the functions' region (`functionRegion`) and the
+   storage backend.
 
 ## Releasing a new version (upgrading the live database)
 
@@ -127,9 +134,11 @@ every column the code knows about. If the code is deployed before its migrations
 every signed-in page fails with `column … does not exist` until they do. The build doesn't
 migrate (`next build` only; `vercel.json` has no migration step), so, in this order:
 
-1. **Migrate first.** From a checkout of the release, with the live database's _unpooled_
-   URL (Neon: `DATABASE_URL_UNPOOLED` / `POSTGRES_URL_NON_POOLING`; Supabase: the direct or
-   session-pooler URL) as `DIRECT_DATABASE_URL`:
+1. **Migrate first.** Run the **Database migrate** workflow on the release's branch (GitHub
+   → Actions → Database migrate → Run workflow). It runs `pnpm db:migrate` with the
+   repository secret `DIRECT_DATABASE_URL`, the live database's _unpooled_ URL (Neon:
+   `DATABASE_URL_UNPOOLED`; it refuses pooled hosts), and its log names the provider and host
+   it changed. By hand, from a checkout of the release, the same is:
 
    ```bash
    DIRECT_DATABASE_URL='postgres://…' pnpm db:migrate
@@ -224,6 +233,73 @@ After deploying, `/api/health` reports `"auth":"better-auth"` and `"demoSignIn":
 Supabase Postgres remains supported as the database (its pooler URIs in `DATABASE_URL`/
 `DIRECT_DATABASE_URL`). `database-setup.sql` runs unchanged in its SQL editor.
 
+## Moving the database to Neon
+
+A one-off copy of everything in `public` and `drizzle` (sign-in tables included, so people
+stay signed in) from Supabase to Neon in London, then a switch. Nothing happens until it is
+switched on: Release A ships the tool and the switch; Release B (`vercel.json` →
+`"regions": ["lhr1"]`) moves the functions next to the database at the switch.
+
+- **The switch:** `DATABASE_TARGET=neon` (Production, plain). Unset or `auto` is the
+  behaviour before the move (the rollback value, as a variable can't be deleted with the
+  tools at hand); anything else means no database.
+- **The tool:** `GET /api/admin/move-database?step=<step>&token=<MOVE_DATABASE_TOKEN>` (or
+  `Authorization: Bearer <token>`). It is a 404 unless `MOVE_DATABASE_TOKEN` (Production,
+  Sensitive, `openssl rand -hex 32`) is set and isn't `off`. Steps that change something also
+  need `confirm=<step>`. It reads Supabase from `DIRECT_DATABASE_URL` and Neon from
+  `DATABASE_URL_UNPOOLED`, never copies into the database the app runs on, and replies with
+  hosts only. While the token is set the daily orphan-artwork sweep is paused.
+
+  | Step        | What it does                                                                                                                                            |
+  | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `check`     | Read-only preflight: versions, collation, owners, frozen or not, rows, migrations against this release                                                  |
+  | `files`     | Read-only: every file the database (`db=`, default the live one) refers to exists in the bucket                                                         |
+  | `freeze`    | `db=supabase\|neon`: that database becomes read-only (strategy A or B in the reply)                                                                     |
+  | `unfreeze`  | `db=…`: writable again                                                                                                                                  |
+  | `copy`      | Migrates the target, then copies in one snapshot and one transaction, checked before commit (`replace=1` to overwrite a previous copy, `batch=50–2000`) |
+  | `verify`    | Live comparison: every table, the schema, sequences, both fingerprints (`detail=1` for full lists)                                                      |
+  | `finish`    | `expect=<copy's fingerprint>`, once the app is on Neon: Supabase unchanged since the copy, then one audit row                                           |
+  | `back-copy` | Neon → Supabase, replacing Supabase's data (the lossless rollback)                                                                                      |
+
+**Runbook** (a weekday, 10:00–10:45 London; Hall Pass, sign-in included, is unavailable
+during the window). Save every reply.
+
+1. **Before:** run "Database backup". Create `MOVE_DATABASE_TOKEN`, then merge Release A.
+   `/api/health`: `ok:true`, `databaseTarget:"auto"`, `databaseProvider:"supabase"`,
+   `databaseVia:"DIRECT_DATABASE_URL"`, `schema:"current"`. Deploy nothing else until step 7.
+2. `step=check`: `readyToCopy:true` (otherwise `blockers` says why), `migrations` `{ bundled:
+15, latest: "0014_better_auth", source: 15, match: true }`, source `tables: 48`, target
+   `state:"empty"`, `collationMatch:true`, `ownsAllTables:true` on both sides.
+3. `step=files&db=supabase`: note `missing` (reported, not a blocker).
+4. **Window starts.** `step=freeze&db=supabase&confirm=freeze` → `frozen:true`; `check`
+   again shows `source.frozen:true`.
+5. `step=copy&confirm=copy` → `migrationsApplied:15`, the five deferred cycle columns,
+   `totalRows`, and `fingerprint` (F: keep it). A failed copy leaves Neon as it was.
+6. `step=verify` → `ok:true`; schema functions 2, triggers 46, constraints
+   `{c:20,f:106,p:48,u:21}`; `sourceFingerprint` = `targetFingerprint` = F.
+7. **Switch:** create `DATABASE_TARGET=neon` (Production), push Release B, wait for READY.
+8. `/api/health`: `databaseTarget:"neon"`, `databaseProvider:"neon"`, `databaseProject`
+   (the Neon project), `databaseRegion:"aws-eu-west-2"`, `functionRegion:"lhr1"`,
+   `schema:"current"`, `seeded:true`, no `databaseError`. Settings → System says London.
+9. `step=files` again (now Neon): the same as step 3. Sign in, open the dashboard, an item
+   with artwork and Users.
+10. `step=finish&expect=F&confirm=finish` → `sourceUnchanged:true` and the audit row
+    "Database moved from Supabase to Neon (London): N rows verified". The window ends.
+11. **After:** set the GitHub secret `DIRECT_DATABASE_URL` to Neon's `DATABASE_URL_UNPOOLED`
+    and run "Database backup". Keep Supabase frozen and the token set until Phase 3.
+
+**Rolling back.** Before step 7: `step=unfreeze&db=supabase&confirm=unfreeze`. After it, with
+nothing written to Neon yet: Instant Rollback to Release A, `DATABASE_TARGET=auto`, unfreeze
+Supabase, revert Release B. After people have used Neon (nothing lost): if Supabase is
+paused, restore it first; `step=freeze&db=neon&confirm=freeze`;
+`step=unfreeze&db=supabase&confirm=unfreeze`; `step=back-copy&confirm=back-copy`;
+`step=verify&from=neon&to=supabase` → `ok:true`; Instant Rollback to Release A;
+`DATABASE_TARGET=auto`.
+
+**If `check` isn't ready:** a different collation needs a matching Neon database first; a
+schema difference wanted on Neon (`verify&detail=1`) ships as migration 0015, applied to
+Supabase before the window; a migration hash mismatch means a file changed after it ran.
+
 ## Sign-in
 
 Better Auth runs inside the app and keeps everything in this database (`users` plus
@@ -264,18 +340,20 @@ email-link landing (`GET /api/auth/magic-link/verify`) answers.
   (`better-auth`, `demo` or `none`), `demoSignIn` and `authBaseUrl`.
 - **Locked out** (the last super admin forgot their password and email is off):
   `DATABASE_URL='<live database URL>' pnpm auth:set-password you@company.com` prints a new
-  20-character password once, signs them out everywhere and writes an audit row.
+  20-character password once, signs them out everywhere and writes an audit row. On Neon,
+  use `DATABASE_URL_UNPOOLED` from Vercel → Storage → the Neon database → `.env.local` →
+  Show secret, pasted as it is.
 
 ## Running on free plans (Supabase Free + Cloudflare R2)
 
 The cheapest setup that still copes with large print-ready graphics:
 
-| Part                                        | Service                  | Free allowance                                       | What to know                                                                                                                        |
-| ------------------------------------------- | ------------------------ | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Database (sign-in data lives here too)      | Supabase **Free**        | 500 MB database, 2 projects per organisation         | Pauses after a quiet week; the daily cron's queries keep it awake. No automatic backups — the weekly GitHub Action below takes one. |
-| Database, alternative (see 3b)              | Neon **Free** via Vercel | 1 GB, 6-hour restore window                          | Scales to zero and wakes by itself.                                                                                                 |
-| Files (artwork, photos, documents, exports) | Cloudflare **R2**        | 10 GB storage, no egress fees, up to 5 GB per upload | Needs a Cloudflare account; R2 may ask for a payment method on first use but charges nothing inside the allowance.                  |
-| App                                         | Vercel **Hobby**         | Cron once a day, 1 GB Blob                           | Hobby is for non-commercial use; move to Pro when the tool runs a real show for a business.                                         |
+| Part                                        | Service                  | Free allowance                                       | What to know                                                                                                                       |
+| ------------------------------------------- | ------------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Database (sign-in data lives here too)      | Supabase **Free**        | 500 MB database, 2 projects per organisation         | Pauses after a quiet week; the daily cron's queries keep it awake. No automatic backups — the daily GitHub Action below takes one. |
+| Database, alternative (see 3b)              | Neon **Free** via Vercel | 1 GB, 6-hour restore window                          | Scales to zero and wakes by itself.                                                                                                |
+| Files (artwork, photos, documents, exports) | Cloudflare **R2**        | 10 GB storage, no egress fees, up to 5 GB per upload | Needs a Cloudflare account; R2 may ask for a payment method on first use but charges nothing inside the allowance.                 |
+| App                                         | Vercel **Hobby**         | Cron once a day, 1 GB Blob                           | Hobby is for non-commercial use; move to Pro when the tool runs a real show for a business.                                        |
 
 Vercel Blob is the simplest file store (1a); R2 (1b) gives ten times the free space and no
 transfer fees.
@@ -380,20 +458,25 @@ the `auth_*` tables, so they move with the data and nobody has to set a new pass
 3. **Redeploy** so the functions pick up the new variables. `/api/health` should show
    `"databaseProvider":"neon"`, `"database":"ok"` and `"auth":"better-auth"`. Sign in and open
    the dashboard, Signage and Onsite.
-4. Then downgrade the Supabase organisation to Free (Billing). For the weekly backup, use
+4. Then downgrade the Supabase organisation to Free (Billing). For the daily backup, use
    the Neon `DATABASE_URL_UNPOOLED` as the `DIRECT_DATABASE_URL` secret.
 
-### 4. Weekly backup to the bucket
+For the live site, [Moving the database to Neon](#moving-the-database-to-neon) replaces
+steps 1–3: the move tool copies and checks every row instead of an import file.
 
-The Free plan has no backups, so `.github/workflows/db-backup.yml` dumps the database
-every Monday into `backups/` in the bucket. Add the repository secrets
-`DIRECT_DATABASE_URL`, `S3_BUCKET`, `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`,
-`S3_SECRET_ACCESS_KEY` (GitHub → Settings → Secrets and variables → Actions) and run the
-workflow once by hand to check it. For `DIRECT_DATABASE_URL` use the **Session pooler**
-URI from Supabase's Connect dialog (port 5432, user `postgres.<ref>`), not the direct
-`db.<ref>.supabase.co` address, which is IPv6-only on the Free plan and unreachable from
-GitHub's runners. Restore with
-`pg_restore --clean --if-exists --no-owner -d "<session pooler URI>" hallpass-<date>.dump`.
+### 4. Daily backup to the bucket
+
+Neon's Free plan keeps a 6-hour restore window only, so `.github/workflows/db-backup.yml`
+dumps the database every day into `backups/` in the bucket, with the `pg_dump` client that
+matches the server's version, and uploads only a dump that reads back with at least 48
+tables. Add the repository secrets `DIRECT_DATABASE_URL`, `S3_BUCKET`, `S3_ENDPOINT`,
+`S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` (GitHub → Settings → Secrets and variables →
+Actions) and run the workflow once by hand to check it. For `DIRECT_DATABASE_URL` use Neon's
+`DATABASE_URL_UNPOOLED` (Vercel → project → Storage → the Neon database → `.env.local` tab →
+Show secret), never the pooled `-pooler` host; until the move it is Supabase's **Session
+pooler** URI (port 5432, user `postgres.<ref>`), not the IPv6-only `db.<ref>.supabase.co`.
+The same secret drives the **Database migrate** workflow. Restore with
+`pg_restore --clean --if-exists --no-owner --no-privileges -d "<Neon direct URL>" hallpass-<date>.dump`.
 
 ## Imagery
 

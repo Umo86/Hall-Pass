@@ -6,18 +6,26 @@ import { PageHeader } from "@/components/page-header";
 import { SectionLocked, settingsAccess } from "@/components/settings/access";
 import { StoragePanel } from "@/components/settings/storage-panel";
 import { StatusLine } from "@/components/settings/status-line";
-import { emailStatus, signInStatus, storageStatus } from "@/components/settings/system-status";
+import {
+  databaseStatus,
+  emailStatus,
+  signInStatus,
+  storageStatus,
+} from "@/components/settings/system-status";
+import { latestMigration } from "@/lib/db/schema-state";
+import { checkDatabase } from "@/lib/db/status";
+import { providerName, regionCity } from "@/lib/db/urls";
 
 export const metadata = { title: "System · Settings" };
 export const dynamic = "force-dynamic";
 
-/** Settings → System (admins): is file storage safe, does email work, how sign-in works — in plain words first. */
+/** Settings → System (admins): where the data and files are, does email work, how sign-in works — in plain words first. */
 export default async function SystemPage() {
   const { session, canOpen } = await settingsAccess();
   const header = (
     <PageHeader
       title="System"
-      description="Where files are kept, whether email works and how people sign in. These come from the hosting settings, which your developer looks after; this page checks them."
+      description="Where your data and files are kept, whether email works and how people sign in. These come from the hosting settings, which your developer looks after; this page checks them."
     />
   );
   if (!canOpen("system")) {
@@ -36,11 +44,20 @@ export default async function SystemPage() {
   const demo = devAuthEnabled();
   const signIn = signInStatus({ configured: authConfigured(), demo, emailOn: emailConfigured() });
   const feedsOn = calendarFeedUrl(session.user.id) !== null;
+  const data = await checkDatabase();
+  const database = databaseStatus({
+    provider: data.info?.provider ?? null,
+    region: data.info?.region ?? null,
+    schema: data.schema,
+    reachable: data.state === "ok",
+  });
+  const city = regionCity(data.info?.region);
 
   return (
     <>
       {header}
       <div className="grid gap-3 lg:grid-cols-2">
+        <StatusLine label="Database" status={database} />
         <StatusLine label="File storage" status={storage} />
         <StatusLine label="Email" status={email} />
         <StatusLine label="Sign-in" status={signIn} />
@@ -64,11 +81,50 @@ export default async function SystemPage() {
         />
       </div>
 
-      <details className="rounded-lg border" open={storage.tone === "error"}>
+      <details
+        className="rounded-lg border"
+        open={storage.tone === "error" || database.tone === "error"}
+      >
         <summary className="cursor-pointer px-4 py-3 text-sm font-medium select-none">
           Technical details
         </summary>
         <div className="space-y-6 border-t px-4 py-4">
+          <section className="space-y-2 text-sm">
+            <h2 className="font-semibold">Database</h2>
+            {data.info ? (
+              <dl className="text-muted-foreground grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+                <dt>Provider</dt>
+                <dd className="text-foreground">
+                  {providerName(data.info.provider)}
+                  {data.info.project ? ` · project ${data.info.project}` : ""}
+                </dd>
+                <dt>Region</dt>
+                <dd className="text-foreground">
+                  {data.info.region
+                    ? `${data.info.region}${city ? ` (${city})` : ""}`
+                    : "Not shown by the host name"}
+                </dd>
+                <dt>Connection</dt>
+                <dd className="text-foreground">
+                  {data.info.via}
+                  {data.info.target === "neon"
+                    ? " (DATABASE_TARGET=neon)"
+                    : " (the first variable that answers)"}
+                </dd>
+                <dt>Layout</dt>
+                <dd className="text-foreground">
+                  {data.schema === "current"
+                    ? `Up to date (${latestMigration().tag})`
+                    : data.schema === "behind"
+                      ? `Behind this release: run the "Database migrate" workflow (expects ${latestMigration().tag})`
+                      : "Unknown"}
+                </dd>
+                <dt>App region</dt>
+                <dd className="text-foreground">{process.env.VERCEL_REGION ?? "Not on Vercel"}</dd>
+              </dl>
+            ) : null}
+            {data.error ? <p className="text-muted-foreground">{data.error}</p> : null}
+          </section>
           <section className="space-y-3">
             <h2 className="text-sm font-semibold">File storage</h2>
             <StoragePanel

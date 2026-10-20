@@ -1351,3 +1351,103 @@ production` counts too. Elsewhere it is as before, fenced to `…@….test` acco
     invitation or a live partner invitation in this organisation, and never when the
     account has ties to another organisation (a membership, a grant or an open invitation
     there): inviting someone's email must not hand a link to their access elsewhere.
+
+## Database on Neon (2026-10)
+
+Phase 2, Release A of the move off Supabase (build spec "Hall Pass off Supabase" §5; detail
+in the move spec): the switch and the one-off move tool, which do nothing until they are
+switched on. No migration ships with it (the copy needs the source exactly at the bundled
+journal: 15 entries, latest `0014_better_auth`). One line per decision.
+
+- **D1 The copy is an in-app, one-off route** (`/api/admin/move-database`), run inside
+  production, which can reach both databases (the sandbox and the owner's machine can't);
+  a logical copy table by table lets every row be checked, unlike pg_dump/pg_restore.
+- **D2 Neon's schema comes from the repo's migrations, run by the tool**; rows travel as JSON
+  text (`json_agg(r)::text` → `json_populate_recordset(…, $1::text::json)`), never through
+  JavaScript values, which lose microseconds, numeric scale and bigints above 2^53.
+- **D3 One `REPEATABLE READ READ ONLY` snapshot of the source, one transaction on the
+  target**, and every table's digest compared before the commit: a failed, refused or
+  timed-out copy (270 s budget) leaves the target as it was.
+- **D4 The source is frozen first**: the app's role revokes its own INSERT/UPDATE/DELETE/
+  TRUNCATE (strategy A; it applies to pooled sessions at once), or, if it doesn't own every
+  table or the revoke is refused, its sessions default to read-only and are ended (B). The
+  freeze also stops sign-in (B17): Better Auth writes to `public`.
+- **D5 The switch is one variable, `DATABASE_TARGET=neon`**; unset, empty or `auto` is
+  today's behaviour (rollback sets `auto`: the Vercel MCP can't delete a variable), anything
+  else means no database, with a reason. Functions move to `lhr1` in Release B.
+- **D6 The app uses Neon's pooled `POSTGRES_URL`; migrations, the copy and backups use the
+  direct `DATABASE_URL_UNPOOLED` (then `POSTGRES_URL_NON_POOLING`).** No probing and no
+  fallback with `neon` (never split-brain). `channel_binding` is dropped from every URL
+  (postgres-js would send it as a setting and fail). On Neon the client keeps at most 5
+  connections and lets idle ones go after 20 s (the Free plan counts compute time).
+- **D7 The tool copies back too** (`step=back-copy`: Neon → Supabase, replacing), so a
+  rollback after people used Neon loses nothing, and it never copies into the database the
+  app runs on.
+- **D8 Backups run daily**, with the `pg_dump` client matching the server's major version
+  (read with the runner's `psql`), refuse pooled hosts (`-pooler.`, port 6543), and stop
+  before uploading unless `pg_restore --list` shows at least 48 tables with data. A new
+  on-demand "Database migrate" workflow (`pnpm db:migrate` with the `DIRECT_DATABASE_URL`
+  secret) replaces migrating by hand, so Claude can trigger it.
+- **D9 (move spec) superseded:** the Supabase keep-alive went in Phase 1; nothing keeps
+  Supabase awake after the switch, and a paused project is restored before any back-copy.
+- **D10 Neon Auth stays on and unused;** the tool ignores every schema but `public` and
+  `drizzle` (`neon_auth`, and Supabase's `auth`, `storage`, `extensions`).
+- **D11 Preview deployments get no database unless `DATABASE_TARGET` is set for Preview:**
+  the Neon integration hands Preview the production URLs. Migrations, the seed and
+  drizzle-kit refuse there too.
+- **D12 The orphan-artwork sweep pauses while `MOVE_DATABASE_TOKEN` is set (anything but
+  `off`) and whenever `artwork_versions` is empty:** against an empty or half-copied
+  database every real file would look orphaned and be deleted.
+- **Every `public` table is copied, the four `auth_*` included (B6):** sessions survive the
+  switch and links already sent keep working.
+- **Expected numbers are the post-0014 ones** (48 tables, 2 functions, 46 triggers,
+  constraints `{c:20,f:106,p:48,u:21}`, 199 indexes), in `check`, `verify`, the test and the
+  README runbook.
+- **Postgres 18 safety:** constraint counts and texts compare only `contype` c, f, p, u, t, x
+  (18 adds `n` rows for NOT NULL, which the columns comparison already covers); `check`
+  reports both server versions and warns when the majors differ.
+- **Digests and lists don't depend on the server's collation:** rows are ordered by their
+  primary key as text in the "C" collation, columns by name, schema lists sorted in "C", and
+  TimeZone, DateStyle, IntervalStyle and float digits are pinned in every move transaction.
+- **`check` also reports `clientGrants`** (table privileges held by `anon`,
+  `authenticated` or `anonymous` on either side) as a warning, not a blocker (RLS with no
+  policies denies them anyway), and lists its `blockers` in words.
+- **Freezing the live database is allowed, with a warning** in the reply ("the app is
+  read-only until unfreeze"). The move spec's test list said "refused", but its own guard
+  table and the lossless rollback (freeze Neon while it is live) need it; copying into the
+  live database is what is refused.
+- **`back-copy` is its own step** (`confirm=back-copy`, always Neon → Supabase, always
+  replacing: Supabase holds the earlier data), besides `copy&from=neon&to=supabase&replace=1`.
+- **`finish` can't name the tables that changed on the source** (only the copy's
+  fingerprint is kept): on a mismatch it lists the tables whose digests differ between the
+  two databases now, and says either side may have changed since the copy. Its audit row
+  carries the organisation when there is exactly one, else none.
+- **`copy` reports `migrationsApplied`** as the migration rows on the target after the copy
+  (15) and `migrationsRun` as those it ran first (15 on an empty target, 0 on a previous
+  copy). `verify` and `finish` answer 409 when they ran but don't pass.
+- **The move token is compared through SHA-256 digests with `timingSafeEqual`**, so its
+  length isn't leaked either; `off` or under 32 characters is a 404.
+- **`DATABASE_TARGET` is read trimmed and case-insensitively** (`Neon` is `neon`): a pasted
+  value with a trailing space must not leave production without a database.
+- **In auto mode the candidate URLs are trimmed, unquoted and stripped of `channel_binding`
+  too:** only values that could never connect change, and a local Neon URL works.
+- **Health, the login page and Settings → System describe the connection actually used**
+  (`lib/db/status.ts:checkDatabase` over `databaseInfo`): `databaseTarget`, `databaseProvider`,
+  `databaseProject`, `databaseRegion`, `databaseVia`, `functionRegion`; `databaseError` also
+  carries why there is no database (unknown target, a preview). Settings → System gains a
+  "Database" line ("In Neon's London data centre."; no backup claim, R2.11) and a technical
+  block; the login page's setup hint names `POSTGRES_URL` with `DATABASE_TARGET=neon`.
+- **Diagnose hints follow the host:** Neon's wrong password, quota, disabled compute,
+  `channel_binding`, time-outs and database name get Neon wording and name the variable in
+  use; the Supabase hints stay until Phase 3.
+- **The break-glass script normalises its URL** (`pnpm auth:set-password` with a Neon URL
+  pasted as is would otherwise fail on `channel_binding`).
+- **Tests.** `db-move.db.test.ts` copies between two scratch databases owned by two
+  non-superuser roles (a superuser would ignore the freeze); the source is built like the
+  seeded database (migrations, then `lib/db/seed`) plus `fixtures/move-fixture.sql` (every
+  cycle, the `auth_*` rows, edge values, a bigint of 2^53 + 1), and the shared test database
+  is used once, read-only, as a busy source. The sweep guards are tested in
+  `orphan-sweep.db.test.ts` on its own scratch database (not in `cron.db.test.ts`), so the
+  "no artwork rows" case doesn't empty the shared one. The planner's real-schema case reads
+  `fixtures/move-catalog.json`, captured from the migrated test database (columns left out:
+  the planner doesn't use them).

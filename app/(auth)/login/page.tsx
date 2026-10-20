@@ -11,6 +11,7 @@ import { emailConfigured } from "@/lib/email/dispatch";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 import { roleLabel } from "@/lib/format";
 import { brandImage } from "@/lib/brand-images";
+import { checkDatabase } from "@/lib/db/status";
 
 export const metadata = { title: "Sign in" };
 export const dynamic = "force-dynamic";
@@ -99,20 +100,15 @@ export default async function LoginPage({
     : null;
 
   // Self-diagnosis for the unconfigured state, so a misdeployed instance
-  // says exactly what is missing instead of a dead end.
-  let databaseReachable = false;
-  let databaseError: string | null = null;
-  if (process.env.DATABASE_URL) {
-    try {
-      const { sql } = await import("drizzle-orm");
-      const { db } = await import("@/lib/db/client");
-      await db.execute(sql`SELECT 1`);
-      databaseReachable = true;
-    } catch (err) {
-      const { describeDbError } = await import("@/lib/db/diagnose");
-      databaseError = describeDbError(err, process.env.DATABASE_URL);
-    }
-  }
+  // says exactly what is missing instead of a dead end — about the
+  // connection actually used (DATABASE_TARGET=neon: POSTGRES_URL).
+  const database = await checkDatabase({ depth: "ping" });
+  const databaseReachable = database.state === "ok";
+  // A plain "not set" shows the setup hint instead.
+  const databaseError =
+    !databaseReachable && (database.info || database.misconfigured)
+      ? (database.error ?? null)
+      : null;
 
   return (
     <LoginCard
@@ -128,7 +124,7 @@ export default async function LoginPage({
       unprovisionedEmail={unprovisionedEmail}
       configStatus={{
         authSecret: authConfigured(),
-        databaseUrl: Boolean(process.env.DATABASE_URL),
+        databaseUrl: Boolean(database.info),
         databaseReachable,
         databaseError,
         // Whether demo sign-in actually works here (never on Vercel production, whatever DEV_AUTH says).

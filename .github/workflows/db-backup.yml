@@ -1,18 +1,21 @@
 name: Database backup
 
-# Supabase's Free plan keeps no backups, so this takes one every week and
-# puts it in the same S3/R2 bucket as the files, under backups/. Set these
-# repository secrets (Settings → Secrets and variables → Actions):
-#   DIRECT_DATABASE_URL  — the Supabase "Session pooler" URI (port 5432, host
-#                          aws-0-<region>.pooler.supabase.com, user postgres.<ref>).
-#                          Not the db.<ref>.supabase.co address: on the Free plan that
-#                          is IPv6-only and GitHub's runners have no IPv6.
+# Neon's Free plan keeps only a 6-hour restore window, so this takes a backup
+# every day and puts it in the same S3/R2 bucket as the files, under backups/.
+# Set these repository secrets (Settings → Secrets and variables → Actions):
+#   DIRECT_DATABASE_URL  — Neon's direct connection, DATABASE_URL_UNPOOLED (Vercel →
+#                          project → Storage → the Neon database → .env.local tab →
+#                          Show secret). Never the pooled "-pooler" host: pg_dump needs
+#                          a session. Until it is updated after the move it is still the
+#                          Supabase "Session pooler" URI (port 5432), which also works.
 #   S3_BUCKET, S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY — as in Vercel
-# Restore with:  pg_restore --clean --if-exists --no-owner -d "<session pooler URI>" file.dump
+# The pg_dump client matches the server's major version, whatever it is.
+# Restore with:
+#   pg_restore --clean --if-exists --no-owner --no-privileges -d "<Neon direct URL>" file.dump
 
 on:
   schedule:
-    - cron: "17 3 * * 1" # Mondays 03:17 UTC
+    - cron: "17 3 * * *" # every day, 03:17 UTC
   workflow_dispatch:
 
 jobs:
@@ -20,36 +23,65 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Install the Postgres 17 client (matches the Supabase server)
+      - name: Check the connection string
+        env:
+          DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
         run: |
+          test -n "$DIRECT_DATABASE_URL" || { echo "DIRECT_DATABASE_URL secret is not set"; exit 1; }
+          case "$DIRECT_DATABASE_URL" in
+            *-pooler.*)
+              echo "DIRECT_DATABASE_URL is Neon's pooled (-pooler) host; pg_dump needs a session."
+              echo "Use DATABASE_URL_UNPOOLED from Vercel → Storage → the Neon database instead."
+              exit 1 ;;
+            *:6543/*|*:6543)
+              echo "DIRECT_DATABASE_URL is a transaction pooler (port 6543); pg_dump needs a session."
+              exit 1 ;;
+            *db.*.supabase.co*)
+              echo "DIRECT_DATABASE_URL points at the direct db.<ref>.supabase.co host, which is IPv6-only;"
+              echo "use the Session pooler URI (…pooler.supabase.com:5432, user postgres.<ref>) instead."
+              exit 1 ;;
+          esac
+
+      - name: Install the Postgres client that matches the server
+        env:
+          DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
+        run: |
+          command -v psql >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client; }
+          MAJOR=$(psql "$DIRECT_DATABASE_URL" -Atc "show server_version_num" | cut -c1-2) \
+            || { echo "The database did not answer — check the URI and that the project is not suspended."; exit 1; }
+          case "$MAJOR" in
+            1[4-9]|2[0-9]) echo "Server major version: $MAJOR" ;;
+            *) echo "Unexpected server version '$MAJOR'"; exit 1 ;;
+          esac
           sudo install -d /usr/share/postgresql-common/pgdg
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
             | sudo tee /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc >/dev/null
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-client-17
+          sudo apt-get install -y -qq "postgresql-client-$MAJOR"
+          echo "PGBIN=/usr/lib/postgresql/$MAJOR/bin" >> "$GITHUB_ENV"
 
       - name: Dump the database
         env:
           DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
         run: |
-          test -n "$DIRECT_DATABASE_URL" || { echo "DIRECT_DATABASE_URL secret is not set"; exit 1; }
-          case "$DIRECT_DATABASE_URL" in
-            *db.*.supabase.co*)
-              echo "DIRECT_DATABASE_URL points at the direct db.<ref>.supabase.co host, which is IPv6-only;"
-              echo "use the Session pooler URI (…pooler.supabase.com:5432, user postgres.<ref>) instead."
-              exit 1 ;;
-          esac
-          /usr/lib/postgresql/17/bin/pg_isready -d "$DIRECT_DATABASE_URL" -t 20 \
-            || { echo "The database did not answer — check the URI and that the project is not paused."; exit 1; }
+          "$PGBIN/pg_isready" -d "$DIRECT_DATABASE_URL" -t 20 \
+            || { echo "The database did not answer — check the URI and that the project is not suspended."; exit 1; }
           STAMP=$(date -u +%Y-%m-%d)
-          /usr/lib/postgresql/17/bin/pg_dump "$DIRECT_DATABASE_URL" \
+          "$PGBIN/pg_dump" --version
+          "$PGBIN/pg_dump" "$DIRECT_DATABASE_URL" \
             --format=custom --no-owner --no-privileges \
             --schema=public --schema=drizzle \
             --file="hallpass-$STAMP.dump"
           ls -la hallpass-*.dump
           echo "FILE=hallpass-$STAMP.dump" >> "$GITHUB_ENV"
+
+      - name: Check the dump can be read back
+        run: |
+          TABLES=$("$PGBIN/pg_restore" --list "$FILE" | grep -c " TABLE DATA " || true)
+          echo "Tables with data in the dump: $TABLES"
+          test "$TABLES" -ge 48 || { echo "Expected at least 48 tables; not uploading this dump."; exit 1; }
 
       - name: Upload to the bucket
         env:

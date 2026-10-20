@@ -4,6 +4,7 @@ import { and, count, eq, gte, inArray, isNotNull, isNull, lt, max, or, sql } fro
 import { s3Delete, s3Enabled, s3List } from "@/lib/storage";
 import { revokeSessionsTx } from "@/lib/auth/accounts";
 import { db, type Db, type Tx } from "@/lib/db/client";
+import { moveTokenSet } from "@/lib/db/urls";
 import {
   approvalInstances,
   auditLog,
@@ -851,13 +852,21 @@ export async function dateReminders(today: string): Promise<JobResult> {
  * written) are removed from the bucket after a day, so they cannot eat the
  * free allowance. Only the artwork/ prefix; everything else is written by
  * the server and recorded in the same request.
+ * It never runs while the database is being moved (MOVE_DATABASE_TOKEN set
+ * and not "off"), nor against a database with no artwork versions at all
+ * (an empty or half-copied database would make every real file look
+ * orphaned).
  */
 export async function orphanArtworkSweep(today: string): Promise<JobResult> {
   let sent = 0; // objects removed
   let skipped = 0; // objects kept
-  if (!s3Enabled()) return { job: "orphan_artwork_sweep", sent, skipped };
-  const cutoff = new Date(`${today}T00:00:00Z`).getTime() - 24 * 60 * 60 * 1000;
+  if (moveTokenSet(process.env) || !s3Enabled()) {
+    return { job: "orphan_artwork_sweep", sent, skipped };
+  }
   const { artworkVersions } = await import("@/lib/db/schema");
+  const anyArtwork = await db.select({ id: artworkVersions.id }).from(artworkVersions).limit(1);
+  if (anyArtwork.length === 0) return { job: "orphan_artwork_sweep", sent, skipped };
+  const cutoff = new Date(`${today}T00:00:00Z`).getTime() - 24 * 60 * 60 * 1000;
   let cursor: string | undefined;
   do {
     const page = await s3List("artwork/", cursor);

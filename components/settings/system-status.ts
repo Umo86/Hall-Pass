@@ -2,6 +2,7 @@
  * Plain-language status lines for Settings → System. Pure — unit tested in
  * tests/unit/settings-sections.test.ts.
  */
+import { providerName, regionCity } from "@/lib/db/urls";
 
 export type StatusTone = "ok" | "warn" | "error";
 export type StatusLine = { tone: StatusTone; title: string; detail: string };
@@ -47,6 +48,43 @@ export function storageStatus(p: {
             detail: "Fine for trying things out. Connect file storage before you use it for real.",
           };
   }
+}
+
+/** Where the data is, and whether the database works, in plain words. */
+export function databaseStatus(p: {
+  /** lib/db/urls.ts provider of the connection in use ("neon", "supabase", "local", …); null when none. */
+  provider: string | null;
+  /** Cloud region, e.g. "aws-eu-west-2". */
+  region: string | null;
+  schema: "current" | "behind" | "unknown";
+  reachable: boolean;
+}): StatusLine {
+  if (!p.provider || !p.reachable) {
+    return {
+      tone: "error",
+      title: "The database isn't connected",
+      detail:
+        "Nothing can be saved or shown until it is. Ask your developer to look at the technical details below.",
+    };
+  }
+  if (p.schema === "behind") {
+    return {
+      tone: "warn",
+      title: "The database needs updating",
+      detail:
+        "This release expects changes to the database that haven't been made yet, so some pages may fail. Ask your developer to run the database migration.",
+    };
+  }
+  const city = regionCity(p.region);
+  const where =
+    p.provider === "neon" || p.provider === "supabase"
+      ? city
+        ? `In ${providerName(p.provider)}'s ${city} data centre.`
+        : `With ${providerName(p.provider)}.`
+      : p.provider === "local"
+        ? "In a database on this computer."
+        : "In your Postgres database.";
+  return { tone: "ok", title: "Your data is stored safely", detail: where };
 }
 
 export function emailStatus(configured: boolean): StatusLine {

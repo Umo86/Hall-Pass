@@ -440,8 +440,9 @@ function SetupPanel({ status }: { status: ConfigStatus }) {
       status.databaseUrl && status.databaseReachable,
       status.databaseUrl
         ? (status.databaseError ??
-          "DATABASE_URL is set but unreachable — check the pooler URI and password")
-        : "Set DATABASE_URL (the pooled connection string)",
+          "The database is set but doesn't answer — check its URL and password")
+        : (status.databaseError ??
+          "Connect the database (the Neon integration's POSTGRES_URL with DATABASE_TARGET=neon, or DATABASE_URL locally)"),
     ],
     [
       "Sign-in method",

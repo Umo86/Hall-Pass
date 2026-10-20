@@ -7,7 +7,12 @@ import {
   type SettingsAllows,
   type SettingsNeed,
 } from "@/components/settings/sections";
-import { emailStatus, signInStatus, storageStatus } from "@/components/settings/system-status";
+import {
+  databaseStatus,
+  emailStatus,
+  signInStatus,
+  storageStatus,
+} from "@/components/settings/system-status";
 import { NOTIFICATION_GROUPS } from "@/components/account/notification-groups";
 import { MUTABLE_KINDS } from "@/lib/notification-kinds";
 
@@ -144,6 +149,55 @@ describe("system status in plain words", () => {
       tone: "error",
       title: "Nobody can sign in",
     });
+  });
+  it("says where the data is: Neon in London, with no backup claim", () => {
+    expect(
+      databaseStatus({
+        provider: "neon",
+        region: "aws-eu-west-2",
+        schema: "current",
+        reachable: true,
+      }),
+    ).toEqual({
+      tone: "ok",
+      title: "Your data is stored safely",
+      detail: "In Neon's London data centre.",
+    });
+    expect(
+      databaseStatus({
+        provider: "supabase",
+        region: "aws-eu-central-1",
+        schema: "current",
+        reachable: true,
+      }).detail,
+    ).toBe("In Supabase's Frankfurt data centre.");
+    expect(
+      databaseStatus({ provider: "neon", region: null, schema: "unknown", reachable: true }).detail,
+    ).toBe("With Neon.");
+    expect(
+      databaseStatus({ provider: "local", region: null, schema: "current", reachable: true }),
+    ).toMatchObject({ tone: "ok", detail: "In a database on this computer." });
+  });
+  it("says so when the database is unreachable or not set", () => {
+    for (const p of [
+      { provider: "neon", region: "aws-eu-west-2", schema: "unknown" as const, reachable: false },
+      { provider: null, region: null, schema: "unknown" as const, reachable: false },
+    ]) {
+      expect(databaseStatus(p)).toMatchObject({
+        tone: "error",
+        title: "The database isn't connected",
+      });
+    }
+  });
+  it("warns when the database is behind this release", () => {
+    expect(
+      databaseStatus({
+        provider: "neon",
+        region: "aws-eu-west-2",
+        schema: "behind",
+        reachable: true,
+      }),
+    ).toMatchObject({ tone: "warn", title: "The database needs updating" });
   });
 });
 

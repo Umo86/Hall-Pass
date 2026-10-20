@@ -1,21 +1,26 @@
-import { drizzle } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
-import postgres from "postgres";
 import "dotenv/config";
+import { runMigrations } from "./migrate-core";
+import {
+  databaseHostPort,
+  databaseProviderOf,
+  migrationDatabaseMissingReason,
+  migrationDatabaseUrl,
+} from "./urls";
 
+/**
+ * `pnpm db:migrate`: applies the repo's migrations over the direct
+ * connection (lib/db/urls.ts:migrationDatabaseUrl — DIRECT_DATABASE_URL
+ * locally; with DATABASE_TARGET=neon, Neon's DATABASE_URL_UNPOOLED). Prints
+ * the provider and host it is about to change, never the credentials.
+ */
 async function main() {
-  const url =
-    process.env.DIRECT_DATABASE_URL ??
-    process.env.DATABASE_URL_UNPOOLED ??
-    process.env.POSTGRES_URL_NON_POOLING ??
-    process.env.DATABASE_URL ??
-    process.env.POSTGRES_URL;
-  if (!url) throw new Error("DIRECT_DATABASE_URL (or DATABASE_URL) is not set");
-  const client = postgres(url, { max: 1, prepare: false });
-  const db = drizzle(client);
-  await migrate(db, { migrationsFolder: "lib/db/migrations" });
-  await client.end();
-  console.log("Migrations applied");
+  const target = migrationDatabaseUrl(process.env);
+  if (!target) throw new Error(migrationDatabaseMissingReason(process.env));
+  console.log(
+    `Migrating ${databaseProviderOf(target.url)} database at ${databaseHostPort(target.url) ?? "?"} (from ${target.via})`,
+  );
+  const { applied, total } = await runMigrations(target.url, "lib/db/migrations");
+  console.log(`Migrations applied: ${applied} new, ${total} in total`);
 }
 
 main().catch((err) => {

@@ -58,9 +58,11 @@ const nextConfig: NextConfig = {
       bodySizeLimit: "25mb",
     },
   },
-  // PDF exports load their fonts from disk at runtime.
   outputFileTracingIncludes: {
+    // PDF exports load their fonts from disk at runtime.
     "/api/exports/**": ["./lib/exports/fonts/**"],
+    // The one-off database move builds the target's schema from the migration files.
+    "/api/admin/move-database": ["./lib/db/migrations/**/*"],
   },
   async headers() {
     return [{ source: "/(.*)", headers: securityHeaders }];

@@ -44,3 +44,43 @@ describe("describeDbError", () => {
     expect(describeDbError(err, GOOD)).not.toContain("secret");
   });
 });
+
+describe("describeDbError on Neon", () => {
+  const NEON =
+    "postgresql://neondb_owner:secret@ep-cool-sea-a1b2c3d4-pooler.eu-west-2.aws.neon.tech/neondb?sslmode=require";
+  it("points a wrong password at Vercel → Storage, naming the variable", () => {
+    const err = new Error('password authentication failed for user "neondb_owner"');
+    expect(describeDbError(err, NEON, "POSTGRES_URL")).toMatch(
+      /Re-copy POSTGRES_URL from Vercel → Storage/,
+    );
+  });
+  it("explains the Free plan allowance and a disabled compute", () => {
+    expect(
+      describeDbError(
+        new Error(
+          "Your account or project has exceeded the compute time quota. Upgrade your plan.",
+        ),
+        NEON,
+      ),
+    ).toMatch(/Free plan allowance is used up/);
+    expect(
+      describeDbError(
+        new Error("The endpoint has been disabled. Enable it using Neon API and retry."),
+        NEON,
+      ),
+    ).toMatch(/compute is disabled/);
+  });
+  it("says to remove channel_binding", () => {
+    const err = new Error('unrecognized configuration parameter "channel_binding"');
+    expect(describeDbError(err, NEON)).toMatch(/Remove channel_binding/);
+  });
+  it("gives Neon wording for timeouts and unknown hosts, and never the password", () => {
+    const timeout = describeDbError(new Error("connect ETIMEDOUT"), NEON);
+    expect(timeout).toMatch(/Neon database did not answer/);
+    expect(timeout).not.toContain("secret");
+    expect(describeDbError(new Error("getaddrinfo ENOTFOUND x"), NEON)).toMatch(/Vercel → Storage/);
+  });
+  it("names the variable in paste mistakes", () => {
+    expect(describeConfigShape(`"${NEON}"`, "POSTGRES_URL")).toMatch(/^POSTGRES_URL is wrapped/);
+  });
+});

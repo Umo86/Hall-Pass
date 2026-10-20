@@ -275,9 +275,15 @@ test.describe("settings", () => {
     await expect(
       page.getByRole("region", { name: "Email" }).getByText(/Email is working|Email is off/),
     ).toBeVisible();
+    // Where the data is: here, the local database the app connected to.
+    const database = page.getByRole("region", { name: "Database" });
+    await expect(database.getByText("Your data is stored safely")).toBeVisible();
+    await expect(database.getByText("In a database on this computer.")).toBeVisible();
     // The detail is there but folded away unless something is wrong.
     await page.getByText("Technical details").click();
     await expect(page.getByText("New files go to")).toBeVisible();
+    await expect(page.getByText("DATABASE_URL (the first variable that answers)")).toBeVisible();
+    await expect(page.getByText(/^Up to date \(0014_better_auth\)$/)).toBeVisible();
     await page.context().close();
   });
 });

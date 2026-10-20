@@ -57,8 +57,8 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   {
     id: "system",
     label: "System",
-    short: "File storage, email and sign-in",
-    hint: "Where files are kept, whether email works and how people sign in.",
+    short: "Database, files, email and sign-in",
+    hint: "Where your data and files are kept, whether email works and how people sign in.",
     href: "/settings/system",
     needs: "system.manage",
   },

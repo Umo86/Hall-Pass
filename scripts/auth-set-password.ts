@@ -14,6 +14,7 @@ import "dotenv/config";
 import * as schema from "../lib/db/schema";
 import { writeAudit } from "../lib/audit";
 import { hashPassword } from "../lib/auth/password";
+import { normaliseDatabaseUrl } from "../lib/db/urls";
 
 async function main() {
   const email = process.argv[2]?.trim().toLowerCase();
@@ -26,7 +27,12 @@ async function main() {
     console.error("Set DATABASE_URL to the database to change.");
     process.exit(1);
   }
-  const client = postgres(url, { max: 1, prepare: false, onnotice: () => {} });
+  // A Neon URL pasted as is carries channel_binding, which postgres-js can't pass on.
+  const client = postgres(normaliseDatabaseUrl(url), {
+    max: 1,
+    prepare: false,
+    onnotice: () => {},
+  });
   const db = drizzle(client, { schema });
   try {
     const [user] = await db

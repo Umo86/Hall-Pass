@@ -93,6 +93,29 @@ test.describe("every page, every role", () => {
     expect(files.status()).toBe(401);
   });
 
+  test("health names the database actually used; the move tool is off", async ({
+    request,
+    baseURL,
+  }) => {
+    const health = await (await request.get(`${baseURL}/api/health`)).json();
+    // Local and CI: no DATABASE_TARGET, so the first variable that answers (local Postgres).
+    expect(health).toMatchObject({
+      database: "ok",
+      databaseTarget: "auto",
+      databaseProvider: "local",
+      databaseVia: "DATABASE_URL",
+      databaseProject: null,
+      databaseRegion: null,
+      functionRegion: null,
+      schema: "current",
+      seeded: true,
+    });
+    expect(health).not.toHaveProperty("databaseError");
+    // The one-off move tool doesn't exist unless MOVE_DATABASE_TOKEN is set.
+    const move = await request.get(`${baseURL}/api/admin/move-database?step=check&token=x`);
+    expect(move.status()).toBe(404);
+  });
+
   test("there is no sign-up: the invitation page needs a real invitation", async ({
     page,
     baseURL,
