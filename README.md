@@ -8,7 +8,7 @@ See `PLAN.md` for the build plan and current status, `CLAUDE.md` for conventions
 
 - **Signage schedule** — every item for an event in one list: organiser or sponsor signage (with the sponsor's name), print or digital, the supplier, and everything from the Sponsorship section. Full lifecycle (draft → sign-off → production → delivery → install → close, plus hold/reject/reopen), artwork versions with never-silent invalidation, table/Kanban/phone views, Excel import/export, spec labels and approval certificates.
 - **Approvals** — one place for artwork sign-off. _Waiting on me_ lists what each person needs to decide (with a review sheet that moves on to the next one); _All artwork_ shows every item with a graphic, filterable by event and sign-off state, with who approved, rejected or asked for changes and their comments; _Who signs off_ shows, read-only, which departments sign off what (they are set up in Users → Departments). On each item, whoever adds it can untick a department or pick a different person; the assignee is emailed. Every decision and comment is logged in History.
-- **Invite-only sign-in (Supabase)** — there is no sign-up. Admins invite people (team, approvers, partners); Supabase emails them a link that only works from their inbox, where they set their name and password. Sign-in is by email and password (or an emailed link); "Forgot password" and sign-in links only go to invited people, and the reply never reveals who has an account. Demo sign-in is always off on a Vercel deployment with Supabase configured.
+- **Invite-only sign-in (Better Auth, in our own database)** — there is no sign-up. Admins invite people (team, approvers, partners); our invitation email has a link where they set their name and password, and while email isn't set up the invitation link is shown to pass on ("Copy link"). Sign-in is by email and password (or an emailed link); "Forgot password" and sign-in links only go to invited people, and the reply never reveals who has an account. Super admins can also make a one-time sign-in or password reset link for someone to pass on. Demo sign-in is never on for Vercel production.
 - **Events and the guided start** — with no events yet, admins and Operations land on **Create your event** (`/start`): name, open dates and venue (build-up and breakdown are assumed and shown), or copy a previous event and choose what comes across. The event's **setup checklist** (`/CODE/setup`) then works from real data: dates, venue and budget; halls and locations; deadlines; who signs off; people; sign types; suppliers; first signs (add or import); sponsorship. Progress shows as "Setup 3/6" in the side menu until it is done. All events are under General → Events.
 - **Suppliers** — a directory of companies with what each does (signage print, screens, staffing…), filterable by "What they do"; new entries can be typed straight into the supplier popup, and the list itself is managed from the Suppliers page. Install contractors have their own tab. The supplier column in the schedule shows who's making what.
 - **Settings** (admins and Operations; System is admins only) — **Organisation** (name, currency, chasing overdue sign-offs, install photo), **Item types** (signage and sponsorship types people pick from), **Venues**, **Recycle bin** (put deleted items back) and **System** (file storage, email and calendar feeds, in plain words — this is where Storage now lives).
@@ -56,9 +56,9 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/hallpass_test
 CRON_SECRET=dev-cron-secret
 ```
 
-Without Supabase configured, the login page offers **development sign-in** as any seeded user (admin/ops/marketing/sales/director/viewer @media10.test, plus the external venue/engineer/H&S/supplier/exhibitor/sponsor users). `DEV_AUTH=1` keeps it on even with Supabase configured — then it only accepts the seeded `…@….test` accounts, and every page shows a red "Demo sign-in is on" bar.
+Without `BETTER_AUTH_SECRET`, the login page offers **development sign-in** as any seeded user (admin/ops/marketing/sales/director/viewer @media10.test, plus the external venue/engineer/H&S/supplier/exhibitor/sponsor users). `DEV_AUTH=1` keeps it on next to real sign-in — then it only accepts the seeded `…@….test` accounts, and every page shows a red "Demo sign-in is on" bar. It is never on for Vercel production, whatever `DEV_AUTH` says.
 
-**Going live:** invite yourself as admin (Users), sign in with the emailed link, then remove `DEV_AUTH` and redeploy.
+**Going live:** invite yourself as admin (Users), open the invitation link and choose a password, then remove `DEV_AUTH` and redeploy. See [Sign-in](#sign-in).
 
 **Start a real organisation** (no demo data): on an empty, migrated database run
 
@@ -66,8 +66,8 @@ Without Supabase configured, the login page offers **development sign-in** as an
 SEED_MODE=starter FIRST_ADMIN_EMAIL=you@company.com ORG_NAME="Your company" pnpm db:seed
 ```
 
-It creates only the organisation, the first admin (an invitation they accept by signing in
-with that email; a `…@….test` address gets a demo sign-in account instead), the departments
+It creates only the organisation, the first admin (an invitation whose link the command
+prints; a `…@….test` address gets a demo sign-in account instead), the departments
 Operations, Marketing, Sales and Senior management (signs last), the signage sign-off
 workflow, the standard sign types and supplier services. No series, venues, events or signs:
 the admin signs in, is taken to **Create your event**, and the event's setup checklist walks
@@ -100,11 +100,17 @@ pnpm build
    (`BLOB_READ_WRITE_TOKEN`, from the Storage tab) still works as an alternative; without
    either, uploads fall back to the serverless filesystem, which does not persist.
 5. Remaining env vars (Settings → Environment Variables):
-   - `DEV_AUTH=1` — demo sign-in (one-click seeded users; remove before real use)
+   - `BETTER_AUTH_SECRET` — signs sessions and sign-in links (`openssl rand -base64 32`,
+     Sensitive). Optional on Production only: without it the secret is derived from
+     `CRON_SECRET` (see [Sign-in](#sign-in)). Previews need it set for real sign-in.
+   - `DEV_AUTH=1` — demo sign-in on previews and locally (one-click seeded users; never on
+     Production; remove before real use)
    - `STANDS_ENABLED=1` — optional; shows stand approvals (hidden by default)
    - `CRON_SECRET` — any long random string (Vercel Cron sends it automatically)
-   - `RESEND_API_KEY` + `EMAIL_FROM` — transactional email (optional; sends are logged until set)
-   - `NEXT_PUBLIC_APP_URL` — optional; auto-detected from the Vercel domain when unset
+   - `RESEND_API_KEY` + `EMAIL_FROM` — transactional email (optional; sends are logged until
+     BOTH are set, and sign-in links, resets and invitations are then handed over instead)
+   - `NEXT_PUBLIC_APP_URL` — recommended (the address in sign-in and reset links);
+     auto-detected from the Vercel domain when unset
 6. Redeploy. `vercel.json` schedules the daily cron at 06:00 UTC (07:00 BST); the handler
    computes "today" in Europe/London so clock changes don't break it. Verify at
    `/api/health` — it should return `"ok":true` and states which database variable and
@@ -191,10 +197,48 @@ and suspend (Users → Suspend) everyone limited to events who must not see the 
 prices entered after the release stay in the database but aren't shown until the roll-forward;
 `package_name` is mirrored, so names still show.
 
-Supabase remains supported as an alternative (its pooler URIs in `DATABASE_URL`/
-`DIRECT_DATABASE_URL`, Storage private buckets named `artwork`, `documents`, `photos`,
-`floorplans`, `exports`, and `NEXT_PUBLIC_SUPABASE_URL` + publishable key for real email
-sign-in). `database-setup.sql` runs unchanged in its SQL editor.
+### Release 0014 (`0014_better_auth`)
+
+Sign-in moves from Supabase Auth to Better Auth, in this database. 0014 only adds (four
+`auth_*` tables and `users.email_verified`) and copies each Supabase password (bcrypt) to
+the account with the same id, so people keep their passwords; the first password sign-in
+rehashes it. Migrate, deploy, then run `scripts/auth-carry-over.sql` once against the same
+database (`psql "$DIRECT_DATABASE_URL" -f scripts/auth-carry-over.sql`): it picks up any
+Supabase account created between migrating and deploying and changes nothing else. A
+rollback to the previous deployment is safe (it ignores the new tables and still finds the
+passwords in Supabase Auth); anyone who accepted an invitation in between needs a new one.
+
+Supabase Postgres remains supported as the database (its pooler URIs in `DATABASE_URL`/
+`DIRECT_DATABASE_URL`). `database-setup.sql` runs unchanged in its SQL editor.
+
+## Sign-in
+
+Better Auth runs inside the app and keeps everything in this database (`users` plus
+`auth_session`, `auth_account`, `auth_verification`, `auth_rate_limit`). There is no
+sign-up and no client SDK: every sign-in step is a server action, and over HTTP only the
+email-link landing (`GET /api/auth/magic-link/verify`) answers.
+
+- **The secret.** `BETTER_AUTH_SECRET` when it is set. Otherwise, on Vercel Production only
+  (`VERCEL_ENV=production`) and when `CRON_SECRET` is set, it is
+  `HMAC-SHA256(CRON_SECRET, "hall-pass:better-auth:v1")` in hex, so no new secret has to be
+  typed or shown anywhere. Real sign-in is on when either gives a secret; changing either
+  value signs everyone out (sessions and links stop validating). Locally and in CI's unit
+  step nothing changes; CI's end-to-end step sets `BETTER_AUTH_SECRET`.
+- **Sessions** last 30 days and roll while people use the app. Suspending someone, removing
+  them, their access end date passing, a password reset and a password change (other
+  devices) end their sessions at once.
+- **Links** (sign-in and reset) work once, for an hour, and are stored hashed. Sign-in, link
+  and reset requests are rate-limited in production (`AUTH_RATE_LIMIT=1` elsewhere).
+- **Email.** With `RESEND_API_KEY` and `EMAIL_FROM` set, invitations, sign-in links and
+  resets are emailed. Without them invitations show the link to pass on, "Email me a link"
+  and "Forgot password?" say email isn't set up, and super admins can make one-time sign-in
+  and reset links on a person's page. In local development (no email) the login page shows
+  the link that would have been sent. To switch email on: verify a sending domain at
+  resend.com, create an API key, add `RESEND_API_KEY` (Sensitive) and `EMAIL_FROM`
+  (e.g. `Hall Pass <noreply@mail.example.com>`) on Vercel and redeploy.
+- **Locked out** (the last super admin forgot their password and email is off):
+  `DATABASE_URL='<live database URL>' pnpm auth:set-password you@company.com` prints a new
+  20-character password once, signs them out everywhere and writes an audit row.
 
 ## Running on free plans (Supabase Free + Cloudflare R2)
 

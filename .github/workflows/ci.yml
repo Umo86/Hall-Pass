@@ -54,6 +54,11 @@ jobs:
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
       - name: End-to-end tests
+        # Real sign-in (Better Auth) on for e2e only, as production runs it; DEV_AUTH=1
+        # keeps the demo cookie for the seeded .test users. Not workflow-wide, so the
+        # unit step runs exactly as it does locally.
+        env:
+          BETTER_AUTH_SECRET: ci-only-not-secret-0123456789abcdefghijklmnop
         run: pnpm test:e2e
 
       - name: Dependency audit

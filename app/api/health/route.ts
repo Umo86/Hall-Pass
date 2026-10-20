@@ -1,13 +1,6 @@
 import { NextResponse } from "next/server";
-import { devAuthEnabled } from "@/lib/auth/actor";
-import { supabaseConfigured, supabasePublicKey } from "@/lib/auth/supabase-server";
-import {
-  checkAuthService,
-  databaseProjectRef,
-  keyProjectRef,
-  supabaseProjectRef,
-} from "@/lib/auth/supabase-diagnostics";
-import { resolveSupabaseUrl } from "@/lib/auth/supabase-config";
+import { authBaseURL, authConfigured, devAuthEnabled } from "@/lib/auth/config";
+import { emailConfigured } from "@/lib/email/dispatch";
 import { blobEnabled, s3Enabled, s3Probe, storageBackend } from "@/lib/storage";
 import { latestMigration, schemaState, type SchemaState } from "@/lib/db/schema-state";
 
@@ -65,8 +58,8 @@ export async function GET() {
       databaseError = describeDbError(err, process.env.DATABASE_URL);
     }
   }
-  const supabase = resolveSupabaseUrl();
-  const auth = devAuthEnabled() ? "demo" : supabaseConfigured() ? "supabase" : "none";
+  // Real sign-in wins the label; demo sign-in is reported on its own.
+  const auth = authConfigured() ? "better-auth" : devAuthEnabled() ? "demo" : "none";
   const ok = database === "ok" && seeded && auth !== "none" && schema !== "behind";
   return NextResponse.json(
     {
@@ -80,22 +73,16 @@ export async function GET() {
         ? { schemaNote: `Run pnpm db:migrate (expects ${latestMigration().tag})` }
         : {}),
       auth,
-      // Project ids are public (they're in every page's sign-in requests).
-      // When the database is itself a Supabase project, sign-in must use the
-      // same one; a Neon (or other) database pairs with any Supabase project.
-      supabaseProject: supabaseProjectRef(supabase.url ?? undefined),
-      supabaseUrlSource: supabase.source,
-      ...(supabase.note ? { supabaseUrlNote: supabase.note } : {}),
-      supabaseKeyProject: keyProjectRef(supabasePublicKey()),
+      demoSignIn: devAuthEnabled(),
+      // The host sign-in links point at (public: it's in every link).
+      authBaseUrl: new URL(authBaseURL()).host,
       databaseProvider: databaseProvider(process.env.DATABASE_URL),
-      databaseProject: databaseProjectRef(process.env.DATABASE_URL),
-      authService: await checkAuthService(supabase.url ?? undefined, supabasePublicKey()),
       storage: storageBackend(),
       // A live call to the bucket, so a wrong key or endpoint shows up here.
       ...(s3Enabled() ? { storageCheck: await s3Probe() } : {}),
       // Both set = files not yet copied to the bucket still read from Blob.
       ...(s3Enabled() && blobEnabled() ? { storageNote: "migrating from vercel-blob" } : {}),
-      email: process.env.RESEND_API_KEY ? "resend" : "logged-only",
+      email: emailConfigured() ? "resend" : "logged-only",
       cron: Boolean(process.env.CRON_SECRET),
     },
     { status: ok ? 200 : 503 },

@@ -23,7 +23,7 @@ const INLINE_TYPES: Record<string, string> = {
 };
 
 /**
- * Local-backend file serving (development/demo). Supabase deployments issue
+ * Local-backend file serving (development/demo). Bucket deployments issue
  * signed URLs instead and never hit this route. Requires a signed-in session;
  * record-level scoping is enforced where files are listed, and paths are
  * unguessable (uuid segment per file).

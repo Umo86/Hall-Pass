@@ -24,8 +24,8 @@ export type DevUser = {
 };
 
 export type ConfigStatus = {
-  supabaseUrl: boolean;
-  supabaseKey: boolean;
+  /** Real sign-in is set up (BETTER_AUTH_SECRET, or derived on Vercel production). */
+  authSecret: boolean;
   databaseUrl: boolean;
   databaseReachable: boolean;
   databaseError: string | null;
@@ -34,7 +34,10 @@ export type ConfigStatus = {
 
 type Props = {
   brandName: string;
-  supabaseEnabled: boolean;
+  /** Real sign-in (Better Auth) is set up: email and password, links. */
+  passwordSignIn: boolean;
+  /** Email goes out (Resend); otherwise links are given another way. */
+  emailEnabled: boolean;
   devEnabled: boolean;
   devUsers: DevUser[];
   configStatus: ConfigStatus;
@@ -43,13 +46,14 @@ type Props = {
   next?: string | null;
   /** A problem to explain, e.g. an expired sign-in link (may hold a link, e.g. a mailto). */
   notice?: ReactNode;
-  /** Signed in with Supabase, but this email has no account here yet. */
+  /** Signed in, but nobody has invited this email here. */
   unprovisionedEmail?: string | null;
 };
 
 export function LoginCard({
   brandName,
-  supabaseEnabled,
+  passwordSignIn,
+  emailEnabled,
   devEnabled,
   devUsers,
   configStatus,
@@ -58,7 +62,7 @@ export function LoginCard({
   notice = null,
   unprovisionedEmail = null,
 }: Props) {
-  const configured = supabaseEnabled || (devEnabled && devUsers.length > 0);
+  const configured = passwordSignIn || (devEnabled && devUsers.length > 0);
 
   return (
     <div className="bg-muted/40 flex min-h-screen flex-col">
@@ -127,9 +131,14 @@ export function LoginCard({
             ) : !configured ? (
               <SetupPanel status={configStatus} />
             ) : devEnabled && devUsers.length > 0 ? (
-              <DevSignIn users={devUsers} supabaseEnabled={supabaseEnabled} next={next} />
+              <DevSignIn
+                users={devUsers}
+                passwordSignIn={passwordSignIn}
+                emailEnabled={emailEnabled}
+                next={next}
+              />
             ) : (
-              <EmailSignIn next={next} />
+              <EmailSignIn next={next} emailEnabled={emailEnabled} />
             )}
           </main>
         </div>
@@ -138,11 +147,13 @@ export function LoginCard({
   );
 }
 
-function EmailSignIn({ next }: { next: string | null }) {
+function EmailSignIn({ next, emailEnabled }: { next: string | null; emailEnabled: boolean }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [mode, setMode] = useState<"password" | "magic" | "reset">("password");
   const [message, setMessage] = useState<string | null>(null);
+  // Local development without email: the link that would have been sent.
+  const [devLink, setDevLink] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
@@ -158,6 +169,7 @@ function EmailSignIn({ next }: { next: string | null }) {
           e.preventDefault();
           setError(null);
           setMessage(null);
+          setDevLink(null);
           start(async () => {
             const res =
               mode === "magic"
@@ -167,6 +179,7 @@ function EmailSignIn({ next }: { next: string | null }) {
                   : await signInWithPassword({ email, password, next: next ?? undefined });
             if (res && !res.ok) setError(res.error);
             if (res && res.ok && res.message) setMessage(res.message);
+            if (res && res.ok && res.devLink) setDevLink(res.devLink);
           });
         }}
       >
@@ -197,6 +210,7 @@ function EmailSignIn({ next }: { next: string | null }) {
                   setMode("reset");
                   setError(null);
                   setMessage(null);
+                  setDevLink(null);
                 }}
               >
                 Forgot password?
@@ -220,7 +234,9 @@ function EmailSignIn({ next }: { next: string | null }) {
         </Button>
         {mode === "reset" && (
           <p className="text-muted-foreground text-xs">
-            We&apos;ll email you a link to choose a new password.
+            {emailEnabled
+              ? "We'll email you a link to choose a new password."
+              : "Email isn't set up here — a super admin can give you a reset link."}
           </p>
         )}
         <button
@@ -230,13 +246,28 @@ function EmailSignIn({ next }: { next: string | null }) {
             setMode(mode === "password" ? "magic" : "password");
             setError(null);
             setMessage(null);
+            setDevLink(null);
           }}
         >
-          {mode === "password"
-            ? "First time here, or no password yet? Email me a link"
-            : "Sign in with my password"}
+          {mode !== "password"
+            ? "Sign in with my password"
+            : emailEnabled
+              ? "First time here, or no password yet? Email me a link"
+              : "First time here? Use the invitation link you were sent."}
         </button>
-        {message && <p className="text-sm text-emerald-700 dark:text-emerald-400">{message}</p>}
+        {message && (
+          <p className="text-sm text-emerald-700 dark:text-emerald-400">
+            {message}
+            {devLink && (
+              <>
+                {" "}
+                <a href={devLink} className="link">
+                  Open the link
+                </a>
+              </>
+            )}
+          </p>
+        )}
         {error && <p className="text-destructive text-sm">{error}</p>}
       </form>
       <p className="text-muted-foreground mt-6 text-xs leading-relaxed">
@@ -249,11 +280,13 @@ function EmailSignIn({ next }: { next: string | null }) {
 
 function DevSignIn({
   users,
-  supabaseEnabled,
+  passwordSignIn,
+  emailEnabled,
   next,
 }: {
   users: DevUser[];
-  supabaseEnabled: boolean;
+  passwordSignIn: boolean;
+  emailEnabled: boolean;
   next: string | null;
 }) {
   const [error, setError] = useState<string | null>(null);
@@ -272,7 +305,7 @@ function DevSignIn({
         >
           ← Back to demo sign-in
         </button>
-        <EmailSignIn next={next} />
+        <EmailSignIn next={next} emailEnabled={emailEnabled} />
       </div>
     );
   }
@@ -338,7 +371,7 @@ function DevSignIn({
       )}
 
       {error && <p className="text-destructive mt-4 text-sm">{error}</p>}
-      {supabaseEnabled && (
+      {passwordSignIn && (
         <button
           className="text-muted-foreground hover:text-foreground mt-5 text-xs underline-offset-2 hover:underline"
           onClick={() => setShowEmail(true)}
@@ -392,12 +425,12 @@ function SetupPanel({ status }: { status: ConfigStatus }) {
       status.databaseUrl
         ? (status.databaseError ??
           "DATABASE_URL is set but unreachable — check the pooler URI and password")
-        : "Set DATABASE_URL (Supabase transaction pooler, port 6543)",
+        : "Set DATABASE_URL (the pooled connection string)",
     ],
     [
       "Sign-in method",
-      status.devAuth || (status.supabaseUrl && status.supabaseKey),
-      "Set DEV_AUTH=1 for demo sign-in, or NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY for real auth",
+      status.devAuth || status.authSecret,
+      "Set DEV_AUTH=1 for demo sign-in, or BETTER_AUTH_SECRET (openssl rand -base64 32) for real sign-in",
     ],
   ];
   return (

@@ -1,43 +1,17 @@
-import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
-import { resolveSupabaseKey, supabaseUrl } from "@/lib/auth/supabase-config";
 
 const PATH_HEADER = "x-hp-path";
 
 /**
- * Keeps Supabase sessions refreshed (per the Supabase SSR setup): expired
- * access tokens are renewed here so server components always see a valid
- * session. A no-op when Supabase auth is not configured (demo sign-in).
+ * Passes the requested path on so pages can send signed-out visitors back to
+ * it after sign-in. Sessions are checked and refreshed by Better Auth where
+ * they are used (pages, server actions, route handlers), never here: no auth
+ * work and no database in the proxy.
  */
-export async function proxy(request: NextRequest) {
-  // Pages read this to send signed-out visitors back here after sign-in.
-  const withPath = () => {
-    const headers = new Headers(request.headers);
-    headers.set(PATH_HEADER, `${request.nextUrl.pathname}${request.nextUrl.search}`);
-    return headers;
-  };
-  const url = supabaseUrl();
-  const key = resolveSupabaseKey();
-  if (!url || !key) return NextResponse.next({ request: { headers: withPath() } });
-
-  let response = NextResponse.next({ request: { headers: withPath() } });
-  const supabase = createServerClient(url, key, {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
-      },
-      setAll(cookiesToSet) {
-        for (const { name, value } of cookiesToSet) request.cookies.set(name, value);
-        response = NextResponse.next({ request: { headers: withPath() } });
-        for (const { name, value, options } of cookiesToSet) {
-          response.cookies.set(name, value, options);
-        }
-      },
-    },
-  });
-  // The getUser call triggers the token refresh when needed.
-  await supabase.auth.getUser();
-  return response;
+export function proxy(request: NextRequest) {
+  const headers = new Headers(request.headers);
+  headers.set(PATH_HEADER, `${request.nextUrl.pathname}${request.nextUrl.search}`);
+  return NextResponse.next({ request: { headers } });
 }
 
 export const config = {

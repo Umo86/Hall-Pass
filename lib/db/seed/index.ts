@@ -2224,7 +2224,15 @@ async function starter() {
         isNull(s.staffInvites.revokedAt),
       ),
     });
-    if (!open) {
+    // The invitation link is printed (nothing emails it until Resend is set up);
+    // each run makes a fresh one, so the newest printed link is the one that works.
+    const token = randomBytes(24).toString("base64url");
+    if (open) {
+      await db
+        .update(s.staffInvites)
+        .set({ inviteTokenHash: sha(token), updatedAt: new Date() })
+        .where(eq(s.staffInvites.id, open.id));
+    } else {
       await db.insert(s.staffInvites).values({
         organisationId: org.id,
         invitedEmail: email,
@@ -2232,10 +2240,14 @@ async function starter() {
         role: "admin",
         // No expiry: the first admin may not sign in straight away.
         expiresAt: null,
-        inviteTokenHash: sha(randomBytes(24).toString("base64url")),
+        inviteTokenHash: sha(token),
       });
     }
-    adminNote = `${email} is invited as admin: they sign in at /login with that email.`;
+    const base = (process.env.NEXT_PUBLIC_APP_URL?.trim() || "http://localhost:3000").replace(
+      /\/$/,
+      "",
+    );
+    adminNote = `${email} is invited as admin: open ${base}/invite/${token} to choose a password.`;
   }
 
   for (const [i, d] of STARTER_DEPARTMENTS.entries()) {

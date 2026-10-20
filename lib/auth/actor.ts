@@ -19,9 +19,11 @@ import {
   type PermissionOverrides,
   type StaffActor,
 } from "@/lib/authz";
-import { accessState, type AccessBlock } from "@/lib/access";
+import { accessBlockMessage, accessState, type AccessBlock } from "@/lib/access";
 import { activeMembership } from "@/lib/users/active";
-import { createSupabaseServerClient, supabaseConfigured } from "./supabase-server";
+import { brandName } from "@/lib/config";
+import { demoEmailAllowed, devAuthEnabled } from "./config";
+import { getAuthSession } from "./session";
 import { claimStaffInvite, openStaffInviteFor } from "./claim-staff-invite";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 import { departmentIdsForUser } from "@/lib/domain/departments";
@@ -29,31 +31,9 @@ import { claimOpenGrants, partnerSessionGrants } from "@/lib/users/external";
 
 export const DEV_COOKIE = "hp-dev-user";
 
-/**
- * Development sign-in is available when Supabase Auth is not configured and
- * explicitly enabled. It lets the seeded users be assumed via a cookie so
- * the platform can be demonstrated with only a database connection.
- * An explicit DEV_AUTH=1 always enables it (even with Supabase configured,
- * so a project without auth users yet is never locked out); the automatic
- * enable in local development applies only while Supabase is unconfigured.
- * On Vercel deployments with Supabase configured it is always off.
- */
-export function devAuthEnabled(): boolean {
-  // Never on a real deployment with Supabase sign-in: only invited people
-  // with their own accounts get in there, whatever DEV_AUTH says.
-  if (process.env.VERCEL_ENV && supabaseConfigured()) return false;
-  if (process.env.DEV_AUTH === "1") return true;
-  if (supabaseConfigured()) return false;
-  return process.env.NODE_ENV === "development";
-}
-
-/**
- * Once real sign-in (Supabase) is set up, demo sign-in may only be used for
- * the seeded demo accounts (…@….test), never for real people's accounts.
- */
-export function demoEmailAllowed(email: string): boolean {
-  return !supabaseConfigured() || email.toLowerCase().endsWith(".test");
-}
+// Demo sign-in rules live in ./config (pure, unit-tested); re-exported here
+// so the pages and actions that ask keep one import.
+export { demoEmailAllowed, devAuthEnabled };
 
 export type Session = {
   actor: Actor;
@@ -270,27 +250,12 @@ async function partnerInviter(invitedBy: string | null): Promise<AskWho> {
 
 /** Who is signed in on this request (cached), or why they are turned away. */
 const loadRequest = cache(async (): Promise<Loaded | null> => {
-  const supabase = await createSupabaseServerClient();
-  if (supabase) {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (user) {
-      const existing = await loadForUserId(user.id);
-      if (existing) return existing;
-      // First sign-in: create the app user row keyed by the auth uid.
-      if (user.email) {
-        await db
-          .insert(users)
-          .values({ id: user.id, email: user.email, fullName: "" })
-          .onConflictDoNothing();
-        return loadForUserId(user.id);
-      }
-      return null;
-    }
-    // No Supabase user: fall through — DEV_AUTH=1 keeps the dev cookie
-    // usable even with Supabase configured, so demos are never locked out.
+  const auth = await getAuthSession();
+  if (auth?.user) {
+    // users is Better Auth's user table: the row always exists, with the same id.
+    return loadForUserId(auth.user.id);
   }
+  // No real session: DEV_AUTH keeps the demo cookie usable next to real sign-in.
   if (devAuthEnabled()) {
     const store = await cookies();
     const email = store.get(DEV_COOKIE)?.value;
@@ -301,6 +266,22 @@ const loadRequest = cache(async (): Promise<Loaded | null> => {
   }
   return null;
 });
+
+/**
+ * Why a correct password got no session (Better Auth's session gate refused
+ * it): suspended or ended, with who to ask, or not invited at all.
+ */
+export async function accessRefusal(email: string): Promise<string> {
+  const user = await db.query.users.findFirst({
+    where: eq(users.email, email.trim().toLowerCase()),
+  });
+  const loaded = user ? await loadForUser(user, { touch: false }) : null;
+  if (loaded?.blocked) {
+    const b = loaded.blocked;
+    return `${accessBlockMessage(b)}${b.askEmail ? ` (${b.askEmail})` : ""}.`;
+  }
+  return `This account doesn't have access to ${brandName} — ask your contact there for an invitation.`;
+}
 
 /**
  * The current session, or null when signed out — or when the person's access

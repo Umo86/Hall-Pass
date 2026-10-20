@@ -111,6 +111,22 @@ describe("canManagePerson", () => {
     expect(can(external, { type: "people.manage" })).toBe(false);
   });
 
+  it("people.access_link: super admins only (one-time sign-in and reset links)", () => {
+    expect(can(superAdmin, { type: "people.access_link" })).toBe(true);
+    expect(can(deptManager, { type: "people.access_link" })).toBe(false);
+    expect(can(noDeptManager, { type: "people.access_link" })).toBe(false);
+    expect(can(everyoneManager, { type: "people.access_link" })).toBe(false);
+    expect(can(plainOps, { type: "people.access_link" })).toBe(false);
+    expect(can(staff("viewer"), { type: "people.access_link" })).toBe(false);
+    expect(can(external, { type: "people.access_link" })).toBe(false);
+    // No stored override can give it.
+    const sneaky = staff("ops", {
+      managerScope: "everyone",
+      overrides: { "people.access_link": true } as never,
+    });
+    expect(can(sneaky, { type: "people.access_link" })).toBe(false);
+  });
+
   it("sections never gate the people actions", () => {
     const m = { ...deptManager, features: [] };
     expect(can(m, { type: "people.manage" })).toBe(true);

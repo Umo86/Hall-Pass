@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { PasswordInput } from "@/components/ui/password-input";
 import { updatePassword } from "@/app/actions/auth";
 
-export function NewPasswordForm() {
+/** The new password for a reset link; the token comes from the link (/reset-password?token=…). */
+export function NewPasswordForm({ token }: { token: string }) {
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   return (
@@ -17,6 +18,7 @@ export function NewPasswordForm() {
         setError(null);
         start(async () => {
           const res = await updatePassword({
+            token,
             password: f.get("password"),
             confirm: f.get("confirm"),
           });

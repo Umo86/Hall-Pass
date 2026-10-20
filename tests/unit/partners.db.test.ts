@@ -359,9 +359,9 @@ d("partner access", () => {
 
   describe("who is external (P4.1)", () => {
     it("someone who arrived through the account email is marked external at sign-in", async () => {
-      // completeAccount inserts the user without is_external, as Supabase's invite does.
+      // A users row without is_external, as a magic-link account (Better Auth) is created.
       const id = randomUUID();
-      const email = mail("supabase");
+      const email = mail("magic-link");
       await db.insert(schema.users).values({ id, email, fullName: "Sam" });
       const g = await grant({
         invitedEmail: email,

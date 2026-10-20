@@ -4,8 +4,10 @@ import { LoginCard, type DevUser } from "@/components/auth/login-card";
 import { brandName } from "@/lib/config";
 import { demoEmailAllowed, devAuthEnabled, getAccessBlock, getSession } from "@/lib/auth/actor";
 import type { AccessBlock } from "@/lib/access";
-import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
-import { supabaseUrl } from "@/lib/auth/supabase-config";
+import { authConfigured } from "@/lib/auth/config";
+import { getAuthSession } from "@/lib/auth/session";
+import { loginNotice } from "@/lib/auth/messages";
+import { emailConfigured } from "@/lib/email/dispatch";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
 import { roleLabel } from "@/lib/format";
 import { brandImage } from "@/lib/brand-images";
@@ -77,10 +79,6 @@ function blockedNotice(block: AccessBlock): ReactNode {
   );
 }
 
-const NOTICES: Record<string, string> = {
-  auth: "That sign-in link has expired or was already used — ask for a new one below.",
-};
-
 export default async function LoginPage({
   searchParams,
 }: {
@@ -94,13 +92,11 @@ export default async function LoginPage({
   // Suspended, or access ended: say so and who to ask, instead of looping.
   const block = await getAccessBlock().catch(() => null);
 
-  // Signed in with Supabase but not invited: explain instead of looping.
-  let unprovisionedEmail: string | null = null;
-  const supabase = await createSupabaseServerClient().catch(() => null);
-  if (supabase && !block) {
-    const { data } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
-    unprovisionedEmail = data.user?.email ?? null;
-  }
+  // Signed in but not invited (Better Auth's session gate makes this all but
+  // impossible): explain instead of looping.
+  const unprovisionedEmail = !block
+    ? ((await getAuthSession().catch(() => null))?.user.email ?? null)
+    : null;
 
   // Self-diagnosis for the unconfigured state, so a misdeployed instance
   // says exactly what is missing instead of a dead end.
@@ -121,25 +117,16 @@ export default async function LoginPage({
   return (
     <LoginCard
       brandName={brandName}
-      supabaseEnabled={supabaseConfigured()}
+      passwordSignIn={authConfigured()}
+      emailEnabled={emailConfigured()}
       devEnabled={devAuthEnabled()}
       devUsers={await devUserList()}
       photo={brandImage("login")}
       next={next}
-      notice={
-        block
-          ? blockedNotice(block)
-          : error
-            ? (NOTICES[error] ?? "Sign-in didn't work — please try again.")
-            : null
-      }
+      notice={block ? blockedNotice(block) : loginNotice(error)}
       unprovisionedEmail={unprovisionedEmail}
       configStatus={{
-        supabaseUrl: Boolean(supabaseUrl()),
-        supabaseKey: Boolean(
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-          process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
-        ),
+        authSecret: authConfigured(),
         databaseUrl: Boolean(process.env.DATABASE_URL),
         databaseReachable,
         databaseError,

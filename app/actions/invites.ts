@@ -1,8 +1,7 @@
 "use server";
 
-import { appUrl } from "@/lib/app-url";
 import { randomUUID } from "node:crypto";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { and, eq, isNull, or } from "drizzle-orm";
@@ -10,13 +9,16 @@ import { db } from "@/lib/db/client";
 import { externalGrants, memberships, staffInvites, users } from "@/lib/db/schema";
 import { writeAudit } from "@/lib/audit";
 import { DEV_COOKIE, devAuthEnabled, getSession } from "@/lib/auth/actor";
-import { createSupabaseServerClient, supabaseConfigured } from "@/lib/auth/supabase-server";
+import { authConfigured } from "@/lib/auth/config";
+import { createInvitedAccount } from "@/lib/auth/accounts";
+import { getAuth } from "@/lib/auth/server";
+import { allow } from "@/lib/auth/rate-limit";
+import { NOT_SET_UP, TOO_MANY, UNAVAILABLE } from "@/lib/auth/messages";
 import { claimStaffInvite } from "@/lib/auth/claim-staff-invite";
 import { findValidGrant, findValidStaffInvite } from "@/lib/users/invite-lookup";
 import { PORTAL_HOME, STAFF_HOME } from "@/lib/edition-path";
 import { grantAuditPayload, grantLive, liveGrantSql } from "@/lib/users/external";
 import { roleLabel } from "@/lib/format";
-import { supabaseAdmin } from "@/lib/auth/supabase-admin";
 
 export type InviteResult = { ok: true; message?: string } | { ok: false; error: string };
 
@@ -35,10 +37,9 @@ const acceptSchema = z
 type NewAccount = { password?: string };
 
 /**
- * Create the invited person's login with the password they chose and sign
- * them in. The invitation link (sent to that address) proves the email is
- * theirs. Null when accounts can't be created here (no service key): the
- * caller falls back to an emailed sign-in link.
+ * Create the invited person's account (users row plus password, audited)
+ * with the password they chose. The invitation link (sent to that address)
+ * proves the email is theirs. Null when real sign-in isn't set up here.
  */
 async function createAccount(
   email: string,
@@ -46,44 +47,48 @@ async function createAccount(
   isExternal: boolean,
   account: NewAccount,
 ): Promise<{ userId: string; error?: never } | { error: string; userId?: never } | null> {
-  const admin = supabaseAdmin();
-  const supabase = await createSupabaseServerClient();
-  if (!admin || !supabase) return null;
+  if (!authConfigured()) return null;
   if (!account.password || account.password.length < 8) {
     return { error: "Choose a password of at least 8 characters" };
   }
-  const { data, error } = await admin.auth.admin.createUser({
+  const created = await createInvitedAccount({
     email,
+    fullName,
+    isExternal,
     password: account.password,
-    email_confirm: true,
-    user_metadata: { full_name: fullName },
   });
-  if (error || !data.user) {
-    if (error && (error.status === 422 || /already|exists|registered/i.test(error.message))) {
-      return {
-        error:
-          "You already have an account with this email — sign in with it first, then open this invitation link again.",
-      };
-    }
-    return { error: "Could not create your account — try again shortly." };
+  if ("error" in created) {
+    return {
+      error:
+        "You already have an account with this email — sign in with it first, then open this invitation link again.",
+    };
   }
-  const { error: signInError } = await supabase.auth.signInWithPassword({
-    email,
-    password: account.password,
-  });
-  if (signInError) return { error: "Your account was created — sign in with your new password." };
-  await db
-    .insert(users)
-    .values({ id: data.user.id, email: email.toLowerCase(), fullName, isExternal })
-    .onConflictDoNothing();
-  return { userId: data.user.id };
+  return { userId: created.userId };
 }
+
+/**
+ * Sign the new account in (after the invitation is claimed, so Better Auth's
+ * session gate sees the membership or grant). False when it couldn't.
+ */
+async function signInNewAccount(email: string, password: string): Promise<boolean> {
+  try {
+    await getAuth().api.signInEmail({ body: { email, password }, headers: await headers() });
+    return true;
+  } catch (err) {
+    console.error("signInNewAccount", err instanceof Error ? err.message : err);
+    return false;
+  }
+}
+
+const SIGN_IN_AFTER = "Your account was created — sign in with your new password.";
 
 /** Accept an invitation (external grant or staff) and land in the right place. */
 export async function acceptInvite(input: unknown): Promise<InviteResult> {
   const parsed = acceptSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
   const { token, fullName } = parsed.data;
+  const gate = await allow("inviteAccept", token.slice(0, 16));
+  if (gate !== "ok") return { ok: false, error: gate === "limited" ? TOO_MANY : UNAVAILABLE };
   const account: NewAccount = { password: parsed.data.password };
   const res = await findValidGrant(token);
   if (!res.grant) {
@@ -92,7 +97,7 @@ export async function acceptInvite(input: unknown): Promise<InviteResult> {
       const problem = res.problem ?? staffRes.problem;
       return { ok: false, error: problem?.error ?? "This invitation link is not valid." };
     }
-    return acceptStaffInvite(staffRes.invite, token, fullName, account);
+    return acceptStaffInvite(staffRes.invite, fullName, account);
   }
   const grant = res.grant;
 
@@ -114,8 +119,8 @@ export async function acceptInvite(input: unknown): Promise<InviteResult> {
     redirect(PORTAL_HOME);
   }
 
-  // With real sign-in configured, invitees always get an email link.
-  if (devAuthEnabled() && !supabaseConfigured()) {
+  // Demo sign-in only while real sign-in isn't set up here.
+  if (devAuthEnabled() && !authConfigured()) {
     // Development: create the user directly and sign them in by cookie.
     let user = await db.query.users.findFirst({ where: eq(users.email, grant.invitedEmail) });
     if (!user) {
@@ -131,32 +136,22 @@ export async function acceptInvite(input: unknown): Promise<InviteResult> {
     redirect(PORTAL_HOME);
   }
 
-  // Production: create their account with the password they chose.
+  // Real sign-in: create their account with the password they chose, claim
+  // the invitation, then sign them in.
   const created = await createAccount(grant.invitedEmail, fullName, true, account);
-  if (created) {
-    if (created.error !== undefined) return { ok: false, error: created.error };
-    const claimed = await claimGrant(grant.id, created.userId, fullName);
-    if (!claimed) return { ok: false, error: CLAIM_FAILED };
-    redirect(PORTAL_HOME);
+  if (!created) return { ok: false, error: NOT_SET_UP };
+  if (created.error !== undefined) return { ok: false, error: created.error };
+  const claimed = await claimGrant(grant.id, created.userId, fullName);
+  if (!claimed) return { ok: false, error: CLAIM_FAILED };
+  if (!(await signInNewAccount(grant.invitedEmail, account.password!))) {
+    return { ok: false, error: SIGN_IN_AFTER };
   }
-
-  // No service key: send a magic link to the invited address; the grant is
-  // claimed by email match on first sign-in (lib/auth/actor.ts).
-  const supabase = await createSupabaseServerClient();
-  if (!supabase) return { ok: false, error: "Authentication is not configured" };
-  const base = appUrl();
-  const { error } = await supabase.auth.signInWithOtp({
-    email: grant.invitedEmail,
-    options: { emailRedirectTo: `${base}/auth/callback?next=/invite/${token}` },
-  });
-  if (error) return { ok: false, error: "Could not send the sign-in link — try again shortly." };
-  return { ok: true, message: `A sign-in link has been sent to ${grant.invitedEmail}.` };
+  redirect(PORTAL_HOME);
 }
 
-/** Staff invitation: create the membership now (or via first sign-in). */
+/** Staff invitation: create the membership now. */
 async function acceptStaffInvite(
   invite: typeof staffInvites.$inferSelect,
-  token: string,
   fullName: string,
   account: NewAccount,
 ): Promise<InviteResult> {
@@ -170,8 +165,8 @@ async function acceptStaffInvite(
     redirect(STAFF_HOME);
   }
 
-  // With real sign-in configured, invitees always get an email link.
-  if (devAuthEnabled() && !supabaseConfigured()) {
+  // Demo sign-in only while real sign-in isn't set up here.
+  if (devAuthEnabled() && !authConfigured()) {
     let user = await db.query.users.findFirst({ where: eq(users.email, invite.invitedEmail) });
     if (!user) {
       [user] = await db
@@ -185,28 +180,16 @@ async function acceptStaffInvite(
     redirect(STAFF_HOME);
   }
 
-  // Production: create their account with the password they chose.
+  // Real sign-in: create their account with the password they chose, claim
+  // the invitation, then sign them in.
   const created = await createAccount(invite.invitedEmail, fullName, false, account);
-  if (created) {
-    if (created.error !== undefined) return { ok: false, error: created.error };
-    await claimStaffInvite(invite, created.userId, fullName);
-    redirect(STAFF_HOME);
+  if (!created) return { ok: false, error: NOT_SET_UP };
+  if (created.error !== undefined) return { ok: false, error: created.error };
+  await claimStaffInvite(invite, created.userId, fullName);
+  if (!(await signInNewAccount(invite.invitedEmail, account.password!))) {
+    return { ok: false, error: SIGN_IN_AFTER };
   }
-
-  // No service key: magic link; the membership is created by email match at
-  // first sign-in (lib/auth/actor.ts).
-  const supabase = await createSupabaseServerClient();
-  if (!supabase) return { ok: false, error: "Authentication is not configured" };
-  const { error } = await supabase.auth.signInWithOtp({
-    email: invite.invitedEmail,
-    options: {
-      emailRedirectTo: `${appUrl()}/auth/callback?next=${encodeURIComponent(
-        `/invite/${token}?name=${encodeURIComponent(fullName)}`,
-      )}`,
-    },
-  });
-  if (error) return { ok: false, error: "Could not send the sign-in link — try again shortly." };
-  return { ok: true, message: `A sign-in link has been sent to ${invite.invitedEmail}.` };
+  redirect(STAFF_HOME);
 }
 
 const CLAIM_FAILED =

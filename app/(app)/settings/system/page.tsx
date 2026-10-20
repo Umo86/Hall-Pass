@@ -78,7 +78,7 @@ export default async function SystemPage() {
             <h2 className="font-semibold">Email</h2>
             <p className="text-muted-foreground">
               {emailConfigured()
-                ? "Sending through Resend (RESEND_API_KEY is set). The sender is EMAIL_FROM."
+                ? "Sending through Resend (RESEND_API_KEY and EMAIL_FROM are set). The sender is EMAIL_FROM."
                 : "Set RESEND_API_KEY and EMAIL_FROM in the hosting settings and redeploy to send email."}
             </p>
           </section>

@@ -37,7 +37,6 @@ import { appUrl } from "@/lib/app-url";
 import { brandName } from "@/lib/config";
 import { roleLabel } from "@/lib/format";
 import { generateInviteToken, hashInviteToken } from "@/lib/auth/invite-token";
-import { sendAccountEmail } from "@/lib/auth/account-link";
 import { sendInviteEmail, type InviteDelivery } from "@/lib/auth/staff-invite";
 import { renderNotificationEmail } from "@/lib/email/template";
 import { sendEmail } from "@/lib/email/send";
@@ -372,6 +371,8 @@ export function defaultEventId(list: ExternalEvent[], lastEvent?: string | null)
 
 export type GrantRow = {
   id: string;
+  /** The partner's account once they have accepted (super admins can make them a sign-in link). */
+  userId: string | null;
   name: string | null;
   email: string;
   editionId: string;
@@ -414,6 +415,7 @@ export async function listGrants(
   const now = new Date();
   return rows.map(({ g, name, eventName }) => ({
     id: g.id,
+    userId: g.userId,
     name: name || null,
     email: g.invitedEmail,
     editionId: g.editionId,
@@ -973,8 +975,7 @@ export async function setGrantEndTx(
 
 /**
  * Tell someone who already has an account that they have new access: our
- * own email with the reason (Supabase could only send a plain sign-in
- * link). Signing in adds the access to their account.
+ * own email with the reason. Signing in adds the access to their account.
  */
 async function sendNewAccessEmail(opts: {
   to: string;
@@ -1007,11 +1008,10 @@ async function sendNewAccessEmail(opts: {
 }
 
 /**
- * Get a partner invitation to the person. Someone new: Supabase's email to
- * create their account (with the reason in its metadata), else our own
- * invitation email. Someone with an account already: our own email saying
- * what is new, else a sign-in link (signing in claims it). Failing all
- * that, the link is handed back to pass on by hand.
+ * Get a partner invitation to the person: someone with an account already
+ * gets our email saying what is new (signing in claims it), someone new our
+ * invitation email. When that can't be sent (email isn't set up, or Resend
+ * refused), the link is handed back to pass on by hand.
  */
 export async function deliverPartnerInvite(opts: {
   email: string;
@@ -1029,30 +1029,22 @@ export async function deliverPartnerInvite(opts: {
     .from(users)
     .where(sql`lower(${users.email}) = ${email}`)
     .limit(1);
-  if (existing) {
-    const viaEmail = await sendNewAccessEmail({
-      to: email,
-      name: opts.name,
-      inviterName: opts.inviterName,
-      reason: opts.reason,
-      inviteUrl: opts.inviteUrl,
-      grantId: opts.grantId,
-    });
-    if (viaEmail) return { emailed: true };
-    const viaSupabase = await sendAccountEmail(email, { fullName: opts.name, reason: opts.reason });
-    return viaSupabase !== "not_sent"
-      ? { emailed: true }
-      : { emailed: false, fallbackUrl: opts.inviteUrl };
-  }
-  const viaSupabase = await sendAccountEmail(email, { fullName: opts.name, reason: opts.reason });
-  if (viaSupabase !== "not_sent") return { emailed: true };
-  const viaEmail = await sendInviteEmail({
-    to: email,
-    name: opts.name,
-    inviterName: opts.inviterName,
-    reason: opts.reason,
-    inviteUrl: opts.inviteUrl,
-    inviteId: opts.grantId,
-  });
+  const viaEmail = existing
+    ? await sendNewAccessEmail({
+        to: email,
+        name: opts.name,
+        inviterName: opts.inviterName,
+        reason: opts.reason,
+        inviteUrl: opts.inviteUrl,
+        grantId: opts.grantId,
+      })
+    : await sendInviteEmail({
+        to: email,
+        name: opts.name,
+        inviterName: opts.inviterName,
+        reason: opts.reason,
+        inviteUrl: opts.inviteUrl,
+        inviteId: opts.grantId,
+      });
   return viaEmail ? { emailed: true } : { emailed: false, fallbackUrl: opts.inviteUrl };
 }

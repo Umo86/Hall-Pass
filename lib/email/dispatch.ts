@@ -14,6 +14,7 @@ import { brandName } from "@/lib/config";
 import { seesEdition } from "@/lib/authz";
 import { renderNotificationEmail } from "./template";
 import { sendEmail } from "./send";
+import { emailConfigured } from "./configured";
 
 /** Kinds that stay in the app: one email per new item would bury real requests. */
 const IN_APP_ONLY = new Set(["item_created"]);
@@ -21,9 +22,8 @@ const IN_APP_ONLY = new Set(["item_created"]);
 /** Older notifications are not emailed late (e.g. when email is first switched on). */
 const MAX_AGE_MS = 3 * 86_400_000;
 
-export function emailConfigured(): boolean {
-  return Boolean(process.env.RESEND_API_KEY);
-}
+// Email goes out only when BOTH RESEND_API_KEY and EMAIL_FROM are set.
+export { emailConfigured };
 
 /**
  * Sends the email counterpart of in-app notifications. Called right after

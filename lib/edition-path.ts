@@ -107,6 +107,8 @@ export const PORTAL_HOME = "/portal/approvals";
 export function safeNext(value: unknown): string | null {
   if (typeof value !== "string" || !value.startsWith("/")) return null;
   if (value.startsWith("//") || value.startsWith("/\\")) return null;
-  if (value.startsWith("/login") || value.startsWith("/auth/")) return null;
+  if (value.startsWith("/login") || value.startsWith("/auth/") || value.startsWith("/api/")) {
+    return null;
+  }
   return value;
 }

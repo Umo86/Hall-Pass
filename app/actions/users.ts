@@ -44,6 +44,13 @@ import {
 } from "@/lib/users/manage";
 import { BACK_TO_DEPARTMENT, OTHER_GROUP } from "@/lib/users/handover";
 import type { AbilityKey } from "@/lib/authz";
+import { writeAudit } from "@/lib/audit";
+import { LINK_MINUTES, authConfigured } from "@/lib/auth/config";
+import { emailIsInvited } from "@/lib/auth/account-link";
+import { createPasswordResetLink, createSignInLink } from "@/lib/auth/links";
+import { allow } from "@/lib/auth/rate-limit";
+import { NOT_SET_UP, TOO_MANY, UNAVAILABLE } from "@/lib/auth/messages";
+import { accessLinkTarget } from "@/lib/users/queries";
 
 const NOT_ALLOWED = "Only super admins and managers add and change people";
 
@@ -790,5 +797,57 @@ export async function bulkUsers(input: unknown): Promise<ActionResult<BulkUsersR
     );
   } catch (err) {
     return failure(err, "bulkUsers");
+  }
+}
+
+/**
+ * Super admins: a one-time sign-in or password reset link for someone in
+ * this organisation (a member, or a partner with access here), to pass on
+ * when email isn't set up. Works once, for the next hour; audited.
+ */
+export async function createAccessLink(
+  input: unknown,
+): Promise<ActionResult<{ url: string; minutes: number }>> {
+  const parsed = z
+    .object({ userId: z.string().uuid(), kind: z.enum(["sign_in", "password_reset"]) })
+    .strict()
+    .safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  const session = await requireSession();
+  if (!can(session.actor, { type: "people.access_link" })) {
+    return fail("Only a super admin can make sign-in links");
+  }
+  if (!authConfigured()) return fail(NOT_SET_UP);
+  try {
+    const gate = await allow("accessLink", session.user.id);
+    if (gate !== "ok") return fail(gate === "limited" ? TOO_MANY : UNAVAILABLE);
+    const { userId, kind } = parsed.data;
+    const target = await accessLinkTarget(db, session.organisation.id, userId);
+    if (!target) return fail("Person not found");
+    if (!(await emailIsInvited(target.email))) {
+      return fail(
+        `${firstName(target.name, target.email)} can't sign in at the moment (suspended, or their access has ended) — give them access again first`,
+      );
+    }
+    const url =
+      kind === "sign_in"
+        ? await createSignInLink(target.email)
+        : await createPasswordResetLink(target.email);
+    if (!url) return fail("Could not make a link — try again");
+    await db.transaction((tx) =>
+      writeAudit(tx, {
+        organisationId: session.organisation.id,
+        actorUserId: session.user.id,
+        entityType: "user",
+        entityId: target.id,
+        action: "settings_change",
+        summary: `Made a ${kind === "sign_in" ? "sign-in" : "password reset"} link for ${target.email}`,
+        subjectUserId: target.id,
+        subjectEmail: target.email,
+      }),
+    );
+    return success({ url, minutes: LINK_MINUTES }, "Link ready — it works once, for the next hour");
+  } catch (err) {
+    return failure(err, "createAccessLink");
   }
 }

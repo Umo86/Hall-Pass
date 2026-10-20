@@ -385,7 +385,9 @@ d("partner review fixes", () => {
       .set({ revokedAt: new Date() })
       .where(and(eq(schema.externalGrants.userId, p), eq(schema.externalGrants.editionId, e1)));
     const key = process.env.RESEND_API_KEY;
+    const from = process.env.EMAIL_FROM;
     process.env.RESEND_API_KEY = "re_test";
+    process.env.EMAIL_FROM = "Test <noreply@example.test>";
     try {
       const { dispatchNotificationEmails } = await import("@/lib/email/dispatch");
       state.sent.length = 0;
@@ -399,6 +401,8 @@ d("partner review fixes", () => {
     } finally {
       if (key === undefined) delete process.env.RESEND_API_KEY;
       else process.env.RESEND_API_KEY = key;
+      if (from === undefined) delete process.env.EMAIL_FROM;
+      else process.env.EMAIL_FROM = from;
     }
   });
 

@@ -1,12 +1,15 @@
 import { appUrl } from "@/lib/app-url";
 import "server-only";
-import { and, count, eq, gte, inArray, isNotNull, isNull, max, or, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNotNull, isNull, lt, max, or, sql } from "drizzle-orm";
 import { s3Delete, s3Enabled, s3List } from "@/lib/storage";
-import { databaseSupabaseRef, supabaseUrl } from "@/lib/auth/supabase-config";
+import { revokeSessionsTx } from "@/lib/auth/accounts";
 import { db, type Db, type Tx } from "@/lib/db/client";
 import {
   approvalInstances,
   auditLog,
+  authRateLimit,
+  authSession,
+  authVerification,
   documents,
   editions,
   events,
@@ -980,6 +983,8 @@ export async function endExpiredAccess(today: string, now = new Date()): Promise
     const { m, email, name } = byId.get(id)!;
     const who = name || email;
     await db.transaction(async (tx) => {
+      // Signed out everywhere in the same transaction as the record of it.
+      const sessionsEnded = await revokeSessionsTx(tx, m.userId);
       await writeAudit(tx, {
         organisationId: m.organisationId,
         actorType: "cron",
@@ -987,7 +992,7 @@ export async function endExpiredAccess(today: string, now = new Date()): Promise
         entityId: m.id,
         action: "grant_revoke",
         before: { accessEndsAt: m.accessEndsAt!.toISOString() },
-        after: { accessEnded: true, accessEndsAt: m.accessEndsAt!.toISOString() },
+        after: { accessEnded: true, accessEndsAt: m.accessEndsAt!.toISOString(), sessionsEnded },
         summary: `Access ended for ${email}`,
         subjectUserId: m.userId,
         subjectEmail: email,
@@ -1088,31 +1093,31 @@ export async function runDailyJobs(today: string): Promise<JobResult[]> {
   results.push(await dailyDigest(today));
   results.push(await taskReminders(today));
   results.push(await orphanArtworkSweep(today));
-  results.push(await supabaseKeepAlive());
+  results.push(await authHousekeeping(new Date()));
   return results;
 }
 
 /**
- * Job 10 — when the database lives elsewhere (Neon via Vercel), the Supabase
- * project only ever sees sign-ins, which can be too quiet for its Free plan:
- * a project that looks idle for a week is paused and sign-in stops working.
- * One cheap authenticated call a day counts as activity. Skipped when the
- * database is the Supabase project itself (the other jobs already use it).
+ * Job 10 — sign-in housekeeping: expired sessions and sign-in or reset links
+ * are deleted, and rate-limit counters older than a day (every window is at
+ * most 15 minutes). `sent` counts the rows removed.
  */
-export async function supabaseKeepAlive(): Promise<JobResult> {
-  const url = supabaseUrl();
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY;
-  if (!url || !key || databaseSupabaseRef()) {
-    return { job: "supabase_keep_alive", sent: 0, skipped: 1 };
-  }
-  try {
-    const { createClient } = await import("@supabase/supabase-js");
-    const admin = createClient(url, key, { auth: { persistSession: false } });
-    const { error } = await admin.auth.admin.listUsers({ page: 1, perPage: 1 });
-    if (error) throw error;
-    return { job: "supabase_keep_alive", sent: 1, skipped: 0 };
-  } catch (err) {
-    console.error("supabase keep-alive failed", err);
-    return { job: "supabase_keep_alive", sent: 0, skipped: 1 };
-  }
+export async function authHousekeeping(now: Date): Promise<JobResult> {
+  const sessions = await db
+    .delete(authSession)
+    .where(lt(authSession.expiresAt, now))
+    .returning({ id: authSession.id });
+  const links = await db
+    .delete(authVerification)
+    .where(lt(authVerification.expiresAt, now))
+    .returning({ id: authVerification.id });
+  const limits = await db
+    .delete(authRateLimit)
+    .where(lt(authRateLimit.lastRequest, now.getTime() - 24 * 60 * 60 * 1000))
+    .returning({ id: authRateLimit.id });
+  return {
+    job: "auth_housekeeping",
+    sent: sessions.length + links.length + limits.length,
+    skipped: 0,
+  };
 }

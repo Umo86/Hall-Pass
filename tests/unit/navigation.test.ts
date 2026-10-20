@@ -15,6 +15,8 @@ describe("safeNext", () => {
       "evil",
       "/login?next=/x",
       "/auth/callback",
+      "/api/auth/magic-link/verify?token=x",
+      "/api/files/x",
       null,
       undefined,
       42,

@@ -2,14 +2,10 @@ import type { NextConfig } from "next";
 
 /**
  * File storage the browser talks to directly (uploads, previews, video):
- * Supabase, Vercel Blob, Cloudflare R2, and whatever S3 endpoint is set.
+ * Vercel Blob, Cloudflare R2, and whatever S3 endpoint is set.
  */
 function storageOrigins(): string {
-  const origins = [
-    "https://*.supabase.co",
-    "https://*.blob.vercel-storage.com",
-    "https://*.r2.cloudflarestorage.com",
-  ];
+  const origins = ["https://*.blob.vercel-storage.com", "https://*.r2.cloudflarestorage.com"];
   const endpoint = (process.env.S3_ENDPOINT ?? "").trim();
   if (endpoint) {
     try {
@@ -58,7 +54,7 @@ const nextConfig: NextConfig = {
   experimental: {
     serverActions: {
       // Direct artwork/document uploads flow through server actions on the
-      // local storage backend; Supabase deployments use signed upload URLs.
+      // local storage backend; bucket deployments use signed upload URLs.
       bodySizeLimit: "25mb",
     },
   },

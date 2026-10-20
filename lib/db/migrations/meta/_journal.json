@@ -99,6 +99,13 @@
       "when": 1792400722931,
       "tag": "0013_users_events_packages",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1792502669707,
+      "tag": "0014_better_auth",
+      "breakpoints": true
     }
   ]
 }

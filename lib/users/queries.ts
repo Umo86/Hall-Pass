@@ -11,6 +11,7 @@ import type { Db, Tx } from "@/lib/db/client";
 import {
   approvers,
   departments,
+  externalGrants,
   memberships,
   signageItems,
   staffInvites,
@@ -677,4 +678,38 @@ export async function abilityHolders(
     .filter((r) => abilityOn({ role: r.role, overrides: r.overrides as PermissionOverrides }, key))
     .sort((a, b) => Number(b.role === "admin") - Number(a.role === "admin"))
     .map((r) => ({ name: r.name || r.email, email: r.email, role: r.role }));
+}
+
+/**
+ * Someone a super admin may make a sign-in or reset link for: a member of
+ * this organisation, or a partner with a grant in it. Null otherwise, so
+ * another organisation's people read as "not found".
+ */
+export async function accessLinkTarget(
+  db: Db | Tx,
+  organisationId: string,
+  userId: string,
+): Promise<{ id: string; email: string; name: string } | null> {
+  const [user] = await db
+    .select({ id: users.id, email: users.email, name: users.fullName })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!user) return null;
+  const [member] = await db
+    .select({ id: memberships.id })
+    .from(memberships)
+    .where(and(eq(memberships.userId, userId), eq(memberships.organisationId, organisationId)))
+    .limit(1);
+  if (!member) {
+    const [grant] = await db
+      .select({ id: externalGrants.id })
+      .from(externalGrants)
+      .where(
+        and(eq(externalGrants.userId, userId), eq(externalGrants.organisationId, organisationId)),
+      )
+      .limit(1);
+    if (!grant) return null;
+  }
+  return { id: user.id, email: user.email, name: user.name || user.email };
 }

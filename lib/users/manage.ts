@@ -63,6 +63,7 @@ import { formatDate, roleLabel } from "@/lib/format";
 import { todayInLondon } from "@/lib/today";
 import { createStaffInvite, STAFF_INVITE_DAYS } from "@/lib/auth/staff-invite";
 import { generateInviteToken, hashInviteToken } from "@/lib/auth/invite-token";
+import { revokeSessionsTx } from "@/lib/auth/accounts";
 import {
   departmentIdsForUser,
   departmentSignerIds,
@@ -3169,6 +3170,8 @@ export async function removeMemberTx(
       ),
     )
     .returning({ departmentId: approvers.departmentId, isMain: approvers.isMain });
+  // Signed out everywhere, now (Better Auth sessions; no cookie cache).
+  const sessionsEnded = await revokeSessionsTx(tx, membership.userId);
   await tx.delete(memberships).where(eq(memberships.id, membership.id));
   if (dropped.length > 0) await syncDepartmentSteps(tx, orgId);
   await writeAudit(tx, {
@@ -3190,6 +3193,7 @@ export async function removeMemberTx(
       tasksMovedToRemover: tasksToYou,
       signoffsHandedOver: handedOver,
       partnerAccessRevoked: grantsRevoked,
+      sessionsEnded,
     },
     summary: `Removed ${member?.email ?? "a team member"} from the team`,
     subjectUserId: membership.userId,
@@ -3268,6 +3272,8 @@ export async function suspendMemberTx(
     .update(memberships)
     .set({ suspendedAt: now, suspendedBy: ctx.actorUserId })
     .where(eq(memberships.id, membership.id));
+  // Signed out everywhere, now (Better Auth sessions; no cookie cache).
+  const sessionsEnded = await revokeSessionsTx(tx, membership.userId);
   // A main approver who is suspended isn't named on new sign-offs.
   await syncDepartmentSteps(tx, ctx.organisationId);
   await writeAudit(tx, {
@@ -3281,6 +3287,7 @@ export async function suspendMemberTx(
       suspendedAt: now.toISOString(),
       suspendedBy: ctx.actorUserId,
       signoffsHandedOver: handedOver,
+      sessionsEnded,
     },
     summary: `Suspended ${user?.email ?? who}`,
     subjectUserId: membership.userId,

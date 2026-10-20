@@ -2,19 +2,13 @@ import "server-only";
 import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { externalGrants, memberships, staffInvites, users } from "@/lib/db/schema";
-import { appUrl } from "@/lib/app-url";
 import { writeAudit } from "@/lib/audit";
 import { activeMembership } from "@/lib/users/active";
-import { supabaseAdmin } from "./supabase-admin";
-import { createSupabaseServerClient } from "./supabase-server";
 
-export type AccountEmailResult =
-  /** Supabase emailed a link to create their account. */
-  | "invite_sent"
-  /** They already have an account: Supabase emailed a sign-in link. */
-  | "signin_sent"
-  /** Nothing could be sent (Supabase not set up here, or it refused). */
-  | "not_sent";
+/*
+ * Who may get in, and the sign-in audit row. Better Auth (lib/auth/server.ts)
+ * calls both, so this file must never import lib/auth/server.ts.
+ */
 
 /**
  * Is this email allowed in? Only people with an active team
@@ -52,56 +46,6 @@ export async function emailIsInvited(email: string): Promise<boolean> {
 }
 
 /**
- * Email an invited person the way in, through Supabase: a link to create
- * their account (name and password) the first time, or a sign-in link if
- * they already have one. The link only works from their inbox, so only the
- * invited email can create the account. `reason` ("Media10 has given you
- * access to … as a sponsor") goes into the account's metadata, so the
- * Supabase email template can say what the invitation is for.
- */
-export async function sendAccountEmail(
-  email: string,
-  opts: { fullName?: string | null; reason?: string | null } = {},
-): Promise<AccountEmailResult> {
-  const e = email.trim().toLowerCase();
-  const base = appUrl();
-  const admin = supabaseAdmin();
-  if (admin) {
-    const data: Record<string, string> = {};
-    if (opts.fullName) data.full_name = opts.fullName;
-    if (opts.reason) data.invite_reason = opts.reason;
-    const { error } = await admin.auth.admin.inviteUserByEmail(e, {
-      redirectTo: `${base}/auth/accept`,
-      data: Object.keys(data).length ? data : undefined,
-    });
-    if (!error) return "invite_sent";
-    const exists = error.status === 422 || /already|registered|exists/i.test(error.message);
-    if (!exists) {
-      console.error("sendAccountEmail: invite failed", error.status, error.message);
-      return "not_sent";
-    }
-  }
-  // Already has an account (or no service key): a sign-in link, never a new account
-  // unless they're invited and there's no other way.
-  const supabase = await createSupabaseServerClient();
-  if (!supabase) return "not_sent";
-  const { error } = await supabase.auth.signInWithOtp({
-    email: e,
-    options: {
-      shouldCreateUser: !admin,
-      // A brand-new account (no service key to invite with) still needs its
-      // name and password set; an existing one just signs in.
-      emailRedirectTo: `${base}/auth/callback?next=${encodeURIComponent(admin ? "/" : "/auth/accept")}`,
-    },
-  });
-  if (error) {
-    console.error("sendAccountEmail: sign-in link failed", error.status, error.message);
-    return "not_sent";
-  }
-  return "signin_sent";
-}
-
-/**
  * Record a sign-in in the audit log (Users → access history and "last
  * active"). Never fails the sign-in.
  */
@@ -111,31 +55,10 @@ export async function auditSignIn(
 ): Promise<void> {
   try {
     const email = user.email?.trim().toLowerCase() ?? null;
-    const [member] = await db
-      .select({ organisationId: memberships.organisationId })
-      .from(memberships)
-      .where(eq(memberships.userId, user.id))
-      .limit(1);
-    // A partner's organisation is that of their newest live grant (as their
-    // session picks it), never an arbitrary or revoked one.
-    const now = new Date();
-    const [grant] = member
-      ? []
-      : await db
-          .select({ organisationId: externalGrants.organisationId })
-          .from(externalGrants)
-          .where(
-            and(
-              eq(externalGrants.userId, user.id),
-              isNull(externalGrants.revokedAt),
-              or(isNull(externalGrants.expiresAt), gt(externalGrants.expiresAt, now)),
-            ),
-          )
-          .orderBy(desc(externalGrants.createdAt))
-          .limit(1);
+    const organisationId = await accountOrganisationId(user.id);
     await db.transaction(async (tx) => {
       await writeAudit(tx, {
-        organisationId: member?.organisationId ?? grant?.organisationId ?? null,
+        organisationId,
         actorUserId: user.id,
         entityType: "user",
         entityId: user.id,
@@ -148,4 +71,32 @@ export async function auditSignIn(
   } catch (err) {
     console.error("auditSignIn", err);
   }
+}
+
+/**
+ * The organisation a person's account belongs to, for their audit rows: their
+ * team's, else (a partner) that of their newest live grant, as their session
+ * picks it — never an arbitrary or revoked one. Null when neither exists.
+ */
+export async function accountOrganisationId(userId: string): Promise<string | null> {
+  const [member] = await db
+    .select({ organisationId: memberships.organisationId })
+    .from(memberships)
+    .where(eq(memberships.userId, userId))
+    .limit(1);
+  if (member) return member.organisationId;
+  const now = new Date();
+  const [grant] = await db
+    .select({ organisationId: externalGrants.organisationId })
+    .from(externalGrants)
+    .where(
+      and(
+        eq(externalGrants.userId, userId),
+        isNull(externalGrants.revokedAt),
+        or(isNull(externalGrants.expiresAt), gt(externalGrants.expiresAt, now)),
+      ),
+    )
+    .orderBy(desc(externalGrants.createdAt))
+    .limit(1);
+  return grant?.organisationId ?? null;
 }

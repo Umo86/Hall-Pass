@@ -5,7 +5,7 @@ import { latestMigration, schemaState } from "@/lib/db/schema-state";
 /** migrations-1: /api/health says when the database hasn't had this release's migrations. */
 describe("schemaState", () => {
   it("knows this release's newest migration", () => {
-    expect(latestMigration().tag).toBe("0013_users_events_packages");
+    expect(latestMigration().tag).toBe("0014_better_auth");
   });
 
   it("journal entries are in order (each migration newer than the one before)", () => {

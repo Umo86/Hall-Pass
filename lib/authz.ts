@@ -562,6 +562,8 @@ export type Action =
   | { type: "system.manage" }
   /** Super admins only: archive and restore events. */
   | { type: "events.archive" }
+  /** Super admins only: make a one-time sign-in or reset link to pass on. */
+  | { type: "people.access_link" }
   /** Open Users to add people: super admins and managers. */
   | { type: "people.manage" }
   | { type: "person.edit"; person: PersonCtx }
@@ -1239,6 +1241,7 @@ export function can(actor: Actor, action: Action, now = new Date()): boolean {
     case "users.manage":
     case "system.manage":
     case "events.archive":
+    case "people.access_link":
       return role === "admin";
 
     case "people.manage":

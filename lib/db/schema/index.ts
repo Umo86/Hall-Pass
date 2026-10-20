@@ -10,3 +10,4 @@ export * from "./documents";
 export * from "./collab";
 export * from "./tasks";
 export * from "./audit";
+export * from "./auth";

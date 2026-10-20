@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("next/headers", () => ({ cookies: vi.fn(), headers: vi.fn() }));
-
 const ENV = { ...process.env };
 afterEach(() => {
   process.env = { ...ENV };
@@ -13,34 +11,38 @@ async function devAuth(env: Record<string, string | undefined>) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
-  const { devAuthEnabled } = await import("@/lib/auth/actor");
+  const { devAuthEnabled } = await import("@/lib/auth/config");
   return devAuthEnabled();
 }
 
-const SUPABASE = {
-  NEXT_PUBLIC_SUPABASE_URL: "https://example.supabase.co",
-  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_x",
-};
+const REAL_SIGN_IN = { BETTER_AUTH_SECRET: "x".repeat(40) };
 
 describe("demo sign-in", () => {
-  it("is never on for a Vercel deployment with Supabase sign-in, even with DEV_AUTH=1", async () => {
-    expect(await devAuth({ ...SUPABASE, VERCEL_ENV: "production", DEV_AUTH: "1" })).toBe(false);
-    expect(await devAuth({ ...SUPABASE, VERCEL_ENV: "preview", DEV_AUTH: "1" })).toBe(false);
+  it("is never on for a Vercel deployment with real sign-in, even with DEV_AUTH=1", async () => {
+    expect(await devAuth({ ...REAL_SIGN_IN, VERCEL_ENV: "production", DEV_AUTH: "1" })).toBe(false);
+    expect(await devAuth({ ...REAL_SIGN_IN, VERCEL_ENV: "preview", DEV_AUTH: "1" })).toBe(false);
+  });
+
+  it("is never on for Vercel production, even without a secret", async () => {
+    expect(
+      await devAuth({
+        BETTER_AUTH_SECRET: undefined,
+        CRON_SECRET: undefined,
+        VERCEL_ENV: "production",
+        DEV_AUTH: "1",
+      }),
+    ).toBe(false);
   });
 
   it("still works locally for tests and demos", async () => {
     expect(
-      await devAuth({
-        VERCEL_ENV: undefined,
-        NEXT_PUBLIC_SUPABASE_URL: undefined,
-        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: undefined,
-        NEXT_PUBLIC_SUPABASE_ANON_KEY: undefined,
-        DEV_AUTH: "1",
-      }),
+      await devAuth({ VERCEL_ENV: undefined, BETTER_AUTH_SECRET: undefined, DEV_AUTH: "1" }),
     ).toBe(true);
   });
 
-  it("is off with Supabase configured unless explicitly on locally", async () => {
-    expect(await devAuth({ ...SUPABASE, VERCEL_ENV: undefined, DEV_AUTH: undefined })).toBe(false);
+  it("is off with real sign-in configured unless explicitly on locally", async () => {
+    expect(await devAuth({ ...REAL_SIGN_IN, VERCEL_ENV: undefined, DEV_AUTH: undefined })).toBe(
+      false,
+    );
   });
 });

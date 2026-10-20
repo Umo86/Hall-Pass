@@ -149,9 +149,7 @@ export function StoragePanel({
             ? `S3-compatible bucket${bucket ? ` “${bucket}”` : ""} (Cloudflare R2 or similar)`
             : backend === "blob"
               ? "Vercel Blob"
-              : backend === "supabase"
-                ? "Supabase Storage"
-                : "This server's own disk (wiped on every deploy when hosted)"}
+              : "This server's own disk (wiped on every deploy when hosted)"}
         </dd>
         {check && (
           <>

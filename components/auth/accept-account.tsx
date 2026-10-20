@@ -1,100 +1,18 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useState, useTransition } from "react";
-import { createBrowserClient } from "@supabase/ssr";
+import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { completeAccount } from "@/app/actions/auth";
 
-type State =
-  | { step: "checking" }
-  | { step: "form"; email: string; name: string }
-  | { step: "error"; message: string };
-
 /**
- * Reads the session Supabase put in the invitation link (#access_token…),
- * stores it as cookies, then asks for name and password.
+ * Name and password for someone an email link has just signed in for the
+ * first time (app/auth/accept/page.tsx checks the session first).
  */
-export function AcceptAccount({
-  supabaseUrl,
-  supabaseKey,
-}: {
-  supabaseUrl: string;
-  supabaseKey: string;
-}) {
-  const [state, setState] = useState<State>({ step: "checking" });
+export function AcceptAccount({ email, name }: { email: string; name: string }) {
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
-
-  useEffect(() => {
-    if (!supabaseUrl || !supabaseKey) {
-      void Promise.resolve().then(() =>
-        setState({ step: "error", message: "Sign-in isn't set up on this site." }),
-      );
-      return;
-    }
-    const supabase = createBrowserClient(supabaseUrl, supabaseKey);
-    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-    const failure = hash.get("error_description");
-    const accessToken = hash.get("access_token");
-    const refreshToken = hash.get("refresh_token");
-    // Keep tokens out of the address bar and history.
-    if (window.location.hash) {
-      window.history.replaceState(null, "", window.location.pathname);
-    }
-    (async () => {
-      if (failure) {
-        setState({
-          step: "error",
-          message: /expired|invalid/i.test(failure)
-            ? "This link has expired or was already used. Ask the person who invited you to send it again."
-            : failure,
-        });
-        return;
-      }
-      if (accessToken && refreshToken) {
-        const { error: sessionError } = await supabase.auth.setSession({
-          access_token: accessToken,
-          refresh_token: refreshToken,
-        });
-        if (sessionError) {
-          setState({
-            step: "error",
-            message: "This link has expired. Ask the person who invited you to send it again.",
-          });
-          return;
-        }
-      }
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user?.email) {
-        setState({
-          step: "error",
-          message: "Open this page from the invitation email we sent you.",
-        });
-        return;
-      }
-      const meta = (user.user_metadata ?? {}) as { full_name?: string };
-      setState({ step: "form", email: user.email, name: meta.full_name ?? "" });
-    })();
-  }, [supabaseUrl, supabaseKey]);
-
-  if (state.step === "checking") {
-    return <p className="text-muted-foreground text-center text-sm">Checking your invitation…</p>;
-  }
-  if (state.step === "error") {
-    return (
-      <div className="space-y-3 text-center">
-        <p className="text-destructive text-sm">{state.message}</p>
-        <Link href="/login" className="text-sm underline">
-          Go to sign in
-        </Link>
-      </div>
-    );
-  }
   return (
     <form
       className="space-y-3"
@@ -118,11 +36,11 @@ export function AcceptAccount({
     >
       <p className="text-muted-foreground text-sm">
         You&apos;re setting up the account for{" "}
-        <span className="text-foreground font-medium">{state.email}</span>.
+        <span className="text-foreground font-medium">{email}</span>.
       </p>
       <label className="block space-y-1.5">
         <span className="text-sm font-medium">Your name</span>
-        <Input name="fullName" defaultValue={state.name} autoComplete="name" required />
+        <Input name="fullName" defaultValue={name} autoComplete="name" required />
       </label>
       <label className="block space-y-1.5">
         <span className="text-sm font-medium">Choose a password</span>

@@ -2,21 +2,21 @@
 
 A one-line log of choices made where the build brief is silent, with the reason. Newest first.
 
-| Date       | Decision                                                                                                                                                                                                                                                                                                                                                               | Reason                                                                                                                                                                                                                                           |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2026-09-17 | Development sign-in (`DEV_AUTH=1`) assumes seeded users by cookie                                                                                                                                                                                                                                                                                                      | Lets the platform be demonstrated with only a database. Superseded 2026-09-24: see "Demo sign-in safeguards" below — `DEV_AUTH=1` keeps it on even with Supabase configured, so it is now fenced to demo accounts and flagged on every page.     |
-| 2026-09-17 | Storage falls back to the local filesystem when Supabase is unconfigured                                                                                                                                                                                                                                                                                               | Keeps uploads working in development/demo; production uses Supabase Storage private buckets with signed URLs. Vercel's filesystem is ephemeral, so demo uploads there do not persist across deploys.                                             |
-| 2026-09-17 | Seeded artwork/documents are metadata-only (`seed/` paths, no real files)                                                                                                                                                                                                                                                                                              | Real files need object storage; hashes and versions still exercise the whole approval flow.                                                                                                                                                      |
-| 2026-09-17 | Default-workflow confirmation names drive item status (Sent to print → in_production, etc.)                                                                                                                                                                                                                                                                            | Simplest testable mapping; custom workflows that rename confirmations record decisions without moving item status.                                                                                                                               |
-| 2026-09-17 | `locked_version_id` stored as text                                                                                                                                                                                                                                                                                                                                     | It holds either an artwork version uuid or a stand submission version number.                                                                                                                                                                    |
-| 2026-09-17 | Excel import commits only when every row validates; the error list is the preview                                                                                                                                                                                                                                                                                      | One transaction, no partial imports; matches "commit in one transaction" with a simpler flow than a separate preview step.                                                                                                                       |
-| 2026-09-17 | Grants are claimed by invited email on first Supabase sign-in                                                                                                                                                                                                                                                                                                          | Avoids fragile uid pre-linking; the invite link flow still validates the hashed token.                                                                                                                                                           |
-| 2026-09-17 | TanStack Table pinned to v8                                                                                                                                                                                                                                                                                                                                            | v9 shipped mid-build with a breaking typed API.                                                                                                                                                                                                  |
-| 2026-09-17 | Deferred from v1 (flagged, not silent): inline grid editing, saved views, floorplan and calendar views, artwork previews/compare/annotations, onsite mobile section and PWA, QR camera scanning, change-request UI, venue pack / contractor schedule / sponsor / cost / performance exports, iCal feed, workflow builder UI, email template editing, GDPR self-service | Section 14.10: scope not reduced silently — each is listed in PLAN.md as remaining work with the engine-level support already in place.                                                                                                          |
-| 2026-09-17 | App shell (tasks 0.1–0.4, 0.17-lite) pushed straight to `main`                                                                                                                                                                                                                                                                                                         | The owner asked for a first Vercel deployment; production tracks `main` and the repository is not yet connected to Vercel, so a pull request had nothing to preview against. Later phase work goes through branches and pull requests.           |
-| 2026-09-17 | shadcn/ui components vendored by hand (registry blocked)                                                                                                                                                                                                                                                                                                               | The build environment's egress proxy denies ui.shadcn.com, so `components.json`, the theme tokens and the base components were written manually from the standard shadcn sources; behaviourally identical, future components added the same way. |
-| 2026-09-17 | Cron endpoint accepts GET and POST                                                                                                                                                                                                                                                                                                                                     | Vercel Cron invokes with GET while the brief specifies POST; both are served by the same handler behind the same `CRON_SECRET` bearer check.                                                                                                     |
-| 2026-09-17 | Initial planning docs pushed straight to `main`                                                                                                                                                                                                                                                                                                                        | The repository was empty with no default branch yet.                                                                                                                                                                                             |
+| Date       | Decision                                                                                                                                                                                                                                                                                                                                                               | Reason                                                                                                                                                                                                                                                                                                             |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-09-17 | Development sign-in (`DEV_AUTH=1`) assumes seeded users by cookie                                                                                                                                                                                                                                                                                                      | Lets the platform be demonstrated with only a database. Superseded 2026-09-24: see "Demo sign-in safeguards" below — `DEV_AUTH=1` keeps it on even with Supabase configured, so it is now fenced to demo accounts and flagged on every page.                                                                       |
+| 2026-09-17 | Storage falls back to the local filesystem when Supabase is unconfigured                                                                                                                                                                                                                                                                                               | Keeps uploads working in development/demo; production uses Supabase Storage private buckets with signed URLs. Vercel's filesystem is ephemeral, so demo uploads there do not persist across deploys. Superseded 2026-10-20: the Supabase Storage backend is gone; files go to S3/R2, then Vercel Blob, then local. |
+| 2026-09-17 | Seeded artwork/documents are metadata-only (`seed/` paths, no real files)                                                                                                                                                                                                                                                                                              | Real files need object storage; hashes and versions still exercise the whole approval flow.                                                                                                                                                                                                                        |
+| 2026-09-17 | Default-workflow confirmation names drive item status (Sent to print → in_production, etc.)                                                                                                                                                                                                                                                                            | Simplest testable mapping; custom workflows that rename confirmations record decisions without moving item status.                                                                                                                                                                                                 |
+| 2026-09-17 | `locked_version_id` stored as text                                                                                                                                                                                                                                                                                                                                     | It holds either an artwork version uuid or a stand submission version number.                                                                                                                                                                                                                                      |
+| 2026-09-17 | Excel import commits only when every row validates; the error list is the preview                                                                                                                                                                                                                                                                                      | One transaction, no partial imports; matches "commit in one transaction" with a simpler flow than a separate preview step.                                                                                                                                                                                         |
+| 2026-09-17 | Grants are claimed by invited email on sign-in (first Supabase sign-in until 2026-10-20; Better Auth since)                                                                                                                                                                                                                                                            | Avoids fragile uid pre-linking; the invite link flow still validates the hashed token.                                                                                                                                                                                                                             |
+| 2026-09-17 | TanStack Table pinned to v8                                                                                                                                                                                                                                                                                                                                            | v9 shipped mid-build with a breaking typed API.                                                                                                                                                                                                                                                                    |
+| 2026-09-17 | Deferred from v1 (flagged, not silent): inline grid editing, saved views, floorplan and calendar views, artwork previews/compare/annotations, onsite mobile section and PWA, QR camera scanning, change-request UI, venue pack / contractor schedule / sponsor / cost / performance exports, iCal feed, workflow builder UI, email template editing, GDPR self-service | Section 14.10: scope not reduced silently — each is listed in PLAN.md as remaining work with the engine-level support already in place.                                                                                                                                                                            |
+| 2026-09-17 | App shell (tasks 0.1–0.4, 0.17-lite) pushed straight to `main`                                                                                                                                                                                                                                                                                                         | The owner asked for a first Vercel deployment; production tracks `main` and the repository is not yet connected to Vercel, so a pull request had nothing to preview against. Later phase work goes through branches and pull requests.                                                                             |
+| 2026-09-17 | shadcn/ui components vendored by hand (registry blocked)                                                                                                                                                                                                                                                                                                               | The build environment's egress proxy denies ui.shadcn.com, so `components.json`, the theme tokens and the base components were written manually from the standard shadcn sources; behaviourally identical, future components added the same way.                                                                   |
+| 2026-09-17 | Cron endpoint accepts GET and POST                                                                                                                                                                                                                                                                                                                                     | Vercel Cron invokes with GET while the brief specifies POST; both are served by the same handler behind the same `CRON_SECRET` bearer check.                                                                                                                                                                       |
+| 2026-09-17 | Initial planning docs pushed straight to `main`                                                                                                                                                                                                                                                                                                                        | The repository was empty with no default branch yet.                                                                                                                                                                                                                                                               |
 
 ## Vercel-first infrastructure (2026-09-22)
 
@@ -85,7 +85,7 @@ stages A–G). Owner decisions and the choices made along the way:
   "Demo sign-in is on" bar. Once Supabase Auth is configured, demo sign-in
   only works for the seeded `…@….test` accounts and invitees always get an
   email link. Go-live: invite yourself as admin → sign in by the emailed
-  link → remove `DEV_AUTH` → redeploy.
+  link → remove `DEV_AUTH` → redeploy. _(Superseded 2026-10-20: real sign-in is Better Auth (`BETTER_AUTH_SECRET`), and demo sign-in is never on for Vercel production — see "Sign-in on Better Auth (2026-10)".)_
 - **Staff land on My Work**; admins see their own sign-offs there with an
   "All open sign-offs" switch. Partners land on their sign-offs.
 - **Only admins choose who signs off**; viewers and people whose sign-off
@@ -184,7 +184,7 @@ password. Each department has a main approver.
   invitation link) and signs the person in. If they already have a login
   they sign in first. Without a service key the old emailed sign-in link is
   used. Sign-in defaults to email and password with "Forgot password"
-  (Supabase reset email → `/reset-password`).
+  (Supabase reset email → `/reset-password`). _(Superseded 2026-10-20: accepting an invitation now creates the account in our database (`createInvitedAccount`), then signs in through Better Auth — see "Sign-in on Better Auth (2026-10)".)_
 - **My Work** keeps tasks and links to Approvals; staff land on My Work.
   Settings → Sign-off moved to Approvals → Approvers.
 
@@ -232,9 +232,9 @@ useful fields for every item.
   "Email me a link" and "Forgot password" only email invited people and give
   the same reply either way. Password sign-in also checks the person still
   has access. Supabase's own sign-up is never called (`shouldCreateUser`
-  only when no service key exists, and only for invited emails).
+  only when no service key exists, and only for invited emails). _(Superseded 2026-10-20: invitations are our own email (or the link to pass on); Better Auth's sign-up is off and its session gate refuses anyone not invited — see "Sign-in on Better Auth (2026-10)".)_
 - **Demo sign-in is off on any Vercel deployment with Supabase configured**,
-  whatever `DEV_AUTH` says; it remains for local development and tests.
+  whatever `DEV_AUTH` says; it remains for local development and tests. _(Superseded 2026-10-20: off on Vercel production whatever the configuration, and on other Vercel deployments with real sign-in (D10) — see "Sign-in on Better Auth (2026-10)".)_
 - **Tenancy.** A security review found that records were looked up by id,
   ref or show code without checking the organisation, and `can()` never
   compared organisations. Now: records carry their organisation (from the
@@ -756,7 +756,7 @@ Only what the core section above doesn't already say.
   (`sponsorPortalAccess`, live grants only) on the Sponsors tab and the item
   page.
 - **Existing accounts** get our own "new access" email with the reason,
-  falling back to a Supabase sign-in link, then a link to pass on.
+  falling back to a Supabase sign-in link, then a link to pass on. _(Superseded 2026-10-20: no Supabase step: the new-access email, else the link to pass on — see "Sign-in on Better Auth (2026-10)".)_
 - **Event copy:** partner end dates move with the event's breakdown end (end
   of the London day); ended grants come across moved unless still past;
   revoked never. An owner who can't own the copy is replaced by the copier.
@@ -1196,3 +1196,85 @@ Where the build spec and the code differ:
   that doesn't exist; nothing tells the two apart. Exports, files and other
   route handlers still return 404. Removing the loading state for a status
   code nobody sees wasn't worth the slower-feeling navigation.
+
+## Sign-in on Better Auth (2026-10)
+
+Phase 1 of the move off Supabase (build spec "Hall Pass off Supabase"; detail in the auth
+spec): sign-in moves from Supabase Auth to Better Auth inside the app, on the current
+Supabase database. One line per decision.
+
+- **D1 Versions pinned, 14 days old at least.** `better-auth` **1.7.7** (published
+  2026-09-30) and `bcryptjs` **3.0.3** (2025-11-02), exact versions, no caret. The spec
+  named 1.7.12, published the day it was written; the owner asked for the newest release at
+  least 14 days old (`pnpm view better-auth time --json`). Imports: `better-auth/minimal`
+  with the Drizzle adapter (no Kysely runtime; our own migrations).
+- **1.7.7 differences, adapted.** (a) Its `resetPassword` uses up the token, writes the
+  password and ends sessions as separate statements, not one transaction (1.7.12 joined
+  them), so reset by link runs in our own transaction instead
+  (`lib/auth/accounts.ts:resetPasswordWithVerification`): token deleted only while valid,
+  password saved, every session ended and the audit row written together — the audit is now
+  in the same transaction too. (b) Its magic-link "unproven account" lock keys a
+  verification row by a base64 hash, which the uuid id column can't hold, so 1.7.7 swaps in
+  a random uuid (one WARN line) and the lock is best-effort; it only runs for an unverified
+  existing account, and every account we make is verified. (c) Magic-link verify decodes
+  `callbackURL` twice; ours are plain relative paths, so nothing changes. Everything else the
+  spec relies on (`customStorage.consume`, the session hooks, `FAILED_TO_CREATE_SESSION`,
+  `findVerificationValue`, hashed identifiers) is the same; `auth-accounts.db.test.ts` covers
+  each.
+- **D2 `users` is Better Auth's user table** (name ↔ `full_name`, image ↔ `avatar_path`) plus
+  `users.email_verified`: one row per person, the same uuid everywhere, nothing to sync.
+- **D3 Four new tables with uuid ids** (`auth_session`, `auth_account`,
+  `auth_verification`, `auth_rate_limit`; `generateId: "uuid"`; `users.id` defaults to
+  `gen_random_uuid()`): the project convention.
+- **D4 All sign-in work is in server actions;** `/api/auth/[...all]` answers only
+  `GET /api/auth/magic-link/verify` and 404s everything else: no unused endpoint
+  (sign-up, change email, delete user) is reachable. A throw or 5xx there redirects to
+  `/login?error=unavailable`, never a raw error.
+- **D5 Access is checked when a session is created** (`databaseHooks.session.create.before`
+  → `emailIsInvited`), and Better Auth may only create a user for an invited email: an
+  account alone is never enough, and a correct password can be told who to ask.
+- **D6 No cookie cache; 30-day rolling sessions:** deleting `auth_session` rows (suspend,
+  remove, access end, reset, password change) takes effect on the next request.
+- **D7 One rate limiter in our database** (atomic upsert on `auth_rate_limit`, keys are
+  HMACs), for our actions and Better Auth's HTTP endpoint; on in production or with
+  `AUTH_RATE_LIMIT=1`. If it can't be asked it fails closed with "Sign-in isn't working right
+  now…", never "Too many attempts" (B12).
+- **D8 Tokens stored hashed; links last 60 minutes** (Supabase's default).
+- **D9 Passwords:** new ones scrypt (Better Auth's default); bcrypt carried over from
+  Supabase still verifies and is rehashed at the next password sign-in (no audit row for the
+  rehash: nothing visible changes).
+- **D10 Real sign-in is "configured" when there is a secret.** `BETTER_AUTH_SECRET` when set;
+  otherwise, only on Vercel production with `CRON_SECRET` set,
+  `HMAC-SHA256(CRON_SECRET, "hall-pass:better-auth:v1")` in hex (owner's amendment: no new
+  secret to type or show anywhere; rotating `CRON_SECRET` signs everyone out). Locally and in
+  CI's unit step nothing changes; CI's e2e step sets `BETTER_AUTH_SECRET` (B11: not
+  workflow-wide, so unit tests behave as locally).
+- **Demo sign-in is never possible on Vercel production**, whatever `DEV_AUTH` says
+  (production has `DEV_AUTH=1` today), with or without a secret; `VERCEL_TARGET_ENV=
+production` counts too. Elsewhere it is as before, fenced to `…@….test` accounts once real
+  sign-in is on.
+- **D11 Emails go through Resend** (`lib/email/send.ts`, logged in `email_log`); email is on
+  only with BOTH `RESEND_API_KEY` and `EMAIL_FROM`, and there is no hard-coded sender.
+- **D12 Without email nobody is locked out:** invitations hand back the link (as before);
+  "Email me a link" and "Forgot password?" say email isn't set up; super admins make
+  one-time sign-in and reset links (`people.access_link`, audited); local development shows
+  the link; `pnpm auth:set-password` is the break-glass. The starter seed now prints the
+  first admin's invitation link (Supabase used to email it).
+- **D13 Email change isn't offered; password change is** (My account, staff).
+- **D14 Password writes we own are audited in their transaction** (invitation accepted,
+  account set up, password changed, reset by link — see 1.7.7 (a) — and the CLI); Better
+  Auth's own writes (magic-link account, rehash) are audited right after.
+- **D15 Order: Better Auth on Supabase first**, then the data move (0014's carry-over needs
+  Supabase's `auth.users`).
+- **Supabase Storage fallback and keep-alive removed now.** Files are in R2 and
+  `storage.objects` is empty; nothing reads Supabase URLs any more. Daily job 10 is
+  `auth_housekeeping` (expired sessions and links, day-old rate-limit rows).
+- **Migration 0014 is hand-written and idempotent** (generated for the snapshot and journal,
+  then replaced by the spec's SQL verbatim): run twice on a copy of the seeded database with
+  a Supabase-shaped `auth.users`, it gives 48 tables, 2 functions, 46 triggers, constraints
+  `{c:20,f:106,p:48,u:21}` and 199 indexes. Once applied to Supabase it is frozen; later
+  changes are 0015+.
+- **The migration test runs on its own scratch database** built from 0000–0013 through
+  drizzle's migrator, not inside a rolled-back transaction on the shared test database: its
+  `ALTER TABLE users` would hold locks other test files need (risking deadlocks), and it also
+  checks the "existing rows become verified" path.

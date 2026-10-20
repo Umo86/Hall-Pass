@@ -114,9 +114,8 @@ describe("system status in plain words", () => {
     });
     expect(storageStatus({ backend: "local", check: null, hosted: false }).tone).toBe("warn");
   });
-  it("names Blob and Supabase as safe", () => {
+  it("names Blob as safe", () => {
     expect(storageStatus({ backend: "blob", check: null, hosted: true }).tone).toBe("ok");
-    expect(storageStatus({ backend: "supabase", check: null, hosted: true }).tone).toBe("ok");
   });
   it("says whether email works", () => {
     expect(emailStatus(true)).toMatchObject({ tone: "ok", title: "Email is working" });

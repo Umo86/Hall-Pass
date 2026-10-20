@@ -70,8 +70,10 @@ export const departments = pgTable(
 export type NotificationPrefs = Record<string, boolean>;
 
 export const users = pgTable("users", {
-  // Matches the Supabase auth uid.
-  id: uuid("id").primaryKey(),
+  // Same id as the person's sign-in account (Better Auth uses this table).
+  // lib/auth/server.ts maps Better Auth's name to full_name, image to avatar_path.
+  id: uuid("id").primaryKey().defaultRandom(),
+  // Always stored lower-case.
   email: text("email").notNull().unique(),
   fullName: text("full_name").notNull().default(""),
   phone: text("phone"),
@@ -79,6 +81,8 @@ export const users = pgTable("users", {
   isExternal: boolean("is_external").notNull().default(false),
   notificationPrefs: jsonb("notification_prefs").$type<NotificationPrefs>().notNull().default({}),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  /** Control of the inbox is proven (invitation link, magic link, or carried over by migration 0014). */
+  emailVerified: boolean("email_verified").notNull().default(false),
   ...timestamps,
 });
 
@@ -180,8 +184,8 @@ export const externalGrants = pgTable(
 );
 
 /**
- * Pending invitations for staff users. A membership row needs the Supabase
- * auth uid, which doesn't exist until first sign-in, so the invite carries
+ * Pending invitations for staff users. A membership row needs the account,
+ * which doesn't exist until the invitation is accepted, so the invite carries
  * the role (and overrides) to apply when the email first signs in.
  */
 export const staffInvites = pgTable(

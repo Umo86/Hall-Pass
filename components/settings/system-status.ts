@@ -7,7 +7,7 @@ export type StatusTone = "ok" | "warn" | "error";
 export type StatusLine = { tone: StatusTone; title: string; detail: string };
 
 export function storageStatus(p: {
-  backend: "s3" | "blob" | "supabase" | "local" | string;
+  backend: "s3" | "blob" | "local" | string;
   /** Live bucket check, when a bucket is configured. */
   check: { ok: boolean } | null;
   /** Running on hosting where the server's own disk is wiped on deploy. */
@@ -32,12 +32,6 @@ export function storageStatus(p: {
         tone: "ok",
         title: "Files are stored safely",
         detail: "Artwork, photos, documents and exports are kept in Vercel Blob.",
-      };
-    case "supabase":
-      return {
-        tone: "ok",
-        title: "Files are stored safely",
-        detail: "Artwork, photos, documents and exports are kept in Supabase Storage.",
       };
     default:
       return p.hosted

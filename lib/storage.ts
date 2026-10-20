@@ -1,5 +1,5 @@
 /**
- * File storage abstraction, in priority order:
+ * File storage abstraction, in priority order (S3, Vercel Blob, local):
  *  1. S3-compatible object storage (Cloudflare R2, AWS S3, MinIO…) when the
  *     S3_* variables are set — keys are {bucket}/{storagePath}, downloads are
  *     short-lived signed URLs and large artwork goes browser → bucket through
@@ -9,16 +9,13 @@
  *     uuid segment) and downloads are served straight from the blob CDN.
  *     While both 1 and 2 are configured, reads fall back to Blob for files
  *     not yet copied to the bucket (see /api/admin/storage/migrate).
- *  3. Supabase Storage private buckets with signed URLs.
- *  4. Local filesystem (development/demo), files under .data/uploads served
+ *  3. Local filesystem (development/demo), files under .data/uploads served
  *     through the authenticated /api/files route.
  * Paths follow {organisation_id}/{edition_id}/{entity_type}/{entity_id}/{uuid}-{name}.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { supabaseUrl } from "@/lib/auth/supabase-config";
 import path from "node:path";
-import { createClient } from "@supabase/supabase-js";
 import type { S3Client } from "@aws-sdk/client-s3";
 
 export type Bucket = "artwork" | "documents" | "photos" | "floorplans" | "exports";
@@ -380,10 +377,9 @@ async function blobUrlFor(bucket: Bucket, storagePath: string): Promise<string> 
 }
 
 /** Which backend new files go to — shown on /api/health. */
-export function storageBackend(): "s3" | "blob" | "supabase" | "local" {
+export function storageBackend(): "s3" | "blob" | "local" {
   if (s3Enabled()) return "s3";
   if (blobEnabled()) return "blob";
-  if (supabaseAdmin()) return "supabase";
   return "local";
 }
 
@@ -392,14 +388,6 @@ export function directUploadMode(): "s3" | "blob" | null {
   if (s3Enabled()) return "s3";
   if (blobEnabled()) return "blob";
   return null;
-}
-
-function supabaseAdmin() {
-  const url = supabaseUrl();
-  // New projects issue sb_secret_… keys in place of the legacy service role key.
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SECRET_KEY;
-  if (!url || !key) return null;
-  return createClient(url, key, { auth: { persistSession: false } });
 }
 
 export function sanitiseFilename(name: string): string {
@@ -451,14 +439,6 @@ export async function putObject(bucket: Bucket, storagePath: string, data: Buffe
     });
     return;
   }
-  const supabase = supabaseAdmin();
-  if (supabase) {
-    const { error } = await supabase.storage
-      .from(bucket)
-      .upload(storagePath, data, { upsert: true });
-    if (error) throw new Error(`Storage upload failed: ${error.message}`);
-    return;
-  }
   const full = localPath(bucket, storagePath);
   await mkdir(path.dirname(full), { recursive: true });
   await writeFile(full, data);
@@ -473,47 +453,31 @@ export async function getObject(bucket: Bucket, storagePath: string): Promise<Bu
     if (!res.ok) throw new Error(`Blob download failed: ${res.status}`);
     return Buffer.from(await res.arrayBuffer());
   }
-  const supabase = supabaseAdmin();
-  if (supabase) {
-    const { data, error } = await supabase.storage.from(bucket).download(storagePath);
-    if (error || !data) throw new Error(`Storage download failed: ${error?.message}`);
-    return Buffer.from(await data.arrayBuffer());
-  }
   return readFile(localPath(bucket, storagePath));
 }
 
 /**
- * A short-lived URL the browser can fetch. S3 and Supabase issue 15-minute
- * signed URLs; the local backend serves through the authenticated
- * /api/files route.
+ * A short-lived URL the browser can fetch. S3 issues 15-minute signed URLs;
+ * Blob URLs are unguessable; the local backend serves through the
+ * authenticated /api/files route.
  */
 export async function getDownloadUrl(bucket: Bucket, storagePath: string): Promise<string> {
   if (s3Enabled() && (await inS3OrBlob(bucket, storagePath)) === "s3") {
     return s3SignedGet(bucket, storagePath, "attachment");
   }
   if (blobEnabled()) return blobUrlFor(bucket, storagePath);
-  const supabase = supabaseAdmin();
-  if (supabase) {
-    const { data, error } = await supabase.storage
-      .from(bucket)
-      .createSignedUrl(storagePath, SIGNED_URL_SECONDS);
-    if (error || !data) throw new Error(`Signed URL failed: ${error?.message}`);
-    return data.signedUrl;
-  }
   return `/api/files/${bucket}/${storagePath}`;
 }
 
 /**
  * Like getDownloadUrl but for rendering in the page (image tags, PDF frames)
  * rather than saving: the local backend serves it inline with its real
- * content type. Supabase signed URLs already carry the stored content type.
+ * content type.
  */
 export async function getInlineUrl(bucket: Bucket, storagePath: string): Promise<string> {
   if (s3Enabled() && (await inS3OrBlob(bucket, storagePath)) === "s3") {
     return s3SignedGet(bucket, storagePath, "inline");
   }
   if (blobEnabled()) return blobUrlFor(bucket, storagePath);
-  const supabase = supabaseAdmin();
-  if (supabase) return getDownloadUrl(bucket, storagePath);
   return `/api/files/${bucket}/${storagePath}?inline=1`;
 }
