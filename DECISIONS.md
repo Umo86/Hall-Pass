@@ -1415,7 +1415,10 @@ journal: 15 entries, latest `0014_better_auth`). One line per decision.
   README runbook.
 - **Postgres 18 safety:** constraint counts and texts compare only `contype` c, f, p, u, t, x
   (18 adds `n` rows for NOT NULL, which the columns comparison already covers); `check`
-  reports both server versions and warns when the majors differ.
+  reports both server versions and warns when the majors differ. The Neon project runs
+  18.6 and Supabase 17.6: `tests/unit/db-move.db.test.ts` takes an optional
+  `TEST_TARGET_DATABASE_URL` for the targets' server, and passes every case from 17.6 to
+  18.4 (both ICU en-US) with identical schema texts.
 - **Digests and lists don't depend on the server's collation:** rows are ordered by their
   primary key as text in the "C" collation, columns by name, schema lists sorted in "C", and
   TimeZone, DateStyle, IntervalStyle and float digits are pinned in every move transaction.

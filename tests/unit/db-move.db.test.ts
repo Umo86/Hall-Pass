@@ -10,6 +10,10 @@
  * Auth's tables, and values only an exact copy keeps). The target starts
  * empty. The shared test database is used once more, read-only, as a busy
  * source.
+ *
+ * TEST_TARGET_DATABASE_URL (optional, same rights) puts the targets on
+ * another server: Postgres 17 as the source and 18 as the target, as
+ * Supabase and Neon are. Both servers need the same default collation.
  */
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -26,6 +30,8 @@ import { freeze, isFrozen, unfreeze } from "@/lib/db/move/freeze";
 import { databaseFingerprint, verifyDatabases } from "@/lib/db/move/verify";
 
 const url = process.env.TEST_DATABASE_URL;
+const targetUrl = process.env.TEST_TARGET_DATABASE_URL || url;
+const twoServers = targetUrl !== url;
 const d = describe.skipIf(!url);
 
 const RUN = `${process.pid}_${Date.now() % 100_000}`;
@@ -41,8 +47,8 @@ const FRZ_DB = `hp_move_frz_${RUN}`;
 const PASSWORD = randomBytes(16).toString("hex");
 const SLOW = { timeout: 120_000 };
 
-function urlFor(database: string, role?: string): string {
-  const u = new URL(url!);
+function urlFor(database: string, role?: string, server = url!): string {
+  const u = new URL(server);
   u.pathname = `/${database}`;
   if (role) {
     u.username = role;
@@ -51,7 +57,17 @@ function urlFor(database: string, role?: string): string {
   return u.toString();
 }
 
+/** A database on the target's server. */
+const targetFor = (database: string, role?: string) => urlFor(database, role, targetUrl!);
+
+/** Check's notice when the servers' major versions differ, expected only with two servers. */
+const VERSIONS_DIFFER = /^Different Postgres major versions/;
+const besidesVersions = (warnings: string[]) =>
+  twoServers ? warnings.filter((w) => !VERSIONS_DIFFER.test(w)) : warnings;
+
 let admin: postgres.Sql;
+/** The target server's superuser connection (the same as `admin` with one server). */
+let targetAdmin: postgres.Sql;
 let src: MoveSql;
 let dst: MoveSql;
 let ready = false;
@@ -79,25 +95,31 @@ async function one<T>(sql: MoveSql, query: string): Promise<T> {
 d("database move: copy, verify, freeze, finish", () => {
   beforeAll(async () => {
     admin = postgres(urlFor("postgres"), { max: 1, prepare: false, onnotice: () => {} });
+    targetAdmin = twoServers
+      ? postgres(targetFor("postgres"), { max: 1, prepare: false, onnotice: () => {} })
+      : admin;
     try {
-      for (const role of [SRC_ROLE, DST_ROLE]) {
-        await admin.unsafe(
+      for (const [server, role] of [
+        [admin, SRC_ROLE],
+        [targetAdmin, DST_ROLE],
+      ] as const) {
+        await server.unsafe(
           `CREATE ROLE "${role}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '${PASSWORD}'`,
         );
       }
       await admin.unsafe(`CREATE DATABASE "${SRC_DB}" OWNER "${SRC_ROLE}"`);
-      await admin.unsafe(`CREATE DATABASE "${DST_DB}" OWNER "${DST_ROLE}"`);
-      await admin.unsafe(`CREATE DATABASE "${BUSY_DB}" OWNER "${DST_ROLE}"`);
+      await targetAdmin.unsafe(`CREATE DATABASE "${DST_DB}" OWNER "${DST_ROLE}"`);
+      await targetAdmin.unsafe(`CREATE DATABASE "${BUSY_DB}" OWNER "${DST_ROLE}"`);
     } catch (err) {
       console.warn(`db-move: skipped, can't create roles or databases (${(err as Error).message})`);
       return;
     }
     for (const [database, role] of [
-      [SRC_DB, SRC_ROLE],
-      [DST_DB, DST_ROLE],
-      [BUSY_DB, DST_ROLE],
+      [urlFor(SRC_DB), SRC_ROLE],
+      [targetFor(DST_DB), DST_ROLE],
+      [targetFor(BUSY_DB), DST_ROLE],
     ]) {
-      const c = postgres(urlFor(database), { max: 1, onnotice: () => {} });
+      const c = postgres(database, { max: 1, onnotice: () => {} });
       await c.unsafe(`ALTER SCHEMA public OWNER TO "${role}"`);
       await c.end();
     }
@@ -115,7 +137,7 @@ d("database move: copy, verify, freeze, finish", () => {
       stdio: "pipe",
     });
     src = connectForMove(srcUrl);
-    dst = connectForMove(urlFor(DST_DB, DST_ROLE));
+    dst = connectForMove(targetFor(DST_DB, DST_ROLE));
     await src.unsafe(FIXTURE);
     ready = true;
   }, 180_000);
@@ -123,6 +145,15 @@ d("database move: copy, verify, freeze, finish", () => {
   afterAll(async () => {
     await src?.end({ timeout: 5 });
     await dst?.end({ timeout: 5 });
+    if (targetAdmin && twoServers) {
+      for (const database of [DST_DB, BUSY_DB]) {
+        await targetAdmin
+          .unsafe(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`)
+          .catch(() => {});
+      }
+      await targetAdmin.unsafe(`DROP ROLE IF EXISTS "${DST_ROLE}"`).catch(() => {});
+      await targetAdmin.end({ timeout: 5 });
+    }
     if (admin) {
       for (const database of [SRC_DB, DST_DB, BUSY_DB, FRZ_DB]) {
         await admin.unsafe(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`).catch(() => {});
@@ -157,11 +188,17 @@ d("database move: copy, verify, freeze, finish", () => {
       expect(report.collationMatch).toBe(true);
       expect(report.blockers).toEqual([]);
       expect(report.readyToCopy).toBe(true);
-      expect(report.warnings).toEqual([]);
+      expect(besidesVersions(report.warnings)).toEqual([]);
+      // Check names a difference in major versions exactly when there is one.
+      const [srcMajor, dstMajor] = [report.source, report.target].map((s) =>
+        Math.floor(s.versionNum / 10000),
+      );
+      if (!twoServers) expect(dstMajor).toBe(srcMajor);
+      expect(report.warnings.some((w) => VERSIONS_DIFFER.test(w))).toBe(srcMajor !== dstMajor);
       // When the app runs on the source, check says it must be frozen before the copy.
       const live = await checkDatabases(src, dst, { liveSource: "supabase" });
       expect(live.readyToCopy).toBe(true);
-      expect(live.warnings).toEqual([
+      expect(besidesVersions(live.warnings)).toEqual([
         expect.stringMatching(/^supabase is the live database and isn't frozen: copy refuses/),
       ]);
     },
@@ -393,7 +430,7 @@ d("database move: copy, verify, freeze, finish", () => {
     async (ctx) => {
       if (!ready) ctx.skip();
       const busy = connectForMove(url!);
-      const target = connectForMove(urlFor(BUSY_DB, DST_ROLE));
+      const target = connectForMove(targetFor(BUSY_DB, DST_ROLE));
       try {
         const report = await copyDatabase(busy, target, { batchRows: 200 });
         // Each table holds exactly what the snapshot held (checked before commit)…
