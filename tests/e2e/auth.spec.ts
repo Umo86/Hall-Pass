@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test, type Browser, type Page } from "@playwright/test";
 import postgres from "postgres";
 import { signInAs, signInWithPassword } from "./helpers";
 
@@ -36,9 +36,12 @@ async function signOutFromMenu(page: Page, name: string) {
 
 /**
  * As if this browser signed in four weeks ago and was last rolled then: the
- * session cookie and its database row both run out in two days.
+ * session cookie and its database row both run out in two days. Waits for the
+ * page's own keep-alive pings first, so none lands after the ageing.
  */
-async function ageSession(ctx: BrowserContext) {
+async function ageSession(page: Page) {
+  await page.waitForLoadState("networkidle");
+  const ctx = page.context();
   const cookie = (await ctx.cookies()).find((c) => c.name === SESSION_COOKIE);
   expect(cookie, "a real session cookie").toBeDefined();
   await ctx.addCookies([{ ...cookie!, expires: Math.floor(Date.now() / 1000) + 2 * DAY }]);
@@ -53,13 +56,20 @@ async function ageSession(ctx: BrowserContext) {
   }
 }
 
-/** A full page load rolls the session: the cookie comes back good for 30 days. */
+/**
+ * A full page load rolls the session: the cookie comes back good for 30 days.
+ * In development React mounts the keep-alive twice, so a page load can ping
+ * twice and only one reply rolls the session: wait for the one that does.
+ */
 async function expectRolledOnPageLoad(page: Page, url: string) {
-  const ping = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/session");
+  const ping = page.waitForResponse(
+    async (r) =>
+      new URL(r.url()).pathname === "/api/session" &&
+      ((await r.headerValue("set-cookie")) ?? "").includes("Max-Age=2592000"),
+  );
   await page.goto(url);
   const res = await ping;
   expect(res.status()).toBe(204);
-  expect(await res.headerValue("set-cookie")).toContain("Max-Age=2592000");
   const cookie = (await page.context().cookies()).find((c) => c.name === SESSION_COOKIE);
   expect(cookie!.expires).toBeGreaterThan(Date.now() / 1000 + 29 * DAY);
 }
@@ -262,7 +272,7 @@ test.describe("Real sign-in", () => {
     const pat = await fresh(browser);
     await signInWithPassword(pat, baseURL!, email, password);
     await pat.waitForURL("**/my-work");
-    await ageSession(pat.context());
+    await ageSession(pat);
     await expectRolledOnPageLoad(pat, `${baseURL}/my-work`);
     await pat.context().close();
 
@@ -277,7 +287,7 @@ test.describe("Real sign-in", () => {
     const partner = await fresh(browser);
     await partner.goto(partnerLink);
     await partner.waitForURL("**/portal/**");
-    await ageSession(partner.context());
+    await ageSession(partner);
     await expectRolledOnPageLoad(partner, `${baseURL}/portal/approvals`);
     await partner.context().close();
   });
