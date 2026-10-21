@@ -32,7 +32,7 @@ function stepScript(name: string): string {
 const dir = mkdtempSync(path.join(tmpdir(), "hp-backup-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-function check(url: string) {
+function check(url: string, event = "workflow_dispatch") {
   const githubEnv = path.join(dir, `env-${Math.random().toString(36).slice(2)}`);
   const r = spawnSync(
     "bash",
@@ -43,6 +43,7 @@ function check(url: string) {
         NODE_ENV: "test",
         DIRECT_DATABASE_URL: url,
         GITHUB_ENV: githubEnv,
+        GITHUB_EVENT_NAME: event,
       },
     },
   );
@@ -58,7 +59,7 @@ function check(url: string) {
 describe("db-backup.yml: which database is backed up", () => {
   it.each([
     [
-      "postgresql://neondb_owner:s3cret@ep-cool-sea-a1b2c3d4.eu-west-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+      "postgresql://neondb_owner:s3cret@ep-cool-sea-a1b2c3d4.eu-west-2.aws.neon.tech/hallpass?sslmode=require&channel_binding=require",
       "ep-cool-sea-a1b2c3d4.eu-west-2.aws.neon.tech (Neon)",
     ],
     [
@@ -79,11 +80,21 @@ describe("db-backup.yml: which database is backed up", () => {
     "postgresql://neondb_owner:s3cret@ep-cool-sea-a1b2c3d4-pooler.eu-west-2.aws.neon.tech/neondb",
     "postgresql://postgres.ref:s3cret@aws-0-eu-central-1.pooler.supabase.com:6543/postgres",
     "postgresql://postgres:s3cret@db.uymemosqktczdjxlsryj.supabase.co:5432/postgres",
+    // Neon's integration database, not NEON_DATABASE (hallpass).
+    "postgresql://neondb_owner:s3cret@ep-cool-sea-a1b2c3d4.eu-west-2.aws.neon.tech/neondb?sslmode=require",
+    "postgresql://neondb_owner:s3cret@ep-cool-sea-a1b2c3d4.c-2.eu-west-2.aws.neon.tech:5432/neondb",
     "",
   ])("refuses %j before naming anything", (url) => {
     const r = check(url);
     expect(r.status).toBe(1);
     expect(r.out).not.toContain("Backing up");
     expect(r.out).not.toContain("s3cret");
+  });
+
+  it("a scheduled run without the secret warns once and skips, instead of failing every day", () => {
+    const r = check("", "schedule");
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("::warning::No backup today");
+    expect(r.exported).toContain("SKIP_BACKUP=1");
   });
 });
