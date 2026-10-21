@@ -50,7 +50,7 @@ describe("authoriseMove: steps and parameters", () => {
     expect(call(`token=${TOKEN}`)).toMatchObject({ ok: false, status: 400 });
   });
 
-  it.each(["freeze", "unfreeze", "copy", "finish", "back-copy"])(
+  it.each(["prepare", "freeze", "unfreeze", "copy", "finish", "back-copy"])(
     "%s without confirm=<step> → 400",
     (step) => {
       const r = call(`step=${step}&db=supabase&expect=f&token=${TOKEN}`, {
@@ -86,6 +86,21 @@ describe("authoriseMove: steps and parameters", () => {
   it("freeze and unfreeze need db", () => {
     expect(call(`step=freeze&confirm=freeze&token=${TOKEN}`)).toMatchObject({ status: 400 });
     expect(call(`step=unfreeze&confirm=unfreeze&token=${TOKEN}`)).toMatchObject({ status: 400 });
+  });
+
+  it("prepare makes the Neon database only, and only before the switch", () => {
+    expect(call(`step=prepare&confirm=prepare&token=${TOKEN}`)).toMatchObject({
+      ok: true,
+      request: { step: "prepare", live: "supabase" },
+    });
+    expect(call(`step=prepare&confirm=prepare&db=neon&token=${TOKEN}`).ok).toBe(true);
+    expect(call(`step=prepare&confirm=prepare&db=supabase&token=${TOKEN}`)).toMatchObject({
+      ok: false,
+      status: 400,
+    });
+    expect(
+      call(`step=prepare&confirm=prepare&token=${TOKEN}`, { DATABASE_TARGET: "neon" }),
+    ).toMatchObject({ ok: false, status: 409 });
   });
 });
 

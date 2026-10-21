@@ -16,6 +16,12 @@
  *   otherwise run on Neon while the move tool treats Supabase as live.
  * - anything else: no database, with a reason.
  *
+ * NEON_DATABASE names the database inside the Neon project when it isn't the
+ * integration's own (its URLs all name "neondb", made with Neon's default
+ * C.UTF-8 collation): every Neon URL then names it instead. The move creates
+ * it with the source's collation (step=prepare), as a database's collation
+ * can't change once it's made.
+ *
  * Imported by drizzle.config.ts, so it only uses relative imports (none).
  */
 export type Env = Record<string, string | undefined>;
@@ -44,6 +50,8 @@ export const AUTO_MIGRATION_VARS = [
 /** Neon's direct (unpooled) variables, in priority order. */
 export const NEON_DIRECT_VARS = ["DATABASE_URL_UNPOOLED", "POSTGRES_URL_NON_POOLING"] as const;
 
+const NEON_DATABASE_REASON =
+  "NEON_DATABASE is not a valid database name (lower-case letters, digits and _, starting with a letter or _).";
 const PREVIEW_REASON =
   "Preview deployments have no database unless DATABASE_TARGET is set for Preview (the Neon integration would otherwise give them production data).";
 const INVALID_REASON = "DATABASE_TARGET has an unknown value: use neon, or leave it unset.";
@@ -84,6 +92,29 @@ export function normaliseDatabaseUrl(url: string): string {
     .split("&")
     .filter((p) => p !== "" && !/^channel_binding(=|$)/i.test(p));
   return kept.length ? `${base}?${kept.join("&")}` : base;
+}
+
+/** The URL with another database in its path; credentials, host and query untouched. */
+export function withDatabaseName(url: string, name: string): string {
+  const m = /^([a-z][a-z0-9+.-]*:\/\/[^/?#]*)(?:\/[^?#]*)?(.*)$/i.exec(url);
+  return m ? `${m[1]}/${encodeURIComponent(name)}${m[2]}` : url;
+}
+
+/**
+ * A Neon URL pointed at NEON_DATABASE (unchanged when it's unset, or for
+ * any other host). Null when NEON_DATABASE isn't a plain database name.
+ */
+export function withNeonDatabase(url: string, env: Env): string | null {
+  const name = read(env, "NEON_DATABASE")?.trim();
+  if (!name || databaseProviderOf(url) !== "neon") return url;
+  if (neonDatabaseInvalid(env)) return null;
+  return withDatabaseName(url, name);
+}
+
+/** NEON_DATABASE is set to something that isn't a plain database name. */
+function neonDatabaseInvalid(env: Env): boolean {
+  const name = read(env, "NEON_DATABASE")?.trim();
+  return Boolean(name) && !/^[a-z_][a-z0-9_]{0,62}$/.test(name!);
 }
 
 /** Host name of a database URL, lower-case, or null when it isn't a URL. */
@@ -169,14 +200,15 @@ export function databaseProjectOf(url: string, env: Env = {}): string | null {
 }
 
 /**
- * The cloud region in the host: "ep-x(-pooler).eu-west-2.aws.neon.tech" →
- * "aws-eu-west-2"; Supabase's pooler "aws-0-eu-central-1.pooler.supabase.com"
- * → "aws-eu-central-1". Null when the host doesn't say.
+ * The cloud region in the host: "ep-x(-pooler).eu-west-2.aws.neon.tech" (or,
+ * on newer Neon cells, "ep-x.c-2.eu-west-2.aws.neon.tech") → "aws-eu-west-2";
+ * Supabase's pooler "aws-0-eu-central-1.pooler.supabase.com" →
+ * "aws-eu-central-1". Null when the host doesn't say.
  */
 export function databaseRegionOf(url: string): string | null {
   const host = databaseHostOf(url);
   if (!host) return null;
-  const neon = /^[^.]+\.([a-z0-9-]+)\.(aws|azure|gcp)\.neon\.tech$/.exec(host);
+  const neon = /^[^.]+\.(?:c-\d+\.)?([a-z0-9-]+)\.(aws|azure|gcp)\.neon\.tech$/.exec(host);
   if (neon) return `${neon[2]}-${neon[1]}`;
   const supabase = /^(aws|gcp|azure)-\d+-([a-z0-9-]+)\.pooler\.supabase\.com$/.exec(host);
   if (supabase) return `${supabase[1]}-${supabase[2]}`;
@@ -240,7 +272,9 @@ export function appDatabaseUrl(env: Env): AppDatabaseUrl {
     if (databaseProviderOf(url) !== "neon") {
       return { kind: "none", reason: "DATABASE_TARGET=neon but POSTGRES_URL is not a Neon URL." };
     }
-    return { kind: "single", url, via: "POSTGRES_URL" };
+    const named = withNeonDatabase(url, env);
+    if (named === null) return { kind: "none", reason: NEON_DATABASE_REASON };
+    return { kind: "single", url: named, via: "POSTGRES_URL" };
   }
   if (env.VERCEL_ENV === "preview") return { kind: "none", reason: PREVIEW_REASON };
   // On Vercel, Neon is reached only through the switch (never split-brain): before
@@ -251,8 +285,8 @@ export function appDatabaseUrl(env: Env): AppDatabaseUrl {
   for (const name of AUTO_CANDIDATE_VARS) {
     const raw = read(env, name);
     if (!raw) continue;
-    const url = normaliseDatabaseUrl(raw);
-    if (onVercel && databaseProviderOf(url) === "neon") {
+    const url = withNeonDatabase(normaliseDatabaseUrl(raw), env);
+    if (url === null || (onVercel && databaseProviderOf(url) === "neon")) {
       skippedNeon = true;
       continue;
     }
@@ -272,7 +306,9 @@ export function migrationDatabaseUrl(env: Env): { url: string; via: string } | n
   if (target === "auto" && env.VERCEL_ENV === "preview") return null;
   for (const name of names) {
     const raw = read(env, name);
-    if (raw) return { url: normaliseDatabaseUrl(raw), via: name };
+    if (!raw) continue;
+    const url = withNeonDatabase(normaliseDatabaseUrl(raw), env);
+    return url === null ? null : { url, via: name };
   }
   return null;
 }
@@ -281,6 +317,7 @@ export function migrationDatabaseUrl(env: Env): { url: string; via: string } | n
 export function migrationDatabaseMissingReason(env: Env): string {
   const target = databaseTarget(env);
   if (target === "invalid") return INVALID_REASON;
+  if (neonDatabaseInvalid(env)) return NEON_DATABASE_REASON;
   if (target === "neon") {
     return "DATABASE_TARGET=neon but neither DATABASE_URL_UNPOOLED nor POSTGRES_URL_NON_POOLING is set.";
   }
@@ -288,14 +325,22 @@ export function migrationDatabaseMissingReason(env: Env): string {
   return "DIRECT_DATABASE_URL (or DATABASE_URL) is not set";
 }
 
-export type MoveEnd = { url: string; host: string } | { error: string };
+export type MoveEnd =
+  | {
+      url: string;
+      host: string;
+      /** Neon with NEON_DATABASE: the integration's own database, to create it from (step=prepare). */
+      serverUrl?: string;
+    }
+  | { error: string };
 
 /**
  * The two databases the one-off move tool (app/api/admin/move-database) works
  * between: "supabase" is DIRECT_DATABASE_URL and must be a Supabase host;
  * "neon" is Neon's direct URL (never the "-pooler" host: the copy needs a
- * session). They must be different databases. `live` is the one the app runs
- * on, which the tool never writes into.
+ * session), naming NEON_DATABASE when that is set. They must be different
+ * databases. `live` is the one the app runs on, which the tool never writes
+ * into.
  */
 export function moveDatabaseUrls(env: Env): {
   supabase: MoveEnd;
@@ -327,7 +372,14 @@ export function moveDatabaseUrls(env: Env): {
       neon = {
         error: "The Neon direct URL is the pooled (-pooler) host; the copy needs a session",
       };
-    } else neon = { url, host: databaseHostPort(url) ?? "?" };
+    } else {
+      const named = withNeonDatabase(url, env);
+      if (named === null) neon = { error: NEON_DATABASE_REASON };
+      else {
+        neon = { url: named, host: databaseHostPort(named) ?? "?" };
+        if (databaseNameOf(named) !== databaseNameOf(url)) neon.serverUrl = url;
+      }
+    }
   }
 
   if ("url" in supabase && "url" in neon) {

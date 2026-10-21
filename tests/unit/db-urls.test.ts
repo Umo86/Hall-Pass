@@ -7,10 +7,13 @@ import {
   databaseRegionOf,
   databaseTarget,
   isPooledNeonUrl,
+  migrationDatabaseMissingReason,
   migrationDatabaseUrl,
   moveDatabaseUrls,
   moveTokenSet,
   normaliseDatabaseUrl,
+  withDatabaseName,
+  withNeonDatabase,
 } from "@/lib/db/urls";
 
 const LOCAL = "postgres://postgres:postgres@localhost:5432/hallpass";
@@ -57,6 +60,73 @@ describe("normaliseDatabaseUrl", () => {
   it("leaves everything else byte for byte", () => {
     const odd = "postgres://u:p%40ss%2Fw0rd@localhost:5432/db?application_name=hall%20pass";
     expect(normaliseDatabaseUrl(odd)).toBe(odd);
+  });
+});
+
+describe("NEON_DATABASE", () => {
+  const POOLED = normaliseDatabaseUrl(NEON_POOLED);
+  const DIRECT = normaliseDatabaseUrl(NEON_DIRECT);
+  const named = (url: string) => url.replace("/neondb?", "/hallpass?");
+  it("withDatabaseName swaps only the path", () => {
+    expect(withDatabaseName(DIRECT, "hallpass")).toBe(named(DIRECT));
+    expect(withDatabaseName("postgres://u:p%2Fq@h:5432", "x")).toBe("postgres://u:p%2Fq@h:5432/x");
+    expect(withDatabaseName("postgres://u:p@h/a?b=c/d", "x")).toBe("postgres://u:p@h/x?b=c/d");
+  });
+  it("names the database in every Neon URL, and in no other", () => {
+    const env = { NEON_DATABASE: "hallpass" };
+    expect(withNeonDatabase(POOLED, env)).toBe(named(POOLED));
+    expect(withNeonDatabase(LOCAL, env)).toBe(LOCAL);
+    expect(withNeonDatabase(SUPA_POOLER, env)).toBe(SUPA_POOLER);
+    expect(withNeonDatabase(POOLED, {})).toBe(POOLED);
+    expect(withNeonDatabase(POOLED, { NEON_DATABASE: " " })).toBe(POOLED);
+  });
+  it("an odd name is refused, never quoted into a URL", () => {
+    for (const bad of ["Hall Pass", "hall-pass", "a/b", "x?y", "1db", "a".repeat(64)]) {
+      expect(withNeonDatabase(POOLED, { NEON_DATABASE: bad })).toBeNull();
+    }
+  });
+  it("the app, migrations and the move tool all use it", () => {
+    const env = {
+      DATABASE_TARGET: "neon",
+      NEON_DATABASE: "hallpass",
+      POSTGRES_URL: NEON_POOLED,
+      DATABASE_URL_UNPOOLED: NEON_DIRECT,
+      DIRECT_DATABASE_URL: SUPA_POOLER,
+    };
+    expect(appDatabaseUrl(env)).toEqual({
+      kind: "single",
+      url: named(POOLED),
+      via: "POSTGRES_URL",
+    });
+    expect(migrationDatabaseUrl(env)).toEqual({ url: named(DIRECT), via: "DATABASE_URL_UNPOOLED" });
+    const move = moveDatabaseUrls({ ...env, DATABASE_TARGET: undefined });
+    expect(move.neon).toEqual({
+      url: named(DIRECT),
+      host: "ep-cool-sea-a1b2c3d4.eu-west-2.aws.neon.tech:5432",
+      serverUrl: DIRECT,
+    });
+    // Without it, the integration's own database, and nothing to create it from.
+    expect(moveDatabaseUrls({ ...env, NEON_DATABASE: undefined }).neon).toEqual({
+      url: DIRECT,
+      host: "ep-cool-sea-a1b2c3d4.eu-west-2.aws.neon.tech:5432",
+    });
+  });
+  it("an odd name: no database at all, with the reason", () => {
+    const env = {
+      DATABASE_TARGET: "neon",
+      NEON_DATABASE: "Hall Pass",
+      POSTGRES_URL: NEON_POOLED,
+      DATABASE_URL_UNPOOLED: NEON_DIRECT,
+    };
+    expect(appDatabaseUrl(env)).toEqual({
+      kind: "none",
+      reason: expect.stringMatching(/^NEON_DATABASE is not a valid database name/),
+    });
+    expect(migrationDatabaseUrl(env)).toBeNull();
+    expect(migrationDatabaseMissingReason(env)).toMatch(/^NEON_DATABASE is not a valid/);
+    expect(moveDatabaseUrls(env).neon).toEqual({
+      error: expect.stringMatching(/^NEON_DATABASE is not a valid/),
+    });
   });
 });
 
@@ -219,6 +289,14 @@ describe("provider, project and region", () => {
       "ep-x-123",
       "azure-westus3",
     ],
+    // Newer Neon cells carry a "c-N" label.
+    [
+      "postgresql://u:p@ep-odd-tree-a1b2-pooler.c-2.eu-west-2.aws.neon.tech/neondb",
+      "neon",
+      "ep-odd-tree-a1b2",
+      "aws-eu-west-2",
+    ],
+    ["postgresql://u:p@ep-x.c-12.us-east-1.aws.neon.tech/neondb", "neon", "ep-x", "aws-us-east-1"],
     [SUPA_POOLER, "supabase", "uymemosqktczdjxlsryj", "aws-eu-central-1"],
     [SUPA_TXN, "supabase", "uymemosqktczdjxlsryj", "aws-eu-central-1"],
     [SUPA_DIRECT, "supabase", "uymemosqktczdjxlsryj", null],

@@ -1480,3 +1480,31 @@ journal: 15 entries, latest `0014_better_auth`). One line per decision.
   "no artwork rows" case doesn't empty the shared one. The planner's real-schema case reads
   `fixtures/move-catalog.json`, captured from the migrated test database (columns left out:
   the planner doesn't use them).
+- **Pre-flight review against the live databases (2026-10-21), three fixes before the move.**
+  - _Collation._ Supabase's database is ICU `en-US`; the Neon integration's `neondb` is libc
+    `C.UTF-8`, which sorts "Bob" before "alice" and "Émile" after "zed". A database's collation
+    can't change, so the move makes a second database on the same Neon server,
+    `NEON_DATABASE=hallpass`, with the source's provider and locale (`step=prepare`; the source's
+    LC_COLLATE/LC_CTYPE too when Neon has them, else template0's, with a warning: with ICU the
+    locale alone decides the order). Every Neon URL (app, migrations, seed, backups, the tool)
+    names it in place of the path; an odd name means no database, never a quoted URL. `prepare`
+    keeps a database that is already right and refuses, never drops, one that isn't. `check`
+    compares provider and locale for ICU/builtin, LC_COLLATE/LC_CTYPE for libc (a differing
+    libc LC_CTYPE under the same ICU locale is a warning). Rejected: accepting code-point order
+    (lists would visibly reorder) and recreating `neondb` (destructive; the Neon Auth schema
+    lives there).
+  - _Freeze on Supabase._ `postgres` inherits INSERT/UPDATE/DELETE/TRUNCATE on every public
+    table through `service_role` (granted by `postgres`), so revoking the owner's own did
+    nothing, and strategy B left the tool's own backend writable in Supavisor's pool, where
+    the app could be handed it. Strategy A now revokes the four from the owner, from every role
+    it is a member of that holds them by its grant, and from PUBLIC, recording each revoked
+    privilege first in `db_move.frozen_grants` (outside `public`/`drizzle`, so the copy, verify
+    and backups never see it); unfreeze grants back exactly those rows, grant options included,
+    then clears them (no record: the owner's own, as before). Strategy B ends every client
+    session of the role, its own last in the same statement (so on a transaction pooler it is
+    the backend that ran it), and waits until its next query runs on a fresh backend.
+  - _Migration record._ Supabase's row for `0010_lifecycle` held the sha256 of a draft without
+    `IF NOT EXISTS`; the schema is the file's (labels, columns, all counts). The row's hash was
+    corrected on Supabase (guarded by its old value); `compareMigrations` stays strict.
+  - Neon's newer endpoints carry a cell label (`ep-….c-2.eu-west-2.aws.neon.tech`):
+    `databaseRegionOf` allows it. Health also reports `databaseName`.

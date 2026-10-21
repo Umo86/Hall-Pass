@@ -3,6 +3,7 @@ import postgres from "postgres";
 import * as schema from "./schema";
 import {
   appDatabaseUrl,
+  databaseNameOf,
   databaseProjectOf,
   databaseProviderOf,
   databaseRegionOf,
@@ -33,6 +34,8 @@ export type DatabaseInfo = {
   provider: DatabaseProvider;
   project: string | null;
   region: string | null;
+  /** The database's name on its server (NEON_DATABASE on Neon, when set). */
+  name: string | null;
   target: Exclude<DatabaseTarget, "invalid">;
   /** Auto mode only: an earlier variable was unreachable, so a later one is used. */
   note?: string;
@@ -80,6 +83,7 @@ export const databaseInfo: DatabaseInfo | null =
         provider: databaseProviderOf(resolved.url),
         project: databaseProjectOf(resolved.url, process.env),
         region: databaseRegionOf(resolved.url),
+        name: databaseNameOf(resolved.url),
         target: databaseTarget(process.env) === "neon" ? "neon" : "auto",
         ...(resolved.note ? { note: resolved.note } : {}),
       }

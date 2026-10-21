@@ -245,6 +245,11 @@ switched on: Release A ships the tool and the switch; Release B (`vercel.json` �
   tools at hand); anything else means no database. On Vercel, `auto` never falls back onto
   a Neon URL: an instance that couldn't reach Supabase at start-up would otherwise write to
   Neon while the tool treats Supabase as live.
+- **The database on Neon:** `NEON_DATABASE=hallpass` (Production, plain). The integration's
+  own database (`neondb`) sorts text as C.UTF-8 ("Bob" before "alice"); Supabase's sorts
+  as ICU en-US, and a database's collation can't change once it exists. So `step=prepare`
+  makes `hallpass` on the same Neon server with Supabase's collation, and every Neon URL
+  (the app's, migrations', backups', the tool's) names it instead of `neondb`.
 - **The tool:** `GET /api/admin/move-database?step=<step>&token=<MOVE_DATABASE_TOKEN>` (or
   `Authorization: Bearer <token>`). It is a 404 unless `MOVE_DATABASE_TOKEN` (Production,
   Sensitive, `openssl rand -hex 32`) is set and isn't `off`. Steps that change something also
@@ -255,43 +260,60 @@ switched on: Release A ships the tool and the switch; Release B (`vercel.json` �
   Each copy also keeps its snapshot's per-table digests on the target, in schema `db_move`
   (outside `public` and `drizzle`, so nothing else sees it), for `finish`.
 
-  | Step        | What it does                                                                                                                                              |
-  | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `check`     | Read-only preflight: versions, collation, owners, frozen or not, rows, migrations against this release                                                    |
-  | `files`     | Read-only: every file the database (`db=`, default the live one) refers to exists in the bucket                                                           |
-  | `freeze`    | `db=supabase\|neon`: that database becomes read-only (strategy A or B in the reply)                                                                       |
-  | `unfreeze`  | `db=…`: writable again; after strategy B it also ends the sessions opened during the freeze, so they reconnect writable                                   |
-  | `copy`      | Migrates the target, then copies in one snapshot and one transaction, checked before commit (`replace=1` to overwrite a previous copy, `batch=50–2000`)   |
-  | `verify`    | Live comparison: every table, the schema, sequences, both fingerprints (`detail=1` for full lists)                                                        |
-  | `finish`    | `expect=<copy's fingerprint>`, once the app is on Neon: Supabase unchanged since the copy (else `differingTables` names what changed), then one audit row |
-  | `back-copy` | Neon → Supabase, replacing Supabase's data (the lossless rollback)                                                                                        |
+  | Step        | What it does                                                                                                                                                                                                                             |
+  | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `check`     | Read-only preflight: versions, collation, owners, frozen or not, rows, migrations against this release                                                                                                                                   |
+  | `prepare`   | Makes `NEON_DATABASE` on the Neon server with Supabase's collation; keeps one that is already right, refuses (never drops) one that isn't                                                                                                |
+  | `files`     | Read-only: every file the database (`db=`, default the live one) refers to exists in the bucket                                                                                                                                          |
+  | `freeze`    | `db=supabase\|neon`: read-only. A: write privileges revoked from the owner, roles it inherits (Supabase's `service_role`) and PUBLIC, recorded first in `db_move.frozen_grants`; B (if A can't): read-only sessions, every session ended |
+  | `unfreeze`  | `db=…`: writable again, exactly the privileges A recorded; after strategy B it also ends the sessions opened during the freeze, so they reconnect writable                                                                               |
+  | `copy`      | Migrates the target, then copies in one snapshot and one transaction, checked before commit (`replace=1` to overwrite a previous copy, `batch=50–2000`)                                                                                  |
+  | `verify`    | Live comparison: every table, the schema, sequences, both fingerprints (`detail=1` for full lists)                                                                                                                                       |
+  | `finish`    | `expect=<copy's fingerprint>`, once the app is on Neon: Supabase unchanged since the copy (else `differingTables` names what changed), then one audit row                                                                                |
+  | `back-copy` | Neon → Supabase, replacing Supabase's data (the lossless rollback)                                                                                                                                                                       |
 
 **Runbook** (a weekday, 10:00–10:45 London; Hall Pass, sign-in included, is unavailable
 during the window). Save every reply.
 
-1. **Before:** run "Database backup". Create `MOVE_DATABASE_TOKEN`, then merge Release A.
-   `/api/health`: `ok:true`, `databaseTarget:"auto"`, `databaseProvider:"supabase"`,
-   `databaseVia:"DIRECT_DATABASE_URL"`, `schema:"current"`. Deploy nothing else until step 7.
+1. **Before:** run "Database backup" (until its `DIRECT_DATABASE_URL` secret exists, the frozen
+   Supabase project, whose data the move never changes, is the fallback; a scheduled run without
+   the secret warns instead of failing). Create `MOVE_DATABASE_TOKEN` and `NEON_DATABASE=hallpass`,
+   then merge Release A. `/api/health`: `ok:true`, `databaseTarget:"auto"`,
+   `databaseProvider:"supabase"`, `databaseVia:"DIRECT_DATABASE_URL"`, `schema:"current"`.
+   Deploy nothing else until step 7. `step=prepare&confirm=prepare` → `created:true`,
+   `target:"ICU en-US, UTF8"`, `collationMatch:true` (run again: `created:false`).
 2. `step=check`: `readyToCopy:true` (otherwise `blockers` says why), `migrations` `{ bundled:
 15, latest: "0014_better_auth", source: 15, match: true }`, source `tables: 48`, target
-   `state:"empty"`, `collationMatch:true`, `ownsAllTables:true` on both sides.
+   `database:"hallpass"`, `state:"empty"`, `collationMatch:true`, `ownsAllTables:true` on
+   both sides.
 3. `step=files&db=supabase`: note `missing` (reported, not a blocker).
+   **Rehearsal** (optional, a day ahead, the app still live): `step=copy&confirm=copy&unfrozen=1`
+   → `ok:true`, `migrationsApplied:15` (its own in-snapshot check proves every row); straight
+   after, `step=verify` → schema and sequences match. Tables the app writes in normal use
+   (`users`, `auth_session`, `auth_rate_limit`, `audit_log`, `notifications`, `email_log`,
+   `reminder_log`) may differ by then: that is live traffic, not the copy. Don't keep its
+   fingerprint. From then on `check` says target `state:"previousCopy"` (with every table
+   non-empty and `db_move` among `otherSchemas`), and step 5 needs `replace=1`.
 4. **Window starts.** `step=freeze&db=supabase&confirm=freeze` → `frozen:true`; `check`
    again shows `source.frozen:true`.
-5. `step=copy&confirm=copy` → `migrationsApplied:15`, the five deferred cycle columns,
-   `totalRows`, and `fingerprint` (F: keep it). A failed copy leaves Neon as it was.
+5. `step=copy&confirm=copy` (`&replace=1` after a rehearsal) → `migrationsApplied:15`, the
+   five deferred cycle columns, `totalRows`, and `fingerprint` (F: keep only this one). A
+   failed copy leaves Neon as it was (after a rehearsal, the rehearsal's copy, which nothing
+   reads until the switch).
 6. `step=verify` → `ok:true`; schema functions 2, triggers 46, constraints
    `{c:20,f:106,p:48,u:21}`; `sourceFingerprint` = `targetFingerprint` = F.
 7. **Switch:** create `DATABASE_TARGET=neon` (Production), push Release B, wait for READY.
 8. `/api/health`: `databaseTarget:"neon"`, `databaseProvider:"neon"`, `databaseProject`
-   (the Neon project), `databaseRegion:"aws-eu-west-2"`, `functionRegion:"lhr1"`,
-   `schema:"current"`, `seeded:true`, no `databaseError`. Settings → System says London.
+   (the Neon project), `databaseName:"hallpass"`, `databaseRegion:"aws-eu-west-2"`,
+   `functionRegion:"lhr1"` (the authority; an `x-vercel-id` header reads
+   `<edge>::lhr1::<request id>`), `schema:"current"`, `seeded:true`, no `databaseError`.
+   Settings → System says London.
 9. `step=files` again (now Neon): the same as step 3. Sign in, open the dashboard, an item
    with artwork and Users.
 10. `step=finish&expect=F&confirm=finish` → `sourceUnchanged:true` and the audit row
     "Database moved from Supabase to Neon (London): N rows verified". The window ends.
 11. **After:** set the GitHub secret `DIRECT_DATABASE_URL` to Neon's `DATABASE_URL_UNPOOLED`
-    and run "Database backup": its log says "Backing up the database at ep-….neon.tech
+    with `/neondb` at the end changed to `/hallpass`, and run "Database backup": its log says "Backing up the database at ep-….neon.tech
     (Neon)" (a Supabase host there means the secret wasn't changed). Keep Supabase frozen and
     the token set until Phase 3.
 
@@ -305,9 +327,11 @@ paused, restore it first; `step=freeze&db=neon&confirm=freeze`;
 `step=verify&from=neon&to=supabase` → `ok:true`; Instant Rollback to Release A;
 `DATABASE_TARGET=auto`.
 
-**If `check` isn't ready:** a different collation needs a matching Neon database first; a
-schema difference wanted on Neon (`verify&detail=1`) ships as migration 0015, applied to
-Supabase before the window; a migration hash mismatch means a file changed after it ran.
+**If `check` isn't ready:** a different collation needs `step=prepare` (and `NEON_DATABASE`);
+a schema difference wanted on Neon (`verify&detail=1`) ships as migration 0015, applied to
+Supabase before the window; a migration hash mismatch means a file changed after it ran, or
+(0010 on Supabase, fixed 2026-10-21) the row records a draft's hash while the schema is the
+file's: correct the row's `hash`, never the comparison.
 
 ## Sign-in
 

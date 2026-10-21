@@ -29,7 +29,16 @@ jobs:
         env:
           DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
         run: |
-          test -n "$DIRECT_DATABASE_URL" || { echo "DIRECT_DATABASE_URL secret is not set"; exit 1; }
+          if [ -z "$DIRECT_DATABASE_URL" ]; then
+            # A scheduled run says so once, quietly; a run by hand fails.
+            if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+              echo "::warning::No backup today: the DIRECT_DATABASE_URL secret is not set (README → Daily backup to the bucket)."
+              echo "SKIP_BACKUP=1" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "DIRECT_DATABASE_URL secret is not set"
+            exit 1
+          fi
           case "$DIRECT_DATABASE_URL" in
             *-pooler.*)
               echo "DIRECT_DATABASE_URL is Neon's pooled (-pooler) host; pg_dump needs a session."
@@ -57,6 +66,7 @@ jobs:
           echo "BACKUP_SOURCE=$HOST ($PROVIDER)" >> "$GITHUB_ENV"
 
       - name: Install the Postgres client that matches the server
+        if: env.SKIP_BACKUP != '1'
         env:
           DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
         run: |
@@ -77,6 +87,7 @@ jobs:
           echo "PGBIN=/usr/lib/postgresql/$MAJOR/bin" >> "$GITHUB_ENV"
 
       - name: Dump the database
+        if: env.SKIP_BACKUP != '1'
         env:
           DIRECT_DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
         run: |
@@ -92,12 +103,14 @@ jobs:
           echo "FILE=hallpass-$STAMP.dump" >> "$GITHUB_ENV"
 
       - name: Check the dump can be read back
+        if: env.SKIP_BACKUP != '1'
         run: |
           TABLES=$("$PGBIN/pg_restore" --list "$FILE" | grep -c " TABLE DATA " || true)
           echo "Tables with data in the dump: $TABLES"
           test "$TABLES" -ge 48 || { echo "Expected at least 48 tables; not uploading this dump."; exit 1; }
 
       - name: Upload to the bucket
+        if: env.SKIP_BACKUP != '1'
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}

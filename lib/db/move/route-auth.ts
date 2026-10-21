@@ -19,6 +19,7 @@ import { databaseTarget, type Env } from "../urls";
 
 export const MOVE_STEPS = [
   "check",
+  "prepare",
   "files",
   "freeze",
   "unfreeze",
@@ -31,6 +32,7 @@ export type MoveStep = (typeof MOVE_STEPS)[number];
 export type MoveDb = "supabase" | "neon";
 
 const MUTATING: ReadonlySet<MoveStep> = new Set([
+  "prepare",
   "freeze",
   "unfreeze",
   "copy",
@@ -129,6 +131,18 @@ export function authoriseMove(
   }
   const db: MoveDb = dbParam ?? live;
 
+  if (step === "prepare") {
+    if (dbParam && dbParam !== "neon") {
+      return { ok: false, status: 400, error: "prepare makes the Neon database: db=neon" };
+    }
+    if (live === "neon") {
+      return {
+        ok: false,
+        status: 409,
+        error: "Refused: the app already runs on Neon, so its database exists",
+      };
+    }
+  }
   if ((step === "copy" || step === "back-copy") && to === live) {
     return {
       ok: false,

@@ -10,14 +10,47 @@ import { readCatalog, type Catalog } from "./catalog";
 import { qualified, type MoveSql, type Queryable } from "./connect";
 import { isFrozen, ownsAllTables } from "./freeze";
 
-export type SideFacts = {
-  version: string;
-  versionNum: number;
+/** How a database sorts and classifies text (pg_database). */
+export type LocaleFacts = {
   encoding: string;
   collate: string;
   ctype: string;
+  /** "c" libc, "i" ICU, "b" builtin. */
   localeProvider: string;
+  /** The ICU or builtin locale (null for libc). */
   locale: string | null;
+  icuRules: string | null;
+};
+
+/**
+ * Whether two databases sort and compare text the same way. With ICU or the
+ * builtin provider the database's default collation comes from its locale
+ * (and ICU's rules); LC_COLLATE plays no part. With libc it is LC_COLLATE and
+ * LC_CTYPE.
+ */
+export function sameCollation(a: LocaleFacts, b: LocaleFacts): boolean {
+  if (a.encoding !== b.encoding || a.localeProvider !== b.localeProvider) return false;
+  if (a.localeProvider === "c") return a.collate === b.collate && a.ctype === b.ctype;
+  return a.locale === b.locale && a.icuRules === b.icuRules;
+}
+
+/** Reads LocaleFacts from a pg_database row as JSON (columns differ by version). */
+export function localeFactsOf(d: Record<string, unknown>, encoding: string): LocaleFacts {
+  const str = (k: string) => (typeof d[k] === "string" ? (d[k] as string) : null);
+  return {
+    encoding,
+    collate: str("datcollate") ?? "",
+    ctype: str("datctype") ?? "",
+    localeProvider: str("datlocprovider") ?? "c",
+    // Postgres 17 renamed daticulocale to datlocale.
+    locale: str("datlocale") ?? str("daticulocale"),
+    icuRules: str("daticurules"),
+  };
+}
+
+export type SideFacts = LocaleFacts & {
+  version: string;
+  versionNum: number;
   timezone: string;
   user: string;
   frozen: boolean;
@@ -122,17 +155,10 @@ async function sideFacts(sql: MoveSql): Promise<SideFacts> {
       AND r.rolname IN ('anon','authenticated','anonymous')
     GROUP BY 1 ORDER BY 1`);
   const frozen = await isFrozen(sql);
-  const d = db.d;
-  const str = (k: string) => (typeof d[k] === "string" ? (d[k] as string) : null);
   return {
     version: db.version,
     versionNum: Number(db.version_num),
-    encoding: db.encoding,
-    collate: str("datcollate") ?? "",
-    ctype: str("datctype") ?? "",
-    localeProvider: str("datlocprovider") ?? "c",
-    // Postgres 17 renamed daticulocale to datlocale.
-    locale: str("datlocale") ?? str("daticulocale"),
+    ...localeFactsOf(db.d, db.encoding),
     timezone: db.timezone,
     user: db.user,
     frozen: frozen.frozen,
@@ -144,6 +170,13 @@ async function sideFacts(sql: MoveSql): Promise<SideFacts> {
     clientGrants: Object.fromEntries(grants.map((g) => [g.grantee, Number(g.n)])),
     canCreate: Boolean(db.can_create),
   };
+}
+
+/** "ICU en-US", "libc C.UTF-8" … for messages. */
+export function describeLocale(f: LocaleFacts): string {
+  const provider = { c: "libc", i: "ICU", b: "builtin" }[f.localeProvider] ?? f.localeProvider;
+  const locale = f.localeProvider === "c" ? f.collate : (f.locale ?? "?");
+  return `${provider} ${locale}${f.icuRules ? " with rules" : ""}, ${f.encoding}`;
 }
 
 /** Applied rows of drizzle.__drizzle_migrations, oldest first (empty when the table is missing). */
@@ -237,14 +270,15 @@ export async function checkDatabases(
         : "foreign";
   const nonEmptyTables = (await nonEmpty(target, dstCat)).filter((k) => k !== DRIZZLE_TABLE);
 
-  const collationMatch =
-    srcFacts.collate === dstFacts.collate &&
-    srcFacts.ctype === dstFacts.ctype &&
-    srcFacts.localeProvider === dstFacts.localeProvider &&
-    (srcFacts.localeProvider === "c" || srcFacts.locale === dstFacts.locale);
+  const collationMatch = sameCollation(srcFacts, dstFacts);
 
   const blockers: string[] = [];
   const warnings: string[] = [];
+  if (collationMatch && srcFacts.localeProvider !== "c" && srcFacts.ctype !== dstFacts.ctype) {
+    warnings.push(
+      `Text sorts the same (${srcFacts.locale}); only the libc LC_CTYPE behind it differs (source ${srcFacts.ctype}, target ${dstFacts.ctype})`,
+    );
+  }
   if (dstFacts.versionNum < 160000) blockers.push("The target is older than Postgres 16");
   if (Math.floor(dstFacts.versionNum / 10000) !== Math.floor(srcFacts.versionNum / 10000)) {
     warnings.push(
@@ -263,7 +297,11 @@ export async function checkDatabases(
         .join("; ")})`,
     );
   }
-  if (!collationMatch) blockers.push("The two databases sort text differently (collation)");
+  if (!collationMatch) {
+    blockers.push(
+      `The two databases sort text differently (collation: source ${describeLocale(srcFacts)}, target ${describeLocale(dstFacts)}); on Neon, set NEON_DATABASE and run step=prepare`,
+    );
+  }
   if (!dstFacts.ownsAllTables) blockers.push("The target's tables are not all owned by its user");
   if (!dstFacts.canCreate) blockers.push("The target's user can't create tables");
   if (dstFacts.frozen) blockers.push("The target is frozen: unfreeze it first");

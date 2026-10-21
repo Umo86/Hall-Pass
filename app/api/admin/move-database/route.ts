@@ -6,10 +6,12 @@ import { copyDatabase } from "@/lib/db/move/copy";
 import { checkFiles, readFileRefs } from "@/lib/db/move/files";
 import { finishMove } from "@/lib/db/move/finish";
 import { freeze, unfreeze } from "@/lib/db/move/freeze";
+import { prepareTarget } from "@/lib/db/move/prepare";
 import { authoriseMove, type MoveDb, type MoveRequest } from "@/lib/db/move/route-auth";
 import { schemaSignature, verifyDatabases } from "@/lib/db/move/verify";
 import {
   databaseHostPort,
+  databaseNameOf,
   databaseProjectOf,
   databaseProviderOf,
   databaseRegionOf,
@@ -32,7 +34,9 @@ export const maxDuration = 300;
  *
  * Steps (README → "Moving the database to Neon" has the runbook):
  * - check            read-only preflight of from → to (default supabase → neon)
- * - files            every file the database refers to exists in the bucket (db=, default live)
+ * - prepare          confirm=prepare: makes NEON_DATABASE on the Neon server with
+ *                    Supabase's collation (kept if it's there already, never dropped)
+ * - files           every file the database refers to exists in the bucket (db=, default live)
  * - freeze           db=supabase|neon, confirm=freeze: that database becomes read-only
  * - unfreeze         db=…, confirm=unfreeze
  * - copy             confirm=copy [&from=&to=] [&replace=1] [&batch=50–2000]; a live
@@ -59,25 +63,48 @@ async function handle(request: Request) {
   const token = (process.env.MOVE_DATABASE_TOKEN ?? "").trim();
   const urls = moveDatabaseUrls(process.env);
   const opened: MoveSql[] = [];
-  const open = async (which: MoveDb): Promise<MoveSql> => {
-    const end = urls[which];
-    if ("error" in end) throw new MoveRefused(`${which}: ${end.error}`);
-    const sql = connectForMove(end.url);
+  const connect = async (label: string, url: string, host: string): Promise<MoveSql> => {
+    const sql = connectForMove(url);
     opened.push(sql);
     try {
       await sql`SELECT 1`;
     } catch (err) {
+      if ((err as { code?: string }).code === "3D000" && label === "neon") {
+        throw new MoveRefused(
+          `The Neon database ${databaseNameOf(url)} doesn't exist yet: run step=prepare&confirm=prepare first`,
+        );
+      }
       throw new MoveRefused(
-        `Could not connect to ${which} (${end.host}): ${describeDbError(err, end.url)}`,
+        `Could not connect to ${label} (${host}): ${describeDbError(err, url)}`,
       );
     }
     return sql;
+  };
+  const open = async (which: MoveDb): Promise<MoveSql> => {
+    const end = urls[which];
+    if ("error" in end) throw new MoveRefused(`${which}: ${end.error}`);
+    return connect(which, end.url, end.host);
+  };
+  /** The Neon server's own database (the integration's), to create NEON_DATABASE from. */
+  const openNeonServer = async (): Promise<{ sql: MoveSql; name: string }> => {
+    const end = urls.neon;
+    if ("error" in end) throw new MoveRefused(`neon: ${end.error}`);
+    if (!end.serverUrl) {
+      throw new MoveRefused(
+        "NEON_DATABASE is not set: set it (Production) to the database to make, such as hallpass, and redeploy",
+      );
+    }
+    return {
+      sql: await connect("the Neon server", end.serverUrl, end.host),
+      name: databaseNameOf(end.url) ?? "?",
+    };
   };
   const describe = (which: MoveDb) => {
     const end = urls[which];
     if ("error" in end) return { error: end.error };
     return {
       host: databaseHostPort(end.url),
+      database: databaseNameOf(end.url),
       provider: databaseProviderOf(end.url),
       project: databaseProjectOf(end.url, process.env),
       region: databaseRegionOf(end.url),
@@ -85,7 +112,7 @@ async function handle(request: Request) {
   };
 
   try {
-    const body = await runStep(r, open, describe, urls);
+    const body = await runStep(r, open, openNeonServer, describe, urls);
     const ok = body.ok !== false;
     log(r.step, r.from, r.to, ok ? "ok" : "not-ok");
     return NextResponse.json(
@@ -124,6 +151,7 @@ type Body = Record<string, unknown> & { ok?: boolean; warnings?: string[] };
 async function runStep(
   r: MoveRequest,
   open: (which: MoveDb) => Promise<MoveSql>,
+  openNeonServer: () => Promise<{ sql: MoveSql; name: string }>,
   describe: (which: MoveDb) => Record<string, unknown>,
   urls: ReturnType<typeof moveDatabaseUrls>,
 ): Promise<Body> {
@@ -145,6 +173,12 @@ async function runStep(
         target: { ...describe(r.to), ...report.target },
         ...(r.detail ? { sourceSchema: await schemaSignature(src, { detail: true }) } : {}),
       };
+    }
+    case "prepare": {
+      const src = await open("supabase");
+      const server = await openNeonServer();
+      const report = await prepareTarget(src, server.sql, server.name);
+      return { live: r.live, ...describe("neon"), ...report };
     }
     case "files": {
       if (!s3Enabled()) throw new MoveRefused("No file storage bucket is configured (S3_*)");

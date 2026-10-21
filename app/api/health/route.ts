@@ -41,6 +41,7 @@ export async function GET() {
       databaseProvider: db.info?.provider ?? "not set",
       databaseProject: db.info?.project ?? null,
       databaseRegion: db.info?.region ?? null,
+      databaseName: db.info?.name ?? null,
       databaseVia: db.info?.via ?? null,
       functionRegion: process.env.VERCEL_REGION ?? null,
       storage: storageBackend(),

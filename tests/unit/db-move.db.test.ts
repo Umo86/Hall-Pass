@@ -521,7 +521,7 @@ d("database move: copy, verify, freeze, finish", () => {
   });
 
   it(
-    "13. freeze strategy B: sessions opened during the freeze are ended by unfreeze, which says it worked",
+    "13. freeze A takes the writes a role inherits too (as postgres through service_role on Supabase) and gives back exactly those; B ends every session, the tool's own too",
     SLOW,
     async (ctx) => {
       if (!ready) ctx.skip();
@@ -560,7 +560,8 @@ d("database move: copy, verify, freeze, finish", () => {
         return false;
       };
       // A pooled connection the server ended fails its next query once, as in the app.
-      const ENDED = /^(57P01|CONNECTION_CLOSED|CONNECTION_ENDED|ECONNRESET|EPIPE)$/;
+      const ENDED =
+        /^(57P01|CONNECTION_CLOSED|CONNECTION_ENDED|CONNECTION_DESTROYED|ECONNRESET|EPIPE)$/;
       const afterReconnect = async <T>(run: () => Promise<T>): Promise<T> => {
         try {
           return await run();
@@ -569,46 +570,76 @@ d("database move: copy, verify, freeze, finish", () => {
           return run();
         }
       };
+      // Effective privileges per table and grantee (relacl, or the owner's default when unset).
+      const privileges = (s: MoveSql) =>
+        s.unsafe<{ t: string; who: string; p: string; g: boolean }[]>(`
+          SELECT c.relname AS t, CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS who,
+                 a.privilege_type AS p, a.is_grantable AS g
+          FROM pg_class c CROSS JOIN LATERAL aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a
+          WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r'
+          ORDER BY 1, 2, 3`);
       try {
         const tool = session();
         await tool.unsafe(`CREATE TABLE reminder_log (id serial PRIMARY KEY, kind text NOT NULL)`);
-        // A privilege held through role membership: revoking the owner's own isn't enough.
+        await tool.unsafe(`CREATE TABLE plain (id int PRIMARY KEY)`); // relacl unset
+        // Privileges held through role membership and through PUBLIC: revoking the
+        // owner's own isn't enough (Supabase: postgres inherits service_role's).
         await tool.unsafe(`GRANT ALL ON reminder_log TO "${FRZ_GROUP}"`);
+        await tool.unsafe(`GRANT SELECT, INSERT ON reminder_log TO PUBLIC`);
+        await tool.unsafe(`GRANT UPDATE ON reminder_log TO "${FRZ_GROUP}" WITH GRANT OPTION`);
+        const before = await privileges(tool);
 
-        const frozen = await freeze(tool);
-        expect(frozen).toMatchObject({ frozen: true, strategy: "B" });
-        // The app reconnects during the freeze: read-only.
-        await expect(write(app, "during")).rejects.toMatchObject({ code: "25006" });
+        const frozenA = await freeze(tool);
+        expect(frozenA).toMatchObject({ frozen: true, strategy: "A" });
+        expect(frozenA.revokedFrom).toEqual(["PUBLIC", FRZ_ROLE, FRZ_GROUP].sort());
+        await expect(write(app, "during A")).rejects.toMatchObject({ code: "42501" });
+        await expect(write(tool, "during A")).rejects.toMatchObject({ code: "42501" });
+        // Reads keep working.
+        expect(await one<number>(app, `SELECT count(*)::int FROM reminder_log`)).toBe(0);
+        expect(await isFrozen(session())).toEqual({ frozen: true, strategy: "A" });
+
+        const undoneA = await unfreeze(session());
+        expect(undoneA).toMatchObject({ frozen: false, undid: ["A"] });
+        expect(undoneA.restoredTo).toEqual(["PUBLIC", FRZ_ROLE, FRZ_GROUP].sort());
+        // Exactly the privileges there were, grant options included.
+        expect(await privileges(tool)).toEqual(before);
+        expect(await one<number>(tool, `SELECT count(*)::int FROM db_move.frozen_grants`)).toBe(0);
+        await write(app, "after A");
+
+        // A table the role doesn't own: strategy B.
+        await tool.unsafe(`CREATE TABLE not_ours (id int PRIMARY KEY)`);
+        await tool.unsafe(`GRANT CREATE ON SCHEMA public TO "${FRZ_GROUP}"`);
+        await tool.unsafe(`ALTER TABLE not_ours OWNER TO "${FRZ_GROUP}"`);
+        const appBefore = await pid(app);
+        const toolBefore = await pid(tool);
+        const frozenB = await freeze(tool);
+        expect(frozenB).toMatchObject({ frozen: true, strategy: "B" });
+        // Every session of the role was ended, the tool's own too (a pooler would
+        // otherwise hand that backend, started writable, to the app).
+        expect(await ended(appBefore)).toBe(true);
+        expect(await ended(toolBefore)).toBe(true);
+        await expect(afterReconnect(() => write(app, "during B"))).rejects.toMatchObject({
+          code: "25006",
+        });
+        await expect(afterReconnect(() => write(tool, "during B"))).rejects.toMatchObject({
+          code: "25006",
+        });
         const appDuringFreeze = await pid(app);
 
         // The next route call opens a new (read-only) session and unfreezes.
         const route = session();
         expect(await isFrozen(route)).toEqual({ frozen: true, strategy: "B" });
-        const undone = await unfreeze(route);
-        expect(undone).toMatchObject({ frozen: false, strategy: null, undid: ["B", "A"] });
-        expect(undone.sessionsEnded).toBeGreaterThanOrEqual(2); // the app's and the first tool's
-        // The app's session from the freeze was ended; it reconnects writable.
+        const routeBefore = await pid(route);
+        const undoneB = await unfreeze(route);
+        expect(undoneB).toMatchObject({ frozen: false, strategy: null, undid: ["B"] });
+        expect(undoneB.sessionsEnded).toBeGreaterThanOrEqual(2); // the app's and the tool's
+        // The sessions from the freeze were ended, the route's own last; all reconnect writable.
         expect(await ended(appDuringFreeze)).toBe(true);
-        await afterReconnect(() => write(app, "after"));
+        expect(await ended(routeBefore)).toBe(true);
+        await afterReconnect(() => write(app, "after B"));
         expect(await one<string>(app, `SHOW default_transaction_read_only`)).toBe("off");
-        // The route's own session (opened read-only) can write too.
-        await write(route, "route");
+        await afterReconnect(() => write(route, "route"));
         expect(await isFrozen(session())).toEqual({ frozen: false, strategy: null });
-
-        // A table the role doesn't own: strategy B straight away, and back.
-        await route.unsafe(`CREATE TABLE not_ours (id int PRIMARY KEY)`);
-        await route.unsafe(`GRANT CREATE ON SCHEMA public TO "${FRZ_GROUP}"`);
-        await route.unsafe(`ALTER TABLE not_ours OWNER TO "${FRZ_GROUP}"`);
-        const appBefore = await pid(app);
-        expect(await freeze(route)).toMatchObject({ frozen: true, strategy: "B" });
-        expect(await ended(appBefore)).toBe(true);
-        await expect(afterReconnect(() => write(app, "frozen again"))).rejects.toMatchObject({
-          code: "25006",
-        });
-        const appFrozen = await pid(app);
-        expect(await unfreeze(session())).toMatchObject({ frozen: false, undid: ["B"] });
-        expect(await ended(appFrozen)).toBe(true);
-        await afterReconnect(() => write(app, "after again"));
         expect(await one<number>(app, `SELECT count(*)::int FROM reminder_log`)).toBe(3);
       } finally {
         await Promise.all(sessions.map((s) => s.end({ timeout: 5 }).catch(() => {})));
