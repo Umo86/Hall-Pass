@@ -2,6 +2,7 @@ import "dotenv/config";
 import { runMigrations } from "./migrate-core";
 import {
   databaseHostPort,
+  databaseNameOf,
   databaseProviderOf,
   migrationDatabaseMissingReason,
   migrationDatabaseUrl,
@@ -17,7 +18,7 @@ async function main() {
   const target = migrationDatabaseUrl(process.env);
   if (!target) throw new Error(migrationDatabaseMissingReason(process.env));
   console.log(
-    `Migrating ${databaseProviderOf(target.url)} database at ${databaseHostPort(target.url) ?? "?"} (from ${target.via})`,
+    `Migrating ${databaseProviderOf(target.url)} database ${databaseNameOf(target.url) ?? "?"} at ${databaseHostPort(target.url) ?? "?"} (from ${target.via})`,
   );
   const { applied, total } = await runMigrations(target.url, "lib/db/migrations");
   console.log(`Migrations applied: ${applied} new, ${total} in total`);

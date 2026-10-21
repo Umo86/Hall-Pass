@@ -5,7 +5,8 @@ name: Database backup
 # Set these repository secrets (Settings → Secrets and variables → Actions):
 #   DIRECT_DATABASE_URL  — Neon's direct connection, DATABASE_URL_UNPOOLED (Vercel →
 #                          project → Storage → the Neon database → .env.local tab →
-#                          Show secret). Never the pooled "-pooler" host: pg_dump needs
+#                          Show secret) with /neondb changed to /hallpass
+#                          (NEON_DATABASE). Never the pooled "-pooler" host: pg_dump needs
 #                          a session. Until it is updated after the move it is still the
 #                          Supabase "Session pooler" URI (port 5432), which also works.
 #   S3_BUCKET, S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY — as in Vercel
@@ -40,6 +41,10 @@ jobs:
             exit 1
           fi
           case "$DIRECT_DATABASE_URL" in
+            *.neon.tech/neondb|*.neon.tech/neondb\?*|*.neon.tech:[0-9]*/neondb|*.neon.tech:[0-9]*/neondb\?*)
+              echo "DIRECT_DATABASE_URL names neondb, the Neon integration's own (empty) database;"
+              echo "change /neondb to /hallpass (NEON_DATABASE) in the secret."
+              exit 1 ;;
             *-pooler.*)
               echo "DIRECT_DATABASE_URL is Neon's pooled (-pooler) host; pg_dump needs a session."
               echo "Use DATABASE_URL_UNPOOLED from Vercel → Storage → the Neon database instead."

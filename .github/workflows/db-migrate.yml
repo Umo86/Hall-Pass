@@ -4,7 +4,8 @@ name: Database migrate
 # on demand only: run it before deploying a release that adds a migration
 # (README → Releasing). It uses the repository secret DIRECT_DATABASE_URL —
 # Neon's direct connection, DATABASE_URL_UNPOOLED (Vercel → project → Storage →
-# the Neon database → .env.local tab → Show secret); never a pooled host.
+# the Neon database → .env.local tab → Show secret) with /neondb changed to
+# /hallpass (NEON_DATABASE); never a pooled host.
 # The log names the provider and host it changed, never the credentials.
 
 on:
@@ -25,6 +26,10 @@ jobs:
         run: |
           test -n "$DIRECT_DATABASE_URL" || { echo "DIRECT_DATABASE_URL secret is not set"; exit 1; }
           case "$DIRECT_DATABASE_URL" in
+            *.neon.tech/neondb|*.neon.tech/neondb\?*|*.neon.tech:[0-9]*/neondb|*.neon.tech:[0-9]*/neondb\?*)
+              echo "DIRECT_DATABASE_URL names neondb, the Neon integration's own (empty) database;"
+              echo "change /neondb to /hallpass (NEON_DATABASE) in the secret."
+              exit 1 ;;
             *-pooler.*|*:6543/*|*:6543)
               echo "DIRECT_DATABASE_URL is a pooled connection; migrations need a direct one (DATABASE_URL_UNPOOLED)."
               exit 1 ;;

@@ -1503,6 +1503,15 @@ journal: 15 entries, latest `0014_better_auth`). One line per decision.
     then clears them (no record: the owner's own, as before). Strategy B ends every client
     session of the role, its own last in the same statement (so on a transaction pooler it is
     the backend that ran it), and waits until its next query runs on a fresh backend.
+    A dropped connection during strategy A stops the step (it is run again) instead of
+    falling back to B, which would end every session of the live database; any other
+    failure falls back with the reason in B's reply, and claims no revoke that was rolled
+    back. GRANT/REVOKE name the role's own tables, never ALL TABLES IN SCHEMA (which takes
+    in views of other owners, where the role may hold nothing and is refused). Unfreeze
+    reports A only when A was in place, and ends B's sessions even if giving the
+    privileges back failed.
+  - The "Database backup" and "Database migrate" workflows refuse a secret that names
+    Neon's `neondb` (the integration's empty database): the secret must name `hallpass`.
   - _Migration record._ Supabase's row for `0010_lifecycle` held the sha256 of a draft without
     `IF NOT EXISTS`; the schema is the file's (labels, columns, all counts). The row's hash was
     corrected on Supabase (guarded by its old value); `compareMigrations` stays strict.

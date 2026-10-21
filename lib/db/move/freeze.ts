@@ -34,11 +34,19 @@ export async function ownsAllTables(q: Queryable): Promise<boolean> {
   return Number(r.others) === 0;
 }
 
-async function existingSchemas(q: Queryable): Promise<string[]> {
-  const rows = await q.unsafe<{ name: string }[]>(
-    `SELECT nspname AS name FROM pg_namespace WHERE nspname IN ('public','drizzle') ORDER BY 1`,
-  );
-  return rows.map((r) => r.name);
+/**
+ * The connected role's own tables in public and drizzle, quoted, for one
+ * GRANT/REVOKE each grantee (never ALL TABLES IN SCHEMA: that takes in views
+ * and tables of other owners, where the role may hold nothing and is refused).
+ */
+async function ownTables(q: Queryable): Promise<string> {
+  const rows = await q.unsafe<{ t: string }[]>(`
+    SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS t
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname IN ('public','drizzle') AND c.relkind IN ('r','p')
+      AND pg_get_userbyid(c.relowner) = current_user
+    ORDER BY 1`);
+  return rows.map((r) => r.t).join(", ");
 }
 
 /** Strategy B is in place: the role's new sessions start read-only (read from the catalog). */
@@ -151,9 +159,10 @@ export async function isFrozen(sql: MoveSql): Promise<FreezeState> {
 export async function freeze(
   sql: MoveSql,
 ): Promise<FreezeState & { note?: string; sessionsEnded?: number; revokedFrom?: string[] }> {
-  const schemas = await existingSchemas(sql);
   let revokedFrom: string[] = [];
+  let aFailure = "the role doesn't own every table";
   if (await ownsAllTables(sql)) {
+    let committed = false;
     try {
       // READ WRITE: this session may have started read-only (B already in place).
       await sql.begin("READ WRITE", async (tx) => {
@@ -177,20 +186,35 @@ export async function freeze(
           `SELECT DISTINCT grantee FROM (${HELD_WRITES}) h ORDER BY 1`,
         );
         revokedFrom = grantees.map((g) => g.grantee).sort();
-        for (const schema of schemas) {
+        const tables = await ownTables(tx);
+        if (tables) {
           for (const grantee of ["CURRENT_USER", ...revokedFrom.map(granteeSql)]) {
             await tx.unsafe(
-              `REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA ${ident(schema)} FROM ${grantee}`,
+              `REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE ${tables} FROM ${grantee}`,
             );
           }
         }
       });
+      committed = true;
       const state = await isFrozen(sql);
       if (state.frozen) return { ...state, revokedFrom };
-    } catch {
-      // Refused: fall through to strategy B.
+      aFailure =
+        "privileges revoked, but writes are still allowed (a grant by another role, or a predefined role such as pg_write_all_data)";
+    } catch (err) {
+      const code = (err as { code?: string }).code ?? "";
+      // A dropped connection isn't a reason to end every session of the live
+      // database: say so, and the step can simply be run again (A, if it
+      // committed, is recorded, and a second freeze keeps that record).
+      if (SESSION_ENDED.test(code) || /^08/.test(code)) throw err;
+      if (!committed) revokedFrom = [];
+      aFailure =
+        `${code ? `${code} ` : ""}${err instanceof Error ? err.message : String(err)}`.slice(
+          0,
+          300,
+        );
     }
   }
+  console.warn(`move-database: strategy A did not hold (${aFailure}); using strategy B`);
   await sql.begin("READ WRITE", async (tx) => {
     await tx.unsafe(`ALTER ROLE CURRENT_USER SET default_transaction_read_only = on`);
   });
@@ -200,7 +224,7 @@ export async function freeze(
     strategy: "B",
     ...(revokedFrom.length ? { revokedFrom } : {}),
     sessionsEnded: ended,
-    note: `Sessions of this role now start read-only; ${ended} other open session(s) and this one were ended so they reconnect read-only.`,
+    note: `Strategy A did not hold (${aFailure}). Sessions of this role now start read-only; ${ended} other open session(s) and this one were ended so they reconnect read-only.`,
   };
 }
 
@@ -214,6 +238,9 @@ export async function unfreeze(sql: MoveSql): Promise<
   }
 > {
   const undid: ("A" | "B")[] = [];
+  let ended: number | null = null;
+  // What is in place, before anything is undone (A is reported only if it was).
+  const before = await isFrozen(sql);
   const wasB = await roleReadOnly(sql);
   if (wasB) {
     await sql.begin("READ WRITE", async (tx) => {
@@ -223,8 +250,9 @@ export async function unfreeze(sql: MoveSql): Promise<
   }
   let restoredTo: string[] = [];
   const recorded = (await grantsRecorded(sql)) > 0;
-  if (recorded || (await ownsAllTables(sql))) {
-    const schemas = await existingSchemas(sql);
+  const wasA = recorded || before.strategy === "A";
+  try {
+    if (!wasA && !(await ownsAllTables(sql))) return await done();
     await sql.begin("READ WRITE", async (tx) => {
       const rows = recorded
         ? await tx.unsafe<
@@ -248,30 +276,38 @@ export async function unfreeze(sql: MoveSql): Promise<
         restoredTo = [...new Set(rows.map((r) => r.grantee))].sort();
       } else {
         // Nothing recorded (a freeze from before grants were recorded): the owner's own.
-        for (const schema of schemas) {
+        const tables = await ownTables(tx);
+        if (tables) {
           await tx.unsafe(
-            `GRANT INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA ${ident(schema)} TO CURRENT_USER`,
+            `GRANT INSERT, UPDATE, DELETE, TRUNCATE ON TABLE ${tables} TO CURRENT_USER`,
           );
         }
       }
       if (recorded) await tx.unsafe(`DELETE FROM ${GRANTS}`);
     });
-    undid.push("A");
+    if (wasA) undid.push("A");
+    return await done();
+  } finally {
+    // Sessions opened while B was in place keep their read-only default until
+    // they end: end them all, this one last (once the privileges are back, or
+    // even if giving them back failed), so they reconnect writable.
+    if (wasB && ended === null) ended = await endAllSessions(sql);
   }
-  // Sessions opened while B was in place keep their read-only default until they
-  // end: end them all, this one last (once the privileges are back), so they
-  // reconnect writable. The probe below runs on a fresh session.
-  const ended = wasB ? await endAllSessions(sql) : null;
-  const state = await isFrozen(sql);
-  return {
-    ...state,
-    undid,
-    ...(restoredTo.length ? { restoredTo } : {}),
-    ...(ended === null
-      ? {}
-      : {
-          sessionsEnded: ended,
-          note: `Sessions of this role start writable again; ${ended} other open session(s) and this one were ended so they reconnect writable.`,
-        }),
-  };
+
+  async function done() {
+    if (wasB && ended === null) ended = await endAllSessions(sql);
+    // On a fresh session.
+    const state = await isFrozen(sql);
+    return {
+      ...state,
+      undid,
+      ...(restoredTo.length ? { restoredTo } : {}),
+      ...(ended === null
+        ? {}
+        : {
+            sessionsEnded: ended,
+            note: `Sessions of this role start writable again; ${ended} other open session(s) and this one were ended so they reconnect writable.`,
+          }),
+    };
+  }
 }
