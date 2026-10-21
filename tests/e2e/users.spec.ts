@@ -148,7 +148,10 @@ test.describe("Users", () => {
     await card.getByLabel(`Team member to add to ${legal} approvers`).selectOption({ label: sam });
     await expect(card.getByRole("checkbox", { name: "Main approver" })).toBeChecked();
     await card.getByRole("button", { name: "Add", exact: true }).click();
-    await expect(card.getByText("main approver")).toBeVisible();
+    // Sam's own row, once saved (plain text would also match the form's "Main approver").
+    await expect(
+      card.getByRole("button", { name: `${sam} is the main approver for ${legal} — stop` }),
+    ).toBeVisible();
 
     // Operations adds signage that only Legal signs off; it waits on Sam.
     const ops = await as(browser, "ops@media10.test", baseURL!);
