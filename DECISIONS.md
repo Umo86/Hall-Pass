@@ -1530,6 +1530,17 @@ level, for testing, to be removed later.
   lists the seeded `…@….test` accounts that can sign in now (staff from super admin down,
   then partners) with the shared password; picking one fills in the form. Real people's
   addresses are never listed.
+- **Every role has a demo account.** The seed has none for a contractor, and the live
+  database isn't re-seeded, so while the switch is on the app adds one itself the first time
+  the sign-in page loads: `sam@standbuilders.test`, a contractor grant for the stand the demo
+  exhibitor's newest live grant names (Exhibitor Co), ending when that grant does, accepted,
+  with a random invitation token, audited, under an advisory lock so it is made once. Never
+  into an archived (read-only) event, as for any partner invitation; never for an address
+  that is a team member's or has an open team invitation; and an existing grant for that
+  event — revoked included — means nothing is made, so removing it keeps it removed.
+  Turning the switch off leaves the account in place, locked like the other demo accounts.
+  No demo managers or one-event accounts: demo accounts can't manage people, so a demo
+  manager would be the same as their role, and the demo data has one event.
 - **The password is set at sign-in, not by a script:** signing in to a demo account with the
   shared password makes it that account's password first (scrypt, audited) and ends that
   account's older sessions. While it is on, a demo account takes only the shared password

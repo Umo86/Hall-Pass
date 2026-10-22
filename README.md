@@ -370,7 +370,9 @@ email-link landing (`GET /api/auth/magic-link/verify`) answers.
   takes the seeded `…@….test` accounts.
 - **Demo logins (testing only, temporary).** `DEMO_LOGIN_PASSWORD` (8+ characters,
   Production) lists every seeded `…@….test` account under the sign-in form — role, name,
-  email — with that shared password; picking one fills in the form. Signing in with it sets
+  email — with that shared password; picking one fills in the form. Every role has one: the
+  seed has no contractor, so a demo one (`sam@standbuilders.test`, building the demo
+  exhibitor's stand) is added the first time the page loads (audited). Signing in with it sets
   it as that account's password (audited); only that password is taken, and it can't be
   changed from My account. Demo accounts keep their role but can't add, change or remove
   people, invite partners, make sign-in links, or change departments or system settings,

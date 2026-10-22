@@ -82,6 +82,33 @@ async function member(
   return id;
 }
 
+/** An event (edition) of the test organisation, for partner grants. */
+async function newEdition(code: string): Promise<string> {
+  const [event] = await db
+    .insert(schema.events)
+    .values({ organisationId: orgId, name: `Demo ${code}`, code: `${code}${n}` })
+    .returning();
+  const [venue] = await db
+    .insert(schema.venues)
+    .values({ organisationId: orgId, name: `Demo venue ${code}`, code: `${code}V${n}` })
+    .returning();
+  const [edition] = await db
+    .insert(schema.editions)
+    .values({
+      eventId: event.id,
+      venueId: venue.id,
+      name: `Demo edition ${code}`,
+      code: `${code}E${n}`,
+      buildStart: "2027-10-01",
+      buildEnd: "2027-10-04",
+      openStart: "2027-10-05",
+      openEnd: "2027-10-07",
+      breakdownEnd: "2027-10-08",
+    })
+    .returning();
+  return edition.id;
+}
+
 async function credential(email: string) {
   const [row] = await db
     .select({ password: schema.authAccount.password })
@@ -164,7 +191,7 @@ d("demo logins (testing only)", () => {
     await client?.end();
   });
 
-  const ours = (list: { email: string }[]) =>
+  const ours = <T extends { email: string }>(list: T[]) =>
     list.filter((l) => l.email.endsWith(`-${n}@demologins.test`));
 
   it("off: nothing listed, no password made, and a demo account without one can't sign in", async () => {
@@ -293,5 +320,196 @@ d("demo logins (testing only)", () => {
     } finally {
       vi.stubEnv("VERCEL_ENV", "");
     }
+  });
+
+  /** A demo exhibitor (account and accepted grant for one stand of an event). */
+  async function demoExhibitor(
+    email: string,
+    editionId: string,
+    extra: Partial<typeof schema.externalGrants.$inferInsert> = {},
+  ) {
+    await db
+      .insert(schema.users)
+      .values({ email, fullName: "Erin", isExternal: true, emailVerified: true })
+      .onConflictDoNothing({ target: schema.users.email });
+    const user = await db.query.users.findFirst({ where: eq(schema.users.email, email) });
+    const exhibitorId = randomUUID();
+    await db.insert(schema.externalGrants).values({
+      userId: user!.id,
+      invitedEmail: email,
+      organisationId: orgId,
+      editionId,
+      role: "exhibitor",
+      scopeType: "exhibitor",
+      scopeId: exhibitorId,
+      invitedBy: demoAdminId,
+      inviteTokenHash: `test-${randomUUID()}`,
+      acceptedAt: new Date(),
+      ...extra,
+    });
+    return exhibitorId;
+  }
+
+  const grantsOf = (email: string) =>
+    db.select().from(schema.externalGrants).where(eq(schema.externalGrants.invitedEmail, email));
+
+  it("on: the contractor gets a demo account once, for the demo exhibitor's stand; removed stays removed", async () => {
+    const exhibitorEmail = demoMail("stand");
+    const spec = {
+      email: demoMail("contractor"),
+      fullName: "Sam at Stand Builders",
+      exhibitorEmail,
+    };
+    const editionId = await newEdition("DLC");
+    const exhibitorId = await demoExhibitor(exhibitorEmail, editionId);
+    const added = () =>
+      db
+        .select()
+        .from(schema.auditLog)
+        .where(
+          and(
+            eq(schema.auditLog.subjectEmail, spec.email),
+            eq(
+              schema.auditLog.summary,
+              "Demo contractor account added (DEMO_LOGIN_PASSWORD, testing only)",
+            ),
+          ),
+        );
+
+    // With the exhibitor there: off, nothing.
+    vi.stubEnv("DEMO_LOGIN_PASSWORD", "");
+    expect(await demo.ensureDemoContractor(spec)).toBe(false);
+    expect(await grantsOf(spec.email)).toHaveLength(0);
+    vi.stubEnv("DEMO_LOGIN_PASSWORD", DEMO);
+    // Only demo addresses, on both sides.
+    const realSam = `sam-${n}@builders.example`;
+    expect(await demo.ensureDemoContractor({ ...spec, email: realSam })).toBe(false);
+    expect(await grantsOf(realSam)).toHaveLength(0);
+    const realStand = `stand-${n}@exhibitor.example`;
+    await demoExhibitor(realStand, editionId);
+    expect(await demo.ensureDemoContractor({ ...spec, exhibitorEmail: realStand })).toBe(false);
+    expect(await grantsOf(spec.email)).toHaveLength(0);
+
+    // Several sign-in pages loading at once: one account, one grant, one audit entry.
+    const made = await Promise.all([1, 2, 3].map(() => demo.ensureDemoContractor(spec)));
+    expect(made.filter(Boolean)).toHaveLength(1);
+    expect(await demo.ensureDemoContractor(spec)).toBe(false);
+    const grants = await grantsOf(spec.email);
+    expect(grants).toHaveLength(1);
+    expect(grants[0]).toMatchObject({
+      organisationId: orgId,
+      editionId,
+      role: "contractor",
+      scopeType: "exhibitor",
+      scopeId: exhibitorId,
+      invitedBy: demoAdminId,
+      revokedAt: null,
+      expiresAt: null,
+    });
+    expect(grants[0].acceptedAt).not.toBeNull();
+    expect(grants[0].inviteTokenHash).toMatch(/^[0-9a-f]{64}$/);
+    const sam = await db.query.users.findFirst({ where: eq(schema.users.email, spec.email) });
+    expect(sam).toMatchObject({ fullName: "Sam at Stand Builders", isExternal: true });
+    expect(grants[0].userId).toBe(sam!.id);
+    expect(await added()).toHaveLength(1);
+
+    // Listed after the exhibitor; signs in with the shared password as that stand's contractor.
+    expect(ours(await demo.listDemoLogins(spec)).filter((l) => l.isExternal)).toEqual([
+      { email: exhibitorEmail, name: "Erin", role: "Exhibitor", isExternal: true },
+      { email: spec.email, name: "Sam at Stand Builders", role: "Contractor", isExternal: true },
+    ]);
+    state.cookie = "";
+    expect(await redirectOf(auth.signInWithPassword({ email: spec.email, password: DEMO }))).toBe(
+      "/",
+    );
+    state.cookie = await cookieFor(spec.email, DEMO);
+    expect((await actor.getSession())?.actor).toMatchObject({
+      kind: "external",
+      organisationId: orgId,
+      demo: true,
+      grants: [{ role: "contractor", editionId, scopeType: "exhibitor", scopeId: exhibitorId }],
+    });
+
+    // Removed by a super admin: it isn't made again, nor listed.
+    await db
+      .update(schema.externalGrants)
+      .set({ revokedAt: new Date() })
+      .where(eq(schema.externalGrants.id, grants[0].id));
+    expect(await demo.ensureDemoContractor(spec)).toBe(false);
+    expect(await grantsOf(spec.email)).toHaveLength(1);
+    expect(ours(await demo.listDemoLogins(spec)).map((l) => l.email)).not.toContain(spec.email);
+    expect(await added()).toHaveLength(1);
+  });
+
+  it("the sign-in page's list adds the contractor when it is missing", async () => {
+    vi.stubEnv("DEMO_LOGIN_PASSWORD", DEMO);
+    const exhibitorEmail = demoMail("stand3");
+    const spec = { email: demoMail("builder3"), fullName: "Bo Builder", exhibitorEmail };
+    await demoExhibitor(exhibitorEmail, await newEdition("DLH"));
+    expect(await grantsOf(spec.email)).toHaveLength(0);
+    expect(ours(await demo.listDemoLogins(spec)).map((l) => [l.email, l.role])).toContainEqual([
+      spec.email,
+      "Contractor",
+    ]);
+    expect(await grantsOf(spec.email)).toHaveLength(1);
+  });
+
+  it("only from the exhibitor's newest live grant, never into an archived event, ending when it does", async () => {
+    vi.stubEnv("DEMO_LOGIN_PASSWORD", DEMO);
+    const exhibitorEmail = demoMail("stand4");
+    const spec = { email: demoMail("builder4"), fullName: "Cal Contractor", exhibitorEmail };
+    // Ended access: nothing.
+    await demoExhibitor(exhibitorEmail, await newEdition("DLE"), {
+      expiresAt: new Date(Date.now() - 86_400_000),
+    });
+    expect(await demo.ensureDemoContractor(spec)).toBe(false);
+    // An archived (read-only) event: nothing, as for any partner invitation.
+    const archived = await newEdition("DLA");
+    await db
+      .update(schema.editions)
+      .set({ status: "archived" })
+      .where(eq(schema.editions.id, archived));
+    await demoExhibitor(exhibitorEmail, archived);
+    expect(await demo.ensureDemoContractor(spec)).toBe(false);
+    expect(await grantsOf(spec.email)).toHaveLength(0);
+    // A newer live grant with an end: the contractor's access ends with it.
+    const ends = new Date(Date.now() + 30 * 86_400_000);
+    const live = await newEdition("DLL");
+    const stand = await demoExhibitor(exhibitorEmail, live, { expiresAt: ends });
+    expect(await demo.ensureDemoContractor(spec)).toBe(true);
+    const [grant] = await grantsOf(spec.email);
+    expect(grant).toMatchObject({ editionId: live, scopeId: stand, role: "contractor" });
+    expect(grant.expiresAt?.getTime()).toBe(ends.getTime());
+  });
+
+  it("never makes a team member's account, or an invited team member, a contractor", async () => {
+    vi.stubEnv("DEMO_LOGIN_PASSWORD", DEMO);
+    const exhibitorEmail = demoMail("stand2");
+    await demoExhibitor(exhibitorEmail, await newEdition("DLD"));
+    // The demo viewer is staff: their address is never turned into a partner's.
+    expect(
+      await demo.ensureDemoContractor({
+        email: demoMail("viewer"),
+        fullName: "Sam",
+        exhibitorEmail,
+      }),
+    ).toBe(false);
+    expect(await grantsOf(demoMail("viewer"))).toHaveLength(0);
+    // Nor an address with an open team invitation (signing in would claim it as staff).
+    const invited = demoMail("invited");
+    await db.insert(schema.staffInvites).values({
+      organisationId: orgId,
+      invitedEmail: invited,
+      role: "ops",
+      invitedBy: demoAdminId,
+      inviteTokenHash: `test-${randomUUID()}`,
+    });
+    expect(
+      await demo.ensureDemoContractor({ email: invited, fullName: "Ivy", exhibitorEmail }),
+    ).toBe(false);
+    expect(await grantsOf(invited)).toHaveLength(0);
+    expect(
+      await db.query.users.findFirst({ where: eq(schema.users.email, invited) }),
+    ).toBeUndefined();
   });
 });

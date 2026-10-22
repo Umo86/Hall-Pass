@@ -6,6 +6,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { demoAccountLocked, demoLoginPassword, isDemoAccount } from "@/lib/auth/config";
+import { externalRole } from "@/lib/db/schema/enums";
 import {
   can,
   canExtendToCopy,
@@ -184,6 +185,9 @@ describe("demo logins: the list on the sign-in page", () => {
       { email: "print@bigprint.test", name: "Petra", staffRole: null, externalRole: "supplier" },
       { email: "viewer@media10.test", name: "Vic", staffRole: "viewer", externalRole: null },
       { email: "venue@nec.test", name: "Nina", staffRole: null, externalRole: "venue" },
+      { email: "sponsor@buildco.test", name: "Ben", staffRole: null, externalRole: "sponsor" },
+      { email: "sam@standbuilders.test", name: "Sam", staffRole: null, externalRole: "contractor" },
+      { email: "stand@exhibitorco.test", name: "Erin", staffRole: null, externalRole: "exhibitor" },
       { email: "ops@media10.test", name: "Olivia", staffRole: "ops", externalRole: null },
       { email: "admin@media10.test", name: "Alex", staffRole: "admin", externalRole: null },
       // A second row for the same account (another grant) is listed once.
@@ -201,6 +205,27 @@ describe("demo logins: the list on the sign-in page", () => {
       { email: "viewer@media10.test", name: "Vic", role: "Viewer (read-only)", isExternal: false },
       { email: "venue@nec.test", name: "Nina", role: "Venue", isExternal: true },
       { email: "print@bigprint.test", name: "Petra", role: "Supplier", isExternal: true },
+      { email: "stand@exhibitorco.test", name: "Erin", role: "Exhibitor", isExternal: true },
+      { email: "sam@standbuilders.test", name: "Sam", role: "Contractor", isExternal: true },
+      { email: "sponsor@buildco.test", name: "Ben", role: "Sponsor", isExternal: true },
+    ]);
+  });
+
+  it("every partner role has its place in the list", async () => {
+    const { orderDemoLogins } = await import("@/lib/auth/demo-logins");
+    // Every role the database knows, in reverse, so a new one can't be missed.
+    const roles = [...externalRole.enumValues].reverse();
+    const rows = orderDemoLogins(
+      roles.map((r) => ({ email: `${r}@x.test`, name: r, staffRole: null, externalRole: r })),
+    );
+    expect(rows.map((r) => r.role)).toEqual([
+      "Venue",
+      "Structural engineer",
+      "Health & safety",
+      "Supplier",
+      "Exhibitor",
+      "Contractor",
+      "Sponsor",
     ]);
   });
 });

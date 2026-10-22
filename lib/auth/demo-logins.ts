@@ -1,11 +1,20 @@
 import "server-only";
-import { createHash, timingSafeEqual } from "node:crypto";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { and, asc, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { authAccount, authSession, externalGrants, memberships, users } from "@/lib/db/schema";
+import {
+  authAccount,
+  authSession,
+  editions,
+  externalGrants,
+  memberships,
+  staffInvites,
+  users,
+} from "@/lib/db/schema";
 import { STAFF_ROLES, type ExternalRole, type StaffRole } from "@/lib/authz";
 import { accessState } from "@/lib/access";
-import { grantLive } from "@/lib/users/external";
+import { editionIsReadOnly } from "@/lib/edition-lock";
+import { grantLive, liveGrantSql } from "@/lib/users/external";
 import { roleLabel } from "@/lib/format";
 import { writeAudit } from "@/lib/audit";
 import { accountOrganisationId } from "./account-link";
@@ -14,10 +23,11 @@ import { hashPassword, verifyPassword } from "./password";
 
 /**
  * Demo logins (testing only, DEMO_LOGIN_PASSWORD): the seeded …@….test
- * accounts, listed on the sign-in page with the shared password, which
- * signing in with sets for them. What they may do is limited by authz
- * DEMO_DENIED; unset the variable and, on production, they can't sign in at
- * all (config.demoAccountLocked).
+ * accounts (plus a demo contractor, which the seed has none of), listed on
+ * the sign-in page with the shared password, which signing in with sets for
+ * them. What they may do is limited by authz DEMO_DENIED; unset the variable
+ * and, on a Vercel deployment, they can't sign in at all
+ * (config.demoAccountLocked).
  */
 
 export type DemoLogin = { email: string; name: string; role: string; isExternal: boolean };
@@ -58,9 +68,150 @@ export function orderDemoLogins(candidates: readonly Candidate[]): DemoLogin[] {
     }));
 }
 
-/** The demo accounts that can sign in now (active team members, partners with a live grant). */
-export async function listDemoLogins(): Promise<DemoLogin[]> {
+/**
+ * The one partner type the seed has no demo account for: a contractor, here
+ * building the stand of the seeded demo exhibitor (Exhibitor Co).
+ */
+export const DEMO_CONTRACTOR = {
+  email: "sam@standbuilders.test",
+  fullName: "Sam at Stand Builders",
+  exhibitorEmail: "stand@exhibitorco.test",
+} as const;
+
+type ContractorSpec = { email: string; fullName: string; exhibitorEmail: string };
+
+/**
+ * While demo logins are on, give the contractor role a demo account too: a
+ * contractor grant for the stand the demo exhibitor's newest live grant names,
+ * ending when that grant does, made once (audited). Nothing happens without
+ * that live exhibitor grant, when its event is archived (read-only, as for
+ * any partner invitation), when the address is a team member's or has an
+ * open team invitation, or when the contractor already has a grant for that
+ * event — a revoked one included, so removing it keeps it removed. Returns
+ * whether it made one.
+ */
+export async function ensureDemoContractor(
+  spec: ContractorSpec = DEMO_CONTRACTOR,
+): Promise<boolean> {
+  const email = spec.email.trim().toLowerCase();
+  const exhibitorEmail = spec.exhibitorEmail.trim().toLowerCase();
+  if (!demoLoginPassword() || !isDemoAccount(email) || !isDemoAccount(exhibitorEmail)) {
+    return false;
+  }
+  return db.transaction(async (tx) => {
+    // One at a time, so two sign-in pages loading together add one grant.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('hallpass:demo-contractor'))`);
+    const [stand] = await tx
+      .select({
+        organisationId: externalGrants.organisationId,
+        editionId: externalGrants.editionId,
+        exhibitorId: externalGrants.scopeId,
+        invitedBy: externalGrants.invitedBy,
+        expiresAt: externalGrants.expiresAt,
+        editionStatus: editions.status,
+      })
+      .from(externalGrants)
+      .innerJoin(editions, eq(editions.id, externalGrants.editionId))
+      .where(
+        and(
+          sql`lower(${externalGrants.invitedEmail}) = ${exhibitorEmail}`,
+          eq(externalGrants.role, "exhibitor"),
+          eq(externalGrants.scopeType, "exhibitor"),
+          isNotNull(externalGrants.scopeId),
+          liveGrantSql(new Date()),
+        ),
+      )
+      .orderBy(desc(externalGrants.createdAt))
+      .limit(1);
+    if (!stand?.exhibitorId || editionIsReadOnly(stand.editionStatus)) return false;
+    const [already] = await tx
+      .select({ id: externalGrants.id })
+      .from(externalGrants)
+      .where(
+        and(
+          sql`lower(${externalGrants.invitedEmail}) = ${email}`,
+          eq(externalGrants.editionId, stand.editionId),
+        ),
+      )
+      .limit(1);
+    if (already) return false;
+    // An open team invitation for the address: signing in would claim it as staff.
+    const [invited] = await tx
+      .select({ id: staffInvites.id })
+      .from(staffInvites)
+      .where(
+        and(
+          sql`lower(${staffInvites.invitedEmail}) = ${email}`,
+          isNull(staffInvites.acceptedAt),
+          isNull(staffInvites.revokedAt),
+        ),
+      )
+      .limit(1);
+    if (invited) return false;
+    await tx
+      .insert(users)
+      .values({ email, fullName: spec.fullName, isExternal: true, emailVerified: true })
+      .onConflictDoNothing({ target: users.email });
+    const user = await tx.query.users.findFirst({
+      where: sql`lower(${users.email}) = ${email}`,
+    });
+    // Never make a team member's account a partner's.
+    if (!user?.isExternal) return false;
+    const [grant] = await tx
+      .insert(externalGrants)
+      .values({
+        userId: user.id,
+        invitedEmail: email,
+        organisationId: stand.organisationId,
+        editionId: stand.editionId,
+        role: "contractor",
+        scopeType: "exhibitor",
+        scopeId: stand.exhibitorId,
+        // No longer than the exhibitor's own access.
+        expiresAt: stand.expiresAt,
+        invitedBy: stand.invitedBy,
+        // Accepted already; the token is random so no link can be made from it.
+        inviteTokenHash: createHash("sha256").update(randomBytes(32)).digest("hex"),
+        acceptedAt: new Date(),
+      })
+      .returning({ id: externalGrants.id });
+    await writeAudit(tx, {
+      organisationId: stand.organisationId,
+      editionId: stand.editionId,
+      actorType: "system",
+      entityType: "external_grant",
+      entityId: grant.id,
+      action: "invite",
+      after: { role: "contractor", scopeType: "exhibitor", scopeId: stand.exhibitorId },
+      summary: "Demo contractor account added (DEMO_LOGIN_PASSWORD, testing only)",
+      subjectUserId: user.id,
+      subjectEmail: email,
+    });
+    return true;
+  });
+}
+
+/** Contractors checked by this server instance; a failure is tried again next time. */
+const contractorsChecked = new Set<string>();
+
+/**
+ * The demo accounts that can sign in now (active team members, partners with
+ * a live grant), the demo contractor made first if it is missing.
+ */
+export async function listDemoLogins(
+  contractor: ContractorSpec = DEMO_CONTRACTOR,
+): Promise<DemoLogin[]> {
   if (!demoLoginPassword()) return [];
+  if (!contractorsChecked.has(contractor.email)) {
+    const checked = await ensureDemoContractor(contractor).then(
+      () => true,
+      (err) => {
+        console.error("ensureDemoContractor", err instanceof Error ? err.message : err);
+        return false;
+      },
+    );
+    if (checked) contractorsChecked.add(contractor.email);
+  }
   const now = new Date();
   const rows = await db
     .select({
