@@ -23,6 +23,9 @@ export type DevUser = {
   isExternal: boolean;
 };
 
+/** Demo logins (testing only, DEMO_LOGIN_PASSWORD): the seeded accounts and their shared password. */
+export type DemoLogins = { password: string; accounts: DevUser[] };
+
 export type ConfigStatus = {
   /** Real sign-in is set up (BETTER_AUTH_SECRET, or derived on Vercel production). */
   authSecret: boolean;
@@ -50,6 +53,8 @@ type Props = {
   notice?: ReactNode;
   /** Signed in, but nobody has invited this email here. */
   unprovisionedEmail?: string | null;
+  /** Demo logins to list under the form (testing only); null when off. */
+  demoLogins?: DemoLogins | null;
 };
 
 export function LoginCard({
@@ -64,6 +69,7 @@ export function LoginCard({
   next = null,
   notice = null,
   unprovisionedEmail = null,
+  demoLogins = null,
 }: Props) {
   const configured = passwordSignIn || (devEnabled && devUsers.length > 0);
 
@@ -140,9 +146,15 @@ export function LoginCard({
                 emailEnabled={emailEnabled}
                 devLinks={devLinks}
                 next={next}
+                demoLogins={demoLogins}
               />
             ) : (
-              <EmailSignIn next={next} emailEnabled={emailEnabled} devLinks={devLinks} />
+              <EmailSignIn
+                next={next}
+                emailEnabled={emailEnabled}
+                devLinks={devLinks}
+                demoLogins={demoLogins}
+              />
             )}
           </main>
         </div>
@@ -155,10 +167,12 @@ function EmailSignIn({
   next,
   emailEnabled,
   devLinks,
+  demoLogins = null,
 }: {
   next: string | null;
   emailEnabled: boolean;
   devLinks: boolean;
+  demoLogins?: DemoLogins | null;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -288,7 +302,95 @@ function EmailSignIn({
         No account yet? Ask your contact there to invite you — the invitation email has a link to
         set up your profile and password.
       </p>
+      {demoLogins && (
+        <DemoLoginList
+          demo={demoLogins}
+          picked={mode === "password" ? email : null}
+          onPick={(account) => {
+            setMode("password");
+            setEmail(account.email);
+            setPassword(demoLogins.password);
+            setError(null);
+            setMessage(null);
+            setDevLink(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/** Demo logins (testing only): every seeded account, its role, and the shared password. */
+function DemoLoginList({
+  demo,
+  picked,
+  onPick,
+}: {
+  demo: DemoLogins;
+  picked: string | null;
+  onPick: (account: DevUser) => void;
+}) {
+  const groups: Array<[string, typeof Building2, DevUser[]]> = [
+    ["Media10 staff", Building2, demo.accounts.filter((a) => !a.isExternal)],
+    ["External partners", UserRound, demo.accounts.filter((a) => a.isExternal)],
+  ];
+  return (
+    <section
+      aria-labelledby="demo-logins"
+      className="mt-6 rounded-lg border border-amber-300 bg-amber-50/70 p-4 dark:border-amber-800 dark:bg-amber-950/40"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 id="demo-logins" className="text-sm font-semibold">
+            Demo accounts
+          </h3>
+          <p className="text-muted-foreground mt-0.5 text-xs">
+            For testing. Pick one to fill in the form, then press Sign in.
+          </p>
+        </div>
+        <span className="shrink-0 rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-900 dark:text-amber-200">
+          Testing
+        </span>
+      </div>
+      <p className="mt-3 text-xs">
+        Password for every demo account:{" "}
+        <code className="bg-background rounded border px-1.5 py-0.5 font-mono text-xs select-all">
+          {demo.password}
+        </code>
+      </p>
+      {groups.map(
+        ([title, Icon, accounts]) =>
+          accounts.length > 0 && (
+            <div key={title} className="mt-4">
+              <p className="text-muted-foreground mb-1.5 flex items-center gap-1.5 text-xs font-semibold tracking-wide uppercase">
+                <Icon className="size-3.5" aria-hidden /> {title}
+              </p>
+              <ul className="space-y-1">
+                {accounts.map((a) => (
+                  <li key={a.email}>
+                    <button
+                      type="button"
+                      onClick={() => onPick(a)}
+                      aria-pressed={picked === a.email}
+                      className="bg-background hover:bg-muted/60 focus-visible:ring-ring/50 aria-pressed:border-primary flex w-full items-baseline justify-between gap-3 rounded-md border px-3 py-2 text-left transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
+                    >
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium">{a.role}</span>
+                        <span className="text-muted-foreground block truncate text-xs">
+                          {a.name}
+                        </span>
+                      </span>
+                      <span className="text-muted-foreground min-w-0 truncate font-mono text-xs">
+                        {a.email}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ),
+      )}
+    </section>
   );
 }
 
@@ -298,12 +400,14 @@ function DevSignIn({
   emailEnabled,
   devLinks,
   next,
+  demoLogins = null,
 }: {
   users: DevUser[];
   passwordSignIn: boolean;
   emailEnabled: boolean;
   devLinks: boolean;
   next: string | null;
+  demoLogins?: DemoLogins | null;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [pendingEmail, setPendingEmail] = useState<string | null>(null);
@@ -321,7 +425,12 @@ function DevSignIn({
         >
           ← Back to demo sign-in
         </button>
-        <EmailSignIn next={next} emailEnabled={emailEnabled} devLinks={devLinks} />
+        <EmailSignIn
+          next={next}
+          emailEnabled={emailEnabled}
+          devLinks={devLinks}
+          demoLogins={demoLogins}
+        />
       </div>
     );
   }

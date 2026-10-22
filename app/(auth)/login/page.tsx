@@ -4,7 +4,8 @@ import { LoginCard, type DevUser } from "@/components/auth/login-card";
 import { brandName } from "@/lib/config";
 import { demoEmailAllowed, devAuthEnabled, getAccessBlock, getSession } from "@/lib/auth/actor";
 import type { AccessBlock } from "@/lib/access";
-import { authConfigured, devLinksShown } from "@/lib/auth/config";
+import { authConfigured, demoLoginPassword, devLinksShown } from "@/lib/auth/config";
+import { listDemoLogins } from "@/lib/auth/demo-logins";
 import { getAuthSession } from "@/lib/auth/session";
 import { loginNotice } from "@/lib/auth/messages";
 import { emailConfigured } from "@/lib/email/dispatch";
@@ -110,10 +111,20 @@ export default async function LoginPage({
       ? (database.error ?? null)
       : null;
 
+  // Demo logins (testing only): the seeded accounts and their shared password.
+  const demoPassword = demoLoginPassword();
+  const demoLogins =
+    demoPassword && databaseReachable ? await listDemoLogins().catch(() => []) : [];
+
   return (
     <LoginCard
       brandName={brandName}
       passwordSignIn={authConfigured()}
+      demoLogins={
+        demoPassword && demoLogins.length > 0
+          ? { password: demoPassword, accounts: demoLogins }
+          : null
+      }
       emailEnabled={emailConfigured()}
       devLinks={authConfigured() && !emailConfigured() && devLinksShown()}
       devEnabled={devAuthEnabled()}

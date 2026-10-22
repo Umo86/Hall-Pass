@@ -69,7 +69,39 @@ export function devAuthEnabled(env: Env = process.env): boolean {
 
 /** With real sign-in set up, demo sign-in only works for the seeded …@….test accounts. */
 export function demoEmailAllowed(email: string, env: Env = process.env): boolean {
-  return !authConfigured(env) || email.trim().toLowerCase().endsWith(".test");
+  return !authConfigured(env) || isDemoAccount(email);
+}
+
+/** A seeded demo account (…@….test), never a real person's address. */
+export function isDemoAccount(email: string): boolean {
+  return email.trim().toLowerCase().endsWith(".test");
+}
+
+/**
+ * Demo logins, for testing only: while DEMO_LOGIN_PASSWORD is set (8 or more
+ * characters) on a deployment with real sign-in, the sign-in page lists the
+ * seeded demo accounts with this shared password, and signing in with it sets
+ * it for them. Null otherwise. Unset it to turn the whole thing off.
+ */
+export function demoLoginPassword(env: Env = process.env): string | null {
+  const password = env.DEMO_LOGIN_PASSWORD?.trim();
+  return authConfigured(env) && password && password.length >= 8 ? password : null;
+}
+
+/**
+ * On any Vercel deployment with real sign-in and demo logins off, demo
+ * accounts can't sign in or keep a session (calendar feed included): turning
+ * DEMO_LOGIN_PASSWORD off locks out every password and session it handed
+ * out, and another deployment on the same database without it never lets
+ * them in unrestricted. CI and local development are unaffected.
+ */
+export function demoAccountLocked(email: string, env: Env = process.env): boolean {
+  return (
+    Boolean(env.VERCEL_ENV || env.VERCEL_TARGET_ENV) &&
+    authConfigured(env) &&
+    demoLoginPassword(env) === null &&
+    isDemoAccount(email)
+  );
 }
 
 /** Local development without email: show the link that would have been emailed. */

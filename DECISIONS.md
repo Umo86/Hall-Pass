@@ -1520,3 +1520,33 @@ journal: 15 entries, latest `0014_better_auth`). One line per decision.
     corrected on Supabase (guarded by its old value); `compareMigrations` stays strict.
   - Neon's newer endpoints carry a cell label (`ep-….c-2.eu-west-2.aws.neon.tech`):
     `databaseRegionOf` allows it. Health also reports `databaseName`.
+
+## Demo logins for testing (Oct 2026, temporary)
+
+The owner asked for the demo accounts' sign-in details on the live sign-in page, every
+level, for testing, to be removed later.
+
+- **One switch, `DEMO_LOGIN_PASSWORD`** (8+ characters, with real sign-in): the sign-in page
+  lists the seeded `…@….test` accounts that can sign in now (staff from super admin down,
+  then partners) with the shared password; picking one fills in the form. Real people's
+  addresses are never listed.
+- **The password is set at sign-in, not by a script:** signing in to a demo account with the
+  shared password makes it that account's password first (scrypt, audited) and ends that
+  account's older sessions. While it is on, a demo account takes only the shared password
+  (not an old one, nor one a tester set), and My account refuses to change it. A real
+  person's account is left alone.
+- **Anyone who reads the page can use them, so they can't reach real people:** a demo
+  session keeps its role but `can()` refuses `DEMO_DENIED` — people, users, access links,
+  partner invitations, departments, system settings, and person edit/suspend/remove — and
+  the per-person checks refuse it too. Nobody can lock the owner out, take over their
+  account by a reset link, or invite themselves a lasting account.
+- **Off means off on every Vercel deployment with real sign-in** (Production, and a preview
+  pointed at the same database): without the variable, `…@….test` accounts can't sign in
+  there, no session is created for them, and any session or calendar feed they hold is
+  ignored (the check is in `loadForUser`), so deleting it and redeploying undoes everything.
+  Demo sign-in previews, CI and local use the seeded accounts as before.
+- **Left as is, for a temporary testing switch:** a demo account sees the real team's names
+  and emails where its role would; it can still change an event's details (venue included)
+  like its role allows; anyone can use up a demo account's sign-in limit (10 tries in 15
+  minutes). When removing it, also delete or protect older deployments that still carry the
+  variable.

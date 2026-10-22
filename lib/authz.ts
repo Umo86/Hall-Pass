@@ -424,6 +424,8 @@ export type StaffActor = {
    * including ones created later. Super admins are never limited.
    */
   editionIds?: string[] | null;
+  /** Signed in with a demo login (DEMO_LOGIN_PASSWORD): see DEMO_DENIED. */
+  demo?: true;
 };
 
 export type ExternalActor = {
@@ -431,6 +433,8 @@ export type ExternalActor = {
   userId: string;
   organisationId: string;
   grants: GrantInfo[];
+  /** Signed in with a demo login (DEMO_LOGIN_PASSWORD): see DEMO_DENIED. */
+  demo?: true;
 };
 
 export type Actor = StaffActor | ExternalActor;
@@ -1025,10 +1029,29 @@ export function featureForAction(action: Action): Feature | null {
   }
 }
 
+/**
+ * What a demo login never does, whatever its role: anyone who reads the
+ * sign-in page can use one, so it can't add, change or remove people, invite
+ * partners, make sign-in links, or change storage and email — nothing that
+ * reaches a real person's access or outlives the demo.
+ */
+export const DEMO_DENIED: ReadonlySet<Action["type"]> = new Set<Action["type"]>([
+  "people.manage",
+  "users.manage",
+  "people.access_link",
+  "partners.invite",
+  "departments.manage",
+  "system.manage",
+  "person.edit",
+  "person.suspend",
+  "person.remove",
+]);
+
 export function can(actor: Actor, action: Action, now = new Date()): boolean {
   // Tenancy first: nobody — admins included — acts on another organisation's records.
   const recordOrg = recordOrganisation(action);
   if (recordOrg !== undefined && recordOrg !== actor.organisationId) return false;
+  if (actor.demo && DEMO_DENIED.has(action.type)) return false;
   if (actor.kind === "external") {
     switch (action.type) {
       case "signage.view":
@@ -1287,7 +1310,7 @@ function isSelf(actor: Actor, target: PersonCtx): boolean {
  * and nobody when they have no department.
  */
 export function canManagePerson(actor: Actor, target: PersonCtx): boolean {
-  if (actor.kind !== "staff") return false;
+  if (actor.kind !== "staff" || actor.demo) return false;
   if (target.organisationId !== actor.organisationId) return false;
   if (isSuperAdmin(actor)) return true;
   const scope = managerScope(actor);
@@ -1393,7 +1416,7 @@ export function assignableSignoffDepartments(
 
 /** Only super admins make managers (or change what a manager manages). */
 export function canGrantManager(actor: Actor): boolean {
-  return isSuperAdmin(actor);
+  return isSuperAdmin(actor) && !actor.demo;
 }
 
 /** Suspend, reactivate or give an end date: in scope, never yourself or the last active super admin. */
@@ -1408,7 +1431,10 @@ export function canSuspendPerson(
 /** Remove someone from the team: super admins only, never themselves. */
 export function canRemovePerson(actor: Actor, target: PersonCtx): boolean {
   return (
-    isSuperAdmin(actor) && target.organisationId === actor.organisationId && !isSelf(actor, target)
+    isSuperAdmin(actor) &&
+    !actor.demo &&
+    target.organisationId === actor.organisationId &&
+    !isSelf(actor, target)
   );
 }
 
@@ -1455,6 +1481,7 @@ export function personChangeRefusal(
   after: PersonAccess,
 ): string | null {
   if (actor.kind !== "staff") return "You can't change people's access";
+  if (actor.demo) return "Demo accounts can't change people's access";
   // 1. Scope.
   if (target) {
     if (target.organisationId !== actor.organisationId) {
@@ -1619,6 +1646,7 @@ export function assignableEditions(actor: Actor, all: readonly string[]): "all" 
  * the source themselves.
  */
 export function canExtendToCopy(actor: Actor, person: PersonCtx, sourceEditionId: string): boolean {
+  if (actor.demo) return false;
   if (isSuperAdmin(actor)) return person.organisationId === actor.organisationId;
   return canManagePerson(actor, person) && seesEdition(actor, sourceEditionId);
 }
@@ -1632,7 +1660,7 @@ export function canExtendToCopy(actor: Actor, person: PersonCtx, sourceEditionId
  * their scope at all is canManagePerson, checked first by the server.
  */
 export function canRenewInvite(actor: Actor, access: PersonAccess): boolean {
-  if (actor.kind !== "staff") return false;
+  if (actor.kind !== "staff" || actor.demo) return false;
   return isSuperAdmin(actor) || personChangeRefusal(actor, null, null, access) === null;
 }
 

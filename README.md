@@ -368,6 +368,15 @@ email-link landing (`GET /api/auth/magic-link/verify`) answers.
 - **Demo sign-in** (`DEV_AUTH=1`, or local development without a secret) is never possible
   on Vercel Production, whatever `DEV_AUTH` says; elsewhere, next to real sign-in, it only
   takes the seeded `…@….test` accounts.
+- **Demo logins (testing only, temporary).** `DEMO_LOGIN_PASSWORD` (8+ characters,
+  Production) lists every seeded `…@….test` account under the sign-in form — role, name,
+  email — with that shared password; picking one fills in the form. Signing in with it sets
+  it as that account's password (audited); only that password is taken, and it can't be
+  changed from My account. Demo accounts keep their role but can't add, change or remove
+  people, invite partners, make sign-in links, or change departments or system settings,
+  so nobody who reads the page can reach a real person's access. Delete the variable and
+  redeploy to turn it off: on any Vercel deployment with real sign-in the demo accounts then
+  can't sign in at all, and any session or calendar feed they have stops working.
 - **Checking it.** Settings → System → Sign-in says, in plain words, whether real sign-in
   and demo sign-in are on and where the secret comes from; `/api/health` reports `auth`
   (`better-auth`, `demo` or `none`), `demoSignIn` and `authBaseUrl`.

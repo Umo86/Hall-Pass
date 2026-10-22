@@ -14,7 +14,8 @@ import {
   devAuthEnabled,
   getSession,
 } from "@/lib/auth/actor";
-import { authConfigured, devLinksShown } from "@/lib/auth/config";
+import { authConfigured, demoAccountLocked, devLinksShown } from "@/lib/auth/config";
+import { demoPasswordRefused, ensureDemoPassword } from "@/lib/auth/demo-logins";
 import { getAuth } from "@/lib/auth/server";
 import { getAuthSession } from "@/lib/auth/session";
 import { auditSignIn, emailIsInvited } from "@/lib/auth/account-link";
@@ -79,6 +80,14 @@ export async function signInWithPassword(input: unknown): Promise<AuthResult> {
   const email = normaliseEmail(parsed.data.email);
   const limited = limitReply(await allow("signIn", email));
   if (limited) return limited;
+  // Demo logins (testing only): off on a Vercel deployment, the demo accounts
+  // can't sign in; on, they take only the shared password, made theirs first.
+  if (demoAccountLocked(email) || demoPasswordRefused(email, parsed.data.password)) {
+    return { ok: false, error: INCORRECT };
+  }
+  await ensureDemoPassword(email, parsed.data.password).catch((err) =>
+    console.error("ensureDemoPassword", err instanceof Error ? err.message : err),
+  );
   let user: { id: string; email: string };
   try {
     const res = await getAuth().api.signInEmail({

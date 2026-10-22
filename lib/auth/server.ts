@@ -15,6 +15,7 @@ import {
   SESSION_DAYS,
   authBaseURL,
   authTrustedOrigins,
+  demoAccountLocked,
 } from "./config";
 import { authSecret } from "./secret";
 import { hashPassword, isLegacyHash, verifyPassword } from "./password";
@@ -34,7 +35,8 @@ async function invitedUserId(userId: string): Promise<boolean> {
     where: eq(users.id, userId),
     columns: { email: true },
   });
-  return Boolean(u && (await emailIsInvited(u.email)));
+  // Demo logins off on this deployment: no new session for a demo account by any route.
+  return Boolean(u && !demoAccountLocked(u.email) && (await emailIsInvited(u.email)));
 }
 
 function createAuth() {

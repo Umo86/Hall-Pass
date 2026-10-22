@@ -65,6 +65,8 @@ export async function changeMyPassword(input: unknown): Promise<ActionResult> {
     if (!parsed.success) return fail(parsed.error.issues[0].message);
     const session = await requireSession();
     if (!authConfigured()) return fail(NOT_SET_UP);
+    // Demo logins share one password: nobody may change it for the others.
+    if (session.actor.demo) return fail("Demo accounts keep the shared demo password");
     const gate = await allow("changePassword", session.user.id);
     if (gate !== "ok") return fail(gate === "limited" ? TOO_MANY : UNAVAILABLE);
     const auth = await getAuthSession();

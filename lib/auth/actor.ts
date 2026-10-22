@@ -22,7 +22,13 @@ import {
 import { accessBlockMessage, accessState, type AccessBlock } from "@/lib/access";
 import { activeMembership } from "@/lib/users/active";
 import { brandName } from "@/lib/config";
-import { demoEmailAllowed, devAuthEnabled } from "./config";
+import {
+  demoAccountLocked,
+  demoEmailAllowed,
+  demoLoginPassword,
+  devAuthEnabled,
+  isDemoAccount,
+} from "./config";
 import { getAuthSession } from "./session";
 import { claimStaffInvite, openStaffInviteFor } from "./claim-staff-invite";
 import { PORTAL_HOME, STAFF_HOME, safeNext } from "@/lib/edition-path";
@@ -151,6 +157,8 @@ async function loadForUser(
   user: typeof users.$inferSelect,
   opts: LoadOpts = { touch: true },
 ): Promise<Loaded | null> {
+  // Demo logins off on this Vercel deployment: no session, no calendar feed.
+  if (demoAccountLocked(user.email)) return null;
   let membership = await db.query.memberships.findFirst({
     where: eq(memberships.userId, user.id),
   });
@@ -186,6 +194,7 @@ async function loadForUser(
       managerScope: membership.role === "admin" ? null : membership.managerScope,
       // Users → Events: null = every event (super admins always).
       editionIds: membership.role === "admin" ? null : (membership.editionIds ?? null),
+      ...demoFlag(user.email),
     };
     if (opts.touch !== false) touchLastSeen(user);
     return {
@@ -231,6 +240,7 @@ async function loadForUser(
       expiresAt: g.expiresAt,
       revokedAt: g.revokedAt,
     })),
+    ...demoFlag(user.email),
   };
   return {
     session: {
@@ -246,6 +256,11 @@ async function partnerInviter(invitedBy: string | null): Promise<AskWho> {
   if (!invitedBy) return NOBODY;
   const inviter = await db.query.users.findFirst({ where: eq(users.id, invitedBy) });
   return inviter ? { askName: inviter.fullName || inviter.email, askEmail: inviter.email } : NOBODY;
+}
+
+/** A demo login (DEMO_LOGIN_PASSWORD on, a …@….test account): limited by authz DEMO_DENIED. */
+function demoFlag(email: string): { demo?: true } {
+  return demoLoginPassword() !== null && isDemoAccount(email) ? { demo: true } : {};
 }
 
 /** Who is signed in on this request (cached), or why they are turned away. */
