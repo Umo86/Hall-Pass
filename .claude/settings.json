@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Edit",
+      "Write",
+      "WebFetch",
+      "WebSearch",
+      "mcp__Neon",
+      "mcp__Vercel",
+      "mcp__github",
+      "mcp__Supabase"
+    ]
+  }
+}
