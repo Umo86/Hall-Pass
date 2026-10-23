@@ -1561,3 +1561,28 @@ level, for testing, to be removed later.
   like its role allows; anyone can use up a demo account's sign-in limit (10 tries in 15
   minutes). When removing it, also delete or protect older deployments that still carry the
   variable.
+
+## Vercel and Neon audit, after the move (23 Oct 2026)
+
+A read-only check of both platforms the day after the switch. Everything the app needs is
+there and working: functions in London next to the database, the schema and all 15
+migrations matching the repo, no runtime errors or 5xx since the switch, and the daily cron
+writing to Neon. What it changed and what it leaves for later:
+
+- **Backup instructions fixed.** The README and the backup and migrate workflows sent the
+  owner to a Vercel Storage page that no longer exists (the Neon store was disconnected),
+  and Vercel's `DATABASE_URL_UNPOOLED` names `/postgres`. The `DIRECT_DATABASE_URL` secret
+  now comes from the Neon console (Connect → database `hallpass`, Connection pooling off),
+  and both workflows refuse a Neon URL naming `/postgres` as they already refused
+  `/neondb`.
+- **No backup exists yet** beyond Neon's 6-hour restore window: take the one free manual
+  snapshot, and set the GitHub secret after the password rotation.
+- **Phase 3 notes:** don't uninstall the Supabase integration (it is shared with the
+  turkan-abla project); remove only hall-pass's link and its `SUPABASE_*` variables. Keep
+  `NEON_DATABASE` (the stored URLs name `/postgres`; it points them at `hallpass`). Drop
+  the `db_move` schema once the move tool is gone, and delete the ignored `DEV_AUTH`.
+- **Rollback:** never instant-roll back past `dpl_Cci9foyU6Af1iPNvkFAHvR68iUih`; earlier
+  production deployments run on the frozen Supabase database.
+- **Later, optional:** give the app its own login role instead of `neondb_owner`;
+  `pg_stat_statements` for slow-query visibility. The daily cron runs at 06:00 UTC, which
+  is 06:00 London in winter.

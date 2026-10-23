@@ -312,8 +312,9 @@ during the window). Save every reply.
    with artwork and Users.
 10. `step=finish&expect=F&confirm=finish` → `sourceUnchanged:true` and the audit row
     "Database moved from Supabase to Neon (London): N rows verified". The window ends.
-11. **After:** set the GitHub secret `DIRECT_DATABASE_URL` to Neon's `DATABASE_URL_UNPOOLED`
-    with `/neondb` at the end changed to `/hallpass`, and run "Database backup": its log says "Backing up the database at ep-….neon.tech
+11. **After:** set the GitHub secret `DIRECT_DATABASE_URL` to Neon's direct URL for `hallpass`
+    (Neon console → Hall Pass → **Connect** → database `hallpass`, **Connection pooling** off;
+    it ends in `/hallpass` and its host has no `-pooler`), and run "Database backup": its log says "Backing up the database at ep-….neon.tech
     (Neon)" (a Supabase host there means the secret wasn't changed). Keep Supabase frozen and
     the token set until Phase 3.
 
@@ -385,8 +386,8 @@ email-link landing (`GET /api/auth/magic-link/verify`) answers.
 - **Locked out** (the last super admin forgot their password and email is off):
   `DATABASE_URL='<live database URL>' pnpm auth:set-password you@company.com` prints a new
   20-character password once, signs them out everywhere and writes an audit row. On Neon,
-  use `DATABASE_URL_UNPOOLED` from Vercel → Storage → the Neon database → `.env.local` →
-  Show secret, pasted as it is.
+  use the direct URL for `hallpass` from the Neon console (**Connect** → database `hallpass`,
+  **Connection pooling** off), pasted as it is.
 
 ## Running on free plans (Supabase Free + Cloudflare R2)
 
@@ -503,7 +504,8 @@ the `auth_*` tables, so they move with the data and nobody has to set a new pass
    `"databaseProvider":"neon"`, `"database":"ok"` and `"auth":"better-auth"`. Sign in and open
    the dashboard, Signage and Onsite.
 4. Then downgrade the Supabase organisation to Free (Billing). For the daily backup, use
-   the Neon `DATABASE_URL_UNPOOLED` as the `DIRECT_DATABASE_URL` secret.
+   Neon's direct URL for `hallpass` (Neon console → **Connect** → database `hallpass`,
+   **Connection pooling** off) as the `DIRECT_DATABASE_URL` secret.
 
 For the live site, [Moving the database to Neon](#moving-the-database-to-neon) replaces
 steps 1–3: the move tool copies and checks every row instead of an import file.
@@ -516,9 +518,11 @@ matches the server's version, and uploads only a dump that reads back with at le
 tables. Add the repository secrets `DIRECT_DATABASE_URL`, `S3_BUCKET`, `S3_ENDPOINT`,
 `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` (GitHub → Settings → Secrets and variables →
 Actions) and run the workflow once by hand to check it. For `DIRECT_DATABASE_URL` use Neon's
-`DATABASE_URL_UNPOOLED` (Vercel → project → Storage → the Neon database → `.env.local` tab →
-Show secret), never the pooled `-pooler` host; until the move it is Supabase's **Session
-pooler** URI (port 5432, user `postgres.<ref>`), not the IPv6-only `db.<ref>.supabase.co`.
+direct URL for `hallpass`: Neon console → project Hall Pass → **Connect** → branch
+`production`, database `hallpass`, role `neondb_owner`, **Connection pooling** off → copy. It
+ends in `/hallpass` and its host has no `-pooler` (`pg_dump` needs a session). Don't take
+Vercel's `DATABASE_URL_UNPOOLED`: it names `/postgres`, and a sensitive value can't be shown
+again.
 The same secret drives the **Database migrate** workflow. Restore with
 `pg_restore --clean --if-exists --no-owner --no-privileges -d "<Neon direct URL>" hallpass-<date>.dump`.
 

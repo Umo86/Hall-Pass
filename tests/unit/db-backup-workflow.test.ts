@@ -83,6 +83,9 @@ describe("db-backup.yml: which database is backed up", () => {
     // Neon's integration database, not NEON_DATABASE (hallpass).
     "postgresql://neondb_owner:s3cret@ep-cool-sea-a1b2c3d4.eu-west-2.aws.neon.tech/neondb?sslmode=require",
     "postgresql://neondb_owner:s3cret@ep-cool-sea-a1b2c3d4.c-2.eu-west-2.aws.neon.tech:5432/neondb",
+    // Neon's server database (what Vercel's DATABASE_URL_UNPOOLED names), not hallpass.
+    "postgresql://neondb_owner:s3cret@ep-cool-sea-a1b2c3d4.c-2.eu-west-2.aws.neon.tech/postgres?sslmode=require",
+    "postgresql://neondb_owner:s3cret@ep-cool-sea-a1b2c3d4.c-2.eu-west-2.aws.neon.tech:5432/postgres",
     "",
   ])("refuses %j before naming anything", (url) => {
     const r = check(url);

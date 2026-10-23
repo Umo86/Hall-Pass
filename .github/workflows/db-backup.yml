@@ -3,12 +3,10 @@ name: Database backup
 # Neon's Free plan keeps only a 6-hour restore window, so this takes a backup
 # every day and puts it in the same S3/R2 bucket as the files, under backups/.
 # Set these repository secrets (Settings → Secrets and variables → Actions):
-#   DIRECT_DATABASE_URL  — Neon's direct connection, DATABASE_URL_UNPOOLED (Vercel →
-#                          project → Storage → the Neon database → .env.local tab →
-#                          Show secret) with /neondb changed to /hallpass
-#                          (NEON_DATABASE). Never the pooled "-pooler" host: pg_dump needs
-#                          a session. Until it is updated after the move it is still the
-#                          Supabase "Session pooler" URI (port 5432), which also works.
+#   DIRECT_DATABASE_URL  — Neon's direct URL for the hallpass database (Neon console →
+#                          Hall Pass → Connect → database hallpass, Connection pooling
+#                          off): it ends in /hallpass. Never the pooled "-pooler" host:
+#                          pg_dump needs a session.
 #   S3_BUCKET, S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY — as in Vercel
 # The pg_dump client matches the server's major version, whatever it is. The log names
 # the host and provider it dumps ("Backing up the database at <host> (Neon)"), never the
@@ -41,13 +39,14 @@ jobs:
             exit 1
           fi
           case "$DIRECT_DATABASE_URL" in
-            *.neon.tech/neondb|*.neon.tech/neondb\?*|*.neon.tech:[0-9]*/neondb|*.neon.tech:[0-9]*/neondb\?*)
-              echo "DIRECT_DATABASE_URL names neondb, the Neon integration's own (empty) database;"
-              echo "change /neondb to /hallpass (NEON_DATABASE) in the secret."
+            *.neon.tech/neondb|*.neon.tech/neondb\?*|*.neon.tech:[0-9]*/neondb|*.neon.tech:[0-9]*/neondb\?*|\
+            *.neon.tech/postgres|*.neon.tech/postgres\?*|*.neon.tech:[0-9]*/postgres|*.neon.tech:[0-9]*/postgres\?*)
+              echo "DIRECT_DATABASE_URL names a Neon database that isn't the app's (neondb or postgres);"
+              echo "use the hallpass one: Neon console → Connect → database hallpass, Connection pooling off."
               exit 1 ;;
             *-pooler.*)
               echo "DIRECT_DATABASE_URL is Neon's pooled (-pooler) host; pg_dump needs a session."
-              echo "Use DATABASE_URL_UNPOOLED from Vercel → Storage → the Neon database instead."
+              echo "Use the direct URL instead: Neon console → Connect → Connection pooling off."
               exit 1 ;;
             *:6543/*|*:6543)
               echo "DIRECT_DATABASE_URL is a transaction pooler (port 6543); pg_dump needs a session."
